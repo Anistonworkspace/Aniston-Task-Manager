@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: aph-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aniston_project_hub
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    container_name: aph-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: aniston_project_hub
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-change-this-to-a-secure-secret}
+      JWT_EXPIRES_IN: 7d
+      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL:-}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost}
+    ports:
+      - "5000:5000"
+    volumes:
+      - uploads_data:/app/uploads
+
+  # Frontend (Nginx)
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.client
+    container_name: aph-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  uploads_data:

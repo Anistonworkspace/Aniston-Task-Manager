@@ -1,0 +1,126 @@
+const express = require('express');
+const { body } = require('express-validator');
+const { authenticate, managerOrAdmin } = require('../middleware/auth');
+const {
+  createTask,
+  getTasks,
+  getTask,
+  updateTask,
+  deleteTask,
+  moveTask,
+  bulkUpdateTasks,
+  reorderTasks,
+  duplicateTask,
+} = require('../controllers/taskController');
+const { getCrossTeamDependencies } = require('../controllers/dependencyController');
+
+const router = express.Router();
+
+// All task routes require authentication
+router.use(authenticate);
+
+// ─── GET /api/tasks/cross-team-deps (must be before /:id) ────
+router.get('/cross-team-deps', getCrossTeamDependencies);
+
+// ─── PUT /api/tasks/reorder (manager/admin only) ─────────────
+router.put('/reorder', managerOrAdmin, reorderTasks);
+
+// ─── PUT /api/tasks/bulk (manager/admin only) ────────────────
+router.put(
+  '/bulk',
+  managerOrAdmin,
+  [
+    body('taskIds')
+      .isArray({ min: 1 }).withMessage('taskIds must be a non-empty array'),
+    body('updates')
+      .isObject().withMessage('updates must be an object'),
+  ],
+  bulkUpdateTasks
+);
+
+// ─── POST /api/tasks (all authenticated users) ───────────────
+router.post(
+  '/',
+  [
+    body('title')
+      .trim()
+      .notEmpty().withMessage('Task title is required')
+      .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
+    body('boardId')
+      .notEmpty().withMessage('boardId is required')
+      .isUUID().withMessage('boardId must be a valid UUID'),
+    body('status')
+      .optional()
+      .isIn(['not_started', 'working_on_it', 'stuck', 'done']).withMessage('Invalid status value'),
+    body('priority')
+      .optional()
+      .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
+    body('assignedTo')
+      .optional({ nullable: true })
+      .isUUID().withMessage('assignedTo must be a valid UUID'),
+    body('dueDate')
+      .optional({ nullable: true })
+      .isISO8601().withMessage('dueDate must be a valid date'),
+    body('startDate')
+      .optional({ nullable: true })
+      .isISO8601().withMessage('startDate must be a valid date'),
+  ],
+  createTask
+);
+
+// ─── GET /api/tasks ──────────────────────────────────────────
+router.get('/', getTasks);
+
+// ─── GET /api/tasks/:id ──────────────────────────────────────
+router.get('/:id', getTask);
+
+// ─── PUT /api/tasks/:id ──────────────────────────────────────
+router.put(
+  '/:id',
+  [
+    body('title')
+      .optional()
+      .trim()
+      .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
+    body('status')
+      .optional()
+      .isIn(['not_started', 'working_on_it', 'stuck', 'done']).withMessage('Invalid status value'),
+    body('priority')
+      .optional()
+      .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
+    body('assignedTo')
+      .optional({ nullable: true })
+      .isUUID().withMessage('assignedTo must be a valid UUID'),
+    body('dueDate')
+      .optional({ nullable: true })
+      .isISO8601().withMessage('dueDate must be a valid date'),
+    body('startDate')
+      .optional({ nullable: true })
+      .isISO8601().withMessage('startDate must be a valid date'),
+  ],
+  updateTask
+);
+
+// ─── DELETE /api/tasks/:id (manager/admin only) ──────────────
+router.delete('/:id', managerOrAdmin, deleteTask);
+
+// ─── POST /api/tasks/:id/duplicate ────────────────────────────
+router.post('/:id/duplicate', duplicateTask);
+
+// ─── PUT /api/tasks/:id/move (manager/admin only) ────────────
+router.put(
+  '/:id/move',
+  managerOrAdmin,
+  [
+    body('groupId')
+      .optional()
+      .trim()
+      .notEmpty().withMessage('groupId cannot be empty'),
+    body('position')
+      .optional()
+      .isInt({ min: 0 }).withMessage('position must be a non-negative integer'),
+  ],
+  moveTask
+);
+
+module.exports = router;

@@ -1,0 +1,10 @@
+const express = require('express');
+const { authenticate, managerOrAdmin } = require('../middleware/auth');
+const { getAutomations, createAutomation, updateAutomation, deleteAutomation } = require('../controllers/automationController');
+const router = express.Router();
+router.use(authenticate);
+router.get('/', getAutomations);
+router.post('/', managerOrAdmin, createAutomation);
+router.put('/:id', managerOrAdmin, updateAutomation);
+router.delete('/:id', managerOrAdmin, deleteAutomation);
+module.exports = router;

@@ -1,0 +1,21 @@
+version: '3.8'
+
+# Development compose - only runs PostgreSQL
+# Frontend and backend are run locally with npm run dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aph-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aniston_project_hub
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_dev_data:
