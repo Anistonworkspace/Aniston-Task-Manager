@@ -42,6 +42,14 @@ const Workspace = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: true,
     },
+    archivedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    archivedBy: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
     createdBy: {
       type: DataTypes.UUID,
       allowNull: false,

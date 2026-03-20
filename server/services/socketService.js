@@ -134,10 +134,22 @@ const emitToBoard = (boardId, event, data) => {
   }
 };
 
-/** Emit an event to a specific user's personal room. */
+/** Emit an event to a specific user's personal room. Also sends push notification for notification:new events. */
 const emitToUser = (userId, event, data) => {
   if (ioInstance) {
     ioInstance.to(`user:${userId}`).emit(event, data);
+  }
+  // Send push notification for new notifications (fire-and-forget)
+  if (event === 'notification:new' && data?.notification?.message) {
+    try {
+      const { sendPushToUser } = require('./pushService');
+      sendPushToUser(userId, {
+        title: 'Aniston Hub',
+        body: data.notification.message,
+        tag: `notif-${data.notification.id || Date.now()}`,
+        url: data.notification.entityType === 'task' ? '/my-work' : '/',
+      }).catch(() => {}); // Silently ignore push failures
+    } catch (e) { /* pushService not available */ }
   }
 };
 

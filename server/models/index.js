@@ -286,6 +286,7 @@ TaskDependency.belongsTo(Task, { as: 'task', foreignKey: 'taskId', onDelete: 'CA
 TaskDependency.belongsTo(Task, { as: 'dependsOnTask', foreignKey: 'dependsOnTaskId', onDelete: 'CASCADE' });
 TaskDependency.belongsTo(User, { as: 'autoAssignTo', foreignKey: 'autoAssignToUserId', onDelete: 'SET NULL' });
 TaskDependency.belongsTo(User, { as: 'createdBy', foreignKey: 'createdById', onDelete: 'CASCADE' });
+TaskDependency.belongsTo(User, { as: 'archiver', foreignKey: 'archivedBy', onDelete: 'SET NULL' });
 
 Task.hasMany(TaskDependency, { as: 'dependencies', foreignKey: 'taskId' });
 Task.hasMany(TaskDependency, { as: 'dependents', foreignKey: 'dependsOnTaskId' });
@@ -388,6 +389,7 @@ Task.hasMany(DueDateExtension, { foreignKey: 'taskId', as: 'extensionRequests' }
 HelpRequest.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
 HelpRequest.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester', onDelete: 'CASCADE' });
 HelpRequest.belongsTo(User, { foreignKey: 'requestedTo', as: 'helper', onDelete: 'CASCADE' });
+HelpRequest.belongsTo(User, { foreignKey: 'archivedBy', as: 'archiver', onDelete: 'SET NULL' });
 Task.hasMany(HelpRequest, { foreignKey: 'taskId', as: 'helpRequests' });
 User.hasMany(HelpRequest, { foreignKey: 'requestedTo', as: 'helpRequestsReceived' });
 

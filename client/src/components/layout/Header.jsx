@@ -10,6 +10,7 @@ import KeyboardShortcuts from '../common/KeyboardShortcuts';
 import useSocket from '../../hooks/useSocket';
 import { useToast } from '../common/Toast';
 import { useTheme } from '../../context/ThemeContext';
+import { requestPushPermission, showLocalNotification, isPushSupported, subscribeToPush } from '../../services/pushNotifications';
 
 export default function Header({ onToggleSidebar }) {
   const { user, logout, canManage } = useAuth();
@@ -17,10 +18,27 @@ export default function Header({ onToggleSidebar }) {
   const { darkMode, toggleDarkMode } = useTheme();
   const location = useLocation();
 
+  // Request push notification permission and subscribe to VAPID push
+  useEffect(() => {
+    if (isPushSupported()) {
+      requestPushPermission().then((perm) => {
+        if (perm === 'granted') subscribeToPush();
+      });
+    }
+  }, []);
+
   useSocket('notification:new', (data) => {
     const msg = data?.notification?.message;
     if (msg) toastInfo(msg);
     loadUnreadCount();
+    // Send browser push notification when tab is not focused
+    if (msg) {
+      showLocalNotification('Aniston Hub', {
+        body: msg,
+        tag: `notif-${data?.notification?.id || Date.now()}`,
+        url: data?.notification?.entityType === 'task' ? '/my-work' : '/',
+      });
+    }
   });
   useSocket('task:unblocked', (data) => { toastSuccess(`Task "${data?.title || 'task'}" unblocked!`); });
   useSocket('task:delegated', (data) => { toastInfo(`"${data?.title || 'Task'}" delegated to you`); });

@@ -13,6 +13,9 @@ const HelpRequest = sequelize.define('HelpRequest', {
   meetingLink: { type: DataTypes.TEXT, allowNull: true },
   meetingScheduledAt: { type: DataTypes.DATE, allowNull: true },
   resolvedAt: { type: DataTypes.DATE, allowNull: true },
+  isArchived: { type: DataTypes.BOOLEAN, defaultValue: false },
+  archivedAt: { type: DataTypes.DATE, allowNull: true },
+  archivedBy: { type: DataTypes.UUID, allowNull: true },
 }, { tableName: 'help_requests', timestamps: true });
 
 module.exports = HelpRequest;

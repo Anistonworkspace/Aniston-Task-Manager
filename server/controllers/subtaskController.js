@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const { Subtask, Task, User } = require('../models');
 const { logActivity } = require('../services/activityService');
+const { emitToBoard } = require('../services/socketService');
 
 // POST /api/subtasks
 const createSubtask = async (req, res) => {
@@ -53,6 +54,7 @@ const createSubtask = async (req, res) => {
       userId: req.user.id,
     });
 
+    if (task.boardId) emitToBoard(task.boardId, 'subtask:created', { subtask: fullSubtask, taskId });
     res.status(201).json({ success: true, data: { subtask: fullSubtask } });
   } catch (error) {
     console.error('Create subtask error:', error);
@@ -139,6 +141,7 @@ const updateSubtask = async (req, res) => {
       ],
     });
 
+    if (subtask.task?.boardId) emitToBoard(subtask.task.boardId, 'subtask:updated', { subtask: fullSubtask, taskId: subtask.taskId });
     res.json({ success: true, data: { subtask: fullSubtask } });
   } catch (error) {
     console.error('Update subtask error:', error);

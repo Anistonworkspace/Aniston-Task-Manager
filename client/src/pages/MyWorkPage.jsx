@@ -4,6 +4,7 @@ import {
   Calendar as CalIcon, Table, Search, ChevronLeft, ChevronRight, Plus, Settings,
   Send, Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot,
 } from 'lucide-react';
+import { SkeletonTable } from '../components/common/Skeleton';
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths,
   isSameDay, parseISO, isToday, isPast, startOfWeek, endOfWeek, addDays,
@@ -89,7 +90,20 @@ export default function MyWorkPage() {
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>;
+    return (
+      <div className="h-full flex flex-col">
+        <div className="px-6 pt-5 pb-4">
+          <div className="h-7 w-32 bg-gray-100 rounded animate-pulse mb-2" />
+          <div className="h-4 w-48 bg-gray-50 rounded animate-pulse" />
+        </div>
+        <div className="flex gap-3 px-6 mb-4">
+          {[1,2,3,4].map(i => <div key={i} className="h-16 flex-1 bg-gray-50 rounded-xl animate-pulse" />)}
+        </div>
+        <div className="px-6 flex-1">
+          <SkeletonTable rows={8} cols={5} />
+        </div>
+      </div>
+    );
   }
 
   return (

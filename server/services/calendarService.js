@@ -1,6 +1,11 @@
 const axios = require('axios');
 const { User, Task, Board } = require('../models');
 const teamsConfig = require('../config/teams');
+const { getAppToken } = require('./teamsUserSync');
+
+// In-memory cache for calendar events (5-minute TTL)
+const calendarCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Get a valid access token for a user, refreshing if expired.
@@ -191,4 +196,87 @@ async function syncToTeamsCalendar(taskId, userId) {
   }
 }
 
-module.exports = { getAccessToken, createTaskEvent, updateTaskEvent, deleteTaskEvent, syncToTeamsCalendar };
+/**
+ * Fetch calendar events from Microsoft 365 for a user (app-level access).
+ * Returns { timedEvents: [...], allDayEvents: [...] } or null if user has no teamsUserId.
+ */
+async function fetchCalendarEvents(teamsUserId, startDate, endDate) {
+  if (!teamsConfig.isConfigured || !teamsUserId) return null;
+
+  // Check cache
+  const cacheKey = `${teamsUserId}:${startDate}:${endDate}`;
+  const cached = calendarCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  try {
+    const token = await getAppToken();
+
+    const startISO = `${startDate}T00:00:00`;
+    const endISO = `${endDate}T23:59:59`;
+
+    let allEvents = [];
+    let nextLink = `${teamsConfig.graphUrl}/users/${teamsUserId}/calendarView?startDateTime=${startISO}&endDateTime=${endISO}&$select=id,subject,start,end,isAllDay,location,showAs,bodyPreview&$top=100&$orderby=start/dateTime`;
+
+    while (nextLink) {
+      const res = await axios.get(nextLink, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Prefer': 'outlook.timezone="Asia/Kolkata"',
+        },
+      });
+      allEvents = allEvents.concat(res.data.value || []);
+      nextLink = res.data['@odata.nextLink'] || null;
+    }
+
+    // Map and separate timed vs all-day events
+    const timedEvents = [];
+    const allDayEvents = [];
+
+    for (const event of allEvents) {
+      const mapped = {
+        id: event.id,
+        subject: event.subject || '(No title)',
+        isAllDay: event.isAllDay,
+        location: event.location?.displayName || '',
+        showAs: event.showAs,
+        bodyPreview: event.bodyPreview || '',
+        source: 'teams',
+      };
+
+      if (event.isAllDay) {
+        // All-day events: extract date from start
+        mapped.date = event.start.dateTime.split('T')[0];
+        allDayEvents.push(mapped);
+      } else {
+        // Timed events: extract date and HH:MM
+        const startDT = event.start.dateTime;
+        const endDT = event.end.dateTime;
+        mapped.date = startDT.split('T')[0];
+        mapped.startTime = startDT.split('T')[1].substring(0, 5); // HH:MM
+        mapped.endTime = endDT.split('T')[1].substring(0, 5);
+        // Handle events that span midnight (cap at day end)
+        if (mapped.endTime <= mapped.startTime) mapped.endTime = '20:00';
+        timedEvents.push(mapped);
+      }
+    }
+
+    const result = { timedEvents, allDayEvents };
+
+    // Cache the result
+    calendarCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL });
+
+    // Lazy cleanup of expired cache entries
+    for (const [key, val] of calendarCache) {
+      if (val.expiresAt < Date.now()) calendarCache.delete(key);
+    }
+
+    return result;
+  } catch (err) {
+    console.error('[Calendar] fetchCalendarEvents error:', err.response?.data?.error?.message || err.message);
+    return { timedEvents: [], allDayEvents: [] };
+  }
+}
+
+module.exports = { getAccessToken, createTaskEvent, updateTaskEvent, deleteTaskEvent, syncToTeamsCalendar, fetchCalendarEvents };

@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { Link2, ArrowRight, AlertTriangle, CheckCircle2, Check, HelpCircle } from 'lucide-react';
+import { Link2, ArrowRight, AlertTriangle, CheckCircle2, Check, HelpCircle, Archive } from 'lucide-react';
 
 const STATUS_COLORS = {
   not_started: { bg: '#c4c4c4', label: 'Not Started' },
@@ -16,18 +16,21 @@ const STATUS_COLORS = {
 export default function CrossTeamTasksPage() {
   const [deps, setDeps] = useState([]);
   const [helpRequests, setHelpRequests] = useState([]);
+  const [resolvedHelp, setResolvedHelp] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { user } = useAuth();
 
   async function loadDeps() {
     try {
-      const [depRes, helpRes] = await Promise.all([
+      const [depRes, helpRes, resolvedHelpRes] = await Promise.all([
         api.get('/tasks/cross-team-deps'),
         api.get('/help-requests/my-pending').catch(() => ({ data: { data: { helpRequests: [] } } })),
+        api.get('/help-requests?status=resolved').catch(() => ({ data: { data: { helpRequests: [] } } })),
       ]);
       setDeps((depRes.data?.data || depRes.data).dependencies || []);
       setHelpRequests((helpRes.data?.data || helpRes.data).helpRequests || []);
+      setResolvedHelp((resolvedHelpRes.data?.data || resolvedHelpRes.data).helpRequests || []);
     } catch (err) { console.error(err); } finally { setLoading(false); }
   }
 
@@ -35,6 +38,20 @@ export default function CrossTeamTasksPage() {
     try {
       await api.put(`/help-requests/${helpId}/status`, { status: 'resolved' });
       loadDeps();
+    } catch (err) { console.error(err); }
+  }
+
+  async function handleArchiveDep(dep) {
+    try {
+      await api.put(`/tasks/${dep.taskId}/dependencies/${dep.id}/archive`);
+      setDeps(prev => prev.filter(d => d.id !== dep.id));
+    } catch (err) { console.error(err); }
+  }
+
+  async function handleArchiveHelp(helpId) {
+    try {
+      await api.put(`/help-requests/${helpId}/archive`);
+      setHelpRequests(prev => prev.filter(h => h.id !== helpId));
     } catch (err) { console.error(err); }
   }
 
@@ -113,12 +130,12 @@ export default function CrossTeamTasksPage() {
               <CheckCircle2 size={12} className="text-green-500" /> Resolved ({resolved.length})
             </h2>
             <div className="space-y-2 opacity-60">
-              {resolved.map(d => <DepCard key={d.id} dep={d} navigate={navigate} userId={user?.id} />)}
+              {resolved.map(d => <DepCard key={d.id} dep={d} navigate={navigate} userId={user?.id} onArchive={handleArchiveDep} />)}
             </div>
           </div>
         )}
 
-        {/* Help Requests */}
+        {/* Help Requests — Pending */}
         {helpRequests.length > 0 && (
           <div className="mt-6">
             <h2 className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
@@ -146,12 +163,41 @@ export default function CrossTeamTasksPage() {
             </div>
           </div>
         )}
+
+        {/* Help Requests — Resolved (with Archive button) */}
+        {resolvedHelp.length > 0 && (
+          <div className="mt-6">
+            <h2 className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+              <CheckCircle2 size={12} className="text-green-500" /> Resolved Help Requests ({resolvedHelp.length})
+            </h2>
+            <div className="space-y-2 opacity-60">
+              {resolvedHelp.map(hr => (
+                <div key={hr.id} className="bg-white rounded-lg border border-gray-100 shadow-sm p-3 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center">
+                    <HelpCircle size={14} className="text-green-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-semibold text-gray-800 truncate">{hr.task?.title || 'Task'}</p>
+                    <p className="text-[10px] text-gray-400 truncate">{hr.description}</p>
+                    <p className="text-[9px] text-gray-300 mt-0.5">
+                      From: {hr.requester?.name || '?'} · Helper: {hr.helper?.name || '?'}
+                    </p>
+                  </div>
+                  <button onClick={() => handleArchiveHelp(hr.id)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-medium text-gray-500 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors">
+                    <Archive size={10} /> Archive
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function DepCard({ dep, navigate, userId, onMarkDone }) {
+function DepCard({ dep, navigate, userId, onMarkDone, onArchive }) {
   const [completing, setCompleting] = useState(false);
   const task = dep.task;
   const blocker = dep.dependsOnTask;
@@ -163,6 +209,7 @@ function DepCard({ dep, navigate, userId, onMarkDone }) {
 
   // Show "Mark Complete" if the current user is assigned to the blocker task and it's not done
   const canComplete = onMarkDone && blocker.assignedTo === userId && blocker.status !== 'done';
+  const isResolved = task.status === 'done' || blocker.status === 'done';
 
   async function handleComplete() {
     setCompleting(true);
@@ -224,17 +271,25 @@ function DepCard({ dep, navigate, userId, onMarkDone }) {
       )}
 
       {/* Mark Complete button — only for the assigned employee on the blocker task */}
-      {canComplete && (
-        <div className="mt-2.5 pt-2 border-t border-gray-50 flex justify-end">
-          <button onClick={handleComplete} disabled={completing}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-green-500 text-white text-[11px] font-medium rounded-lg hover:bg-green-600 disabled:opacity-50 transition-colors">
-            {completing ? (
-              <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <Check size={12} />
-            )}
-            Mark Complete
-          </button>
+      {(canComplete || (isResolved && onArchive)) && (
+        <div className="mt-2.5 pt-2 border-t border-gray-50 flex justify-end gap-2">
+          {isResolved && onArchive && (
+            <button onClick={() => onArchive(dep)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-500 text-[11px] font-medium rounded-lg hover:bg-gray-200 transition-colors">
+              <Archive size={12} /> Archive
+            </button>
+          )}
+          {canComplete && (
+            <button onClick={handleComplete} disabled={completing}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-500 text-white text-[11px] font-medium rounded-lg hover:bg-green-600 disabled:opacity-50 transition-colors">
+              {completing ? (
+                <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Check size={12} />
+              )}
+              Mark Complete
+            </button>
+          )}
         </div>
       )}
     </motion.div>

@@ -70,6 +70,14 @@ const Board = sequelize.define(
       defaultValue: false,
       allowNull: false,
     },
+    archivedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    archivedBy: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
     createdBy: {
       type: DataTypes.UUID,
       allowNull: false,

@@ -50,6 +50,8 @@ const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
 const hierarchyRoutes = require('./routes/hierarchy');
 const directorPlanRoutes = require('./routes/directorPlan');
+const archiveRoutes = require('./routes/archive');
+const pushRoutes = require('./routes/push');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -122,7 +124,17 @@ const searchLimiter = rateLimit({
   message: { success: false, message: 'Too many search requests. Please slow down.' },
 });
 
+// General API rate limiter (200 requests per minute per IP)
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 200,
+  message: { success: false, message: 'Too many requests. Please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ─── API routes ──────────────────────────────────────────────
+app.use('/api', generalLimiter); // Apply to all API routes
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
@@ -157,6 +169,8 @@ app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/hierarchy-levels', hierarchyRoutes);
 app.use('/api/director-plan', directorPlanRoutes);
+app.use('/api/archive', archiveRoutes);
+app.use('/api/push', pushRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────
 app.use((_req, res) => {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Clock, Calendar, Users, Eye, Save, FolderOpen, X, Trash2, Edit3 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Clock, Calendar, Users, Eye, Save, FolderOpen, X, Trash2, Edit3, CalendarDays, Link as LinkIcon } from 'lucide-react';
 import { format, addDays, subDays, parseISO, isToday, startOfWeek, endOfWeek, eachDayOfInterval, addWeeks, subWeeks } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -29,6 +29,11 @@ export default function TimePlanPage() {
   const [viewingEmployee, setViewingEmployee] = useState(null);
   const [employeeBlocks, setEmployeeBlocks] = useState([]);
   const [templates, setTemplates] = useState(() => JSON.parse(localStorage.getItem('timePlanTemplates') || '[]'));
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [allDayEvents, setAllDayEvents] = useState([]);
+  const [teamsSynced, setTeamsSynced] = useState(null);
+  const [employeeCalendarEvents, setEmployeeCalendarEvents] = useState([]);
+  const [employeeAllDayEvents, setEmployeeAllDayEvents] = useState([]);
 
   const weekDays = useMemo(() => eachDayOfInterval({
     start: weekStart,
@@ -47,8 +52,18 @@ export default function TimePlanPage() {
       setLoading(true);
       const from = format(weekDays[0], 'yyyy-MM-dd');
       const to = format(weekDays[weekDays.length - 1], 'yyyy-MM-dd');
-      const res = await api.get(`/timeplans/my?from=${from}&to=${to}`);
-      setAllBlocks(res.data.data || res.data.blocks || []);
+
+      const [blocksRes, calRes] = await Promise.all([
+        api.get(`/timeplans/my?from=${from}&to=${to}`),
+        api.get(`/timeplans/calendar-events?from=${from}&to=${to}`).catch(() => ({ data: { data: { events: [], allDayEvents: [], synced: null } } })),
+      ]);
+
+      setAllBlocks(blocksRes.data.data || blocksRes.data.blocks || []);
+
+      const calData = calRes.data?.data || {};
+      setCalendarEvents(calData.events || []);
+      setAllDayEvents(calData.allDayEvents || []);
+      setTeamsSynced(calData.synced ?? null);
     } catch (err) {
       console.error('Failed to load blocks:', err);
       toastError('Failed to load time blocks');
@@ -72,10 +87,19 @@ export default function TimePlanPage() {
     try {
       const from = format(weekDays[0], 'yyyy-MM-dd');
       const to = format(weekDays[weekDays.length - 1], 'yyyy-MM-dd');
-      const res = await api.get(`/timeplans/employee/${userId}?from=${from}&to=${to}`);
-      const data = res.data.data || {};
+
+      const [blocksRes, calRes] = await Promise.all([
+        api.get(`/timeplans/employee/${userId}?from=${from}&to=${to}`),
+        api.get(`/timeplans/calendar-events/${userId}?from=${from}&to=${to}`).catch(() => ({ data: { data: { events: [], allDayEvents: [], synced: null } } })),
+      ]);
+
+      const data = blocksRes.data.data || {};
       setEmployeeBlocks(data.blocks || []);
       setViewingEmployee(data.employee || { id: userId, name: userName });
+
+      const calData = calRes.data?.data || {};
+      setEmployeeCalendarEvents(calData.events || []);
+      setEmployeeAllDayEvents(calData.allDayEvents || []);
     } catch (err) { toastError('Failed to load employee schedule'); }
   }
 
@@ -141,6 +165,10 @@ export default function TimePlanPage() {
 
   // Stats
   const totalMins = allBlocks.reduce((sum, b) => sum + timeToMinutes(b.endTime) - timeToMinutes(b.startTime), 0);
+  const teamsMeetingMins = calendarEvents.reduce((sum, e) => {
+    if (e.startTime && e.endTime) return sum + timeToMinutes(e.endTime) - timeToMinutes(e.startTime);
+    return sum;
+  }, 0);
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
@@ -185,8 +213,13 @@ export default function TimePlanPage() {
         {viewMode === 'my' && (
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-text-secondary bg-surface px-2.5 py-1 rounded-lg">
-              <Clock size={11} className="inline mr-1" />{Math.floor(totalMins / 60)}h {totalMins % 60 > 0 ? `${totalMins % 60}m` : ''} this week
+              <Clock size={11} className="inline mr-1" />{Math.floor(totalMins / 60)}h {totalMins % 60 > 0 ? `${totalMins % 60}m` : ''} planned
             </span>
+            {teamsMeetingMins > 0 && (
+              <span className="text-xs font-medium text-[#7b83eb] bg-[#7b83eb]/10 px-2.5 py-1 rounded-lg">
+                <CalendarDays size={11} className="inline mr-1" />{Math.floor(teamsMeetingMins / 60)}h {teamsMeetingMins % 60 > 0 ? `${teamsMeetingMins % 60}m` : ''} in Teams
+              </span>
+            )}
 
             {/* Templates */}
             {templates.length > 0 && (
@@ -213,6 +246,37 @@ export default function TimePlanPage() {
         )}
       </div>
 
+      {/* Teams Sync Banner */}
+      {!loading && viewMode === 'my' && teamsSynced === false && (
+        <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-[#7b83eb]/5 border border-[#7b83eb]/20 rounded-lg">
+          <CalendarDays size={16} className="text-[#7b83eb] flex-shrink-0" />
+          <p className="text-xs text-text-secondary flex-1">
+            Your account is not synced with Microsoft 365. Ask your admin to sync users from the Integrations page to see your Teams calendar here.
+          </p>
+          <a href="/integrations" className="text-xs font-medium text-[#7b83eb] hover:underline whitespace-nowrap">
+            Go to Integrations
+          </a>
+        </div>
+      )}
+
+      {/* Legend */}
+      {!loading && viewMode === 'my' && teamsSynced === true && (
+        <div className="mb-3 flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-sm bg-[#4285f4]/15 border-l-[3px] border-[#4285f4]" />
+            <span className="text-[10px] text-text-tertiary font-medium">Your time blocks</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-sm bg-[#7b83eb]/15 border-l-[3px] border-dashed border-[#7b83eb]" />
+            <span className="text-[10px] text-text-tertiary font-medium">Teams calendar</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-1.5 rounded-sm bg-[#7b83eb]/20" />
+            <span className="text-[10px] text-text-tertiary font-medium">All-day event</span>
+          </div>
+        </div>
+      )}
+
       {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>
@@ -222,14 +286,24 @@ export default function TimePlanPage() {
           {/* Day headers */}
           <div className="grid grid-cols-[60px_repeat(5,1fr)] border-b border-border bg-surface/30">
             <div className="px-2 py-3 text-[10px] font-medium text-text-tertiary"></div>
-            {weekDays.map(day => (
-              <div key={day.toISOString()} className={`px-3 py-3 text-center border-l border-border ${isToday(day) ? 'bg-primary/5' : ''}`}>
-                <p className="text-[10px] uppercase tracking-wider font-semibold text-text-tertiary">{format(day, 'EEE')}</p>
-                <p className={`text-lg font-bold ${isToday(day) ? 'text-primary' : 'text-text-primary'}`}>{format(day, 'd')}</p>
-                <button onClick={() => handleAddBlock(format(day, 'yyyy-MM-dd'))}
-                  className="mt-1 text-[10px] text-primary hover:underline font-medium">+ Add</button>
-              </div>
-            ))}
+            {weekDays.map(day => {
+              const dateStr = format(day, 'yyyy-MM-dd');
+              const dayAllDay = allDayEvents.filter(e => e.date === dateStr);
+              return (
+                <div key={day.toISOString()} className={`px-3 py-3 text-center border-l border-border ${isToday(day) ? 'bg-primary/5' : ''}`}>
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-text-tertiary">{format(day, 'EEE')}</p>
+                  <p className={`text-lg font-bold ${isToday(day) ? 'text-primary' : 'text-text-primary'}`}>{format(day, 'd')}</p>
+                  <button onClick={() => handleAddBlock(dateStr)}
+                    className="mt-1 text-[10px] text-primary hover:underline font-medium">+ Add</button>
+                  {/* All-day Teams events banner */}
+                  {dayAllDay.map((evt, i) => (
+                    <div key={`allday-${evt.id || i}`} className="mt-1 px-1.5 py-0.5 bg-[#7b83eb]/15 rounded text-[9px] font-medium text-[#7b83eb] truncate" title={evt.subject}>
+                      {evt.subject}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
 
           {/* Time grid */}
@@ -301,6 +375,31 @@ export default function TimePlanPage() {
                     );
                   })}
 
+                  {/* Teams calendar events (read-only overlay) */}
+                  {calendarEvents.filter(e => e.date === dateStr).map((event, idx) => {
+                    const startMins = timeToMinutes(event.startTime);
+                    const endMins = timeToMinutes(event.endTime);
+                    const top = minsToPos(startMins);
+                    const height = Math.max(((endMins - startMins) / 60) * 60, 24);
+                    return (
+                      <div key={`teams-${event.id || idx}`}
+                        className="absolute left-1 right-1 rounded-md px-2 py-1 z-[5] overflow-hidden pointer-events-auto"
+                        style={{ top, height, backgroundColor: '#7b83eb12', borderLeft: '3px dashed #7b83eb', opacity: 0.85 }}
+                        title={`Teams: ${event.subject}\n${event.startTime}–${event.endTime}${event.location ? '\n📍 ' + event.location : ''}`}>
+                        <div className="flex items-center gap-1">
+                          <CalendarDays size={9} className="text-[#7b83eb] flex-shrink-0" />
+                          <p className="text-[10px] font-semibold text-[#7b83eb]">{event.startTime}–{event.endTime}</p>
+                        </div>
+                        {height > 30 && (
+                          <p className="text-[10px] text-text-primary font-medium truncate">{event.subject}</p>
+                        )}
+                        {height > 48 && event.location && (
+                          <p className="text-[9px] text-text-tertiary truncate">📍 {event.location}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+
                   {/* Click to add (empty area) */}
                   <div className="absolute inset-0 z-0 cursor-pointer" onClick={() => handleAddBlock(dateStr)} />
                 </div>
@@ -364,7 +463,7 @@ export default function TimePlanPage() {
 
       {/* Employee Detail Modal */}
       {viewingEmployee && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => { setViewingEmployee(null); setEmployeeBlocks([]); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => { setViewingEmployee(null); setEmployeeBlocks([]); setEmployeeCalendarEvents([]); setEmployeeAllDayEvents([]); }}>
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
               <div className="flex items-center gap-2.5">
@@ -379,31 +478,52 @@ export default function TimePlanPage() {
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-white hover:bg-primary/90 flex items-center gap-1">
                   <Plus size={12} /> Add Block for {viewingEmployee.name?.split(' ')[0]}
                 </button>
-                <button onClick={() => { setViewingEmployee(null); setEmployeeBlocks([]); }} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={16} /></button>
+                <button onClick={() => { setViewingEmployee(null); setEmployeeBlocks([]); setEmployeeCalendarEvents([]); setEmployeeAllDayEvents([]); }} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={16} /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
-              {employeeBlocks.length === 0 ? (
-                <div className="text-center py-12"><Clock size={32} className="mx-auto text-text-tertiary mb-2" /><p className="text-sm text-text-secondary">No time blocks planned this week</p></div>
+              {employeeBlocks.length === 0 && employeeCalendarEvents.length === 0 ? (
+                <div className="text-center py-12"><Clock size={32} className="mx-auto text-text-tertiary mb-2" /><p className="text-sm text-text-secondary">No time blocks or meetings this week</p></div>
               ) : (
                 <div className="grid grid-cols-5 gap-3">
                   {weekDays.map(day => {
                     const dateStr = format(day, 'yyyy-MM-dd');
                     const dayBlocks = employeeBlocks.filter(b => b.date === dateStr).sort((a, b) => a.startTime.localeCompare(b.startTime));
+                    const dayTeamsEvents = employeeCalendarEvents.filter(e => e.date === dateStr).sort((a, b) => a.startTime.localeCompare(b.startTime));
+                    const dayAllDay = employeeAllDayEvents.filter(e => e.date === dateStr);
                     return (
                       <div key={dateStr}>
                         <p className={`text-xs font-semibold mb-2 text-center ${isToday(day) ? 'text-primary' : 'text-text-secondary'}`}>
                           {format(day, 'EEE d')}
                         </p>
+                        {/* All-day events */}
+                        {dayAllDay.map((evt, i) => (
+                          <div key={`emp-allday-${evt.id || i}`} className="mb-1.5 px-2 py-1 bg-[#7b83eb]/10 rounded text-[9px] font-medium text-[#7b83eb] truncate" title={evt.subject}>
+                            {evt.subject}
+                          </div>
+                        ))}
                         <div className="space-y-1.5">
-                          {dayBlocks.length === 0 ? (
+                          {dayBlocks.length === 0 && dayTeamsEvents.length === 0 ? (
                             <p className="text-[10px] text-text-tertiary text-center py-4">No blocks</p>
-                          ) : dayBlocks.map((b, i) => (
-                            <div key={b.id} className="rounded-md px-2 py-1.5 border-l-[3px]" style={{ backgroundColor: `${BLOCK_COLORS[i % BLOCK_COLORS.length]}10`, borderLeftColor: BLOCK_COLORS[i % BLOCK_COLORS.length] }}>
-                              <p className="text-[10px] font-semibold" style={{ color: BLOCK_COLORS[i % BLOCK_COLORS.length] }}>{b.startTime}–{b.endTime}</p>
-                              <p className="text-[10px] text-text-primary font-medium truncate">{b.task?.title || b.description || '—'}</p>
-                            </div>
-                          ))}
+                          ) : (
+                            <>
+                              {dayBlocks.map((b, i) => (
+                                <div key={b.id} className="rounded-md px-2 py-1.5 border-l-[3px]" style={{ backgroundColor: `${BLOCK_COLORS[i % BLOCK_COLORS.length]}10`, borderLeftColor: BLOCK_COLORS[i % BLOCK_COLORS.length] }}>
+                                  <p className="text-[10px] font-semibold" style={{ color: BLOCK_COLORS[i % BLOCK_COLORS.length] }}>{b.startTime}–{b.endTime}</p>
+                                  <p className="text-[10px] text-text-primary font-medium truncate">{b.task?.title || b.description || '—'}</p>
+                                </div>
+                              ))}
+                              {dayTeamsEvents.map((evt, i) => (
+                                <div key={`emp-teams-${evt.id || i}`} className="rounded-md px-2 py-1.5 border-l-[3px] border-dashed" style={{ backgroundColor: '#7b83eb10', borderLeftColor: '#7b83eb' }}>
+                                  <div className="flex items-center gap-1">
+                                    <CalendarDays size={9} className="text-[#7b83eb] flex-shrink-0" />
+                                    <p className="text-[10px] font-semibold text-[#7b83eb]">{evt.startTime}–{evt.endTime}</p>
+                                  </div>
+                                  <p className="text-[10px] text-text-primary font-medium truncate">{evt.subject}</p>
+                                </div>
+                              ))}
+                            </>
+                          )}
                         </div>
                       </div>
                     );

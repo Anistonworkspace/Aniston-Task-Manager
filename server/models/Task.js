@@ -131,6 +131,14 @@ const Task = sequelize.define(
       defaultValue: false,
       allowNull: false,
     },
+    archivedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    archivedBy: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
     boardId: {
       type: DataTypes.UUID,
       allowNull: false,

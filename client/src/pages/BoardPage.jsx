@@ -635,8 +635,9 @@ export default function BoardPage() {
         <DragDropContext onDragEnd={handleDragEnd}>
           <div className="flex-1 overflow-auto px-2 sm:px-6 pb-6 -webkit-overflow-scrolling-touch" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             {groups.map((group, idx) => {
+              const validGroupIds = groups.map(g => g.id);
               const groupTasks = sortedTasks
-                .filter(t => t.groupId === group.id || (!t.groupId && group.id === groups[0]?.id))
+                .filter(t => t.groupId === group.id || ((!t.groupId || !validGroupIds.includes(t.groupId)) && group.id === groups[0]?.id))
                 .sort((a, b) => sortConfig ? 0 : (a.position || 0) - (b.position || 0));
               return (
                 <TaskGroup

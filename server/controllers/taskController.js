@@ -1,4 +1,5 @@
 const { Task, Board, User, Notification, Subtask } = require('../models');
+const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { emitToBoard, emitToUser } = require('../services/socketService');
@@ -412,7 +413,7 @@ const deleteTask = async (req, res) => {
       if (task.assignedTo !== req.user.id) {
         return res.status(403).json({ success: false, message: 'You can only archive tasks assigned to you.' });
       }
-      await task.update({ isArchived: true });
+      await task.update({ isArchived: true, archivedAt: new Date(), archivedBy: req.user.id });
       logActivity({
         action: 'task_archived',
         description: `${req.user.name} archived task "${task.title}"`,
@@ -422,7 +423,15 @@ const deleteTask = async (req, res) => {
       return res.json({ success: true, message: 'Task archived successfully. Only managers can permanently delete tasks.' });
     }
 
-    // Managers/admins: permanent delete
+    // Managers/admins: permanent delete — enforce 90-day rule
+    const { canPermanentlyDelete } = require('../utils/archiveHelpers');
+    if (task.isArchived) {
+      const { allowed, daysRemaining } = canPermanentlyDelete(req.user, task.archivedAt);
+      if (!allowed) {
+        return res.status(403).json({ success: false, message: `This task is protected for ${daysRemaining} more days. Only Super Admin can delete before 90 days.` });
+      }
+    }
+
     const boardId = task.boardId;
     const taskId = task.id;
     const taskTitle = task.title;

@@ -1,11 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { Archive, RotateCcw, Trash2, Search, FolderKanban, ListTodo, AlertTriangle, X, Building2, Layers } from 'lucide-react';
-import { formatDistanceToNow, parseISO } from 'date-fns';
+import { Archive, RotateCcw, Trash2, Search, FolderKanban, ListTodo, AlertTriangle, X, Building2, Layers, Link2, HelpCircle, Shield, ShieldCheck, ArrowRight, Calendar as CalIcon, Filter } from 'lucide-react';
+import { formatDistanceToNow, parseISO, differenceInDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 
-function ConfirmDeleteModal({ item, type, onConfirm, onCancel }) {
+const PROTECTION_DAYS = 90;
+
+function ProtectionBadge({ archivedAt }) {
+  if (!archivedAt) return null;
+  const daysSince = differenceInDays(new Date(), parseISO(archivedAt));
+  const daysRemaining = Math.max(0, PROTECTION_DAYS - daysSince);
+  if (daysRemaining > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[9px] bg-orange-50 text-orange-600 px-2 py-0.5 rounded-full font-medium">
+        <Shield size={9} /> Protected for {daysRemaining}d
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[9px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-medium">
+      <ShieldCheck size={9} /> Ready to delete
+    </span>
+  );
+}
+
+function canDeleteItem(user, archivedAt) {
+  if (user?.isSuperAdmin) return true;
+  if (!archivedAt) return true;
+  const daysSince = differenceInDays(new Date(), parseISO(archivedAt));
+  return daysSince >= PROTECTION_DAYS;
+}
+
+function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onCancel}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4" onClick={e => e.stopPropagation()}>
@@ -15,13 +42,19 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel }) {
           </div>
           <h3 className="text-lg font-bold text-gray-800 mb-2">Permanently Delete?</h3>
           <p className="text-sm text-gray-500 mb-1">Are you sure you want to permanently delete this {type}?</p>
-          <p className="text-sm font-semibold text-gray-800 mb-3">"{item?.name || item?.title}"</p>
+          <p className="text-sm font-semibold text-gray-800 mb-3">"{item?.name || item?.title || item?.task?.title || 'Item'}"</p>
+          {!canDelete && (
+            <p className="text-xs text-orange-600 font-medium bg-orange-50 rounded-lg px-3 py-2 mb-3">
+              This item is still within the 90-day protection period. Only Super Admin can delete it.
+            </p>
+          )}
           <p className="text-xs text-red-500 font-medium bg-red-50 rounded-lg px-3 py-2 mb-5">
             This action cannot be undone. All associated data will be permanently removed.
           </p>
           <div className="flex gap-3">
             <button onClick={onCancel} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors">Cancel</button>
-            <button onClick={onConfirm} className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 transition-colors flex items-center justify-center gap-2">
+            <button onClick={onConfirm} disabled={!canDelete}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors ${canDelete ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}>
               <Trash2 size={14} /> Delete Permanently
             </button>
           </div>
@@ -32,35 +65,54 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel }) {
 }
 
 export default function ArchivedPage() {
-  const { canManage, isAdmin } = useAuth();
+  const { canManage, isAdmin, user } = useAuth();
   const [boards, setBoards] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
+  const [dependencies, setDependencies] = useState([]);
+  const [helpRequests, setHelpRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('tasks');
   const [search, setSearch] = useState('');
   const [deleteItem, setDeleteItem] = useState(null);
   const [deleteType, setDeleteType] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => { loadArchived(); }, []);
 
   async function loadArchived() {
     setLoading(true);
     try {
-      const [boardsRes, tasksRes, wsRes] = await Promise.all([
+      const [boardsRes, tasksRes, wsRes, depsRes, helpRes] = await Promise.all([
         api.get('/boards?archived=true'),
         api.get('/tasks?archived=true&limit=200'),
         canManage ? api.get('/workspaces/archived').catch(() => ({ data: { data: { workspaces: [] } } })) : Promise.resolve({ data: { data: { workspaces: [] } } }),
+        api.get(`/archive/dependencies${buildFilterQuery()}`).catch(() => ({ data: { data: { dependencies: [] } } })),
+        api.get(`/archive/help-requests${buildFilterQuery()}`).catch(() => ({ data: { data: { helpRequests: [] } } })),
       ]);
       setBoards((boardsRes.data.boards || boardsRes.data || []).filter(b => b.isArchived));
       setTasks(tasksRes.data.tasks || tasksRes.data || []);
       const wsData = wsRes.data?.data || wsRes.data;
       setWorkspaces(wsData?.workspaces || []);
+      setDependencies((depsRes.data?.data || depsRes.data)?.dependencies || []);
+      setHelpRequests((helpRes.data?.data || helpRes.data)?.helpRequests || []);
     } catch (err) {
       console.error('Failed to load archived items:', err);
     }
     setLoading(false);
   }
+
+  function buildFilterQuery() {
+    const params = [];
+    if (search) params.push(`search=${encodeURIComponent(search)}`);
+    if (dateFrom) params.push(`dateFrom=${dateFrom}`);
+    if (dateTo) params.push(`dateTo=${dateTo}`);
+    return params.length ? '?' + params.join('&') : '';
+  }
+
+  function clearFilters() { setDateFrom(''); setDateTo(''); setSearch(''); }
 
   async function restoreTask(id) {
     try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); } catch {}
@@ -71,6 +123,13 @@ export default function ArchivedPage() {
   async function restoreWorkspace(id) {
     try { await api.put(`/workspaces/${id}/restore`); setWorkspaces(prev => prev.filter(w => w.id !== id)); loadArchived(); } catch {}
   }
+  async function restoreDep(id) {
+    try { await api.put(`/archive/dependencies/${id}/restore`); setDependencies(prev => prev.filter(d => d.id !== id)); } catch {}
+  }
+  async function restoreHelp(id) {
+    try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); } catch {}
+  }
+
   async function handleDelete() {
     if (!deleteItem) return;
     try {
@@ -80,15 +139,24 @@ export default function ArchivedPage() {
       } else if (deleteType === 'board') {
         await api.delete(`/boards/${deleteItem.id}`);
         setBoards(prev => prev.filter(b => b.id !== deleteItem.id));
+      } else if (deleteType === 'dependency') {
+        await api.delete(`/archive/dependencies/${deleteItem.id}`);
+        setDependencies(prev => prev.filter(d => d.id !== deleteItem.id));
+      } else if (deleteType === 'helpRequest') {
+        await api.delete(`/archive/help-requests/${deleteItem.id}`);
+        setHelpRequests(prev => prev.filter(h => h.id !== deleteItem.id));
       } else {
         await api.delete(`/tasks/${deleteItem.id}`);
         setTasks(prev => prev.filter(t => t.id !== deleteItem.id));
       }
-    } catch {}
+    } catch (err) {
+      const msg = err?.response?.data?.message;
+      if (msg) alert(msg);
+    }
     setDeleteItem(null); setDeleteType('');
   }
 
-  // Group tasks by board for structured view
+  // Group tasks by board
   const tasksByBoard = {};
   tasks.forEach(t => {
     const boardName = t.Board?.name || t.board?.name || 'Unknown Board';
@@ -98,6 +166,14 @@ export default function ArchivedPage() {
 
   const filteredBoards = search ? boards.filter(b => b.name.toLowerCase().includes(search.toLowerCase())) : boards;
   const filteredWorkspaces = search ? workspaces.filter(w => w.name.toLowerCase().includes(search.toLowerCase())) : workspaces;
+
+  const tabs = [
+    { id: 'tasks', label: 'Tasks', icon: ListTodo, count: tasks.length },
+    { id: 'boards', label: 'Boards', icon: FolderKanban, count: boards.length },
+    { id: 'workspaces', label: 'Workspaces', icon: Building2, count: workspaces.length },
+    { id: 'dependencies', label: 'Dependencies', icon: Link2, count: dependencies.length },
+    { id: 'helpRequests', label: 'Help Requests', icon: HelpCircle, count: helpRequests.length },
+  ];
 
   if (loading) return (
     <div className="p-8 max-w-[1000px] mx-auto space-y-4">
@@ -116,14 +192,10 @@ export default function ArchivedPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-gray-200 mb-5">
-        {[
-          { id: 'tasks', label: 'Tasks', icon: ListTodo, count: tasks.length },
-          { id: 'boards', label: 'Boards', icon: FolderKanban, count: boards.length },
-          { id: 'workspaces', label: 'Workspaces', icon: Building2, count: workspaces.length },
-        ].map(t => (
+      <div className="flex items-center gap-1 border-b border-gray-200 mb-5 overflow-x-auto">
+        {tabs.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-all ${
+            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-all whitespace-nowrap ${
               tab === t.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-400 hover:text-gray-600'
             }`}>
             <t.icon size={15} /> {t.label}
@@ -132,13 +204,38 @@ export default function ArchivedPage() {
         ))}
       </div>
 
-      {/* Search */}
-      <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-5 max-w-md">
-        <Search size={15} className="text-gray-400" />
-        <input type="text" placeholder={`Search archived ${tab}...`} value={search} onChange={e => setSearch(e.target.value)}
-          className="bg-transparent border-none outline-none text-sm w-full placeholder:text-gray-300" />
-        {search && <button onClick={() => setSearch('')}><X size={14} className="text-gray-300" /></button>}
+      {/* Search + Filters */}
+      <div className="flex items-center gap-2 mb-5">
+        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 flex-1 max-w-md">
+          <Search size={15} className="text-gray-400" />
+          <input type="text" placeholder={`Search archived ${tab}...`} value={search} onChange={e => setSearch(e.target.value)}
+            className="bg-transparent border-none outline-none text-sm w-full placeholder:text-gray-300" />
+          {search && <button onClick={() => setSearch('')}><X size={14} className="text-gray-300" /></button>}
+        </div>
+        <button onClick={() => setShowFilters(!showFilters)}
+          className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+          <Filter size={13} /> Filters
+        </button>
+        {(dateFrom || dateTo) && (
+          <button onClick={clearFilters} className="text-[10px] text-red-500 hover:underline">Clear</button>
+        )}
       </div>
+
+      {/* Filter bar */}
+      {showFilters && (
+        <div className="flex items-center gap-3 mb-5 bg-gray-50 rounded-xl p-3 border border-gray-100">
+          <div className="flex items-center gap-2">
+            <CalIcon size={13} className="text-gray-400" />
+            <span className="text-[11px] text-gray-500 font-medium">Archived between:</span>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              className="text-[11px] border border-gray-200 rounded-lg px-2 py-1 bg-white" />
+            <span className="text-gray-400">–</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              className="text-[11px] border border-gray-200 rounded-lg px-2 py-1 bg-white" />
+          </div>
+          <button onClick={loadArchived} className="text-[11px] font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-lg hover:bg-blue-100">Apply</button>
+        </div>
+      )}
 
       {/* ═══ TASKS TAB ═══ */}
       {tab === 'tasks' && (
@@ -160,6 +257,7 @@ export default function ArchivedPage() {
                     {filtered.map(task => {
                       const statusCfg = STATUS_CONFIG[task.status] || {};
                       const priorityCfg = PRIORITY_CONFIG[task.priority] || {};
+                      const deletable = canDeleteItem(user, task.archivedAt);
                       return (
                         <div key={task.id} className="bg-white rounded-lg border border-gray-100 p-3 hover:shadow-sm transition-shadow flex items-center gap-3">
                           <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: statusCfg.color || '#94a3b8' }} />
@@ -168,7 +266,7 @@ export default function ArchivedPage() {
                             <div className="flex items-center gap-2 mt-0.5">
                               <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${statusCfg.color || '#94a3b8'}15`, color: statusCfg.color }}>{statusCfg.label || task.status}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${priorityCfg.color || '#94a3b8'}15`, color: priorityCfg.color }}>{priorityCfg.label || task.priority}</span>
-                              {task.updatedAt && <span className="text-[9px] text-gray-400">{formatDistanceToNow(parseISO(task.updatedAt), { addSuffix: true })}</span>}
+                              <ProtectionBadge archivedAt={task.archivedAt} />
                             </div>
                           </div>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -176,7 +274,10 @@ export default function ArchivedPage() {
                               <RotateCcw size={11} /> Restore
                             </button>
                             {canManage && (
-                              <button onClick={() => { setDeleteItem(task); setDeleteType('task'); }} className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-red-500 hover:bg-red-50 rounded-md border border-red-200 transition-colors">
+                              <button onClick={() => { setDeleteItem(task); setDeleteType('task'); }}
+                                disabled={!deletable && !user?.isSuperAdmin}
+                                className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}
+                                title={!deletable && !user?.isSuperAdmin ? 'Protected for 90 days' : ''}>
                                 <Trash2 size={11} /> Delete
                               </button>
                             )}
@@ -198,35 +299,36 @@ export default function ArchivedPage() {
           <EmptyState icon={FolderKanban} title="No archived boards" subtitle="Boards you archive will appear here." />
         ) : (
           <div className="space-y-2">
-            {filteredBoards.map(board => (
-              <div key={board.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow flex items-center gap-4">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${board.color || '#4f46e5'}12` }}>
-                  <FolderKanban size={18} style={{ color: board.color || '#4f46e5' }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-800">{board.name}</p>
-                  <p className="text-xs text-gray-400">{board.description || 'No description'}</p>
-                  {board.updatedAt && <p className="text-[10px] text-gray-400 mt-0.5">Archived {formatDistanceToNow(parseISO(board.updatedAt), { addSuffix: true })}</p>}
-                  {/* Show archived groups if any */}
-                  {board.archivedGroups?.length > 0 && (
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <Layers size={10} className="text-gray-400" />
-                      <span className="text-[10px] text-gray-400">{board.archivedGroups.length} archived group{board.archivedGroups.length !== 1 ? 's' : ''}</span>
+            {filteredBoards.map(board => {
+              const deletable = canDeleteItem(user, board.archivedAt);
+              return (
+                <div key={board.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${board.color || '#4f46e5'}12` }}>
+                    <FolderKanban size={18} style={{ color: board.color || '#4f46e5' }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800">{board.name}</p>
+                    <p className="text-xs text-gray-400">{board.description || 'No description'}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {board.updatedAt && <span className="text-[10px] text-gray-400">Archived {formatDistanceToNow(parseISO(board.updatedAt), { addSuffix: true })}</span>}
+                      <ProtectionBadge archivedAt={board.archivedAt} />
                     </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button onClick={() => restoreBoard(board.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
-                    <RotateCcw size={12} /> Restore
-                  </button>
-                  {canManage && (
-                    <button onClick={() => { setDeleteItem(board); setDeleteType('board'); }} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 rounded-lg border border-red-200 transition-colors">
-                      <Trash2 size={12} /> Delete
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button onClick={() => restoreBoard(board.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
+                      <RotateCcw size={12} /> Restore
                     </button>
-                  )}
+                    {canManage && (
+                      <button onClick={() => { setDeleteItem(board); setDeleteType('board'); }}
+                        disabled={!deletable && !user?.isSuperAdmin}
+                        className={`flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )
       )}
@@ -237,53 +339,163 @@ export default function ArchivedPage() {
           <EmptyState icon={Building2} title="No archived workspaces" subtitle="Workspaces you archive will appear here." />
         ) : (
           <div className="space-y-2">
-            {filteredWorkspaces.map(ws => (
-              <div key={ws.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-bold" style={{ backgroundColor: ws.color || '#6366f1' }}>
-                    {ws.name?.charAt(0)?.toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">{ws.name}</p>
-                    <p className="text-xs text-gray-400">{ws.description || 'No description'}</p>
-                    <div className="flex items-center gap-3 mt-1">
-                      {ws.boards?.length > 0 && <span className="text-[10px] text-gray-400">{ws.boards.length} board{ws.boards.length !== 1 ? 's' : ''}</span>}
-                      {ws.creator && <span className="text-[10px] text-gray-400">by {ws.creator.name}</span>}
-                      {ws.updatedAt && <span className="text-[10px] text-gray-400">Archived {formatDistanceToNow(parseISO(ws.updatedAt), { addSuffix: true })}</span>}
+            {filteredWorkspaces.map(ws => {
+              const deletable = canDeleteItem(user, ws.archivedAt);
+              return (
+                <div key={ws.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-bold" style={{ backgroundColor: ws.color || '#6366f1' }}>
+                      {ws.name?.charAt(0)?.toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-800">{ws.name}</p>
+                      <p className="text-xs text-gray-400">{ws.description || 'No description'}</p>
+                      <div className="flex items-center gap-3 mt-1">
+                        {ws.boards?.length > 0 && <span className="text-[10px] text-gray-400">{ws.boards.length} board{ws.boards.length !== 1 ? 's' : ''}</span>}
+                        {ws.creator && <span className="text-[10px] text-gray-400">by {ws.creator.name}</span>}
+                        <ProtectionBadge archivedAt={ws.archivedAt} />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={() => restoreWorkspace(ws.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
+                        <RotateCcw size={12} /> Restore All
+                      </button>
+                      {isAdmin && (
+                        <button onClick={() => { setDeleteItem(ws); setDeleteType('workspace'); }}
+                          disabled={!deletable && !user?.isSuperAdmin}
+                          className={`flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <button onClick={() => restoreWorkspace(ws.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
-                      <RotateCcw size={12} /> Restore All
+                  {ws.boards?.length > 0 && (
+                    <div className="mt-3 pl-14 space-y-1">
+                      {ws.boards.map(b => (
+                        <div key={b.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 rounded-md text-[11px]">
+                          <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: b.color || '#0073ea' }} />
+                          <span className="text-gray-600">{b.name}</span>
+                          {b.isArchived && <span className="text-[9px] text-orange-500 bg-orange-50 px-1 rounded">archived</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      )}
+
+      {/* ═══ DEPENDENCIES TAB ═══ */}
+      {tab === 'dependencies' && (
+        dependencies.length === 0 ? (
+          <EmptyState icon={Link2} title="No archived dependencies" subtitle="Archived dependencies will appear here." />
+        ) : (
+          <div className="space-y-2">
+            {dependencies.map(dep => {
+              const deletable = canDeleteItem(user, dep.archivedAt);
+              return (
+                <div key={dep.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Link2 size={14} className="text-purple-400 flex-shrink-0" />
+                    <div className="flex-1 flex items-center gap-2 min-w-0">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          {dep.task?.board && <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: dep.task.board.color || '#0073ea' }} />}
+                          <span className="text-[10px] text-gray-400 truncate">{dep.task?.board?.name}</span>
+                        </div>
+                        <p className="text-[12px] font-medium text-gray-800 truncate">{dep.task?.title || 'Unknown task'}</p>
+                      </div>
+                      <div className="flex flex-col items-center flex-shrink-0 px-2">
+                        <span className="text-[8px] text-gray-400 uppercase">needs</span>
+                        <ArrowRight size={12} className="text-purple-300" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          {dep.dependsOnTask?.board && <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: dep.dependsOnTask.board.color || '#0073ea' }} />}
+                          <span className="text-[10px] text-gray-400 truncate">{dep.dependsOnTask?.board?.name}</span>
+                        </div>
+                        <p className="text-[12px] font-medium text-gray-800 truncate">{dep.dependsOnTask?.title || 'Unknown task'}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 ml-6">
+                    <span className="text-[9px] px-1.5 py-0.5 bg-purple-50 text-purple-500 rounded font-medium capitalize">{dep.dependencyType?.replace('_', ' ')}</span>
+                    {dep.createdBy && <span className="text-[9px] text-gray-400">by {dep.createdBy.name}</span>}
+                    {dep.archiver && <span className="text-[9px] text-gray-400">archived by {dep.archiver.name}</span>}
+                    <ProtectionBadge archivedAt={dep.archivedAt} />
+                  </div>
+                  <div className="flex items-center justify-end gap-1.5 mt-2">
+                    <button onClick={() => restoreDep(dep.id)} className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 rounded-md border border-blue-200 transition-colors">
+                      <RotateCcw size={11} /> Restore
                     </button>
-                    {isAdmin && (
-                      <button onClick={() => { setDeleteItem(ws); setDeleteType('workspace'); }} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-50 rounded-lg border border-red-200 transition-colors">
-                        <Trash2 size={12} /> Delete
-                      </button>
-                    )}
+                    <button onClick={() => { setDeleteItem(dep); setDeleteType('dependency'); }}
+                      disabled={!deletable && !user?.isSuperAdmin}
+                      className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>
+                      <Trash2 size={11} /> Delete
+                    </button>
                   </div>
                 </div>
-                {/* Show boards inside this workspace */}
-                {ws.boards?.length > 0 && (
-                  <div className="mt-3 pl-14 space-y-1">
-                    {ws.boards.map(b => (
-                      <div key={b.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 rounded-md text-[11px]">
-                        <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: b.color || '#0073ea' }} />
-                        <span className="text-gray-600">{b.name}</span>
-                        {b.isArchived && <span className="text-[9px] text-orange-500 bg-orange-50 px-1 rounded">archived</span>}
+              );
+            })}
+          </div>
+        )
+      )}
+
+      {/* ═══ HELP REQUESTS TAB ═══ */}
+      {tab === 'helpRequests' && (
+        helpRequests.length === 0 ? (
+          <EmptyState icon={HelpCircle} title="No archived help requests" subtitle="Archived help requests will appear here." />
+        ) : (
+          <div className="space-y-2">
+            {helpRequests.map(hr => {
+              const deletable = canDeleteItem(user, hr.archivedAt);
+              const urgencyColors = { critical: 'text-red-600 bg-red-50', high: 'text-orange-600 bg-orange-50', medium: 'text-yellow-600 bg-yellow-50', low: 'text-gray-500 bg-gray-50' };
+              return (
+                <div key={hr.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-yellow-50 flex items-center justify-center flex-shrink-0">
+                      <HelpCircle size={14} className="text-yellow-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-medium text-gray-800 truncate">{hr.task?.title || 'Task'}</p>
+                      <p className="text-[10px] text-gray-400 truncate">{hr.description}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] text-gray-400">From: {hr.requester?.name}</span>
+                        <span className="text-[9px] text-gray-400">Helper: {hr.helper?.name}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${urgencyColors[hr.urgency] || ''}`}>{hr.urgency}</span>
+                        {hr.archiver && <span className="text-[9px] text-gray-400">archived by {hr.archiver.name}</span>}
+                        <ProtectionBadge archivedAt={hr.archivedAt} />
                       </div>
-                    ))}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button onClick={() => restoreHelp(hr.id)} className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 rounded-md border border-blue-200 transition-colors">
+                        <RotateCcw size={11} /> Restore
+                      </button>
+                      <button onClick={() => { setDeleteItem(hr); setDeleteType('helpRequest'); }}
+                        disabled={!deletable && !user?.isSuperAdmin}
+                        className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>
+                        <Trash2 size={11} /> Delete
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )
       )}
 
       {/* Delete Confirmation */}
       {deleteItem && (
-        <ConfirmDeleteModal item={deleteItem} type={deleteType} onConfirm={handleDelete} onCancel={() => { setDeleteItem(null); setDeleteType(''); }} />
+        <ConfirmDeleteModal
+          item={deleteItem}
+          type={deleteType}
+          onConfirm={handleDelete}
+          onCancel={() => { setDeleteItem(null); setDeleteType(''); }}
+          canDelete={canDeleteItem(user, deleteItem.archivedAt)}
+        />
       )}
     </div>
   );

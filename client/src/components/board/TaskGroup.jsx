@@ -31,55 +31,63 @@ export default function TaskGroup({
   });
   const addColBtnRef = useRef(null);
 
-  // Task column resize handler
+  // Task column resize handler (mouse + touch)
   const handleTaskColResize = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
-    const startX = e.clientX;
+    const isTouch = e.type === 'touchstart';
+    const startX = isTouch ? e.touches[0].clientX : e.clientX;
     const startW = taskColWidth;
     setResizingCol('__task__');
-    function onMouseMove(ev) {
-      const newW = Math.max(180, Math.min(500, startW + ev.clientX - startX));
+    function onMove(ev) {
+      const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+      const newW = Math.max(180, Math.min(500, startW + clientX - startX));
       setTaskColWidth(newW);
     }
-    function onMouseUp() {
+    function onEnd() {
       setResizingCol(null);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onEnd);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       localStorage.setItem(`board_task_col_width_${boardId}`, taskColWidth.toString());
     }
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove, { passive: false });
+    document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
   }, [taskColWidth, boardId]);
 
-  // Column resize handler
+  // Column resize handler (mouse + touch)
   const handleResizeStart = useCallback((e, col) => {
     e.preventDefault();
     e.stopPropagation();
-    const startX = e.clientX;
+    const isTouch = e.type === 'touchstart';
+    const startX = isTouch ? e.touches[0].clientX : e.clientX;
     const startWidth = col.width || 140;
     setResizingCol(col.id);
 
-    function onMouseMove(ev) {
-      const diff = ev.clientX - startX;
+    function onMove(ev) {
+      const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+      const diff = clientX - startX;
       const newWidth = Math.max(80, Math.min(400, startWidth + diff));
       if (onResizeColumn) onResizeColumn(col.id, newWidth);
     }
-    function onMouseUp() {
+    function onEnd() {
       setResizingCol(null);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onEnd);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     }
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener(isTouch ? 'touchmove' : 'mousemove', onMove, { passive: false });
+    document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
   }, [onResizeColumn]);
 
   const statusSummary = useMemo(() => {
@@ -181,9 +189,9 @@ export default function TaskGroup({
                 </div>
                 <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#e6e9ef] relative">
                   Task
-                  {/* Task column resize handle */}
-                  <div onMouseDown={handleTaskColResize}
-                    className={`absolute right-0 top-0 bottom-0 w-[3px] cursor-col-resize z-[7] hover:bg-[#0073ea] transition-colors ${resizingCol === '__task__' ? 'bg-[#0073ea]' : 'bg-transparent'}`} />
+                  {/* Task column resize handle (mouse + touch) */}
+                  <div onMouseDown={handleTaskColResize} onTouchStart={handleTaskColResize}
+                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[7] hover:bg-[#0073ea] transition-colors ${resizingCol === '__task__' ? 'bg-[#0073ea]' : 'bg-transparent'}`} />
                 </div>
               </div>
 
@@ -213,10 +221,11 @@ export default function TaskGroup({
                       />
                     </div>
                   )}
-                  {/* Resize handle — Monday.com blue line on drag */}
+                  {/* Resize handle — Monday.com blue line on drag (mouse + touch) */}
                   <div
                     onMouseDown={(e) => handleResizeStart(e, col)}
-                    className={`absolute right-0 top-0 bottom-0 w-[3px] cursor-col-resize z-[7] group/resize hover:bg-[#0073ea] transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent'}`}
+                    onTouchStart={(e) => handleResizeStart(e, col)}
+                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[7] group/resize hover:bg-[#0073ea] transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent'}`}
                     title="Resize Column"
                   >
                     <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-full transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent group-hover/resize:bg-[#0073ea]'}`} />

@@ -6,6 +6,7 @@ const {
   removeDependency,
   delegateTask,
   assignDependency,
+  archiveDependency,
 } = require('../controllers/dependencyController');
 
 const router = express.Router();
@@ -17,6 +18,7 @@ router.get('/tasks/:taskId/dependencies', getTaskDependencies);
 router.post('/tasks/:taskId/dependencies', createDependency);
 router.post('/tasks/:taskId/dependencies/assign', assignDependency);
 router.delete('/tasks/:taskId/dependencies/:dependencyId', managerOrAdmin, removeDependency);
+router.put('/tasks/:taskId/dependencies/:dependencyId/archive', archiveDependency);
 
 // Delegation
 router.post('/tasks/:taskId/delegate', delegateTask);

@@ -233,6 +233,15 @@ const deleteBoard = async (req, res) => {
       });
     }
 
+    // Enforce 90-day rule for archived boards
+    if (board.isArchived) {
+      const { canPermanentlyDelete } = require('../utils/archiveHelpers');
+      const { allowed, daysRemaining } = canPermanentlyDelete(req.user, board.archivedAt);
+      if (!allowed) {
+        return res.status(403).json({ success: false, message: `This board is protected for ${daysRemaining} more days. Only Super Admin can delete before 90 days.` });
+      }
+    }
+
     const boardId = board.id;
     await board.destroy();
 

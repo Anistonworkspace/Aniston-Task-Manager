@@ -32,6 +32,16 @@ export function ToastProvider({ children }) {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  // Listen for global API error events
+  useEffect(() => {
+    function handleApiError(e) {
+      const { message } = e.detail || {};
+      if (message) addToast(message, 'error', 5000);
+    }
+    window.addEventListener('api-error', handleApiError);
+    return () => window.removeEventListener('api-error', handleApiError);
+  }, [addToast]);
+
   return (
     <ToastContext.Provider value={{ addToast, removeToast }}>
       {children}

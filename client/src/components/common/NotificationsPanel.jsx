@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, Bell, Check, CheckCheck } from 'lucide-react';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import api from '../../services/api';
@@ -8,6 +9,7 @@ export default function NotificationsPanel({ onClose }) {
   const [notifications, setNotifications] = useState([]);
   const [tab, setTab] = useState('all');
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => { loadNotifications(); }, []);
 
@@ -36,13 +38,39 @@ export default function NotificationsPanel({ onClose }) {
     } catch {}
   }
 
+  function handleNotificationClick(n) {
+    markAsRead(n.id);
+
+    // Navigate to the correct entity
+    if (n.entityType === 'task' && n.entityId) {
+      // Try to find boardId from notification meta or fetch task
+      api.get(`/tasks/${n.entityId}`).then(res => {
+        const task = res.data?.task || res.data?.data?.task || res.data;
+        if (task?.boardId) {
+          navigate(`/boards/${task.boardId}`);
+        }
+      }).catch(() => {
+        // Fallback to my-work
+        navigate('/my-work');
+      });
+    } else if (n.entityType === 'board' && n.entityId) {
+      navigate(`/boards/${n.entityId}`);
+    } else if (n.entityType === 'meeting' && n.entityId) {
+      navigate('/meetings');
+    } else if (n.entityType === 'help_request') {
+      navigate('/cross-team');
+    }
+
+    onClose();
+  }
+
   const filtered = tab === 'unread' ? notifications.filter(n => !n.isRead) : notifications;
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
-      <div className="absolute right-0 top-0 h-full w-[380px] bg-white shadow-xl border-l border-border animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute right-0 top-0 h-full w-[380px] max-w-full bg-white dark:bg-dark-surface shadow-xl border-l border-border animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <h2 className="text-lg font-bold">Notifications</h2>
+          <h2 className="text-lg font-bold text-text-primary">Notifications</h2>
           <button onClick={onClose} className="p-1 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
         </div>
         <div className="flex items-center gap-4 px-5 py-2 border-b border-border">
@@ -61,13 +89,18 @@ export default function NotificationsPanel({ onClose }) {
             </div>
           ) : (
             filtered.map(n => (
-              <div key={n.id} onClick={() => markAsRead(n.id)} className={`flex items-start gap-3 px-5 py-3.5 border-b border-border cursor-pointer hover:bg-surface/50 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
+              <div key={n.id} onClick={() => handleNotificationClick(n)} className={`flex items-start gap-3 px-5 py-3.5 border-b border-border cursor-pointer hover:bg-surface/50 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
                 <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${!n.isRead ? 'bg-primary' : 'bg-transparent'}`} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-text-primary leading-snug">{n.message}</p>
-                  <p className="text-xs text-text-secondary mt-1">
-                    {n.createdAt ? formatDistanceToNow(parseISO(n.createdAt), { addSuffix: true }) : ''}
-                  </p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <p className="text-xs text-text-secondary">
+                      {n.createdAt ? formatDistanceToNow(parseISO(n.createdAt), { addSuffix: true }) : ''}
+                    </p>
+                    {n.entityType && (
+                      <span className="text-[9px] text-primary/60 bg-primary/5 px-1.5 py-0.5 rounded capitalize">{n.entityType.replace('_', ' ')}</span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))

@@ -7,11 +7,17 @@ const {
   getTeamTimeBlocks,
   updateTimeBlock,
   deleteTimeBlock,
+  getMyCalendarEvents,
+  getEmployeeCalendarEvents,
 } = require('../controllers/timePlanController');
 
 const router = express.Router();
 
 router.use(authenticate);
+
+// M365 Calendar events (must be before /:id to avoid route conflicts)
+router.get('/calendar-events', getMyCalendarEvents);
+router.get('/calendar-events/:userId', managerOrAdmin, getEmployeeCalendarEvents);
 
 // My time blocks
 router.post('/', createTimeBlock);

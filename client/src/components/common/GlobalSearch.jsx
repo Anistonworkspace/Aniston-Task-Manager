@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, X, FileText, FolderKanban, ArrowRight, Command } from 'lucide-react';
+import { Search, X, FileText, FolderKanban, ArrowRight, Command, ChevronDown } from 'lucide-react';
 import api from '../../services/api';
 
 const STATUS_COLORS = {
@@ -19,12 +19,17 @@ const STATUS_LABELS = {
   review: 'Review',
 };
 
+const PAGE_SIZE = 20;
+
 export default function GlobalSearch({ onClose }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState({ tasks: [], boards: [] });
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [currentLimit, setCurrentLimit] = useState(PAGE_SIZE);
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -37,21 +42,29 @@ export default function GlobalSearch({ onClose }) {
     ...results.tasks.map(t => ({ type: 'task', data: t })),
   ];
 
-  const doSearch = useCallback(async (q) => {
+  const doSearch = useCallback(async (q, limit = PAGE_SIZE, append = false) => {
     if (!q || q.trim().length < 2) {
       setResults({ tasks: [], boards: [] });
       setLoading(false);
+      setHasMore(false);
       return;
     }
-    setLoading(true);
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+
     try {
-      const res = await api.get(`/search?q=${encodeURIComponent(q.trim())}&limit=20`);
-      setResults(res.data.data || res.data || { tasks: [], boards: [] });
+      const res = await api.get(`/search?q=${encodeURIComponent(q.trim())}&limit=${limit}`);
+      const data = res.data.data || res.data || { tasks: [], boards: [] };
+      setResults(data);
       setSelectedIndex(0);
+      // If we got exactly `limit` tasks, there might be more
+      setHasMore((data.tasks?.length || 0) >= limit);
+      setCurrentLimit(limit);
     } catch {
       setResults({ tasks: [], boards: [] });
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, []);
 
@@ -60,6 +73,11 @@ export default function GlobalSearch({ onClose }) {
     debounceRef.current = setTimeout(() => doSearch(query), 300);
     return () => clearTimeout(debounceRef.current);
   }, [query, doSearch]);
+
+  function handleLoadMore() {
+    const newLimit = currentLimit + PAGE_SIZE;
+    doSearch(query, newLimit, true);
+  }
 
   function handleSelect(item) {
     if (item.type === 'board') {
@@ -86,10 +104,11 @@ export default function GlobalSearch({ onClose }) {
 
   const hasResults = allItems.length > 0;
   const hasQuery = query.trim().length >= 2;
+  const totalCount = (results.tasks?.length || 0) + (results.boards?.length || 0);
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-start justify-center pt-[15vh] z-50 animate-fade-in" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-[580px] max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-[#1a1830] rounded-xl shadow-2xl w-full max-w-[580px] mx-4 max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Search Input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
           <Search size={18} className="text-text-tertiary flex-shrink-0" />
@@ -98,7 +117,7 @@ export default function GlobalSearch({ onClose }) {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex-1 text-sm border-none outline-none bg-transparent placeholder:text-text-tertiary"
+            className="flex-1 text-sm border-none outline-none bg-transparent placeholder:text-text-tertiary text-text-primary"
             placeholder="Search tasks, boards..."
           />
           {query && (
@@ -172,7 +191,10 @@ export default function GlobalSearch({ onClose }) {
               {/* Tasks */}
               {results.tasks.length > 0 && (
                 <div className="px-2 pt-2 pb-2">
-                  <p className="text-[10px] uppercase tracking-wider font-semibold text-text-tertiary px-2 py-1">Tasks</p>
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-text-tertiary px-2 py-1">
+                    Tasks
+                    <span className="ml-1.5 text-text-tertiary/60">({results.tasks.length}{hasMore ? '+' : ''})</span>
+                  </p>
                   {results.tasks.map((task, i) => {
                     const idx = results.boards.length + i;
                     const statusColor = STATUS_COLORS[task.status] || '#c4c4c4';
@@ -209,6 +231,22 @@ export default function GlobalSearch({ onClose }) {
                       </button>
                     );
                   })}
+
+                  {/* Load More button */}
+                  {hasMore && (
+                    <button
+                      onClick={handleLoadMore}
+                      disabled={loadingMore}
+                      className="flex items-center justify-center gap-1.5 w-full px-3 py-2.5 mt-1 text-xs font-medium text-primary hover:bg-primary/5 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {loadingMore ? (
+                        <div className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-primary/20 border-t-primary" />
+                      ) : (
+                        <ChevronDown size={14} />
+                      )}
+                      {loadingMore ? 'Loading...' : 'Load more results'}
+                    </button>
+                  )}
                 </div>
               )}
             </>
@@ -218,9 +256,11 @@ export default function GlobalSearch({ onClose }) {
         {/* Footer */}
         {hasResults && (
           <div className="px-4 py-2 border-t border-border bg-surface/30 flex items-center gap-4 text-[10px] text-text-tertiary">
-            <span className="flex items-center gap-1"><kbd className="bg-white px-1 py-0.5 rounded border border-border">↑↓</kbd> Navigate</span>
-            <span className="flex items-center gap-1"><kbd className="bg-white px-1 py-0.5 rounded border border-border">↵</kbd> Open</span>
-            <span className="flex items-center gap-1"><kbd className="bg-white px-1 py-0.5 rounded border border-border">Esc</kbd> Close</span>
+            <span className="font-medium">{totalCount} result{totalCount !== 1 ? 's' : ''}{hasMore ? '+' : ''}</span>
+            <span className="flex-1" />
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">↑↓</kbd> Navigate</span>
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">↵</kbd> Open</span>
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">Esc</kbd> Close</span>
           </div>
         )}
       </div>

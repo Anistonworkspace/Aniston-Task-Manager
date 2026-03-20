@@ -31,6 +31,18 @@ const TaskDependency = sequelize.define('TaskDependency', {
     type: DataTypes.UUID,
     allowNull: false,
   },
+  isArchived: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+  },
+  archivedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  archivedBy: {
+    type: DataTypes.UUID,
+    allowNull: true,
+  },
 }, {
   tableName: 'task_dependencies',
   timestamps: true,

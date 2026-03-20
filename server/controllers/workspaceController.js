@@ -179,6 +179,15 @@ exports.deleteWorkspace = async (req, res) => {
     const workspace = await Workspace.findByPk(req.params.id);
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
 
+    // Enforce 90-day rule for archived workspaces
+    if (!workspace.isActive && workspace.archivedAt) {
+      const { canPermanentlyDelete } = require('../utils/archiveHelpers');
+      const { allowed, daysRemaining } = canPermanentlyDelete(req.user, workspace.archivedAt);
+      if (!allowed) {
+        return res.status(403).json({ success: false, message: `This workspace is protected for ${daysRemaining} more days. Only Super Admin can delete before 90 days.` });
+      }
+    }
+
     // Unlink boards from workspace instead of deleting them
     await Board.update({ workspaceId: null }, { where: { workspaceId: workspace.id } });
     await User.update({ workspaceId: null }, { where: { workspaceId: workspace.id } });

@@ -61,6 +61,41 @@ body {
 .dark input, .dark textarea, .dark select { background-color: #211f3a !important; border-color: #2d2b45 !important; color: #e2e8f0 !important; }
 .dark .dropdown-enter { background-color: #1a1830 !important; border-color: #2d2b45 !important; }
 
+/* Dark mode overrides for hardcoded monday.com hex colors */
+.dark [class*="text-[#323338]"] { color: #e8e8f0 !important; }
+.dark [class*="text-[#676879]"] { color: #a0a0b8 !important; }
+.dark [class*="text-[#c3c6d4]"] { color: #6a6a80 !important; }
+.dark [class*="text-[#1f76c2]"] { color: #60a5fa !important; }
+.dark [class*="bg-[#f5f6f8]"] { background-color: #1a1830 !important; }
+.dark [class*="bg-[#f6f7fb]"] { background-color: #1a1830 !important; }
+.dark [class*="bg-[#ffffff]"], .dark [class*="bg-white"] { background-color: #1a1830 !important; }
+.dark [class*="border-[#e6e9ef]"] { border-color: #2d2b45 !important; }
+.dark [class*="border-[#c3c6d4]"] { border-color: #2d2b45 !important; }
+.dark [class*="text-gray-800"] { color: #e8e8f0 !important; }
+.dark [class*="text-gray-700"] { color: #d0d0e0 !important; }
+.dark [class*="text-gray-600"] { color: #a0a0b8 !important; }
+.dark [class*="text-gray-500"] { color: #8888a0 !important; }
+.dark [class*="text-gray-400"] { color: #6a6a80 !important; }
+.dark [class*="text-gray-300"] { color: #505068 !important; }
+.dark [class*="bg-gray-50"] { background-color: #151328 !important; }
+.dark [class*="bg-gray-100"] { background-color: #1a1830 !important; }
+.dark [class*="bg-gray-200"] { background-color: #211f3a !important; }
+.dark [class*="border-gray-100"] { border-color: #2d2b45 !important; }
+.dark [class*="border-gray-200"] { border-color: #2d2b45 !important; }
+.dark [class*="border-gray-300"] { border-color: #3d3b55 !important; }
+.dark .shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important; }
+.dark .shadow-lg { box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important; }
+.dark .shadow-xl { box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important; }
+.dark .shadow-dropdown { box-shadow: 0 4px 16px rgba(0,0,0,0.4) !important; }
+
+/* Dark mode modals and overlays */
+.dark [class*="bg-black/"] { backdrop-filter: blur(4px); }
+.dark .rounded-2xl.shadow-xl { background-color: #1a1830 !important; }
+
+/* Dark scrollbars */
+.dark ::-webkit-scrollbar-thumb { background: #3d3b55; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #505068; }
+
 /* ===== Scrollbars ===== */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

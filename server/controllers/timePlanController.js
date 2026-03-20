@@ -1,5 +1,6 @@
 const { TimeBlock, Task, User, Board } = require('../models');
 const { Op } = require('sequelize');
+const { fetchCalendarEvents } = require('../services/calendarService');
 
 /**
  * POST /api/timeplans
@@ -250,4 +251,79 @@ const deleteTimeBlock = async (req, res) => {
   }
 };
 
-module.exports = { createTimeBlock, getMyTimeBlocks, getEmployeeTimeBlocks, getTeamTimeBlocks, updateTimeBlock, deleteTimeBlock };
+/**
+ * GET /api/timeplans/calendar-events?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * Fetch current user's M365 calendar events (app-level access)
+ */
+const getMyCalendarEvents = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ success: false, message: 'from and to query parameters are required.' });
+    }
+
+    const userRecord = await User.findByPk(req.user.id, { attributes: ['id', 'teamsUserId'] });
+    if (!userRecord || !userRecord.teamsUserId) {
+      return res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+    }
+
+    const result = await fetchCalendarEvents(userRecord.teamsUserId, from, to);
+    if (!result) {
+      return res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        events: result.timedEvents,
+        allDayEvents: result.allDayEvents,
+        synced: true,
+      },
+    });
+  } catch (error) {
+    console.error('[TimePlan] getMyCalendarEvents error:', error);
+    res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+  }
+};
+
+/**
+ * GET /api/timeplans/calendar-events/:userId?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * Manager/Admin fetch an employee's M365 calendar events
+ */
+const getEmployeeCalendarEvents = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ success: false, message: 'from and to query parameters are required.' });
+    }
+
+    const employee = await User.findByPk(userId, { attributes: ['id', 'teamsUserId', 'name'] });
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    if (!employee.teamsUserId) {
+      return res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+    }
+
+    const result = await fetchCalendarEvents(employee.teamsUserId, from, to);
+    if (!result) {
+      return res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        events: result.timedEvents,
+        allDayEvents: result.allDayEvents,
+        synced: true,
+      },
+    });
+  } catch (error) {
+    console.error('[TimePlan] getEmployeeCalendarEvents error:', error);
+    res.json({ success: true, data: { events: [], allDayEvents: [], synced: false } });
+  }
+};
+
+module.exports = { createTimeBlock, getMyTimeBlocks, getEmployeeTimeBlocks, getTeamTimeBlocks, updateTimeBlock, deleteTimeBlock, getMyCalendarEvents, getEmployeeCalendarEvents };

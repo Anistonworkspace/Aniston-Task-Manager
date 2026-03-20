@@ -87,7 +87,10 @@ const getMyMeetings = async (req, res) => {
     const where = {
       [Op.or]: [
         { createdBy: req.user.id },
-        sequelize.literal(`"Meeting"."participants" @> '[{"userId": "${req.user.id}"}]'`),
+        sequelize.where(
+          sequelize.cast(sequelize.col('participants'), 'text'),
+          { [Op.like]: `%${req.user.id}%` }
+        ),
       ],
     };
 

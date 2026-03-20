@@ -1,7 +1,9 @@
 const { Task, TaskDependency, User, Notification, Board } = require('../models');
+const { Op } = require('sequelize');
 const { emitToUser, emitToBoard } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
+const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
 
 /**
  * GET /api/tasks/:taskId/dependencies
@@ -237,8 +239,9 @@ const getCrossTeamDependencies = async (req, res) => {
     const userId = req.user.id;
     const isAdmin = req.user.role === 'admin';
 
-    // Get all dependencies
+    // Get all non-archived dependencies
     const deps = await TaskDependency.findAll({
+      where: { [Op.or]: [{ isArchived: false }, { isArchived: null }] },
       include: [
         {
           model: Task, as: 'task', required: false,
@@ -372,4 +375,129 @@ const assignDependency = async (req, res) => {
   }
 };
 
-module.exports = { getTaskDependencies, createDependency, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency };
+/**
+ * PUT /api/tasks/:taskId/dependencies/:dependencyId/archive
+ * Archive a resolved dependency
+ */
+const archiveDependency = async (req, res) => {
+  try {
+    const { dependencyId } = req.params;
+    const dep = await TaskDependency.findByPk(dependencyId, {
+      include: [
+        { model: Task, as: 'task', attributes: ['id', 'assignedTo'] },
+        { model: Task, as: 'dependsOnTask', attributes: ['id', 'assignedTo'] },
+      ],
+    });
+    if (!dep) return res.status(404).json({ success: false, message: 'Dependency not found.' });
+
+    const isManager = ['manager', 'admin', 'assistant_manager'].includes(req.user.role);
+    const isInvolved = dep.createdById === req.user.id ||
+      dep.task?.assignedTo === req.user.id ||
+      dep.dependsOnTask?.assignedTo === req.user.id;
+
+    if (!isManager && !isInvolved) {
+      return res.status(403).json({ success: false, message: 'Not authorized to archive this dependency.' });
+    }
+
+    await dep.update({ isArchived: true, archivedAt: new Date(), archivedBy: req.user.id });
+    logActivity({ action: 'dependency_archived', description: `${req.user.name} archived a dependency`, entityType: 'dependency', entityId: dep.id, userId: req.user.id });
+
+    res.json({ success: true, message: 'Dependency archived.' });
+  } catch (error) {
+    console.error('[Dependency] Archive error:', error);
+    res.status(500).json({ success: false, message: 'Server error archiving dependency.' });
+  }
+};
+
+/**
+ * GET /api/archive/dependencies
+ * Manager+ — list archived dependencies with search/date filters
+ */
+const getArchivedDependencies = async (req, res) => {
+  try {
+    const { search, dateFrom, dateTo } = req.query;
+    const where = { isArchived: true };
+
+    if (dateFrom || dateTo) {
+      where.archivedAt = {};
+      if (dateFrom) where.archivedAt[Op.gte] = new Date(dateFrom);
+      if (dateTo) where.archivedAt[Op.lte] = new Date(dateTo + 'T23:59:59Z');
+    }
+
+    const deps = await TaskDependency.findAll({
+      where,
+      include: [
+        {
+          model: Task, as: 'task',
+          attributes: ['id', 'title', 'status', 'boardId'],
+          include: [{ model: Board, as: 'board', attributes: ['id', 'name', 'color'] }],
+          ...(search ? { where: { title: { [Op.iLike]: `%${search}%` } } } : {}),
+          required: !!search,
+        },
+        {
+          model: Task, as: 'dependsOnTask',
+          attributes: ['id', 'title', 'status', 'boardId'],
+          include: [{ model: Board, as: 'board', attributes: ['id', 'name', 'color'] }],
+        },
+        { model: User, as: 'createdBy', attributes: ['id', 'name'] },
+        { model: User, as: 'archiver', attributes: ['id', 'name'] },
+      ],
+      order: [['archivedAt', 'DESC']],
+    });
+
+    const data = deps.map(d => {
+      const plain = d.toJSON();
+      plain.protectionInfo = getProtectionInfo(plain.archivedAt);
+      return plain;
+    });
+
+    res.json({ success: true, data: { dependencies: data } });
+  } catch (error) {
+    console.error('[Dependency] getArchivedDependencies error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
+ * DELETE /api/archive/dependencies/:id
+ * Permanently delete — enforces 90-day rule
+ */
+const permanentDeleteDependency = async (req, res) => {
+  try {
+    const dep = await TaskDependency.findByPk(req.params.id);
+    if (!dep) return res.status(404).json({ success: false, message: 'Dependency not found.' });
+    if (!dep.isArchived) return res.status(400).json({ success: false, message: 'Only archived dependencies can be permanently deleted.' });
+
+    const { allowed, daysRemaining } = canPermanentlyDelete(req.user, dep.archivedAt);
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: `This item is protected for ${daysRemaining} more days. Only Super Admin can delete before 90 days.` });
+    }
+
+    await dep.destroy();
+    logActivity({ action: 'dependency_deleted', description: `${req.user.name} permanently deleted an archived dependency`, entityType: 'dependency', entityId: req.params.id, userId: req.user.id });
+
+    res.json({ success: true, message: 'Dependency permanently deleted.' });
+  } catch (error) {
+    console.error('[Dependency] permanentDelete error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
+ * PUT /api/archive/dependencies/:id/restore
+ * Restore an archived dependency
+ */
+const restoreDependency = async (req, res) => {
+  try {
+    const dep = await TaskDependency.findByPk(req.params.id);
+    if (!dep) return res.status(404).json({ success: false, message: 'Dependency not found.' });
+
+    await dep.update({ isArchived: false, archivedAt: null, archivedBy: null });
+    res.json({ success: true, message: 'Dependency restored.' });
+  } catch (error) {
+    console.error('[Dependency] restore error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+module.exports = { getTaskDependencies, createDependency, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency, archiveDependency, getArchivedDependencies, permanentDeleteDependency, restoreDependency };
