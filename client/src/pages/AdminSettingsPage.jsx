@@ -24,6 +24,7 @@ const TABS = [
 const ROLE_BADGE = {
   admin: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Admin', icon: ShieldCheck },
   manager: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Manager', icon: Shield },
+  assistant_manager: { bg: 'bg-cyan-100', text: 'text-cyan-700', label: 'Asst. Manager', icon: Shield },
   member: { bg: 'bg-green-100', text: 'text-green-700', label: 'Member', icon: Users },
 };
 
@@ -208,6 +209,7 @@ function UsersTab() {
                       disabled={roleChanging === u.id || u.isSuperAdmin}
                       className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text} ${u.isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}>
                       <option value="member">Member</option>
+                      <option value="assistant_manager">Assistant Manager</option>
                       <option value="manager">Manager</option>
                       <option value="admin">Admin</option>
                     </select>

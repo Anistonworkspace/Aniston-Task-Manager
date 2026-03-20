@@ -4,6 +4,7 @@ import { HIERARCHY_LEVELS } from '../../utils/constants';
 
 const ROLES = [
   { value: 'member', label: 'Member' },
+  { value: 'assistant_manager', label: 'Assistant Manager' },
   { value: 'manager', label: 'Manager' },
   { value: 'admin', label: 'Admin' },
 ];

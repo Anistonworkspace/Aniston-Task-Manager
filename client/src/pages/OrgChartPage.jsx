@@ -152,7 +152,7 @@ function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved }) {
               <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Role</label>
               <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
                 className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none focus:border-blue-400">
-                <option value="member">Member</option><option value="manager">Manager</option><option value="admin">Admin</option>
+                <option value="member">Member</option><option value="assistant_manager">Assistant Manager</option><option value="manager">Manager</option><option value="admin">Admin</option>
               </select>
             </div>
             <div>
@@ -560,7 +560,7 @@ export default function OrgChartPage() {
             <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-xl p-5 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2"><ArrowUp size={14} className="text-green-500" /> Promote {showPromote.name}</h3>
               <div className="space-y-3">
-                <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">System Role</label><select value={promoteForm.newRole} onChange={e => setPromoteForm({ ...promoteForm, newRole: e.target.value })} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none"><option value="member">Member</option><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
+                <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">System Role</label><select value={promoteForm.newRole} onChange={e => setPromoteForm({ ...promoteForm, newRole: e.target.value })} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none"><option value="member">Member</option><option value="assistant_manager">Assistant Manager</option><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Hierarchy Level</label><select value={promoteForm.newHierarchyLevel} onChange={e => setPromoteForm({ ...promoteForm, newHierarchyLevel: e.target.value })} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none"><option value="">Select...</option>{hierarchyLevels.map(l => <option key={l.id} value={l.name}>{l.label}</option>)}</select></div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Title</label><input value={promoteForm.newTitle} onChange={e => setPromoteForm({ ...promoteForm, newTitle: e.target.value })} placeholder="e.g., Senior Developer" className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] outline-none" /></div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Notes</label><textarea value={promoteForm.notes} onChange={e => setPromoteForm({ ...promoteForm, notes: e.target.value })} rows={2} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] outline-none resize-none" /></div>

@@ -287,6 +287,7 @@ export default function UserManagementPage() {
                 <option value="">All Roles</option>
                 <option value="admin">Admin</option>
                 <option value="manager">Manager</option>
+                <option value="assistant_manager">Assistant Manager</option>
                 <option value="member">Member</option>
               </select>
               <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}

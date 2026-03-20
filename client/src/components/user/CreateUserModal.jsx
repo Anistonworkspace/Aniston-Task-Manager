@@ -5,6 +5,7 @@ import api from '../../services/api';
 
 const ROLES = [
   { value: 'member', label: 'Member', desc: 'Can view & update assigned tasks' },
+  { value: 'assistant_manager', label: 'Assistant Manager', desc: 'Manager + director plan management & PA duties' },
   { value: 'manager', label: 'Manager', desc: 'Can manage boards, tasks & members' },
   { value: 'admin', label: 'Admin', desc: 'Full access to everything' },
 ];
