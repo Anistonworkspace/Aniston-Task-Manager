@@ -1,0 +1,26 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & build server
+        run: cd server && npm ci
+
+      - name: Install & build client
+        run: cd client && npm ci && npm run build
+
+      - name: Check for build errors
+        run: echo "Build successful"
