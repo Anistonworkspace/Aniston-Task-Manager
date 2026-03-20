@@ -8,29 +8,13 @@ const User = require('./models/User');
 const users = [
   {
     name: 'Super Admin',
-    email: 'superadmin@aniston.com',
-    password: 'SuperAdmin@1234',
+    email: 'superadmin@anistonav.com',
+    password: 'Anistonav@1234',
     role: 'admin',
     department: 'Management',
     isSuperAdmin: true,
     hierarchyLevel: 'ceo',
-  },
-  {
-    name: 'Admin',
-    email: 'admin@aniston.com',
-    password: 'Admin@1234',
-    role: 'admin',
-    department: 'Management',
-    hierarchyLevel: 'director',
-  },
-  {
-    name: 'Assistant Manager',
-    email: 'pa@aniston.com',
-    password: 'PA@1234',
-    role: 'assistant_manager',
-    department: 'Operations',
-    hierarchyLevel: 'manager',
-    designation: 'Personal Assistant',
+    designation: 'Super Administrator',
   },
 ];
 
@@ -45,14 +29,14 @@ const seedUsers = async () => {
         console.log(`[Seed] ${u.role.toUpperCase()} already exists: ${u.email}`);
         continue;
       }
-      await User.create({ ...u, isActive: true });
-      console.log(`[Seed] Created ${u.isSuperAdmin ? 'SUPER ADMIN' : u.role.toUpperCase()}:`);
+      await User.create({ ...u, isActive: true, accountStatus: 'approved' });
+      console.log(`[Seed] Created SUPER ADMIN:`);
       console.log(`  Email:    ${u.email}`);
       console.log(`  Password: ${u.password}`);
-      console.log(`  Role:     ${u.role}${u.isSuperAdmin ? ' (Super Admin)' : ''}\n`);
+      console.log(`  Role:     ${u.role} (Super Admin)\n`);
     }
 
-    console.log('[Seed] All users seeded successfully!');
+    console.log('[Seed] Done! Other employees should be synced from Microsoft Teams.');
     process.exit(0);
   } catch (err) {
     console.error('[Seed] Failed:', err.message);
