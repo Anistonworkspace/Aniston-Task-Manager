@@ -1,0 +1,67 @@
+# Nginx Ingress — Routes traffic from domains to services
+# Supports multiple Aniston apps on the same cluster
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aniston-ingress
+  namespace: aniston-apps
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+    # WebSocket support for Socket.io
+    nginx.ingress.kubernetes.io/websocket-services: "aniston-hub-backend-service"
+    # SSL with cert-manager (uncomment when ready)
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - monday.anistonav.com
+  #     secretName: aniston-hub-tls
+  rules:
+    # Aniston Project Hub
+    - host: monday.anistonav.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: aniston-hub-backend-service
+                port:
+                  number: 5000
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: aniston-hub-backend-service
+                port:
+                  number: 5000
+          - path: /uploads
+            pathType: Prefix
+            backend:
+              service:
+                name: aniston-hub-backend-service
+                port:
+                  number: 5000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aniston-hub-frontend-service
+                port:
+                  number: 80
+
+    # ─── Add more apps here ──────────────────────────────
+    # Example: HRMS App
+    # - host: hrms.anistonav.com
+    #   http:
+    #     paths:
+    #       - path: /
+    #         pathType: Prefix
+    #         backend:
+    #           service:
+    #             name: hrms-frontend-service
+    #             port:
+    #               number: 80
