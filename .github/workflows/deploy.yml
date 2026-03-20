@@ -4,9 +4,6 @@ on:
   push:
     branches: [main]
 
-env:
-  APP_DIR: ~/Aniston-Task-Manager
-
 jobs:
   # Job 1: Build validation
   build-check:
@@ -41,12 +38,17 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ENV_FILE
           script: |
             set -e
             echo "=== Pulling latest code ==="
             cd ~/Aniston-Task-Manager
             git fetch origin main
             git reset --hard origin/main
+
+            echo "=== Creating .env from GitHub secret ==="
+            echo "$ENV_FILE" > deploy/.env
+            echo ".env created ($(wc -l < deploy/.env) lines)"
 
             echo "=== Building and restarting containers ==="
             docker compose -f deploy/docker-compose.yml up -d --build
@@ -63,3 +65,5 @@ jobs:
 
             echo "=== Deployment complete ==="
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
