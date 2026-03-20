@@ -18,6 +18,7 @@ const PermissionGrant = require('./PermissionGrant');
 const AccessRequest = require('./AccessRequest');
 const TaskWatcher = require('./TaskWatcher');
 const Announcement = require('./Announcement');
+const DirectorPlan = require('./DirectorPlan');
 const Label = require('./Label');
 const TaskLabel = require('./TaskLabel');
 const DueDateExtension = require('./DueDateExtension');
@@ -292,6 +293,10 @@ Task.hasMany(TaskDependency, { as: 'dependents', foreignKey: 'dependsOnTaskId' }
 // ─── Task <-> User (scheduledBy) ─────────────────────────────
 Task.belongsTo(User, { as: 'scheduler', foreignKey: 'scheduledBy', onDelete: 'SET NULL' });
 
+// ─── DirectorPlan <-> User ──────────────────────────────────
+DirectorPlan.belongsTo(User, { foreignKey: 'directorId', as: 'director', onDelete: 'CASCADE' });
+DirectorPlan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+
 module.exports = {
   sequelize,
   User,
@@ -319,6 +324,7 @@ module.exports = {
   HelpRequest,
   PromotionHistory,
   HierarchyLevel,
+  DirectorPlan,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────

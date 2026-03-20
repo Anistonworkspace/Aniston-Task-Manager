@@ -28,9 +28,10 @@ const createTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Members can only create tasks assigned to themselves
-    const isMember = req.user.role === 'member';
-    const finalAssignedTo = isMember ? req.user.id : (assignedTo || null);
+    // Members can only create tasks assigned to themselves; all other roles can assign anyone
+    const canAssignOthers = ['admin', 'manager', 'assistant_manager'].includes(req.user.role);
+    const isMember = !canAssignOthers;
+    const finalAssignedTo = canAssignOthers ? (assignedTo || null) : req.user.id;
 
     // Determine position (append to end of group)
     const maxPosition = await Task.max('position', {

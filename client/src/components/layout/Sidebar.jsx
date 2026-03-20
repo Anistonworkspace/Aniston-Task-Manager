@@ -57,7 +57,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace })
 }
 
 export default function Sidebar({ collapsed, onToggle }) {
-  const { user, canManage, isAdmin, isManager, isDirector } = useAuth();
+  const { user, canManage, isAdmin, isManager, isAssistantManager, isDirector } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [boards, setBoards] = useState([]);
@@ -278,7 +278,8 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Home} label="Home" path="/" />
             <NavItem icon={User} label="My Work" path="/my-work" />
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} />
-            {isDirector && <NavItem icon={Crown} label="Director Dashboard" path="/director-dashboard" />}
+            {(isDirector || isAssistantManager) && <NavItem icon={Crown} label="Director Dashboard" path="/director-dashboard" />}
+            {isAssistantManager && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" />
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" />

@@ -133,8 +133,9 @@ export function AuthProvider({ children }) {
   const effectiveRole = (isSuperAdmin && viewAsRole) ? viewAsRole : user?.role;
   const isAdmin = effectiveRole === 'admin';
   const isManager = effectiveRole === 'manager';
+  const isAssistantManager = effectiveRole === 'assistant_manager';
   const isMember = effectiveRole === 'member';
-  const canManage = isAdmin || isManager;
+  const canManage = isAdmin || isManager || isAssistantManager;
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
   const switchViewAs = (role) => {
@@ -145,7 +146,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, token, loading, login, logout, updateProfile,
-      isAdmin, isManager, isMember, canManage, isDirector,
+      isAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
       isSuperAdmin, viewAsRole, switchViewAs, effectiveRole,
     }}>
       {children}

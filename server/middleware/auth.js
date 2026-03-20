@@ -84,7 +84,7 @@ const adminOnly = (req, res, next) => {
  * Must be used AFTER the authenticate middleware.
  */
 const managerOrAdmin = (req, res, next) => {
-  if (!req.user || !['admin', 'manager'].includes(req.user.role)) {
+  if (!req.user || !['admin', 'manager', 'assistant_manager'].includes(req.user.role)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Manager or admin privileges required.',
@@ -93,4 +93,17 @@ const managerOrAdmin = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, adminOnly, managerOrAdmin };
+/**
+ * Restrict access to assistant managers and super admins only (director plan management).
+ */
+const assistantManagerOnly = (req, res, next) => {
+  if (!req.user || (req.user.role !== 'assistant_manager' && !req.user.isSuperAdmin)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Assistant manager privileges required.',
+    });
+  }
+  next();
+};
+
+module.exports = { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly };

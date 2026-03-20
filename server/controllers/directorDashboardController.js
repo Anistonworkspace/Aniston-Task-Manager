@@ -7,9 +7,10 @@ const { Op } = require('sequelize');
  */
 const getDirectorDashboard = async (req, res) => {
   try {
-    // Authorization: director/vp/ceo hierarchy or admin role
+    // Authorization: director/vp/ceo hierarchy, admin role, or assistant_manager
     const allowed = ['director', 'vp', 'ceo'];
-    if (!allowed.includes(req.user.hierarchyLevel) && req.user.role !== 'admin') {
+    const hasAccess = allowed.includes(req.user.hierarchyLevel) || req.user.role === 'admin' || req.user.role === 'assistant_manager' || req.user.isSuperAdmin;
+    if (!hasAccess) {
       return res.status(403).json({ success: false, message: 'Director-level access required.' });
     }
 

@@ -49,6 +49,7 @@ const extensionRoutes = require('./routes/extensions');
 const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
 const hierarchyRoutes = require('./routes/hierarchy');
+const directorPlanRoutes = require('./routes/directorPlan');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -155,6 +156,7 @@ app.use('/api/extensions', extensionRoutes);
 app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/hierarchy-levels', hierarchyRoutes);
+app.use('/api/director-plan', directorPlanRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────
 app.use((_req, res) => {

@@ -23,6 +23,15 @@ const users = [
     department: 'Management',
     hierarchyLevel: 'director',
   },
+  {
+    name: 'Assistant Manager',
+    email: 'pa@aniston.com',
+    password: 'PA@1234',
+    role: 'assistant_manager',
+    department: 'Operations',
+    hierarchyLevel: 'manager',
+    designation: 'Personal Assistant',
+  },
 ];
 
 const seedUsers = async () => {

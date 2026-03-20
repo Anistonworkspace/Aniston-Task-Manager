@@ -20,7 +20,7 @@ const createTimeBlock = async (req, res) => {
     // Allow managers/admins to create blocks for other users (PA workflow)
     let targetUserId = req.user.id;
     if (forUserId && forUserId !== req.user.id) {
-      if (req.user.role !== 'manager' && req.user.role !== 'admin') {
+      if (!['manager', 'admin', 'assistant_manager'].includes(req.user.role)) {
         return res.status(403).json({ success: false, message: 'Only managers/admins can create blocks for other users.' });
       }
       const targetUser = await User.findByPk(forUserId);

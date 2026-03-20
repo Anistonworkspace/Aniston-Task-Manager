@@ -32,6 +32,7 @@ const MemberDashboardPage = lazy(() => import('./pages/MemberDashboardPage'));
 const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage'));
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
 const DirectorDashboardPage = lazy(() => import('./pages/DirectorDashboardPage'));
+const AssistantManagerPlanPage = lazy(() => import('./pages/AssistantManagerPlanPage'));
 
 function PageLoader() {
   return (
@@ -114,6 +115,7 @@ export default function App() {
           <Route path="manager-dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
           <Route path="admin-dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
           <Route path="director-dashboard" element={<Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense>} />
+          <Route path="director-plan" element={<Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense>} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
           <Route path="reviews" element={<Suspense fallback={<PageLoader />}><ReviewPage /></Suspense>} />
