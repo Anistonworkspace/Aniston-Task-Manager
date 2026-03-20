@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 env:
-  APP_DIR: ~/Aniston-Task-Management
+  APP_DIR: ~/Aniston-Task-Manager
 
 jobs:
   # Job 1: Build validation
@@ -44,7 +44,7 @@ jobs:
           script: |
             set -e
             echo "=== Pulling latest code ==="
-            cd ~/Aniston-Task-Management
+            cd ~/Aniston-Task-Manager
             git pull origin main
 
             echo "=== Building and restarting containers ==="
