@@ -7,6 +7,7 @@ const teamsWebhook = require('../services/teamsWebhook');
 const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { processAutomations } = require('../services/automationService');
+const { sanitizeInput } = require('../utils/sanitize');
 
 /**
  * POST /api/tasks
@@ -40,8 +41,8 @@ const createTask = async (req, res) => {
     });
 
     const task = await Task.create({
-      title,
-      description: description || '',
+      title: sanitizeInput(title),
+      description: sanitizeInput(description) || '',
       status: status || 'not_started',
       priority: isMember ? 'medium' : (priority || 'medium'),
       groupId: groupId || 'new',

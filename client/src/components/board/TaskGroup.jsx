@@ -16,8 +16,10 @@ export default function TaskGroup({
   color = '#579bfc', index, isDragEnabled = false,
   selectedTaskIds = [], onSelectTask,
 }) {
+  const TASK_DISPLAY_LIMIT = 100;
   const { canManage } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+  const [showAllTasks, setShowAllTasks] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [adding, setAdding] = useState(false);
   const [showGroupMenu, setShowGroupMenu] = useState(false);
@@ -110,10 +112,13 @@ export default function TaskGroup({
     setEditingColId(null);
   }
 
+  const visibleTasks = showAllTasks ? tasks : tasks.slice(0, TASK_DISPLAY_LIMIT);
+  const hasMoreTasks = tasks.length > TASK_DISPLAY_LIMIT && !showAllTasks;
+
   const renderRows = (provided, snapshot) => (
     <div ref={provided?.innerRef} {...(provided?.droppableProps || {})}
       className={`min-h-[2px] ${snapshot?.isDraggingOver ? 'bg-[#e6f0ff]/30' : ''}`}>
-      {tasks.map((task, taskIndex) => {
+      {visibleTasks.map((task, taskIndex) => {
         const rowContent = (dragHandleProps) => (
           <TaskRow task={task} members={members} columns={columns} boardId={boardId} color={color}
             taskColWidth={taskColWidth}
@@ -137,6 +142,13 @@ export default function TaskGroup({
         return <React.Fragment key={task.id}>{rowContent(null)}</React.Fragment>;
       })}
       {provided?.placeholder}
+      {hasMoreTasks && (
+        <div className="flex items-center justify-center py-2 border-t border-[#e6e9ef]">
+          <button onClick={() => setShowAllTasks(true)} className="text-[11px] font-medium text-[#0073ea] hover:underline">
+            Show all {tasks.length} tasks ({tasks.length - TASK_DISPLAY_LIMIT} more hidden)
+          </button>
+        </div>
+      )}
     </div>
   );
 

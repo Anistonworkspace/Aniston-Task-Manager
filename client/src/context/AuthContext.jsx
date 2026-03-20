@@ -18,6 +18,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('user');
+    sessionStorage.removeItem('refreshToken');
     // Also clear localStorage for backward compat
     localStorage.removeItem('token');
     localStorage.removeItem('user');
@@ -112,6 +113,7 @@ export function AuthProvider({ children }) {
     const newUser = d.user;
     sessionStorage.setItem('token', newToken);
     sessionStorage.setItem('user', JSON.stringify(newUser));
+    if (d.refreshToken) sessionStorage.setItem('refreshToken', d.refreshToken);
     setToken(newToken);
     setUser(newUser);
     setViewAsRole(null);

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
-import { MessageSquare, ListChecks, Clock, Plus, ChevronDown, ChevronRight, AlertTriangle, Zap, Link2 } from 'lucide-react';
+import { MessageSquare, ListChecks, Clock, Plus, ChevronDown, ChevronRight, AlertTriangle, Zap, Link2, ChevronsDown } from 'lucide-react';
 import { format, parseISO, isPast } from 'date-fns';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
 import Avatar from '../common/Avatar';
@@ -15,10 +15,16 @@ const KANBAN_COLUMNS = [
 const PRIORITY_BORDER = { critical: '#e2445c', high: '#ff642e', medium: '#fdab3d', low: '#579bfc' };
 
 export default function KanbanView({ tasks = [], members = [], onTaskClick, onTaskUpdate, onAddTask, groups }) {
+  const INITIAL_CARD_LIMIT = 50;
   const [collapsedCols, setCollapsedCols] = useState({});
   const [filterPerson, setFilterPerson] = useState('');
   const [newTaskCol, setNewTaskCol] = useState(null);
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [expandedCols, setExpandedCols] = useState({});
+
+  const toggleShowAll = useCallback((colId) => {
+    setExpandedCols(prev => ({ ...prev, [colId]: !prev[colId] }));
+  }, []);
 
   function handleDragEnd(result) {
     const { draggableId, destination } = result;
@@ -128,7 +134,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                             : 'bg-surface/30 border-2 border-transparent'
                         }`}
                       >
-                        {colTasks.map((task, index) => {
+                        {(expandedCols[col.id] ? colTasks : colTasks.slice(0, INITIAL_CARD_LIMIT)).map((task, index) => {
                           const priorityCfg = PRIORITY_CONFIG[task.priority] || {};
                           const assignee = task.assignee || (task.assignedTo ? members.find(m => m.id === task.assignedTo) : null);
                           const assigneeName = assignee?.name || assignee?.user?.name;
@@ -210,6 +216,25 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                           );
                         })}
                         {provided.placeholder}
+
+                        {/* Show all button when cards exceed limit */}
+                        {!expandedCols[col.id] && colTasks.length > INITIAL_CARD_LIMIT && (
+                          <button
+                            onClick={() => toggleShowAll(col.id)}
+                            className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium text-primary hover:bg-primary/5 rounded-lg transition-colors"
+                          >
+                            <ChevronsDown size={12} />
+                            Show all {colTasks.length} tasks ({colTasks.length - INITIAL_CARD_LIMIT} more)
+                          </button>
+                        )}
+                        {expandedCols[col.id] && colTasks.length > INITIAL_CARD_LIMIT && (
+                          <button
+                            onClick={() => toggleShowAll(col.id)}
+                            className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium text-text-tertiary hover:bg-surface rounded-lg transition-colors"
+                          >
+                            Show less
+                          </button>
+                        )}
 
                         {/* Empty state */}
                         {colTasks.length === 0 && !snapshot.isDraggingOver && (

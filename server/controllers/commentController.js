@@ -2,6 +2,7 @@ const { Comment, Task, User, Board, Notification } = require('../models');
 const { validationResult } = require('express-validator');
 const { emitToBoard, emitToUser } = require('../services/socketService');
 const teamsWebhook = require('../services/teamsWebhook');
+const { sanitizeInput } = require('../utils/sanitize');
 
 /**
  * POST /api/comments
@@ -14,7 +15,8 @@ const addComment = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { content, taskId, attachments } = req.body;
+    const { content: rawContent, taskId, attachments } = req.body;
+    const content = sanitizeInput(rawContent);
 
     const task = await Task.findByPk(taskId, {
       include: [{ model: Board, as: 'board', attributes: ['id', 'name'] }],

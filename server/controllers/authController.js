@@ -16,11 +16,19 @@ function validatePassword(password) {
 }
 
 /**
- * Generate a signed JWT for a given user id.
+ * Generate a short-lived access token (1 hour).
  */
 const generateToken = (userId) =>
   jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+    expiresIn: '1h',
+  });
+
+/**
+ * Generate a long-lived refresh token (7 days).
+ */
+const generateRefreshToken = (userId) =>
+  jwt.sign({ id: userId, type: 'refresh' }, process.env.JWT_SECRET, {
+    expiresIn: '7d',
   });
 
 /**
@@ -112,11 +120,12 @@ const login = async (req, res) => {
     }
 
     const token = generateToken(user.id);
+    const refreshToken = generateRefreshToken(user.id);
 
     res.json({
       success: true,
       message: 'Login successful.',
-      data: { user: user.toJSON(), token },
+      data: { user: user.toJSON(), token, refreshToken },
     });
   } catch (error) {
     console.error('[Auth] Login error:', error);
@@ -371,4 +380,40 @@ const rejectAccount = async (req, res) => {
   }
 };
 
-module.exports = { register, login, getProfile, updateProfile, getAllUsers, uploadAvatar, forgotPassword, resetPassword, getPendingAccounts, approveAccount, rejectAccount };
+/**
+ * POST /api/auth/refresh
+ * Exchange a valid refresh token for new access + refresh tokens.
+ */
+const refreshTokenEndpoint = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: 'refreshToken required.' });
+    }
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    if (decoded.type !== 'refresh') {
+      return res.status(401).json({ success: false, message: 'Invalid token type.' });
+    }
+
+    const user = await User.findByPk(decoded.id);
+    if (!user || !user.isActive) {
+      return res.status(401).json({ success: false, message: 'User not found or inactive.' });
+    }
+
+    const newToken = generateToken(user.id);
+    const newRefreshToken = generateRefreshToken(user.id);
+
+    res.json({
+      success: true,
+      data: { token: newToken, refreshToken: newRefreshToken },
+    });
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ success: false, message: 'Refresh token expired. Please login again.' });
+    }
+    res.status(401).json({ success: false, message: 'Invalid refresh token.' });
+  }
+};
+
+module.exports = { register, login, getProfile, updateProfile, getAllUsers, uploadAvatar, forgotPassword, resetPassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint };

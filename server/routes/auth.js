@@ -13,6 +13,7 @@ const {
   getPendingAccounts,
   approveAccount,
   rejectAccount,
+  refreshTokenEndpoint,
 } = require('../controllers/authController');
 const { upload, handleMulterError } = require('../middleware/upload');
 
@@ -80,6 +81,9 @@ router.put(
   ],
   updateProfile
 );
+
+// ─── POST /api/auth/refresh ─────────────────────────────────
+router.post('/refresh', refreshTokenEndpoint);
 
 // ─── POST /api/auth/forgot-password ──────────────────────────
 router.post('/forgot-password', forgotPassword);

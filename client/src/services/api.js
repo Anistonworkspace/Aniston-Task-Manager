@@ -3,8 +3,19 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 30000, // 30 second timeout
+  timeout: 30000,
 });
+
+let isRefreshing = false;
+let failedQueue = [];
+
+function processQueue(error, token = null) {
+  failedQueue.forEach(({ resolve, reject }) => {
+    if (error) reject(error);
+    else resolve(token);
+  });
+  failedQueue = [];
+}
 
 api.interceptors.request.use(
   (config) => {
@@ -17,17 +28,68 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   (response) => {
-    // Auto-unwrap backend's nested { success, data: { ... } } format
-    // so frontend can access res.data.boards, res.data.tasks, etc. directly
     if (response.data && response.data.success && response.data.data) {
       response.data = { ...response.data, ...response.data.data };
     }
     return response;
   },
-  (error) => {
-    if (error.response && error.response.status === 401) {
+  async (error) => {
+    const originalRequest = error.config;
+
+    // Try silent refresh on 401 (except for login/refresh endpoints)
+    if (error.response?.status === 401 && !originalRequest._retry &&
+        !originalRequest.url?.includes('/auth/login') &&
+        !originalRequest.url?.includes('/auth/refresh')) {
+
+      const refreshToken = sessionStorage.getItem('refreshToken');
+
+      if (refreshToken) {
+        if (isRefreshing) {
+          // Queue this request while refresh is in progress
+          return new Promise((resolve, reject) => {
+            failedQueue.push({ resolve, reject });
+          }).then((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return api(originalRequest);
+          });
+        }
+
+        originalRequest._retry = true;
+        isRefreshing = true;
+
+        try {
+          const res = await axios.post('/api/auth/refresh', { refreshToken });
+          const { token: newToken, refreshToken: newRefresh } = res.data?.data || res.data;
+
+          sessionStorage.setItem('token', newToken);
+          if (newRefresh) sessionStorage.setItem('refreshToken', newRefresh);
+
+          api.defaults.headers.common.Authorization = `Bearer ${newToken}`;
+          processQueue(null, newToken);
+
+          originalRequest.headers.Authorization = `Bearer ${newToken}`;
+          return api(originalRequest);
+        } catch (refreshError) {
+          processQueue(refreshError, null);
+          // Refresh failed — clear everything and redirect to login
+          sessionStorage.removeItem('token');
+          sessionStorage.removeItem('user');
+          sessionStorage.removeItem('refreshToken');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login';
+          }
+          return Promise.reject(refreshError);
+        } finally {
+          isRefreshing = false;
+        }
+      }
+
+      // No refresh token available — redirect to login
       sessionStorage.removeItem('token');
       sessionStorage.removeItem('user');
+      sessionStorage.removeItem('refreshToken');
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       if (window.location.pathname !== '/login') {
@@ -35,7 +97,7 @@ api.interceptors.response.use(
       }
     }
 
-    // Emit global error event for toast notifications (skip 401 redirects and cancelled requests)
+    // Emit global error event for toast notifications
     if (error.response && error.response.status !== 401 && !axios.isCancel(error)) {
       const message = error.response?.data?.message || error.message || 'Something went wrong';
       window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: error.response?.status } }));

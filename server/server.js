@@ -181,8 +181,9 @@ app.use((_req, res) => {
 });
 
 // ─── Global error handler ────────────────────────────────────
+const logger = require('./utils/logger');
 app.use((err, _req, res, _next) => {
-  console.error('[Server] Unhandled error:', err);
+  logger.error('Unhandled error', { error: err.message, stack: err.stack, name: err.name });
 
   // Sequelize validation errors
   if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
@@ -221,6 +222,8 @@ const start = async () => {
     }
 
     server.listen(PORT, () => {
+      const logger = require('./utils/logger');
+      logger.info(`Aniston Project Hub API running on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });
       console.log(`[Server] Aniston Project Hub API running on port ${PORT}`);
       console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`[Server] Health check: http://localhost:${PORT}/api/health`);
