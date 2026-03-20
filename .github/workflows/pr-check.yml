@@ -17,10 +17,7 @@ jobs:
           node-version: '20'
 
       - name: Install & build server
-        run: cd server && npm ci
+        run: cd server && npm install --production=false
 
       - name: Install & build client
-        run: cd client && npm ci && npm run build
-
-      - name: Check for build errors
-        run: echo "Build successful"
+        run: cd client && npm install && npm run build
