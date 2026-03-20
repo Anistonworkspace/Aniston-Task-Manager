@@ -28,7 +28,7 @@ router.post(
       .matches(/[a-z]/).withMessage('Password must contain at least one lowercase letter.')
       .matches(/[0-9]/).withMessage('Password must contain at least one number.')
       .matches(/[!@#$%^&*(),.?":{}|<>]/).withMessage('Password must contain at least one special character.'),
-    body('role').optional().isIn(['admin', 'manager', 'member']).withMessage('Invalid role.'),
+    body('role').optional().isIn(['admin', 'manager', 'assistant_manager', 'member']).withMessage('Invalid role.'),
     body('department').optional().trim().isLength({ max: 100 }),
     body('designation').optional().trim().isLength({ max: 100 }),
   ],
@@ -48,7 +48,7 @@ router.put(
   [
     body('name').optional().trim().isLength({ min: 2, max: 100 }),
     body('email').optional().isEmail(),
-    body('role').optional().isIn(['admin', 'manager', 'member']),
+    body('role').optional().isIn(['admin', 'manager', 'assistant_manager', 'member']),
     body('department').optional().trim().isLength({ max: 100 }),
     body('designation').optional().trim().isLength({ max: 100 }),
   ],
