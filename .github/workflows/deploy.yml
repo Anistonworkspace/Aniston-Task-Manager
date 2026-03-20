@@ -45,7 +45,8 @@ jobs:
             set -e
             echo "=== Pulling latest code ==="
             cd ~/Aniston-Task-Manager
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "=== Building and restarting containers ==="
             docker compose -f deploy/docker-compose.yml up -d --build
