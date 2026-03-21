@@ -57,7 +57,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace })
 }
 
 export default function Sidebar({ collapsed, onToggle }) {
-  const { user, canManage, isAdmin, isManager, isAssistantManager, isDirector } = useAuth();
+  const { user, canManage, isAdmin, isManager, isAssistantManager, isDirector, isSuperAdmin } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [boards, setBoards] = useState([]);
