@@ -366,7 +366,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                 <div key={ws.id} className="group/ws relative">
                   <button
                     onClick={() => setOpenWorkspaces(prev => ({ ...prev, [ws.id]: !isOpen }))}
-                    className="flex items-center gap-2 px-3 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors">
+                    className="flex items-center gap-2 pl-3 pr-7 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors">
                     <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 text-white text-[10px] font-bold"
                       style={{ backgroundColor: ws.color || '#0073ea' }}>
                       {ws.name.charAt(0).toUpperCase()}
@@ -399,7 +399,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                   </button>
                   {/* Workspace hover menu */}
                   {canManage && (
-                    <div className="absolute right-1 top-1 opacity-0 group-hover/ws:opacity-100 transition-opacity z-10">
+                    <div className="absolute right-2 top-1 opacity-0 group-hover/ws:opacity-100 transition-opacity z-10">
                       <div className="relative">
                         <button onClick={(e) => { e.stopPropagation(); setWsActionMenu(wsActionMenu === ws.id ? null : ws.id); }}
                           className="p-1 rounded-md text-sidebar-text/30 hover:text-sidebar-text hover:bg-sidebar-hover transition-colors">
