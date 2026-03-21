@@ -1,8 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Camera, Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase, User as UserIcon, Check, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
+import SOPViewer from '../components/common/SOPViewer';
 
 const ROLE_STYLES = {
   admin: { bg: 'bg-danger/10', text: 'text-danger', border: 'border-danger/20', label: 'Administrator' },
@@ -13,6 +15,15 @@ const ROLE_STYLES = {
 export default function ProfilePage() {
   const { user, updateProfile } = useAuth();
   const fileInputRef = useRef(null);
+  const sopRef = useRef(null);
+  const location = useLocation();
+
+  // Auto-scroll to SOP section when navigating with #sop hash
+  useEffect(() => {
+    if (location.hash === '#sop' && sopRef.current) {
+      setTimeout(() => sopRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' }), 200);
+    }
+  }, [location.hash]);
 
   const [form, setForm] = useState({
     name: user?.name || '',
@@ -360,6 +371,11 @@ export default function ProfilePage() {
 
         {/* Teams Integration */}
         <TeamsIntegrationSettings />
+
+        {/* Standard Operating Procedure */}
+        <div ref={sopRef}>
+          <SOPViewer onRestartTour={() => window.dispatchEvent(new Event('restart-onboarding'))} />
+        </div>
 
         {/* Account Info Footer */}
         <div className="text-center text-xs text-text-tertiary pb-4">

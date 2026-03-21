@@ -5,7 +5,7 @@ import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
   FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
   Puzzle, Archive, Settings, Link2, GitBranch, PanelLeftClose, PanelLeft,
-  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown
+  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown, BookOpen
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -284,6 +284,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={FileText} label="Reviews" path="/reviews" />
             <NavItem icon={ClipboardCheck} label="Tasks" path="/tasks" />
             <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
+            <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" />
           </nav>
 
           {canManage && (

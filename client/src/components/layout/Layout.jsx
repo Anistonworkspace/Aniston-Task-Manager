@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import OnboardingTour from '../common/OnboardingTour';
 import { useAuth } from '../../context/AuthContext';
 import { Eye, Shield, Users, User, ChevronUp } from 'lucide-react';
 
@@ -66,6 +67,7 @@ export default function Layout() {
         </main>
       </div>
       <RoleSwitcher />
+      <OnboardingTour />
     </div>
   );
 }
