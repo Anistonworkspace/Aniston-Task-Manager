@@ -46,20 +46,28 @@ async function getAccessToken(userId) {
 }
 
 /**
- * Create a Teams calendar event for a task.
+ * Create a Teams calendar event for a task (app-level — no user OAuth needed).
  */
 async function createTaskEvent(taskId, userId) {
   if (!teamsConfig.isConfigured) return null;
 
-  const token = await getAccessToken(userId);
-  if (!token) {
-    console.log('[Calendar] User has not connected Teams — skipping calendar event for task', taskId);
+  // Look up assignee's teamsUserId (set during M365 user sync)
+  const assignee = await User.findByPk(userId, { attributes: ['id', 'name', 'email', 'teamsUserId'] });
+  if (!assignee || !assignee.teamsUserId) {
+    console.log(`[Calendar] User ${userId} has no teamsUserId — skipping calendar event for task ${taskId}`);
+    return null;
+  }
+
+  let token;
+  try {
+    token = await getAppToken();
+  } catch (err) {
+    console.warn('[Calendar] Failed to get app token:', err.message);
     return null;
   }
 
   const task = await Task.findByPk(taskId, {
     include: [
-      { model: User, as: 'assignee', attributes: ['id', 'name', 'email'] },
       { model: Board, as: 'board', attributes: ['id', 'name'] },
     ],
   });
@@ -69,7 +77,7 @@ async function createTaskEvent(taskId, userId) {
   const endTime = task.plannedEndTime || task.dueDate || new Date(new Date(startTime).getTime() + 60 * 60 * 1000);
 
   const event = {
-    subject: `[Project Hub] ${task.title}`,
+    subject: `[Monday Aniston] ${task.title}`,
     body: {
       contentType: 'HTML',
       content: `
@@ -78,7 +86,7 @@ async function createTaskEvent(taskId, userId) {
         <b>Priority:</b> ${task.priority}<br>
         <b>Status:</b> ${task.status}<br>
         ${task.description ? `<b>Description:</b> ${task.description}<br>` : ''}
-        <br><a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/boards/${task.boardId}">Open in Project Hub</a>
+        <br><a href="${process.env.CLIENT_URL || 'http://localhost:3000'}/boards/${task.boardId}">Open in Monday Aniston</a>
       `,
     },
     start: {
@@ -89,56 +97,47 @@ async function createTaskEvent(taskId, userId) {
       dateTime: new Date(endTime).toISOString(),
       timeZone: 'UTC',
     },
-    categories: ['Project Hub', task.priority],
+    categories: ['Monday Aniston', task.priority],
     isReminderOn: true,
     reminderMinutesBeforeStart: 30,
   };
 
-  // Add assignee as attendee if different from calendar owner
-  if (task.assignee && task.assignee.email) {
-    event.attendees = [{
-      emailAddress: { address: task.assignee.email, name: task.assignee.name },
-      type: 'required',
-    }];
-  }
-
   try {
-    const res = await axios.post(`${teamsConfig.graphUrl}/me/events`, event, {
+    const res = await axios.post(`${teamsConfig.graphUrl}/users/${assignee.teamsUserId}/events`, event, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
 
-    // Save event ID to task
     await task.update({ teamsEventId: res.data.id });
-    console.log(`[Calendar] Event created for task "${task.title}" (ID: ${res.data.id})`);
+    console.log(`[Calendar] Event created for "${task.title}" in ${assignee.name}'s calendar (ID: ${res.data.id})`);
     return res.data.id;
   } catch (err) {
-    console.error('[Calendar] Create event failed:', err.response?.data || err.message);
+    console.error('[Calendar] Create event failed:', err.response?.data?.error?.message || err.message);
     return null;
   }
 }
 
 /**
- * Update an existing Teams calendar event.
+ * Update an existing Teams calendar event (app-level).
  */
 async function updateTaskEvent(taskId, userId) {
   if (!teamsConfig.isConfigured) return null;
 
+  const assignee = await User.findByPk(userId, { attributes: ['id', 'name', 'teamsUserId'] });
+  if (!assignee || !assignee.teamsUserId) return null;
+
   const task = await Task.findByPk(taskId, {
-    include: [
-      { model: User, as: 'assignee', attributes: ['id', 'name', 'email'] },
-      { model: Board, as: 'board', attributes: ['id', 'name'] },
-    ],
+    include: [{ model: Board, as: 'board', attributes: ['id', 'name'] }],
   });
   if (!task || !task.teamsEventId) return null;
 
-  const token = await getAccessToken(userId);
-  if (!token) return null;
+  let token;
+  try { token = await getAppToken(); } catch { return null; }
 
   const startTime = task.plannedStartTime || task.startDate || new Date();
   const endTime = task.plannedEndTime || task.dueDate || new Date(new Date(startTime).getTime() + 60 * 60 * 1000);
 
   const updates = {
-    subject: `[Project Hub] ${task.title}`,
+    subject: `[Monday Aniston] ${task.title}`,
     body: {
       contentType: 'HTML',
       content: `
@@ -154,37 +153,40 @@ async function updateTaskEvent(taskId, userId) {
   };
 
   try {
-    await axios.patch(`${teamsConfig.graphUrl}/me/events/${task.teamsEventId}`, updates, {
+    await axios.patch(`${teamsConfig.graphUrl}/users/${assignee.teamsUserId}/events/${task.teamsEventId}`, updates, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
-    console.log(`[Calendar] Event updated for task "${task.title}"`);
+    console.log(`[Calendar] Event updated for "${task.title}" in ${assignee.name}'s calendar`);
     return task.teamsEventId;
   } catch (err) {
-    console.error('[Calendar] Update event failed:', err.response?.data || err.message);
+    console.error('[Calendar] Update event failed:', err.response?.data?.error?.message || err.message);
     return null;
   }
 }
 
 /**
- * Delete a Teams calendar event.
+ * Delete a Teams calendar event (app-level).
  */
 async function deleteTaskEvent(taskId, userId) {
   if (!teamsConfig.isConfigured) return;
 
+  const assignee = await User.findByPk(userId, { attributes: ['id', 'name', 'teamsUserId'] });
+  if (!assignee || !assignee.teamsUserId) return;
+
   const task = await Task.findByPk(taskId);
   if (!task || !task.teamsEventId) return;
 
-  const token = await getAccessToken(userId);
-  if (!token) return;
+  let token;
+  try { token = await getAppToken(); } catch { return; }
 
   try {
-    await axios.delete(`${teamsConfig.graphUrl}/me/events/${task.teamsEventId}`, {
+    await axios.delete(`${teamsConfig.graphUrl}/users/${assignee.teamsUserId}/events/${task.teamsEventId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    console.log(`[Calendar] Event deleted for task "${task.title}"`);
+    console.log(`[Calendar] Event deleted for "${task.title}" from ${assignee.name}'s calendar`);
     await task.update({ teamsEventId: null });
   } catch (err) {
-    console.error('[Calendar] Delete event failed:', err.response?.data || err.message);
+    console.error('[Calendar] Delete event failed:', err.response?.data?.error?.message || err.message);
   }
 }
 
