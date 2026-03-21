@@ -52,7 +52,10 @@ async function createTaskEvent(taskId, userId) {
   if (!teamsConfig.isConfigured) return null;
 
   const token = await getAccessToken(userId);
-  if (!token) return null;
+  if (!token) {
+    console.log('[Calendar] User has not connected Teams — skipping calendar event for task', taskId);
+    return null;
+  }
 
   const task = await Task.findByPk(taskId, {
     include: [
@@ -106,6 +109,7 @@ async function createTaskEvent(taskId, userId) {
 
     // Save event ID to task
     await task.update({ teamsEventId: res.data.id });
+    console.log(`[Calendar] Event created for task "${task.title}" (ID: ${res.data.id})`);
     return res.data.id;
   } catch (err) {
     console.error('[Calendar] Create event failed:', err.response?.data || err.message);
@@ -153,6 +157,7 @@ async function updateTaskEvent(taskId, userId) {
     await axios.patch(`${teamsConfig.graphUrl}/me/events/${task.teamsEventId}`, updates, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
+    console.log(`[Calendar] Event updated for task "${task.title}"`);
     return task.teamsEventId;
   } catch (err) {
     console.error('[Calendar] Update event failed:', err.response?.data || err.message);
@@ -176,6 +181,7 @@ async function deleteTaskEvent(taskId, userId) {
     await axios.delete(`${teamsConfig.graphUrl}/me/events/${task.teamsEventId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    console.log(`[Calendar] Event deleted for task "${task.title}"`);
     await task.update({ teamsEventId: null });
   } catch (err) {
     console.error('[Calendar] Delete event failed:', err.response?.data || err.message);

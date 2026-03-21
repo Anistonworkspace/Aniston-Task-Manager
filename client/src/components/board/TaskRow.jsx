@@ -24,10 +24,10 @@ const TaskRow = React.memo(function TaskRow({
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== 'done';
   const daysOverdue = isOverdue ? Math.ceil((new Date() - new Date(task.dueDate)) / (1000 * 60 * 60 * 24)) : 0;
 
-  const { isMember, isManager, isAdmin } = useAuth();
+  const { isMember, isManager, isAdmin, isAssistantManager } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
-  // Approved tasks are fully read-only. Otherwise: Admin edit all, Manager edit unless admin-created, Member restricted.
-  const canEditAllFields = !isApproved && (isAdmin || (isManager && !!task.creator && task.creator.role !== 'admin'));
+  // Approved tasks are fully read-only. Otherwise: Admin edit all, Manager/AssistantManager edit unless admin-created, Member restricted.
+  const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
   const canEditStatus = !isApproved;
 
   function renderCell(col) {

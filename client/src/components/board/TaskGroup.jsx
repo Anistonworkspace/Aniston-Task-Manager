@@ -155,7 +155,7 @@ export default function TaskGroup({
   return (
     <div className="mb-8 group/group">
       {/* Group Header — Monday.com large colored text — sticky so it doesn't scroll */}
-      <div className="flex items-center gap-2 mb-0.5 px-1 sticky left-0 z-[3] w-fit">
+      <div className="flex items-center gap-2 mb-0.5 px-1 sticky left-0 z-[10] w-fit">
         <button onClick={() => setCollapsed(!collapsed)} className="p-0.5 hover:bg-gray-100 rounded transition-colors" style={{ color }}>
           {collapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
         </button>
@@ -167,7 +167,7 @@ export default function TaskGroup({
             <MoreHorizontal size={16} />
           </button>
           {showGroupMenu && (
-            <div ref={groupMenuRef} className="absolute right-0 top-full mt-1 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-30 w-44"
+            <div ref={groupMenuRef} className="absolute right-0 top-full mt-1 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-[100] w-44"
               onMouseLeave={() => setShowGroupMenu(false)}>
               {onRenameGroup && (
                 <button onClick={() => { setShowGroupMenu(false); const name = prompt('Rename group:', group.title || group.name); if (name) onRenameGroup(group.id, name); }}

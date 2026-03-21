@@ -249,6 +249,7 @@ const updateTask = async (req, res) => {
     // Members can only update tasks assigned to them
     const isMember = req.user.role === 'member';
     const isManager = req.user.role === 'manager';
+    const isAssistantManager = req.user.role === 'assistant_manager';
     const isAdmin = req.user.role === 'admin';
     if (isMember && task.assignedTo !== req.user.id) {
       return res.status(403).json({
@@ -269,8 +270,8 @@ const updateTask = async (req, res) => {
     let allowedFields;
     if (isAdmin) {
       allowedFields = allFields;
-    } else if (isManager) {
-      // Manager can only edit status/progress on admin-assigned tasks
+    } else if (isManager || isAssistantManager) {
+      // Manager/Assistant Manager can only edit status/progress on admin-assigned tasks
       let creatorRole = null;
       if (task.createdBy) {
         const creator = await User.findByPk(task.createdBy, { attributes: ['id', 'role'] });
