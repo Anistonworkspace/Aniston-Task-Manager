@@ -39,7 +39,13 @@ export default function DirectorDashboardPage() {
   const canAccess = isDirector || isAssistantManager || isSuperAdmin;
 
   // Real-time sync: reload plan when PA updates it
-  useSocket('director-plan:updated', () => { loadPlan(); });
+  useSocket('director-plan:updated', (data) => {
+    if (data?.plan) {
+      setPlan(prev => ({ ...prev, ...data.plan, directorName: prev?.directorName || data.plan.directorName }));
+    } else {
+      loadPlan();
+    }
+  });
   // Real-time sync: reload org data when tasks change
   useSocket('task:updated', () => { loadOrgData(); });
   useSocket('task:created', () => { loadOrgData(); });

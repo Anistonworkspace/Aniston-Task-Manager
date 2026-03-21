@@ -42,6 +42,9 @@ async function broadcastPlanUpdate(director, date, plan) {
   // Notify all assistant managers
   const ams = await findAssistantManagers();
   ams.forEach(am => emitToUser(am.id, 'director-plan:updated', payload));
+  // Notify all admins (they can view Director Dashboard too)
+  const admins = await User.findAll({ where: { isActive: true, role: 'admin' }, attributes: ['id'] });
+  admins.forEach(a => emitToUser(a.id, 'director-plan:updated', payload));
 }
 
 /**
