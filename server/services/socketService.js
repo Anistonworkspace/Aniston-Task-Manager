@@ -144,7 +144,7 @@ const emitToUser = (userId, event, data) => {
     try {
       const { sendPushToUser } = require('./pushService');
       sendPushToUser(userId, {
-        title: 'Aniston Hub',
+        title: 'Monday Aniston',
         body: data.notification.message,
         tag: `notif-${data.notification.id || Date.now()}`,
         url: data.notification.entityType === 'task' ? '/my-work' : '/',

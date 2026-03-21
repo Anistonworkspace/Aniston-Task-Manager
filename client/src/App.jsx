@@ -8,6 +8,7 @@ import Login from './components/auth/Login';
 import Register from './components/auth/Register';
 import ForgotPassword from './components/auth/ForgotPassword';
 import ResetPassword from './components/auth/ResetPassword';
+import UpdatePrompt from './components/common/UpdatePrompt';
 
 // Lazy-loaded pages — code-split for smaller initial bundle
 const HomePage = lazy(() => import('./pages/HomePage'));
@@ -98,6 +99,8 @@ function AdminRoute({ children }) {
 
 export default function App() {
   return (
+    <>
+    <UpdatePrompt />
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
@@ -133,5 +136,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>
+    </>
   );
 }

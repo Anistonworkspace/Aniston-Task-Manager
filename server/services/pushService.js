@@ -46,7 +46,7 @@ async function sendPushToUser(userId, payload) {
   if (!subs || subs.length === 0) return;
 
   const data = JSON.stringify({
-    title: payload.title || 'Aniston Hub',
+    title: payload.title || 'Monday Aniston',
     body: payload.body || payload.message || 'New notification',
     tag: payload.tag || `notif-${Date.now()}`,
     url: payload.url || '/',

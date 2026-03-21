@@ -1,6 +1,6 @@
 {
-  "name": "Aniston Project Hub",
-  "short_name": "Aniston Hub",
+  "name": "Monday Aniston",
+  "short_name": "Monday Aniston",
   "description": "Professional Project & Task Management Platform",
   "start_url": "/",
   "display": "standalone",
@@ -10,9 +10,9 @@
   "scope": "/",
   "icons": [
     {
-      "src": "/favicon.svg",
+      "src": "/icons/anistonlogo.png",
       "sizes": "any",
-      "type": "image/svg+xml"
+      "type": "image/png"
     },
     {
       "src": "/icons/icon-192.png",

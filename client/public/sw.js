@@ -1,10 +1,10 @@
-const CACHE_NAME = 'aniston-hub-v1';
+const CACHE_NAME = 'monday-aniston-v1';
 const OFFLINE_URL = '/offline.html';
 
 const STATIC_ASSETS = [
   '/',
   '/offline.html',
-  '/favicon.svg',
+  '/icons/anistonlogo.png',
 ];
 
 // Install — cache static assets + offline page
@@ -14,7 +14,14 @@ self.addEventListener('install', (event) => {
       return cache.addAll(STATIC_ASSETS);
     })
   );
-  self.skipWaiting();
+  // Do NOT auto-skipWaiting — wait for user to click "Update" in the UI
+});
+
+// Listen for SKIP_WAITING message from client to activate new SW
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 // Activate — clean old caches
@@ -95,7 +102,7 @@ self.addEventListener('fetch', (event) => {
 
 // Push notification handler
 self.addEventListener('push', (event) => {
-  let data = { title: 'Aniston Hub', body: 'You have a new notification' };
+  let data = { title: 'Monday Aniston', body: 'You have a new notification' };
   try {
     data = event.data.json();
   } catch (e) {
@@ -103,10 +110,10 @@ self.addEventListener('push', (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Aniston Hub', {
+    self.registration.showNotification(data.title || 'Monday Aniston', {
       body: data.body || data.message || 'New notification',
-      icon: '/favicon.svg',
-      badge: '/favicon.svg',
+      icon: '/icons/anistonlogo.png',
+      badge: '/icons/anistonlogo.png',
       tag: data.tag || 'default',
       data: { url: data.url || '/' },
       actions: data.actions || [],

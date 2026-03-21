@@ -186,7 +186,7 @@ const downloadPDF = async (req, res) => {
 
     // Footer
     doc.moveDown(1);
-    doc.fontSize(8).font('Helvetica').fillColor('#aaaaaa').text(`Generated on ${new Date().toLocaleString()} — Aniston Project Hub`, { align: 'center' });
+    doc.fontSize(8).font('Helvetica').fillColor('#aaaaaa').text(`Generated on ${new Date().toLocaleString()} — Monday Aniston`, { align: 'center' });
 
     doc.end();
   } catch (error) {

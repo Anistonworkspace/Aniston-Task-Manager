@@ -33,7 +33,7 @@ export default function Header({ onToggleSidebar }) {
     loadUnreadCount();
     // Send browser push notification when tab is not focused
     if (msg) {
-      showLocalNotification('Aniston Hub', {
+      showLocalNotification('Monday Aniston', {
         body: msg,
         tag: `notif-${data?.notification?.id || Date.now()}`,
         url: data?.notification?.entityType === 'task' ? '/my-work' : '/',
@@ -107,7 +107,7 @@ export default function Header({ onToggleSidebar }) {
           )}
           {/* Page context */}
           <div className="hidden md:flex items-center gap-1.5 text-sm">
-            <span className="text-text-tertiary">Aniston Hub</span>
+            <span className="text-text-tertiary">Monday Aniston</span>
             <span className="text-text-muted">/</span>
             <span className="text-text-primary font-medium">{getPageTitle()}</span>
           </div>

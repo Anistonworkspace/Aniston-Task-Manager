@@ -33,11 +33,9 @@ export default function Login() {
       <div className="flex-1 flex items-center justify-center p-8 bg-white">
         <div className="w-full max-w-[380px]">
           <div className="flex items-center gap-2.5 mb-8">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-blue-400 flex items-center justify-center shadow-md">
-              <FolderKanban size={22} className="text-white" />
-            </div>
+            <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-10 h-10 rounded-xl object-contain" />
             <div>
-              <h1 className="text-xl font-bold text-text-primary leading-tight">Aniston Hub</h1>
+              <h1 className="text-xl font-bold text-text-primary leading-tight">Monday Aniston</h1>
               <p className="text-[11px] text-text-secondary">Work Management</p>
             </div>
           </div>
@@ -90,10 +88,10 @@ export default function Login() {
       <div className="hidden lg:flex flex-1 bg-gradient-to-br from-primary via-blue-500 to-purple-600 items-center justify-center p-12">
         <div className="text-center text-white max-w-md">
           <div className="w-20 h-20 rounded-2xl bg-white/20 flex items-center justify-center mx-auto mb-6 backdrop-blur-sm">
-            <FolderKanban size={40} className="text-white" />
+            <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-14 h-14 object-contain" />
           </div>
           <h2 className="text-3xl font-bold mb-3">Manage your team's work</h2>
-          <p className="text-white/80 text-base leading-relaxed">Track tasks, collaborate with your team, and deliver projects on time with Aniston Project Hub.</p>
+          <p className="text-white/80 text-base leading-relaxed">Track tasks, collaborate with your team, and deliver projects on time with Monday Aniston.</p>
         </div>
       </div>
     </div>

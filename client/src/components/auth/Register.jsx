@@ -42,11 +42,9 @@ export default function Register() {
       <div className="flex-1 flex items-center justify-center p-8 bg-white">
         <div className="w-full max-w-[380px]">
           <div className="flex items-center gap-2.5 mb-8">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-blue-400 flex items-center justify-center shadow-md">
-              <FolderKanban size={22} className="text-white" />
-            </div>
+            <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-10 h-10 rounded-xl object-contain" />
             <div>
-              <h1 className="text-xl font-bold text-text-primary leading-tight">Aniston Hub</h1>
+              <h1 className="text-xl font-bold text-text-primary leading-tight">Monday Aniston</h1>
               <p className="text-[11px] text-text-secondary">Work Management</p>
             </div>
           </div>

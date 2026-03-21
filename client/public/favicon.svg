@@ -1,10 +1,3 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <defs>
-    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#10b981"/>
-      <stop offset="100%" style="stop-color:#059669"/>
-    </linearGradient>
-  </defs>
-  <rect width="32" height="32" rx="7" fill="url(#g)"/>
-  <text x="16" y="23" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="20" fill="white">A</text>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 32 32" width="32" height="32">
+  <image width="32" height="32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAC8klEQVR42u1WzUsbQRR/MzGuogl6MDSkmCDYUxNoaKgHMZ7qxbZnsbSXtlfBWyn9Byy9FFrIwX5gxR5Sg2gTSdkUPUSNNwtu6mH1EDN+JFmJitlxd6aHhSVYzEdbSw++0/D2vffb937zewzinMNFGoYLtkuAvw9Q76XA9ZZGCNUFUweAUXp/f1/TNONcizXU/u+FQmFhYcFmsxFC+vr63G63iVoluarpus45D4fDmUyGc354eBiPxznnjLGquTWNCGN8cHAAAC6XS1XV1tbW9fV1WZYRQlXJqA5wenoKAOl02ul0cs4FQcjn84SQzc1NAGCM/SmA1WpljCUSCb/fjxAqlUpTU1Ojo6O7u7vFYtFisVRuAlemR9M0URRHRkY0TRsbGzOq9/f3OxyOYDA4OzuradpvAhgcUkpDodDOzo4kSZ2dnaFQSBRFY/Qul8vn80WjUYxxhUHhCrceYywIwvDw8NDQEOecENLc3NzR0UEIQQhRSr1er6ZpuVwOY3xeH7iysowment7W1paFhcXI5GIqqrpdJpS2tjYaMRUHlGlz4wxjHEymSwUCm1tbTMzM3a7XZKkYDDY3t7u8/kymczJycng4CDnHGNcE4BR1ODAVKksy4SQrq4up9NpeBRFkSQJYxwIBCwWy6/ptSq5VCqVyzWfzx8dHem6ns/lFEUxnEYfZgyl9FwlM8bejo8bPcW+ROdjsdWVFELo48SEoijZ7ezzp8++r61hjCPT0y9fvFBV9VsiEZ2b+/Du/fHxsSzL89FYQhQppWdJ1nUdAJaSS58mJ1eWlwGAkOx8NJbL5wDgsFjknCOMHFccGz82AOBmIHCrp0cQhNTyyp279xBCe3t7nLGv8fhqKlWuvgZz2wCAqqqvXr/JZrcB4Ibff3tgQKUUAK57vU1Ck9Vqdbmudl/rBgCb3W7wcf/hg+nPYbfH4/F4tra2Hj15bIzU5A/902eLuYHLyTc3mrG3zbMZxhgrd55RNbp8eF0C/P8APwFKMWFOAGk4hwAAAABJRU5ErkJggg==" />
 </svg>

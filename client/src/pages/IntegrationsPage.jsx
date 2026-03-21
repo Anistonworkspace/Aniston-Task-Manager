@@ -200,7 +200,7 @@ export default function IntegrationsPage() {
                 <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
                   <Users size={15} /> User Sync from Microsoft 365
                 </h3>
-                <p className="text-xs text-text-tertiary mt-0.5">Import employees from your M365 tenant into Aniston Hub</p>
+                <p className="text-xs text-text-tertiary mt-0.5">Import employees from your M365 tenant into Monday Aniston</p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={handlePreviewUsers} disabled={previewing}

@@ -29,10 +29,8 @@ export default function ForgotPassword() {
     <div className="min-h-screen bg-surface flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-400 flex items-center justify-center mx-auto mb-3 shadow-lg">
-            <FolderKanban size={24} className="text-white" />
-          </div>
-          <h1 className="text-lg font-bold text-text-primary">Aniston Hub</h1>
+          <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-12 h-12 rounded-xl object-contain mx-auto mb-3" />
+          <h1 className="text-lg font-bold text-text-primary">Monday Aniston</h1>
         </div>
 
         <div className="bg-white rounded-xl border border-border shadow-sm p-6">

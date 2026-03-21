@@ -260,10 +260,8 @@ export default function Sidebar({ collapsed, onToggle }) {
         {/* === FIXED TOP: Logo only === */}
         <div className="flex-shrink-0">
           <div className="flex items-center gap-2.5 px-4 py-3 border-b border-sidebar-border">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center shadow-sm flex-shrink-0">
-              <FolderKanban size={14} className="text-white" />
-            </div>
-            <h1 className="text-sidebar-text-active text-[13px] font-bold truncate leading-tight flex-1">Aniston Hub</h1>
+            <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-7 h-7 rounded-lg object-contain flex-shrink-0" />
+            <h1 className="text-sidebar-text-active text-[13px] font-bold truncate leading-tight flex-1">Monday Aniston</h1>
             <button onClick={onToggle} className="text-sidebar-text/50 hover:text-sidebar-text-active p-1 rounded-md hover:bg-sidebar-hover transition-all duration-150">
               <PanelLeftClose size={15} />
             </button>

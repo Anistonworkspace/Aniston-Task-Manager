@@ -97,7 +97,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.get('/api/health', (_req, res) => {
   res.json({
     success: true,
-    message: 'Aniston Project Hub API is running.',
+    message: 'Monday Aniston API is running.',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
   });
@@ -223,8 +223,8 @@ const start = async () => {
 
     server.listen(PORT, () => {
       const logger = require('./utils/logger');
-      logger.info(`Aniston Project Hub API running on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });
-      console.log(`[Server] Aniston Project Hub API running on port ${PORT}`);
+      logger.info(`Monday Aniston API running on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });
+      console.log(`[Server] Monday Aniston API running on port ${PORT}`);
       console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`[Server] Health check: http://localhost:${PORT}/api/health`);
 
