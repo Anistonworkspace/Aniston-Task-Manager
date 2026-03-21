@@ -50,17 +50,31 @@ export default function AssistantManagerPlanPage() {
   const [expandedTasks, setExpandedTasks] = useState({});
   const [newSubtaskInputs, setNewSubtaskInputs] = useState({});
   const [copiedLink, setCopiedLink] = useState(null);
+  const [directors, setDirectors] = useState([]);
+  const [selectedDirectorId, setSelectedDirectorId] = useState(null);
 
   const autoSaveTimer = useRef(null);
 
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
   const displayDate = format(selectedDate, 'EEEE, MMMM d, yyyy');
 
-  // Load plan for selected date
+  // Load available directors on mount
+  useEffect(() => {
+    api.get('/director-plan/directors').then(res => {
+      const dirs = res.data?.data || [];
+      setDirectors(dirs);
+      if (dirs.length > 0 && !selectedDirectorId) {
+        setSelectedDirectorId(dirs[0].id);
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Load plan for selected date + director
   const loadPlan = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await api.get(`/director-plan/${dateStr}`);
+      const dirParam = selectedDirectorId ? `?directorId=${selectedDirectorId}` : '';
+      const res = await api.get(`/director-plan/${dateStr}${dirParam}`);
       const plan = res.data?.data || res.data;
       setCategories(plan.categories || []);
       setNotes(plan.notes || '');
@@ -72,10 +86,10 @@ export default function AssistantManagerPlanPage() {
     } finally {
       setLoading(false);
     }
-  }, [dateStr]);
+  }, [dateStr, selectedDirectorId]);
 
   useEffect(() => {
-    loadPlan();
+    if (selectedDirectorId) loadPlan();
   }, [loadPlan]);
 
   // Auto-save after 30 seconds of inactivity
@@ -115,7 +129,7 @@ export default function AssistantManagerPlanPage() {
   async function handleSave(isAutoSave = false) {
     try {
       setSaving(true);
-      await api.put(`/director-plan/${dateStr}`, { categories, notes });
+      await api.put(`/director-plan/${dateStr}`, { categories, notes, directorId: selectedDirectorId });
       setDirty(false);
       if (!isAutoSave) {
         toast?.success?.('Plan saved successfully');
@@ -391,9 +405,24 @@ export default function AssistantManagerPlanPage() {
             </div>
             Director's Daily Plan
           </h1>
-          <p className="text-sm text-gray-500 mt-1 ml-[52px]">
-            Managing schedule for <span className="font-semibold text-gray-700">{directorName}</span>
-          </p>
+          <div className="flex items-center gap-2 mt-1 ml-[52px]">
+            <span className="text-sm text-gray-500">Managing schedule for</span>
+            {directors.length > 1 ? (
+              <select
+                value={selectedDirectorId || ''}
+                onChange={e => { setSelectedDirectorId(e.target.value); setDirty(false); }}
+                className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+              >
+                {directors.map(d => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm font-semibold text-gray-700">{directorName}</span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3 mt-4 sm:mt-0">

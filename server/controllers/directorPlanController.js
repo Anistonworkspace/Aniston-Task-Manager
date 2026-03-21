@@ -4,20 +4,25 @@ const DirectorPlanModel = require('../models/DirectorPlan');
 const { emitToUser } = require('../services/socketService');
 
 /**
- * Find the director user. Prefers hierarchyLevel='director' first,
- * excludes isSuperAdmin test accounts, falls back to vp/ceo.
+ * Find a specific director by ID, or fallback to first available.
  */
-async function findDirector() {
-  // First try to find a real director (not super admin)
+async function findDirector(directorId) {
+  if (directorId) {
+    const director = await User.findOne({
+      where: { id: directorId, isActive: true },
+      attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
+    });
+    if (director) return director;
+  }
+  // Fallback: first director/vp/ceo (non-superadmin preferred)
   let director = await User.findOne({
     where: { isActive: true, hierarchyLevel: 'director', isSuperAdmin: false },
-    attributes: ['id', 'name', 'hierarchyLevel'],
+    attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
   });
   if (director) return director;
-  // Fallback: any director/vp/ceo
   return User.findOne({
-    where: { isActive: true, hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } },
-    attributes: ['id', 'name', 'hierarchyLevel'],
+    where: { isActive: true, [Op.or]: [{ hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } }, { isSuperAdmin: true }] },
+    attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
     order: [['createdAt', 'ASC']],
   });
 }
@@ -33,19 +38,43 @@ async function findAssistantManagers() {
 }
 
 /**
- * Broadcast plan update to director + all assistant managers
+ * Broadcast plan update to director + all assistant managers + superadmins
  */
 async function broadcastPlanUpdate(director, date, plan) {
-  const payload = { date, plan: plan ? plan.toJSON() : null };
-  // Notify director
+  const payload = { date, directorId: director.id, plan: plan ? plan.toJSON() : null };
   emitToUser(director.id, 'director-plan:updated', payload);
-  // Notify all assistant managers
   const ams = await findAssistantManagers();
   ams.forEach(am => emitToUser(am.id, 'director-plan:updated', payload));
-  // Notify all admins (they can view Director Dashboard too)
-  const admins = await User.findAll({ where: { isActive: true, role: 'admin' }, attributes: ['id'] });
-  admins.forEach(a => emitToUser(a.id, 'director-plan:updated', payload));
+  // Notify all superadmins
+  const superadmins = await User.findAll({ where: { isActive: true, isSuperAdmin: true }, attributes: ['id'] });
+  superadmins.forEach(sa => {
+    if (sa.id !== director.id) emitToUser(sa.id, 'director-plan:updated', payload);
+  });
 }
+
+/**
+ * GET /api/director-plan/directors
+ * Returns list of selectable directors (superadmins + director/vp/ceo hierarchy users)
+ */
+const getDirectors = async (req, res) => {
+  try {
+    const directors = await User.findAll({
+      where: {
+        isActive: true,
+        [Op.or]: [
+          { isSuperAdmin: true },
+          { hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } },
+        ],
+      },
+      attributes: ['id', 'name', 'email', 'hierarchyLevel', 'designation', 'avatar', 'isSuperAdmin'],
+      order: [['isSuperAdmin', 'DESC'], ['name', 'ASC']],
+    });
+    res.json({ success: true, data: directors });
+  } catch (error) {
+    console.error('[DirectorPlan] getDirectors error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
 
 /**
  * GET /api/director-plan/:date
@@ -53,17 +82,18 @@ async function broadcastPlanUpdate(director, date, plan) {
 const getDailyPlan = async (req, res) => {
   try {
     const { date } = req.params;
+    const { directorId: queryDirectorId } = req.query;
     const user = req.user;
 
-    const director = await findDirector();
+    const director = await findDirector(queryDirectorId);
     if (!director) {
       return res.status(404).json({ success: false, message: 'No director found in the system.' });
     }
 
-    const isDirectorUser = user.id === director.id;
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isDirectorUser && !isAssistantMgr && !isSuperAdmin) {
+    const isTargetDirector = user.id === director.id;
+    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -106,19 +136,18 @@ const getDailyPlan = async (req, res) => {
 
 /**
  * PUT /api/director-plan/:date
- * Create or update the director's daily plan.
  */
 const saveDailyPlan = async (req, res) => {
   try {
     const { date } = req.params;
-    const { categories, notes } = req.body;
+    const { categories, notes, directorId: bodyDirectorId } = req.body;
     const user = req.user;
 
     if (user.role !== 'assistant_manager' && !user.isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Only assistant managers can edit the director plan.' });
     }
 
-    const director = await findDirector();
+    const director = await findDirector(bodyDirectorId);
     if (!director) {
       return res.status(404).json({ success: false, message: 'No director found in the system.' });
     }
@@ -139,9 +168,7 @@ const saveDailyPlan = async (req, res) => {
       });
     }
 
-    // Broadcast to director + assistant managers
     await broadcastPlanUpdate(director, date, plan);
-
     res.json({ success: true, data: plan });
   } catch (error) {
     console.error('[DirectorPlan] saveDailyPlan error:', error);
@@ -151,23 +178,22 @@ const saveDailyPlan = async (req, res) => {
 
 /**
  * PUT /api/director-plan/:date/task
- * Toggle a task done/undone or edit task text.
  */
 const updateTask = async (req, res) => {
   try {
     const { date } = req.params;
-    const { categoryId, taskIndex, done, text } = req.body;
+    const { categoryId, taskIndex, done, text, directorId: bodyDirectorId } = req.body;
     const user = req.user;
 
-    const director = await findDirector();
+    const director = await findDirector(bodyDirectorId);
     if (!director) {
       return res.status(404).json({ success: false, message: 'No director found.' });
     }
 
-    const isDirectorUser = user.id === director.id;
+    const isTargetDirector = user.id === director.id;
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isDirectorUser && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -178,7 +204,7 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No plan found for this date.' });
     }
 
-    const categories = JSON.parse(JSON.stringify(plan.categories)); // deep clone
+    const categories = JSON.parse(JSON.stringify(plan.categories));
     const cat = categories.find(c => c.id === categoryId);
     if (!cat || !cat.tasks || taskIndex < 0 || taskIndex >= cat.tasks.length) {
       return res.status(400).json({ success: false, message: 'Invalid category or task index.' });
@@ -188,10 +214,7 @@ const updateTask = async (req, res) => {
     if (text !== undefined) cat.tasks[taskIndex].text = text;
 
     await plan.update({ categories });
-
-    // Broadcast update
     await broadcastPlanUpdate(director, date, plan);
-
     res.json({ success: true, data: plan });
   } catch (error) {
     console.error('[DirectorPlan] updateTask error:', error);
@@ -205,16 +228,16 @@ const updateTask = async (req, res) => {
 const updateNotes = async (req, res) => {
   try {
     const { date } = req.params;
-    const { notes } = req.body;
+    const { notes, directorId: bodyDirectorId } = req.body;
     const user = req.user;
 
-    const director = await findDirector();
+    const director = await findDirector(bodyDirectorId);
     if (!director) return res.status(404).json({ success: false, message: 'No director found.' });
 
-    const isDirectorUser = user.id === director.id;
+    const isTargetDirector = user.id === director.id;
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isDirectorUser && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -222,10 +245,7 @@ const updateNotes = async (req, res) => {
     if (!plan) return res.status(404).json({ success: false, message: 'No plan found for this date.' });
 
     await plan.update({ notes: notes || '' });
-
-    // Broadcast update
     await broadcastPlanUpdate(director, date, plan);
-
     res.json({ success: true, data: plan });
   } catch (error) {
     console.error('[DirectorPlan] updateNotes error:', error);
@@ -233,4 +253,4 @@ const updateNotes = async (req, res) => {
   }
 };
 
-module.exports = { getDailyPlan, saveDailyPlan, updateTask, updateNotes };
+module.exports = { getDirectors, getDailyPlan, saveDailyPlan, updateTask, updateNotes };

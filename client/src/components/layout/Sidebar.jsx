@@ -276,7 +276,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Home} label="Home" path="/" />
             <NavItem icon={User} label="My Work" path="/my-work" />
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} />
-            {(isDirector || isAssistantManager) && <NavItem icon={Crown} label="Director Dashboard" path="/director-dashboard" />}
+            {(isSuperAdmin || isAssistantManager) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" />}
             {isAssistantManager && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" />

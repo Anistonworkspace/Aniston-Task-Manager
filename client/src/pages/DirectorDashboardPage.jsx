@@ -36,7 +36,9 @@ export default function DirectorDashboardPage() {
   const lastBlockIdRef = useRef(null);
 
   const today = format(new Date(), 'yyyy-MM-dd');
-  const canAccess = isDirector || isAssistantManager || isSuperAdmin;
+  const canAccess = isSuperAdmin || isAssistantManager;
+  const [directors, setDirectors] = useState([]);
+  const [selectedDirectorId, setSelectedDirectorId] = useState(null);
 
   // Real-time sync: reload plan when PA updates it
   useSocket('director-plan:updated', (data) => {
@@ -50,14 +52,28 @@ export default function DirectorDashboardPage() {
   useSocket('task:updated', () => { loadOrgData(); });
   useSocket('task:created', () => { loadOrgData(); });
 
+  // Load available directors
   useEffect(() => {
     if (canAccess) {
+      api.get('/director-plan/directors').then(res => {
+        const dirs = res.data?.data || [];
+        setDirectors(dirs);
+        if (dirs.length > 0 && !selectedDirectorId) {
+          // Auto-select self if superadmin, otherwise first director
+          const self = dirs.find(d => d.id === user?.id);
+          setSelectedDirectorId(self ? self.id : dirs[0].id);
+        }
+      }).catch(() => {});
+    }
+  }, [canAccess]);
+
+  useEffect(() => {
+    if (canAccess && selectedDirectorId) {
       Promise.all([loadOrgData(), loadPlan()]).finally(() => setLoading(false));
     }
-    // Periodic company data refresh (every 5 min)
     const orgInterval = setInterval(() => { if (canAccess) loadOrgData(); }, 5 * 60 * 1000);
     return () => clearInterval(orgInterval);
-  }, []);
+  }, [selectedDirectorId]);
 
   // Time-block notification: check every 60s if a new block started
   useEffect(() => {
@@ -89,7 +105,8 @@ export default function DirectorDashboardPage() {
 
   async function loadPlan() {
     try {
-      const res = await api.get(`/director-plan/${today}`);
+      const dirParam = selectedDirectorId ? `?directorId=${selectedDirectorId}` : '';
+      const res = await api.get(`/director-plan/${today}${dirParam}`);
       setPlan(res.data?.data || res.data);
     } catch {}
   }
@@ -118,8 +135,8 @@ export default function DirectorDashboardPage() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <Crown size={48} className="text-gray-300 mx-auto mb-4" />
-          <h2 className="text-lg font-bold text-gray-700">Director Access Required</h2>
-          <p className="text-sm text-gray-500 mt-2">This dashboard is for the director, assistant manager, and super admin.</p>
+          <h2 className="text-lg font-bold text-gray-700">Access Required</h2>
+          <p className="text-sm text-gray-500 mt-2">This dashboard is only available for Super Admin and Assistant Manager.</p>
         </div>
       </div>
     );
@@ -189,6 +206,24 @@ export default function DirectorDashboardPage() {
           ))}
         </div>
       </div>
+
+      {/* Director selector (when multiple directors/superadmins exist) */}
+      {directors.length > 1 && (
+        <div className="mb-6 bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3 shadow-sm">
+          <span className="text-xs font-semibold text-gray-500">Viewing plan for:</span>
+          <select
+            value={selectedDirectorId || ''}
+            onChange={e => { setSelectedDirectorId(e.target.value); setLoading(true); }}
+            className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+          >
+            {directors.map(d => (
+              <option key={d.id} value={d.id}>
+                {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Time-block notification banner */}
       {timeBlockAlert && (
