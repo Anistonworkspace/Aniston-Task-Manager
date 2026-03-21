@@ -23,7 +23,7 @@ const Task = sequelize.define(
       defaultValue: '',
     },
     status: {
-      type: DataTypes.ENUM('not_started', 'working_on_it', 'stuck', 'done'),
+      type: DataTypes.ENUM('not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review'),
       defaultValue: 'not_started',
       allowNull: false,
     },

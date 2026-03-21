@@ -212,6 +212,17 @@ const start = async () => {
     // Test DB connection
     await testConnection();
 
+    // Extend task status ENUM with new values (safe to re-run — IF NOT EXISTS)
+    const newStatuses = ['ready_to_start', 'in_progress', 'waiting_for_review', 'pending_deploy', 'review'];
+    for (const val of newStatuses) {
+      try {
+        await sequelize.query(`ALTER TYPE "enum_tasks_status" ADD VALUE IF NOT EXISTS '${val}';`);
+      } catch (e) {
+        // Ignore — type may not exist yet or value already exists
+      }
+    }
+    console.log('[Server] Status ENUM migration complete.');
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
