@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush } from 'lucide-react';
+import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { useToast } from '../components/common/Toast';
@@ -47,6 +47,9 @@ export default function AssistantManagerPlanPage() {
   const [newTaskInputs, setNewTaskInputs] = useState({});
   const [openIconSelector, setOpenIconSelector] = useState(null);
   const [openColorSelector, setOpenColorSelector] = useState(null);
+  const [expandedTasks, setExpandedTasks] = useState({});
+  const [newSubtaskInputs, setNewSubtaskInputs] = useState({});
+  const [copiedLink, setCopiedLink] = useState(null);
 
   const autoSaveTimer = useRef(null);
 
@@ -202,12 +205,132 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: [...cat.tasks, { text, done: false, time: now }],
+          tasks: [...cat.tasks, {
+            id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+            text, done: false, time: now,
+            description: '', link: '',
+            startTime: '', endTime: '',
+            subtasks: [],
+          }],
         };
       })
     );
     setNewTaskInputs(prev => ({ ...prev, [catIndex]: '' }));
     markDirty();
+  }
+
+  // Update any task field
+  function updateTaskField(catIndex, taskIndex, field, value) {
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return { ...cat, tasks: cat.tasks.map((t, ti) => ti === taskIndex ? { ...t, [field]: value } : t) };
+      })
+    );
+    markDirty();
+  }
+
+  // Toggle task expand
+  function toggleExpand(catIndex, taskIndex) {
+    const key = `${catIndex}-${taskIndex}`;
+    setExpandedTasks(prev => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  // Add subtask
+  function addSubtask(catIndex, taskIndex) {
+    const key = `${catIndex}-${taskIndex}`;
+    const title = (newSubtaskInputs[key] || '').trim();
+    if (!title) return;
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return {
+          ...cat,
+          tasks: cat.tasks.map((t, ti) => {
+            if (ti !== taskIndex) return t;
+            return {
+              ...t,
+              subtasks: [...(t.subtasks || []), {
+                id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                title, description: '', link: '',
+                done: false, startTime: '', endTime: '',
+              }],
+            };
+          }),
+        };
+      })
+    );
+    setNewSubtaskInputs(prev => ({ ...prev, [key]: '' }));
+    markDirty();
+  }
+
+  // Toggle subtask done
+  function toggleSubtask(catIndex, taskIndex, subIndex) {
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return {
+          ...cat,
+          tasks: cat.tasks.map((t, ti) => {
+            if (ti !== taskIndex) return t;
+            return {
+              ...t,
+              subtasks: (t.subtasks || []).map((s, si) =>
+                si === subIndex ? { ...s, done: !s.done } : s
+              ),
+            };
+          }),
+        };
+      })
+    );
+    markDirty();
+  }
+
+  // Update subtask field
+  function updateSubtaskField(catIndex, taskIndex, subIndex, field, value) {
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return {
+          ...cat,
+          tasks: cat.tasks.map((t, ti) => {
+            if (ti !== taskIndex) return t;
+            return {
+              ...t,
+              subtasks: (t.subtasks || []).map((s, si) =>
+                si === subIndex ? { ...s, [field]: value } : s
+              ),
+            };
+          }),
+        };
+      })
+    );
+    markDirty();
+  }
+
+  // Delete subtask
+  function deleteSubtask(catIndex, taskIndex, subIndex) {
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return {
+          ...cat,
+          tasks: cat.tasks.map((t, ti) => {
+            if (ti !== taskIndex) return t;
+            return { ...t, subtasks: (t.subtasks || []).filter((_, si) => si !== subIndex) };
+          }),
+        };
+      })
+    );
+    markDirty();
+  }
+
+  // Copy link to clipboard
+  function copyLink(link, id) {
+    navigator.clipboard.writeText(link).then(() => {
+      setCopiedLink(id);
+      setTimeout(() => setCopiedLink(null), 2000);
+    });
   }
 
   // Update category label
@@ -517,71 +640,146 @@ export default function AssistantManagerPlanPage() {
 
                 {/* Task list */}
                 <div className="space-y-2 mb-3">
-                  {(cat.tasks || []).map((task, taskIndex) => (
-                    <div
-                      key={taskIndex}
-                      className={`flex items-center gap-3 group rounded-xl px-3 py-2.5 transition-all ${
-                        task.done ? 'bg-gray-50' : 'bg-white hover:bg-gray-50'
-                      }`}
-                    >
-                      {/* Checkbox */}
-                      <button
-                        onClick={() => toggleTask(catIndex, taskIndex)}
-                        className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${
-                          task.done
-                            ? 'border-emerald-500 bg-emerald-500'
-                            : 'border-gray-300 hover:border-indigo-400'
-                        }`}
-                      >
-                        {task.done && (
-                          <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 12 12"
-                            fill="none"
-                          >
-                            <path
-                              d="M2.5 6L5 8.5L9.5 3.5"
-                              stroke="white"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
+                  {(cat.tasks || []).map((task, taskIndex) => {
+                    const expandKey = `${catIndex}-${taskIndex}`;
+                    const isExpanded = expandedTasks[expandKey];
+                    const subDone = (task.subtasks || []).filter(s => s.done).length;
+                    const subTotal = (task.subtasks || []).length;
+
+                    return (
+                      <div key={task.id || taskIndex} className={`rounded-xl border transition-all ${isExpanded ? 'border-indigo-200 shadow-sm' : 'border-transparent'} ${task.done ? 'bg-gray-50' : 'bg-white'}`}>
+                        {/* Task header row */}
+                        <div className="flex items-center gap-2 px-3 py-2.5 group">
+                          {/* Expand toggle */}
+                          <button onClick={() => toggleExpand(catIndex, taskIndex)} className="p-0.5 rounded text-gray-400 hover:text-indigo-500 flex-shrink-0">
+                            <ChevronDownIcon size={14} className={`transition-transform duration-200 ${isExpanded ? '' : '-rotate-90'}`} />
+                          </button>
+
+                          {/* Checkbox */}
+                          <button onClick={() => toggleTask(catIndex, taskIndex)}
+                            className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${task.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300 hover:border-indigo-400'}`}>
+                            {task.done && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                          </button>
+
+                          {/* Task text */}
+                          <input type="text" value={task.text} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
+                            className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-0 ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+
+                          {/* Task timing */}
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <input type="time" value={task.startTime || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'startTime', e.target.value)}
+                              className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded px-1 py-0.5 w-[72px] focus:outline-none focus:ring-1 focus:ring-indigo-300" title="Task start time" />
+                            <span className="text-gray-300 text-[10px]">-</span>
+                            <input type="time" value={task.endTime || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'endTime', e.target.value)}
+                              className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded px-1 py-0.5 w-[72px] focus:outline-none focus:ring-1 focus:ring-indigo-300" title="Task end time" />
+                          </div>
+
+                          {/* Subtask count badge */}
+                          {subTotal > 0 && (
+                            <span className="text-[10px] font-medium text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">{subDone}/{subTotal}</span>
+                          )}
+
+                          {/* Delete */}
+                          <button onClick={() => deleteTask(catIndex, taskIndex)}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0" title="Remove task">
+                            <X size={14} />
+                          </button>
+                        </div>
+
+                        {/* Expanded detail panel */}
+                        {isExpanded && (
+                          <div className="px-4 pb-4 pt-1 space-y-3 border-t border-gray-100 ml-6 mr-3">
+                            {/* Description */}
+                            <div>
+                              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-1">
+                                <FileText size={10} /> Description
+                              </label>
+                              <textarea value={task.description || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'description', e.target.value)}
+                                placeholder="Add task description..." rows={2}
+                                className="w-full text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-300 resize-y placeholder-gray-400" />
+                            </div>
+
+                            {/* Link */}
+                            <div>
+                              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-1">
+                                <Link2 size={10} /> Important Link
+                              </label>
+                              <div className="flex items-center gap-1.5">
+                                <input type="url" value={task.link || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'link', e.target.value)}
+                                  placeholder="https://..." className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 placeholder-gray-400" />
+                                {task.link && (
+                                  <button onClick={() => copyLink(task.link, `task-${catIndex}-${taskIndex}`)}
+                                    className="p-1.5 rounded-lg bg-gray-100 hover:bg-indigo-100 text-gray-500 hover:text-indigo-600 transition-colors" title="Copy link">
+                                    {copiedLink === `task-${catIndex}-${taskIndex}` ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Subtasks */}
+                            <div>
+                              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-2">
+                                <ListChecks size={10} /> Subtasks {subTotal > 0 && `(${subDone}/${subTotal})`}
+                              </label>
+                              <div className="space-y-1.5">
+                                {(task.subtasks || []).map((sub, subIdx) => (
+                                  <div key={sub.id || subIdx} className="bg-gray-50 rounded-lg p-2.5 group/sub">
+                                    <div className="flex items-center gap-2">
+                                      {/* Subtask checkbox */}
+                                      <button onClick={() => toggleSubtask(catIndex, taskIndex, subIdx)}
+                                        className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${sub.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300 hover:border-indigo-400'}`}>
+                                        {sub.done && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                                      </button>
+                                      {/* Subtask title */}
+                                      <input type="text" value={sub.title} onChange={e => updateSubtaskField(catIndex, taskIndex, subIdx, 'title', e.target.value)}
+                                        className={`flex-1 text-xs bg-transparent border-none outline-none min-w-0 ${sub.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+                                      {/* Subtask timing */}
+                                      <input type="time" value={sub.startTime || ''} onChange={e => updateSubtaskField(catIndex, taskIndex, subIdx, 'startTime', e.target.value)}
+                                        className="text-[10px] text-gray-500 bg-white border border-gray-200 rounded px-1 py-0.5 w-[68px] focus:outline-none focus:ring-1 focus:ring-indigo-300" />
+                                      <span className="text-gray-300 text-[9px]">-</span>
+                                      <input type="time" value={sub.endTime || ''} onChange={e => updateSubtaskField(catIndex, taskIndex, subIdx, 'endTime', e.target.value)}
+                                        className="text-[10px] text-gray-500 bg-white border border-gray-200 rounded px-1 py-0.5 w-[68px] focus:outline-none focus:ring-1 focus:ring-indigo-300" />
+                                      {/* Delete subtask */}
+                                      <button onClick={() => deleteSubtask(catIndex, taskIndex, subIdx)}
+                                        className="opacity-0 group-hover/sub:opacity-100 p-0.5 rounded text-gray-400 hover:text-red-500 transition-all flex-shrink-0">
+                                        <X size={12} />
+                                      </button>
+                                    </div>
+                                    {/* Subtask description */}
+                                    <input type="text" value={sub.description || ''} onChange={e => updateSubtaskField(catIndex, taskIndex, subIdx, 'description', e.target.value)}
+                                      placeholder="Add description..." className="w-full text-[11px] text-gray-500 bg-transparent border-none outline-none mt-1 ml-6 placeholder-gray-300" />
+                                    {/* Subtask link */}
+                                    <div className="flex items-center gap-1 mt-1 ml-6">
+                                      <input type="url" value={sub.link || ''} onChange={e => updateSubtaskField(catIndex, taskIndex, subIdx, 'link', e.target.value)}
+                                        placeholder="Paste link..." className="flex-1 text-[11px] text-indigo-600 bg-transparent border-none outline-none placeholder-gray-300" />
+                                      {sub.link && (
+                                        <button onClick={() => copyLink(sub.link, `sub-${catIndex}-${taskIndex}-${subIdx}`)}
+                                          className="p-0.5 rounded text-gray-400 hover:text-indigo-600 transition-colors" title="Copy link">
+                                          {copiedLink === `sub-${catIndex}-${taskIndex}-${subIdx}` ? <Check size={11} className="text-emerald-500" /> : <Copy size={11} />}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              {/* Add subtask input */}
+                              <div className="flex items-center gap-1.5 mt-2">
+                                <input type="text" placeholder="Add subtask..." value={newSubtaskInputs[expandKey] || ''}
+                                  onChange={e => setNewSubtaskInputs(prev => ({ ...prev, [expandKey]: e.target.value }))}
+                                  onKeyDown={e => { if (e.key === 'Enter') addSubtask(catIndex, taskIndex); }}
+                                  className="flex-1 text-xs bg-white border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 placeholder-gray-400" />
+                                <button onClick={() => addSubtask(catIndex, taskIndex)}
+                                  disabled={!(newSubtaskInputs[expandKey] || '').trim()}
+                                  className={`p-1.5 rounded-lg transition-all ${(newSubtaskInputs[expandKey] || '').trim() ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}>
+                                  <Plus size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         )}
-                      </button>
-
-                      {/* Editable text */}
-                      <input
-                        type="text"
-                        value={task.text}
-                        onChange={e =>
-                          updateTaskText(catIndex, taskIndex, e.target.value)
-                        }
-                        className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 ${
-                          task.done
-                            ? 'line-through text-gray-400'
-                            : 'text-gray-700'
-                        }`}
-                      />
-
-                      {/* Time badge */}
-                      {task.time && (
-                        <span className="text-[10px] text-gray-400 font-mono flex-shrink-0">
-                          {task.time}
-                        </span>
-                      )}
-
-                      {/* Delete button */}
-                      <button
-                        onClick={() => deleteTask(catIndex, taskIndex)}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0"
-                        title="Remove task"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
 
                   {catTotal === 0 && (
                     <div className="text-center py-4 text-xs text-gray-400">
