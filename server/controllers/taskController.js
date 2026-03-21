@@ -8,6 +8,7 @@ const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { processAutomations } = require('../services/automationService');
 const { sanitizeInput } = require('../utils/sanitize');
+const calendarService = require('../services/calendarService');
 
 /**
  * POST /api/tasks
@@ -104,6 +105,13 @@ const createTask = async (req, res) => {
       creatorName: req.user.name,
       assigneeName: fullTask.assignee ? fullTask.assignee.name : null,
     });
+
+    // Sync to Teams calendar (fire-and-forget)
+    if (finalAssignedTo) {
+      calendarService.createTaskEvent(task.id, finalAssignedTo).catch(err =>
+        console.warn('[Teams] Calendar sync failed for new task:', err.message)
+      );
+    }
 
     res.status(201).json({
       success: true,
@@ -385,6 +393,22 @@ const updateTask = async (req, res) => {
       });
     }
 
+    // Sync to Teams calendar (fire-and-forget)
+    if (updates.assignedTo && updates.assignedTo !== previousAssignee) {
+      // Assignee changed — delete old event, create new one
+      if (previousAssignee && task.teamsEventId) {
+        calendarService.deleteTaskEvent(task.id, previousAssignee).catch(() => {});
+      }
+      calendarService.createTaskEvent(task.id, updates.assignedTo).catch(err =>
+        console.warn('[Teams] Calendar sync failed for reassigned task:', err.message)
+      );
+    } else if (task.teamsEventId && task.assignedTo && Object.keys(changes).length > 0) {
+      // Task details changed (title, dates, etc.) — update existing event
+      calendarService.updateTaskEvent(task.id, task.assignedTo).catch(err =>
+        console.warn('[Teams] Calendar event update failed:', err.message)
+      );
+    }
+
     res.json({
       success: true,
       message: 'Task updated successfully.',
@@ -414,6 +438,10 @@ const deleteTask = async (req, res) => {
       if (task.assignedTo !== req.user.id) {
         return res.status(403).json({ success: false, message: 'You can only archive tasks assigned to you.' });
       }
+      // Remove Teams calendar event on archive
+      if (task.teamsEventId && task.assignedTo) {
+        calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(() => {});
+      }
       await task.update({ isArchived: true, archivedAt: new Date(), archivedBy: req.user.id });
       logActivity({
         action: 'task_archived',
@@ -436,6 +464,11 @@ const deleteTask = async (req, res) => {
     const boardId = task.boardId;
     const taskId = task.id;
     const taskTitle = task.title;
+
+    // Remove Teams calendar event before deleting
+    if (task.teamsEventId && task.assignedTo) {
+      calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(() => {});
+    }
 
     await task.destroy();
 
