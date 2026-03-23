@@ -22,6 +22,7 @@ const TABS = [
 ];
 
 const ROLE_BADGE = {
+  superadmin: { bg: 'bg-red-100', text: 'text-red-700', label: 'Super Admin', icon: ShieldCheck },
   admin: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Admin', icon: ShieldCheck },
   manager: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Manager', icon: Shield },
   assistant_manager: { bg: 'bg-cyan-100', text: 'text-cyan-700', label: 'Asst. Manager', icon: Shield },
@@ -91,7 +92,11 @@ function UsersTab() {
   async function handleChangeRole(userId, newRole) {
     setRoleChanging(userId);
     try {
-      await api.put(`/users/${userId}`, { role: newRole });
+      if (newRole === 'superadmin') {
+        await api.put(`/users/${userId}`, { role: 'admin', isSuperAdmin: true });
+      } else {
+        await api.put(`/users/${userId}`, { role: newRole, isSuperAdmin: false });
+      }
       fetchUsers();
     } catch (err) { console.error(err); alert(err.response?.data?.message || 'Failed to change role'); }
     finally { setRoleChanging(null); setActionMenu(null); }
@@ -188,7 +193,7 @@ function UsersTab() {
           </thead>
           <tbody>
             {filtered.map(u => {
-              const badge = ROLE_BADGE[u.role] || ROLE_BADGE.member;
+              const badge = u.isSuperAdmin ? ROLE_BADGE.superadmin : (ROLE_BADGE[u.role] || ROLE_BADGE.member);
               return (
                 <tr key={u.id} className="border-b border-gray-50 dark:border-zinc-700/50 hover:bg-gray-50/50 dark:hover:bg-zinc-700/30 transition-colors">
                   <td className="px-4 py-3">
@@ -205,13 +210,14 @@ function UsersTab() {
                     {u.designation && <p className="text-[10px] text-gray-400">{u.designation}</p>}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <select value={u.role} onChange={e => handleChangeRole(u.id, e.target.value)}
-                      disabled={roleChanging === u.id || u.isSuperAdmin}
-                      className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text} ${u.isSuperAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <select value={u.isSuperAdmin ? 'superadmin' : u.role} onChange={e => handleChangeRole(u.id, e.target.value)}
+                      disabled={roleChanging === u.id}
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text}`}>
                       <option value="member">Member</option>
                       <option value="assistant_manager">Assistant Manager</option>
                       <option value="manager">Manager</option>
                       <option value="admin">Admin</option>
+                      {user?.isSuperAdmin && <option value="superadmin">Super Admin</option>}
                     </select>
                   </td>
                   <td className="px-4 py-3 text-center">

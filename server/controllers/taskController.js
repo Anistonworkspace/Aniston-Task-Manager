@@ -264,7 +264,7 @@ const updateTask = async (req, res) => {
       'assignedTo', 'isArchived', 'progress',
       'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',
     ];
-    const restrictedFields = ['status', 'progress'];
+    const restrictedFields = ['status', 'progress', 'groupId', 'position'];
 
     // Determine allowed fields based on role + task creator
     let allowedFields;

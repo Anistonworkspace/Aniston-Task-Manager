@@ -116,6 +116,10 @@ const updateUser = async (req, res) => {
     }
 
     const allowedFields = ['name', 'email', 'role', 'department', 'designation', 'departmentId', 'isActive', 'hierarchyLevel'];
+    // Only superadmins can toggle isSuperAdmin on other users
+    if (req.user.isSuperAdmin) {
+      allowedFields.push('isSuperAdmin');
+    }
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {

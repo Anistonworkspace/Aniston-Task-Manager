@@ -661,7 +661,7 @@ export default function BoardPage() {
                   onHideColumn={toggleHideColumn}
                   onResizeColumn={handleResizeColumn}
                   onSort={setSortConfig}
-                  isDragEnabled={canManage}
+                  isDragEnabled={true}
                   selectedTaskIds={selectedTaskIds}
                   onSelectTask={handleSelectTask}
                   onArchiveGroup={handleArchiveGroup}

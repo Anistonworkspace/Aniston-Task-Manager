@@ -22,8 +22,8 @@ router.use(authenticate);
 // ─── GET /api/tasks/cross-team-deps (must be before /:id) ────
 router.get('/cross-team-deps', getCrossTeamDependencies);
 
-// ─── PUT /api/tasks/reorder (manager/admin only) ─────────────
-router.put('/reorder', managerOrAdmin, reorderTasks);
+// ─── PUT /api/tasks/reorder (all authenticated users) ────────
+router.put('/reorder', reorderTasks);
 
 // ─── PUT /api/tasks/bulk (manager/admin only) ────────────────
 router.put(
@@ -51,7 +51,7 @@ router.post(
       .isUUID().withMessage('boardId must be a valid UUID'),
     body('status')
       .optional()
-      .isIn(['not_started', 'working_on_it', 'stuck', 'done']).withMessage('Invalid status value'),
+      .isIn(['not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review']).withMessage('Invalid status value'),
     body('priority')
       .optional()
       .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
@@ -84,7 +84,7 @@ router.put(
       .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
     body('status')
       .optional()
-      .isIn(['not_started', 'working_on_it', 'stuck', 'done']).withMessage('Invalid status value'),
+      .isIn(['not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review']).withMessage('Invalid status value'),
     body('priority')
       .optional()
       .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
