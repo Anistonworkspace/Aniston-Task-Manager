@@ -7,6 +7,7 @@ import { ToastProvider } from './components/common/Toast';
 import { ThemeProvider } from './context/ThemeContext';
 import { UndoProvider } from './context/UndoContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
+import UpdatePrompt from './components/common/UpdatePrompt';
 import './index.css';
 
 // Register Service Worker for PWA + detect updates
@@ -70,3 +71,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     </BrowserRouter>
   </React.StrictMode>
 );
+
+// Render UpdatePrompt in a separate root so it shows even if the main app crashes
+const updateRoot = document.createElement('div');
+updateRoot.id = 'update-prompt-root';
+document.body.appendChild(updateRoot);
+ReactDOM.createRoot(updateRoot).render(<UpdatePrompt />);

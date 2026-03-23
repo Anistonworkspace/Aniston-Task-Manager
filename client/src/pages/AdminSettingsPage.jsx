@@ -71,6 +71,7 @@ export default function AdminSettingsPage() {
 }
 
 function UsersTab() {
+  const { user: currentUser, isSuperAdmin } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
