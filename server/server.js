@@ -169,7 +169,6 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/search', searchLimiter, searchRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/meetings', meetingRoutes);
-app.use('/api', dependencyRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -185,6 +184,9 @@ app.use('/api/hierarchy-levels', hierarchyRoutes);
 app.use('/api/director-plan', directorPlanRoutes);
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
+
+// Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
+app.use('/api', dependencyRoutes);
 
 // ─── 404 handler ─────────────────────────────────────────────
 app.use((_req, res) => {
@@ -236,6 +238,14 @@ const start = async () => {
       }
     }
     console.log('[Server] Status ENUM migration complete.');
+
+    // Extend user role ENUM with assistant_manager (safe to re-run)
+    try {
+      await sequelize.query(`ALTER TYPE "enum_users_role" ADD VALUE IF NOT EXISTS 'assistant_manager';`);
+      console.log('[Server] User role ENUM migration complete.');
+    } catch (e) {
+      // Ignore — type may not exist yet or value already exists
+    }
 
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
