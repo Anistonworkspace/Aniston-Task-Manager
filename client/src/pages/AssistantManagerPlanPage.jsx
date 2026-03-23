@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText } from 'lucide-react';
+import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText, Paperclip, Download } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { useToast } from '../components/common/Toast';
@@ -345,6 +345,60 @@ export default function AssistantManagerPlanPage() {
       setCopiedLink(id);
       setTimeout(() => setCopiedLink(null), 2000);
     });
+  }
+
+  // Upload file attachment for a task
+  async function handleFileUpload(catIndex, taskIndex, file) {
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      toast?.error?.('File too large (max 25 MB)');
+      return;
+    }
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await api.post('/files/upload-general', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const fileUrl = res.data?.data?.url || res.data?.url;
+      const fileName = file.name;
+      if (fileUrl) {
+        setCategories(prev =>
+          prev.map((cat, ci) => {
+            if (ci !== catIndex) return cat;
+            return {
+              ...cat,
+              tasks: cat.tasks.map((t, ti) => {
+                if (ti !== taskIndex) return t;
+                return { ...t, attachments: [...(t.attachments || []), { name: fileName, url: fileUrl }] };
+              }),
+            };
+          })
+        );
+        markDirty();
+        toast?.success?.(`File "${fileName}" attached`);
+      }
+    } catch (err) {
+      console.error('File upload failed:', err);
+      toast?.error?.('Failed to upload file');
+    }
+  }
+
+  // Remove file attachment
+  function removeAttachment(catIndex, taskIndex, fileIndex) {
+    setCategories(prev =>
+      prev.map((cat, ci) => {
+        if (ci !== catIndex) return cat;
+        return {
+          ...cat,
+          tasks: cat.tasks.map((t, ti) => {
+            if (ti !== taskIndex) return t;
+            return { ...t, attachments: (t.attachments || []).filter((_, fi) => fi !== fileIndex) };
+          }),
+        };
+      })
+    );
+    markDirty();
   }
 
   // Update category label
@@ -743,6 +797,30 @@ export default function AssistantManagerPlanPage() {
                                   </button>
                                 )}
                               </div>
+                            </div>
+
+                            {/* File Attachments */}
+                            <div>
+                              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-1">
+                                <Paperclip size={10} /> Attachments {(task.attachments || []).length > 0 && `(${(task.attachments || []).length})`}
+                              </label>
+                              <div className="space-y-1 mb-2">
+                                {(task.attachments || []).map((att, ai) => (
+                                  <div key={ai} className="flex items-center gap-2 bg-gray-50 rounded-lg px-2 py-1.5 group/att">
+                                    <Paperclip size={11} className="text-gray-400 flex-shrink-0" />
+                                    <span className="text-xs text-gray-700 flex-1 truncate">{att.name}</span>
+                                    <a href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`} target="_blank" rel="noopener noreferrer"
+                                      className="text-[10px] text-indigo-500 hover:underline flex-shrink-0">Download</a>
+                                    <button onClick={() => removeAttachment(catIndex, taskIndex, ai)}
+                                      className="opacity-0 group-hover/att:opacity-100 p-0.5 text-gray-400 hover:text-red-500 transition-all"><X size={11} /></button>
+                                  </div>
+                                ))}
+                              </div>
+                              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg cursor-pointer transition-colors">
+                                <Paperclip size={12} /> Upload File
+                                <input type="file" className="hidden" onChange={e => { if (e.target.files[0]) handleFileUpload(catIndex, taskIndex, e.target.files[0]); e.target.value = ''; }}
+                                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg,.gif,.webp" />
+                              </label>
                             </div>
 
                             {/* Subtasks */}

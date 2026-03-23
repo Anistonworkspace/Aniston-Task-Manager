@@ -1,4 +1,4 @@
-const CACHE_NAME = 'monday-aniston-v1';
+const CACHE_NAME = 'monday-aniston-__BUILD_TIMESTAMP__';
 const OFFLINE_URL = '/offline.html';
 
 const STATIC_ASSETS = [

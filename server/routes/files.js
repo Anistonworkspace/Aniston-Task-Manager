@@ -16,6 +16,13 @@ router.use(authenticate);
 // ─── POST /api/files (multipart upload, field name: "file") ──
 router.post('/', upload.single('file'), handleMulterError, uploadFile);
 
+// ─── POST /api/files/upload-general (no taskId required) ─────
+router.post('/upload-general', upload.single('file'), handleMulterError, (req, res) => {
+  if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+  const fileUrl = `/uploads/${req.file.filename}`;
+  res.json({ success: true, data: { url: fileUrl, filename: req.file.filename, originalName: req.file.originalname, size: req.file.size } });
+});
+
 // ─── GET /api/files?taskId=<uuid> ────────────────────────────
 router.get('/', getFiles);
 

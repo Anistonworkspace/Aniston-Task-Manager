@@ -124,6 +124,29 @@ export default function DirectorDashboardPage() {
     } catch { toastError('Failed to update task'); }
   }
 
+  async function toggleSubtask(categoryId, taskIndex, subtaskIndex) {
+    if (!plan) return;
+    try {
+      const cat = plan.categories.find(c => c.id === categoryId);
+      if (!cat || !cat.tasks[taskIndex] || !cat.tasks[taskIndex].subtasks?.[subtaskIndex]) return;
+      const newDone = !cat.tasks[taskIndex].subtasks[subtaskIndex].done;
+      // Update local state immediately
+      const updated = {
+        ...plan,
+        categories: plan.categories.map(c => c.id === categoryId ? {
+          ...c,
+          tasks: c.tasks.map((t, ti) => ti === taskIndex ? {
+            ...t,
+            subtasks: (t.subtasks || []).map((s, si) => si === subtaskIndex ? { ...s, done: newDone } : s)
+          } : t)
+        } : c)
+      };
+      setPlan(updated);
+      // Save full plan to backend
+      await api.put(`/director-plan/${today}`, { categories: updated.categories, directorId: selectedDirectorId });
+    } catch { toastError('Failed to update subtask'); }
+  }
+
   async function saveNotes(newNotes) {
     try {
       await api.put(`/director-plan/${today}/notes`, { notes: newNotes });
@@ -207,8 +230,8 @@ export default function DirectorDashboardPage() {
         </div>
       </div>
 
-      {/* Director selector (when multiple directors/superadmins exist) */}
-      {directors.length > 1 && (
+      {/* Director selector (only for assistant managers with multiple directors) */}
+      {isAssistantManager && directors.length > 1 && (
         <div className="mb-6 bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3 shadow-sm">
           <span className="text-xs font-semibold text-gray-500">Viewing plan for:</span>
           <select
@@ -401,14 +424,28 @@ export default function DirectorDashboardPage() {
                                 </button>
                               </div>
                             )}
+                            {/* File Attachments */}
+                            {(t.attachments || []).length > 0 && (
+                              <div className="px-3 pb-2 ml-8 space-y-1">
+                                {(t.attachments || []).map((att, ai) => (
+                                  <a key={ai} href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-2 text-[11px] text-indigo-500 hover:text-indigo-700 hover:underline py-0.5">
+                                    <FileText size={11} className="flex-shrink-0" />
+                                    {att.name}
+                                  </a>
+                                ))}
+                              </div>
+                            )}
                             {/* Subtasks */}
                             {subTotal > 0 && (
                               <div className="px-3 pb-2 ml-8 space-y-1">
                                 {(t.subtasks || []).map((sub, si) => (
                                   <div key={sub.id || si} className="flex items-start gap-2 py-1 px-2 bg-gray-50 rounded">
-                                    <div className={`w-3.5 h-3.5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 text-[8px] ${sub.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300'}`}>
+                                    <button onClick={() => toggleSubtask(c.id, ti, si)}
+                                      className={`w-3.5 h-3.5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 text-[8px] cursor-pointer transition-all ${sub.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300 hover:border-gray-400'}`}>
                                       {sub.done ? '✓' : ''}
-                                    </div>
+                                    </button>
                                     <div className="flex-1 min-w-0">
                                       <div className="flex items-center gap-2">
                                         <span className={`text-[11px] ${sub.done ? 'line-through text-gray-400' : 'text-gray-700'}`}>{sub.title}</span>

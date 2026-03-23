@@ -1,6 +1,6 @@
 {
   "name": "aniston-project-hub-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Backend API for Aniston Project Hub - a full-stack project management application",
   "main": "server.js",
   "scripts": {
