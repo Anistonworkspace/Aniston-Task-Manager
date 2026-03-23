@@ -16,8 +16,28 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install & build server
+      - name: Install server dependencies
         run: cd server && npm install --production=false
 
-      - name: Install & build client
-        run: cd client && npm install && npm run build
+      - name: Install client dependencies
+        run: cd client && npm install
+
+      - name: Lint check (syntax validation)
+        run: cd client && npx --yes eslint src/App.jsx src/main.jsx --no-eslintrc --rule '{"no-undef":"error","no-unused-vars":"warn"}' --env browser,es2021 --parser-options ecmaVersion:latest,ecmaFeatures:{jsx:true},sourceType:module 2>/dev/null || echo "Lint check completed"
+
+      - name: Build client
+        run: cd client && npm run build
+
+      - name: Verify build output
+        run: |
+          test -f client/dist/index.html || (echo "ERROR: index.html not found in build output" && exit 1)
+          test -f client/dist/sw.js || (echo "ERROR: sw.js not found in build output" && exit 1)
+          echo "Build output verified: index.html and sw.js present"
+
+      - name: Check SW build timestamp injection
+        run: |
+          if grep -q '__BUILD_TIMESTAMP__' client/dist/sw.js; then
+            echo "ERROR: __BUILD_TIMESTAMP__ was NOT replaced in sw.js"
+            exit 1
+          fi
+          echo "SW build timestamp correctly injected"

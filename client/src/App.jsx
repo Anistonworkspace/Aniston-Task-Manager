@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/layout/Layout';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Auth pages — loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login';
@@ -107,13 +108,13 @@ export default function App() {
           <Route index element={<Suspense fallback={<PageLoader />}><HomePage /></Suspense>} />
           <Route path="my-work" element={<Suspense fallback={<PageLoader />}><MyWorkPage /></Suspense>} />
           <Route path="boards" element={<Suspense fallback={<PageLoader />}><BoardsPage /></Suspense>} />
-          <Route path="boards/:id" element={<Suspense fallback={<PageLoader />}><BoardPage /></Suspense>} />
+          <Route path="boards/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><BoardPage /></Suspense></ErrorBoundary>} />
           <Route path="boards/:id/dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           <Route path="dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
           <Route path="manager-dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
           <Route path="admin-dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="director-dashboard" element={<Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense>} />
+          <Route path="director-dashboard" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary>} />
           <Route path="director-plan" element={<Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense>} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
@@ -123,7 +124,7 @@ export default function App() {
           <Route path="integrations" element={<ManagerRoute><Suspense fallback={<PageLoader />}><IntegrationsPage /></Suspense></ManagerRoute>} />
           <Route path="archive" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></ManagerRoute>} />
           <Route path="users" element={<ManagerRoute><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></ManagerRoute>} />
-          <Route path="admin-settings" element={<AdminRoute><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></AdminRoute>} />
+          <Route path="admin-settings" element={<AdminRoute><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></AdminRoute>} />
           <Route path="access-requests" element={<ManagerRoute><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></ManagerRoute>} />
           <Route path="org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />

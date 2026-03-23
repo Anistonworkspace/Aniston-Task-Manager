@@ -80,6 +80,7 @@ function UsersTab() {
   const [showReset, setShowReset] = useState(null);
   const [actionMenu, setActionMenu] = useState(null);
   const [roleChanging, setRoleChanging] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(25);
 
   useEffect(() => { fetchUsers(); }, []);
 
@@ -193,7 +194,7 @@ function UsersTab() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map(u => {
+            {filtered.slice(0, visibleCount).map(u => {
               const badge = u.isSuperAdmin ? ROLE_BADGE.superadmin : (ROLE_BADGE[u.role] || ROLE_BADGE.member);
               return (
                 <tr key={u.id} className="border-b border-gray-50 dark:border-zinc-700/50 hover:bg-gray-50/50 dark:hover:bg-zinc-700/30 transition-colors">
@@ -264,6 +265,14 @@ function UsersTab() {
             )}
           </tbody>
         </table>
+        {filtered.length > visibleCount && (
+          <div className="text-center py-3 border-t border-gray-100">
+            <button onClick={() => setVisibleCount(prev => prev + 25)}
+              className="text-xs text-primary hover:text-primary-dark font-medium transition-colors">
+              Show more ({filtered.length - visibleCount} remaining)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Modals */}

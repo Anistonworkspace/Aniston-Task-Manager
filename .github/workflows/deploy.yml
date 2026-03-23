@@ -66,6 +66,10 @@ jobs:
             echo "=== Health check ==="
             curl -sf http://localhost:5000/api/health || echo "WARNING: Health check failed"
 
+            echo "=== Setup daily backup cron (2 AM) ==="
+            chmod +x deploy/backup.sh 2>/dev/null || true
+            (crontab -l 2>/dev/null | grep -v 'aph-postgres.*backup'; echo "0 2 * * * docker exec aph-postgres sh /backup.sh >> /var/log/db-backup.log 2>&1") | sort -u | crontab - || true
+
             echo "=== Container status ==="
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             echo "=== Deployment complete ==="
