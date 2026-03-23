@@ -1,6 +1,7 @@
 const { Task, Board, User, Notification, Subtask } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
+const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const { emitToBoard, emitToUser } = require('../services/socketService');
 const teamsWebhook = require('../services/teamsWebhook');
@@ -119,7 +120,7 @@ const createTask = async (req, res) => {
       data: { task: fullTask },
     });
   } catch (error) {
-    console.error('[Task] Create error:', error);
+    logger.error('[Task] Create error:', error);
     res.status(500).json({ success: false, message: 'Server error creating task.' });
   }
 };
@@ -199,7 +200,7 @@ const getTasks = async (req, res) => {
 
     res.json({ success: true, data: { tasks: tasksWithCounts } });
   } catch (error) {
-    console.error('[Task] GetTasks error:', error);
+    logger.error('[Task] GetTasks error:', error);
     res.status(500).json({ success: false, message: 'Server error fetching tasks.' });
   }
 };
@@ -223,7 +224,7 @@ const getTask = async (req, res) => {
 
     res.json({ success: true, data: { task } });
   } catch (error) {
-    console.error('[Task] GetTask error:', error);
+    logger.error('[Task] GetTask error:', error);
     res.status(500).json({ success: false, message: 'Server error fetching task.' });
   }
 };
@@ -416,7 +417,7 @@ const updateTask = async (req, res) => {
       data: { task: fullTask },
     });
   } catch (error) {
-    console.error('[Task] Update error:', error);
+    logger.error('[Task] Update error:', error);
     res.status(500).json({ success: false, message: 'Server error updating task.' });
   }
 };
@@ -487,7 +488,7 @@ const deleteTask = async (req, res) => {
 
     res.json({ success: true, message: 'Task deleted successfully.' });
   } catch (error) {
-    console.error('[Task] Delete error:', error);
+    logger.error('[Task] Delete error:', error);
     res.status(500).json({ success: false, message: 'Server error deleting task.' });
   }
 };
@@ -537,7 +538,7 @@ const moveTask = async (req, res) => {
       data: { task: fullTask },
     });
   } catch (error) {
-    console.error('[Task] Move error:', error);
+    logger.error('[Task] Move error:', error);
     res.status(500).json({ success: false, message: 'Server error moving task.' });
   }
 };
@@ -595,7 +596,7 @@ const bulkUpdateTasks = async (req, res) => {
       data: { tasks: updatedTasks },
     });
   } catch (error) {
-    console.error('[Task] BulkUpdate error:', error);
+    logger.error('[Task] BulkUpdate error:', error);
     res.status(500).json({ success: false, message: 'Server error during bulk update.' });
   }
 };
@@ -631,7 +632,7 @@ const reorderTasks = async (req, res) => {
 
     res.json({ success: true, message: 'Tasks reordered successfully.' });
   } catch (error) {
-    console.error('[Task] Reorder error:', error);
+    logger.error('[Task] Reorder error:', error);
     res.status(500).json({ success: false, message: 'Server error reordering tasks.' });
   }
 };
@@ -718,7 +719,7 @@ const duplicateTask = async (req, res) => {
       data: { task: fullTask },
     });
   } catch (error) {
-    console.error('[Task] Duplicate error:', error);
+    logger.error('[Task] Duplicate error:', error);
     res.status(500).json({ success: false, message: 'Server error duplicating task.' });
   }
 };

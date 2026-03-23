@@ -53,8 +53,14 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
       setError('Please enter a valid email address.');
       return;
     }
-    if (form.password.length < 8) {
-      setError('Password must be at least 8 characters with uppercase, lowercase, number, and special character.');
+    const pwdErrors = [];
+    if (form.password.length < 8) pwdErrors.push('at least 8 characters');
+    if (!/[A-Z]/.test(form.password)) pwdErrors.push('an uppercase letter');
+    if (!/[a-z]/.test(form.password)) pwdErrors.push('a lowercase letter');
+    if (!/[0-9]/.test(form.password)) pwdErrors.push('a number');
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(form.password)) pwdErrors.push('a special character');
+    if (pwdErrors.length > 0) {
+      setError(`Password must contain: ${pwdErrors.join(', ')}.`);
       return;
     }
 

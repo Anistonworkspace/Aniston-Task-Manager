@@ -232,6 +232,23 @@ const start = async () => {
       console.log('[Server] Continuing with existing schema...');
     }
 
+    // Create performance indices on frequently queried columns (safe to re-run)
+    const indices = [
+      'CREATE INDEX IF NOT EXISTS idx_tasks_board_id ON tasks("boardId")',
+      'CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks("assignedTo")',
+      'CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks("dueDate")',
+      'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)',
+      'CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks("createdBy")',
+      'CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications("userId")',
+      'CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications("isRead")',
+      'CREATE INDEX IF NOT EXISTS idx_activities_task_id ON activities("taskId")',
+      'CREATE INDEX IF NOT EXISTS idx_activities_board_id ON activities("boardId")',
+    ];
+    for (const sql of indices) {
+      try { await sequelize.query(sql); } catch (e) { /* table may not exist yet */ }
+    }
+    console.log('[Server] Database indices ensured.');
+
     server.listen(PORT, () => {
       const logger = require('./utils/logger');
       logger.info(`Monday Aniston API running on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });

@@ -100,4 +100,33 @@ const handleMulterError = (err, req, res, next) => {
   next(err);
 };
 
-module.exports = { upload, handleMulterError, uploadDir };
+/**
+ * Validate uploaded file's magic bytes match declared MIME type.
+ * Middleware to use AFTER multer processes the upload.
+ */
+const MAGIC_BYTES = {
+  'image/jpeg': [Buffer.from([0xFF, 0xD8, 0xFF])],
+  'image/png': [Buffer.from([0x89, 0x50, 0x4E, 0x47])],
+  'image/gif': [Buffer.from('GIF87a'), Buffer.from('GIF89a')],
+  'application/pdf': [Buffer.from('%PDF')],
+  'application/zip': [Buffer.from([0x50, 0x4B, 0x03, 0x04])],
+};
+
+function validateFileSignature(req, res, next) {
+  if (!req.file) return next();
+  const filePath = path.join(uploadDir, req.file.filename);
+  try {
+    const buffer = fs.readFileSync(filePath, { length: 8 });
+    const signatures = MAGIC_BYTES[req.file.mimetype];
+    if (signatures) {
+      const valid = signatures.some(sig => buffer.slice(0, sig.length).equals(sig));
+      if (!valid) {
+        fs.unlinkSync(filePath);
+        return res.status(400).json({ success: false, message: 'File content does not match declared type. Upload rejected.' });
+      }
+    }
+  } catch (e) { /* file read error — let upload continue */ }
+  next();
+}
+
+module.exports = { upload, handleMulterError, validateFileSignature, uploadDir };

@@ -90,8 +90,22 @@ const initializeSocket = (server) => {
       }
     });
 
+    // ── Rate limiting for socket events ──
+    const eventCounts = {};
+    const RATE_LIMIT = 30; // max events per 10 seconds
+    const RATE_WINDOW = 10000;
+    function isRateLimited(eventName) {
+      const now = Date.now();
+      if (!eventCounts[eventName]) eventCounts[eventName] = [];
+      eventCounts[eventName] = eventCounts[eventName].filter(t => now - t < RATE_WINDOW);
+      if (eventCounts[eventName].length >= RATE_LIMIT) return true;
+      eventCounts[eventName].push(now);
+      return false;
+    }
+
     // ── Typing indicators (optional, forwarded to board) ──
     socket.on('task:typing', ({ boardId, taskId }) => {
+      if (isRateLimited('task:typing')) return;
       socket.to(`board:${boardId}`).emit('task:typing', {
         taskId,
         user: socket.user,
