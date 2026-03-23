@@ -36,7 +36,7 @@ const LEVEL_COLORS = {
 };
 
 export default function AdminSettingsPage() {
-  const { user } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('users');
 
   return (
@@ -217,7 +217,7 @@ function UsersTab() {
                       <option value="assistant_manager">Assistant Manager</option>
                       <option value="manager">Manager</option>
                       <option value="admin">Admin</option>
-                      {user?.isSuperAdmin && <option value="superadmin">Super Admin</option>}
+                      {isSuperAdmin && <option value="superadmin">Super Admin</option>}
                     </select>
                   </td>
                   <td className="px-4 py-3 text-center">
