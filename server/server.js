@@ -52,6 +52,7 @@ const hierarchyRoutes = require('./routes/hierarchy');
 const directorPlanRoutes = require('./routes/directorPlan');
 const archiveRoutes = require('./routes/archive');
 const pushRoutes = require('./routes/push');
+const externalRoutes = require('./routes/external');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -106,7 +107,7 @@ app.get('/api/health', (_req, res) => {
 // ─── Rate limiting ──────────────────────────────────────────
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // 20 login attempts per 15 min per IP
+  max: 50, // 50 login attempts per 15 min per IP (increased for shared office networks)
   message: { success: false, message: 'Too many login attempts. Please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -133,8 +134,21 @@ const generalLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// External/HRMS API rate limiter (100 requests per minute per IP)
+const externalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 100,
+  message: { success: false, message: 'Too many external API requests. Please slow down.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ─── API routes ──────────────────────────────────────────────
 app.use('/api', generalLimiter); // Apply to all API routes
+
+// External HRMS API (must be before dependency routes which apply global authenticate)
+app.use('/api/external', externalLimiter, externalRoutes);
+
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);

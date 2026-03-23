@@ -97,8 +97,8 @@ api.interceptors.response.use(
       }
     }
 
-    // Emit global error event for toast notifications
-    if (error.response && error.response.status !== 401 && !axios.isCancel(error)) {
+    // Emit global error event for toast notifications (skip 401 auth errors and 404 not-found)
+    if (error.response && error.response.status !== 401 && error.response.status !== 404 && !axios.isCancel(error)) {
       const message = error.response?.data?.message || error.message || 'Something went wrong';
       window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: error.response?.status } }));
     } else if (!error.response && error.message && !axios.isCancel(error)) {

@@ -113,7 +113,7 @@ export default function Header({ onToggleSidebar }) {
           </div>
 
           {/* Command Palette Trigger */}
-          <button onClick={() => setShowGlobalSearch(true)}
+          <button data-tour="search-bar" onClick={() => setShowGlobalSearch(true)}
             className="flex items-center gap-2 text-text-tertiary hover:text-text-secondary px-3 py-1.5 rounded-lg border border-border hover:border-border-dark bg-surface-50 transition-all duration-150 group">
             <Search size={14} />
             <span className="text-xs hidden sm:inline">Search...</span>
@@ -127,13 +127,13 @@ export default function Header({ onToggleSidebar }) {
         <div className="flex items-center gap-1">
           {/* Quick Create */}
           {canManage && (
-            <button onClick={() => navigate('/boards')} className="btn-primary text-xs py-1.5 px-3 mr-2">
+            <button data-tour="quick-create" onClick={() => navigate('/boards')} className="btn-primary text-xs py-1.5 px-3 mr-2">
               <Plus size={14} /> New
             </button>
           )}
 
           {/* Notifications */}
-          <button onClick={() => setShowNotifications(!showNotifications)}
+          <button data-tour="notifications" onClick={() => setShowNotifications(!showNotifications)}
             className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
             <Bell size={17} strokeWidth={1.8} />
             {unreadCount > 0 && (
@@ -144,7 +144,7 @@ export default function Header({ onToggleSidebar }) {
           </button>
 
           {/* Theme Toggle */}
-          <button onClick={toggleDarkMode}
+          <button data-tour="theme-toggle" onClick={toggleDarkMode}
             className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary"
             title={darkMode ? 'Light mode' : 'Dark mode'}>
             {darkMode ? <Sun size={17} strokeWidth={1.8} /> : <Moon size={17} strokeWidth={1.8} />}
@@ -161,7 +161,7 @@ export default function Header({ onToggleSidebar }) {
 
           {/* User Menu */}
           <div ref={menuRef} className="relative">
-            <button onClick={() => setShowUserMenu(!showUserMenu)}
+            <button data-tour="profile-menu" onClick={() => setShowUserMenu(!showUserMenu)}
               className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-surface-100 transition-all duration-150">
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-400 flex items-center justify-center text-white text-[11px] font-semibold shadow-sm">
                 {user?.name?.charAt(0)?.toUpperCase() || 'U'}

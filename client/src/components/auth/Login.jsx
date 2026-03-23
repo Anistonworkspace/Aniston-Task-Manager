@@ -18,10 +18,11 @@ export default function Login() {
     if (!email || !password) { setError('Please fill in all fields'); return; }
     setLoading(true);
     try {
-      await login(email, password);
+      // Normalize email: trim whitespace and lowercase
+      await login(email.trim().toLowerCase(), password);
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed');
+      setError(err.response?.data?.message || 'Login failed. Please check your email and password.');
     } finally {
       setLoading(false);
     }

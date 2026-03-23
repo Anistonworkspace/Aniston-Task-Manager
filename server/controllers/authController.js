@@ -82,11 +82,14 @@ const login = async (req, res) => {
 
     const { email, password } = req.body;
 
-    const user = await User.findOne({ where: { email: email.toLowerCase() } });
+    // Normalize email: trim + lowercase for case-insensitive match
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const user = await User.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password.',
+        message: 'No account found with this email address. Please check your email.',
       });
     }
 
@@ -115,7 +118,7 @@ const login = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password.',
+        message: 'Incorrect password. Please check your password and try again. Tip: verify Caps Lock and keyboard layout.',
       });
     }
 

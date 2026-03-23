@@ -162,8 +162,9 @@ export default function Sidebar({ collapsed, onToggle }) {
     ? unassignedBoards.filter(b => b.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : unassignedBoards;
 
-  const NavItem = ({ icon: Icon, label, path }) => (
+  const NavItem = ({ icon: Icon, label, path, tourId }) => (
     <button onClick={() => navigate(path)}
+      data-tour={tourId || undefined}
       className={`sidebar-item w-full ${isActive(path) ? 'sidebar-item-active' : ''}`}>
       <Icon size={16} strokeWidth={1.8} />
       <span className="flex-1 text-left truncate">{label}</span>
@@ -251,7 +252,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         className={`fixed inset-0 bg-black/40 z-40 md:hidden transition-opacity duration-200 ${collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
         onClick={onToggle}
       />
-      <div style={{ width: sidebarWidth, transition: resizing.current ? 'none' : 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}
+      <div data-tour="sidebar" style={{ width: sidebarWidth, transition: resizing.current ? 'none' : 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}
         className={`bg-sidebar-bg flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none
           max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:shadow-2xl
           ${collapsed ? 'max-md:-translate-x-full' : 'max-md:translate-x-0'}
@@ -273,25 +274,25 @@ export default function Sidebar({ collapsed, onToggle }) {
 
           {/* Main Nav */}
           <nav className="py-2 flex flex-col gap-0.5">
-            <NavItem icon={Home} label="Home" path="/" />
-            <NavItem icon={User} label="My Work" path="/my-work" />
-            <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} />
-            {(isSuperAdmin || isAssistantManager) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" />}
+            <NavItem icon={Home} label="Home" path="/" tourId="nav-home" />
+            <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />
+            <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
+            {(isSuperAdmin || isAssistantManager) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
             {isAssistantManager && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
-            <NavItem icon={Clock} label="Time Plan" path="/time-plan" />
-            <NavItem icon={CalendarDays} label="Meetings" path="/meetings" />
-            <NavItem icon={FileText} label="Reviews" path="/reviews" />
-            <NavItem icon={ClipboardCheck} label="Tasks" path="/tasks" />
+            <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
+            <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
+            <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
+            <NavItem icon={ClipboardCheck} label="Tasks" path="/tasks" tourId="nav-tasks" />
             <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
-            <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" />
+            <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />
           </nav>
 
           {canManage && (
             <>
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
-                <NavItem icon={BarChart3} label="Dashboard" path="/dashboard" />
+                <NavItem icon={BarChart3} label="Dashboard" path="/dashboard" tourId="nav-dashboard" />
                 <NavItem icon={Users} label="Team" path="/users" />
               </nav>
             </>
@@ -301,7 +302,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <>
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
-                <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" />
+                <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
                 <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
                 <NavItem icon={Archive} label="Archive" path="/archive" />
               </nav>
@@ -335,7 +336,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           )}
 
           {/* Workspace Header */}
-          <div className="flex items-center justify-between px-5 py-1.5 mt-1">
+          <div data-tour="workspaces" className="flex items-center justify-between px-5 py-1.5 mt-1">
             <span className="text-[11px] uppercase tracking-wide text-sidebar-text/60 font-semibold">Workspaces</span>
             <div className="flex items-center gap-0.5">
               <button ref={wsMenuBtnRef} onClick={() => setWsMenuOpen(!wsMenuOpen)}
