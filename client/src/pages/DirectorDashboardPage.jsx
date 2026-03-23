@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Crown, Users, CheckCircle2, Clock, AlertTriangle, TrendingUp, Building2, Briefcase, FileText, Search, Filter, Bell, X, Plus } from 'lucide-react';
+import { Crown, Users, CheckCircle2, Clock, AlertTriangle, TrendingUp, Building2, Briefcase, FileText, Search, Filter, Bell, X, Plus, Link2, Copy, Check, ChevronDown, ListChecks } from 'lucide-react';
 import { Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Edit3 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -365,19 +365,72 @@ export default function DirectorDashboardPage() {
                     <div className="h-full rounded-full transition-all duration-500" style={{ width: `${catPct}%`, background: `linear-gradient(90deg, ${c.color}, ${c.color}99)` }} />
                   </div>
                   {catTasks.length > 0 ? (
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {catTasks.map((t, ti) => (
-                        <div key={ti} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-50 group">
-                          <button
-                            onClick={() => toggleTask(c.id, ti)}
-                            className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all text-[11px]
-                              ${t.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300 hover:border-gray-400'}`}>
-                            {t.done ? '✓' : ''}
-                          </button>
-                          <span className={`text-sm flex-1 ${t.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>{t.text}</span>
-                          {t.time && <span className="text-[10px] font-mono text-gray-300">{t.time}</span>}
-                        </div>
-                      ))}
+                    <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                      {catTasks.map((t, ti) => {
+                        const subTotal = (t.subtasks || []).length;
+                        const subDone = (t.subtasks || []).filter(s => s.done).length;
+                        return (
+                          <div key={t.id || ti} className="rounded-lg border border-gray-100 hover:border-gray-200 transition-colors">
+                            {/* Task header */}
+                            <div className="flex items-center gap-2.5 py-2 px-3">
+                              <button onClick={() => toggleTask(c.id, ti)}
+                                className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all text-[11px] ${t.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300 hover:border-gray-400'}`}>
+                                {t.done ? '✓' : ''}
+                              </button>
+                              <span className={`text-sm flex-1 font-medium ${t.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>{t.text}</span>
+                              {t.startTime && t.endTime && (
+                                <span className="text-[10px] font-mono text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">{t.startTime}-{t.endTime}</span>
+                              )}
+                              {subTotal > 0 && (
+                                <span className="text-[10px] font-medium text-gray-400 flex-shrink-0">{subDone}/{subTotal}</span>
+                              )}
+                            </div>
+                            {/* Description */}
+                            {t.description && (
+                              <div className="px-3 pb-2 ml-8">
+                                <p className="text-[11px] text-gray-500 leading-relaxed">{t.description}</p>
+                              </div>
+                            )}
+                            {/* Link */}
+                            {t.link && (
+                              <div className="px-3 pb-2 ml-8 flex items-center gap-1.5">
+                                <Link2 size={10} className="text-indigo-400 flex-shrink-0" />
+                                <a href={t.link} target="_blank" rel="noopener noreferrer" className="text-[11px] text-indigo-500 hover:underline truncate">{t.link}</a>
+                                <button onClick={() => { navigator.clipboard.writeText(t.link); }} className="p-0.5 rounded text-gray-400 hover:text-indigo-500" title="Copy link">
+                                  <Copy size={10} />
+                                </button>
+                              </div>
+                            )}
+                            {/* Subtasks */}
+                            {subTotal > 0 && (
+                              <div className="px-3 pb-2 ml-8 space-y-1">
+                                {(t.subtasks || []).map((sub, si) => (
+                                  <div key={sub.id || si} className="flex items-start gap-2 py-1 px-2 bg-gray-50 rounded">
+                                    <div className={`w-3.5 h-3.5 rounded border mt-0.5 flex items-center justify-center flex-shrink-0 text-[8px] ${sub.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300'}`}>
+                                      {sub.done ? '✓' : ''}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-[11px] ${sub.done ? 'line-through text-gray-400' : 'text-gray-700'}`}>{sub.title}</span>
+                                        {sub.startTime && sub.endTime && (
+                                          <span className="text-[9px] font-mono text-gray-400">{sub.startTime}-{sub.endTime}</span>
+                                        )}
+                                      </div>
+                                      {sub.description && <p className="text-[10px] text-gray-400 mt-0.5">{sub.description}</p>}
+                                      {sub.link && (
+                                        <div className="flex items-center gap-1 mt-0.5">
+                                          <a href={sub.link} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-500 hover:underline truncate">{sub.link}</a>
+                                          <button onClick={() => { navigator.clipboard.writeText(sub.link); }} className="p-0.5 text-gray-400 hover:text-indigo-500"><Copy size={9} /></button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-xs text-gray-400 text-center py-4">No tasks scheduled</p>
