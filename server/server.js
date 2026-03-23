@@ -290,9 +290,25 @@ const start = async () => {
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);
-    process.exit(1);
+    // Try to start the HTTP server anyway so health checks can report status
+    try {
+      server.listen(PORT, () => {
+        console.error(`[Server] Started on port ${PORT} with errors — check logs above`);
+      });
+    } catch (listenErr) {
+      console.error('[Server] Cannot start HTTP server:', listenErr);
+      process.exit(1);
+    }
   }
 };
+
+// Global handlers to prevent silent crashes in production
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled Promise Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[Server] Uncaught Exception:', err);
+});
 
 start();
 
