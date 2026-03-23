@@ -713,6 +713,13 @@ const duplicateTask = async (req, res) => {
       meta: { originalTaskId: original.id },
     });
 
+    // Sync duplicated task to Teams calendar (fire-and-forget)
+    if (newTask.assignedTo) {
+      calendarService.createTaskEvent(newTask.id, newTask.assignedTo).catch(err =>
+        console.warn('[Teams] Calendar sync failed for duplicated task:', err.message)
+      );
+    }
+
     res.status(201).json({
       success: true,
       message: 'Task duplicated successfully.',
