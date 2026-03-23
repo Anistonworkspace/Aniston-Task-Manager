@@ -66,7 +66,7 @@ export default function AssistantManagerPlanPage() {
       if (dirs.length > 0 && !selectedDirectorId) {
         setSelectedDirectorId(dirs[0].id);
       }
-    }).catch(() => {});
+    }).catch((e) => { console.error('Failed to load directors:', e); });
   }, []);
 
   // Load plan for selected date + director

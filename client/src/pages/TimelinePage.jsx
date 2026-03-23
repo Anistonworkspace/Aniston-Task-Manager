@@ -53,7 +53,7 @@ export default function TimelinePage() {
       <div className="px-6 pt-5 pb-3">
         <h1 className="text-xl font-bold text-text-primary mb-3">Timeline</h1>
         <div className="flex items-center gap-3">
-          <select value={selectedBoard} onChange={(e) => setSelectedBoard(e.target.value)} className="text-sm border border-border rounded-md px-3 py-1.5 bg-white">
+          <select value={selectedBoard} onChange={(e) => setSelectedBoard(e.target.value)} className="text-sm border border-border rounded-md px-3 py-1.5 bg-white dark:bg-zinc-800 dark:text-zinc-200">
             <option value="">All Boards</option>
             {boards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
@@ -71,13 +71,13 @@ export default function TimelinePage() {
       <div className="flex-1 overflow-auto">
         <div className="min-w-fit">
           {/* Day Headers */}
-          <div className="flex sticky top-0 z-10 bg-white border-b border-border">
-            <div className="w-[220px] flex-shrink-0 px-4 py-2 text-xs font-medium text-text-secondary border-r border-border bg-white sticky left-0 z-20">
+          <div className="flex sticky top-0 z-10 bg-white dark:bg-zinc-900 border-b border-border">
+            <div className="w-[220px] flex-shrink-0 px-4 py-2 text-xs font-medium text-text-secondary border-r border-border bg-white dark:bg-zinc-900 sticky left-0 z-20">
               {format(startDate, 'MMM d')} - {format(endDate, 'MMM d')}
             </div>
             <div className="flex">
               {days.map((day, i) => (
-                <div key={i} className={`text-center border-r border-border py-2 ${isWeekend(day) ? 'bg-surface/50' : 'bg-white'}`} style={{ width: dayWidth }}>
+                <div key={i} className={`text-center border-r border-border py-2 ${isWeekend(day) ? 'bg-surface/50' : 'bg-white dark:bg-zinc-900'}`} style={{ width: dayWidth }}>
                   <div className="text-[10px] text-text-tertiary">{format(day, 'EEE')}</div>
                   <div className={`text-xs font-medium ${isToday(day) ? 'text-primary' : 'text-text-primary'}`}>{format(day, 'd')}</div>
                 </div>
@@ -93,7 +93,7 @@ export default function TimelinePage() {
               const bar = getBarStyle(task);
               return (
                 <div key={task.id} className="flex border-b border-border hover:bg-surface/30 transition-colors">
-                  <div className="w-[220px] flex-shrink-0 px-4 py-3 border-r border-border bg-white sticky left-0 z-10">
+                  <div className="w-[220px] flex-shrink-0 px-4 py-3 border-r border-border bg-white dark:bg-zinc-900 sticky left-0 z-10">
                     <p className="text-sm font-medium text-text-primary truncate">{task.title}</p>
                     <p className="text-[11px] text-text-tertiary mt-0.5">
                       {task.startDate ? format(parseISO(task.startDate), 'MMM d') : ''}

@@ -115,19 +115,19 @@ export default function ArchivedPage() {
   function clearFilters() { setDateFrom(''); setDateTo(''); setSearch(''); }
 
   async function restoreTask(id) {
-    try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); } catch {}
+    try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); } catch (e) { console.error('Restore task failed:', e); }
   }
   async function restoreBoard(id) {
-    try { await api.put(`/boards/${id}`, { isArchived: false }); setBoards(prev => prev.filter(b => b.id !== id)); } catch {}
+    try { await api.put(`/boards/${id}`, { isArchived: false }); setBoards(prev => prev.filter(b => b.id !== id)); } catch (e) { console.error('Restore board failed:', e); }
   }
   async function restoreWorkspace(id) {
-    try { await api.put(`/workspaces/${id}/restore`); setWorkspaces(prev => prev.filter(w => w.id !== id)); loadArchived(); } catch {}
+    try { await api.put(`/workspaces/${id}/restore`); setWorkspaces(prev => prev.filter(w => w.id !== id)); loadArchived(); } catch (e) { console.error('Restore workspace failed:', e); }
   }
   async function restoreDep(id) {
-    try { await api.put(`/archive/dependencies/${id}/restore`); setDependencies(prev => prev.filter(d => d.id !== id)); } catch {}
+    try { await api.put(`/archive/dependencies/${id}/restore`); setDependencies(prev => prev.filter(d => d.id !== id)); } catch (e) { console.error('Restore dependency failed:', e); }
   }
   async function restoreHelp(id) {
-    try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); } catch {}
+    try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); } catch (e) { console.error('Restore help request failed:', e); }
   }
 
   async function handleDelete() {

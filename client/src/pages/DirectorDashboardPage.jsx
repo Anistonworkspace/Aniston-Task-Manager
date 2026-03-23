@@ -63,7 +63,7 @@ export default function DirectorDashboardPage() {
           const self = dirs.find(d => d.id === user?.id);
           setSelectedDirectorId(self ? self.id : dirs[0].id);
         }
-      }).catch(() => {});
+      }).catch((e) => { console.error('Failed to load directors:', e); });
     }
   }, [canAccess]);
 
@@ -108,7 +108,7 @@ export default function DirectorDashboardPage() {
       const dirParam = selectedDirectorId ? `?directorId=${selectedDirectorId}` : '';
       const res = await api.get(`/director-plan/${today}${dirParam}`);
       setPlan(res.data?.data || res.data);
-    } catch {}
+    } catch (e) { console.error('Failed to load plan:', e); }
   }
 
   async function toggleTask(categoryId, taskIndex) {

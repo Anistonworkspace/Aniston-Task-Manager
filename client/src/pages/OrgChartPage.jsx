@@ -17,7 +17,7 @@ const ROLE_COLORS = {
 // ═══ SINGLE CARD (draggable independently) ═══
 function PersonCard({ node, hlColor, hlLabel, canManage, onEdit, onPromote, onChangeManager, onViewHistory, onDragStartCard, onDropOnCard }) {
   const [hovered, setHovered] = useState(false);
-  const avatarUrl = node.avatar ? (node.avatar.startsWith('http') ? node.avatar : `http://localhost:5000${node.avatar}`) : null;
+  const avatarUrl = node.avatar ? (node.avatar.startsWith?.('http') ? node.avatar : node.avatar.startsWith?.('/') ? node.avatar : `/${node.avatar}`) : null;
 
   return (
     <div
