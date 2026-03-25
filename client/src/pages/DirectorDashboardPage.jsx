@@ -8,6 +8,16 @@ import { useToast } from '../components/common/Toast';
 import useSocket from '../hooks/useSocket';
 import { format } from 'date-fns';
 
+const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
+const sortByPriority = (tasks) => [...(tasks || [])].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+const PRIORITY_STYLES = {
+  urgent: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500', label: 'Urgent' },
+  high: { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500', label: 'High' },
+  medium: { bg: 'bg-blue-50', text: 'text-blue-600', dot: 'bg-blue-500', label: 'Medium' },
+  low: { bg: 'bg-gray-100', text: 'text-gray-500', dot: 'bg-gray-400', label: 'Low' },
+};
+const getPStyle = (p) => PRIORITY_STYLES[p] || PRIORITY_STYLES.medium;
+
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8);
 function fmtHour(h) { return h === 0 || h === 12 ? '12' : h > 12 ? `${h - 12}` : `${h}`; }
 function ampm(h) { return h >= 12 ? 'PM' : 'AM'; }
@@ -389,7 +399,8 @@ export default function DirectorDashboardPage() {
                   </div>
                   {catTasks.length > 0 ? (
                     <div className="space-y-2 max-h-[400px] overflow-y-auto">
-                      {catTasks.map((t, ti) => {
+                      {sortByPriority(catTasks).map((t) => {
+                        const ti = catTasks.indexOf(t);
                         const subTotal = (t.subtasks || []).length;
                         const subDone = (t.subtasks || []).filter(s => s.done).length;
                         return (
@@ -401,6 +412,11 @@ export default function DirectorDashboardPage() {
                                 {t.done ? '✓' : ''}
                               </button>
                               <span className={`text-sm flex-1 font-medium ${t.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>{t.text}</span>
+                              {t.priority && t.priority !== 'medium' && (
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${getPStyle(t.priority).bg} ${getPStyle(t.priority).text}`}>
+                                  {getPStyle(t.priority).label}
+                                </span>
+                              )}
                               {t.startTime && t.endTime && (
                                 <span className="text-[10px] font-mono text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">{t.startTime}-{t.endTime}</span>
                               )}

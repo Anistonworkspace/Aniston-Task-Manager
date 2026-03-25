@@ -102,6 +102,50 @@ const getDailyPlan = async (req, res) => {
     });
 
     if (!plan) {
+      // Carryforward: look for the most recent previous plan for this director
+      const previousPlan = await DirectorPlan.findOne({
+        where: { directorId: director.id, date: { [Op.lt]: date } },
+        order: [['date', 'DESC']],
+      });
+
+      if (previousPlan && previousPlan.categories?.length > 0) {
+        // Deep copy categories, reset all tasks and subtasks to not-done
+        const carried = JSON.parse(JSON.stringify(previousPlan.categories));
+        carried.forEach(cat => {
+          if (cat.tasks) {
+            cat.tasks.forEach(task => {
+              task.done = false;
+              if (task.subtasks) task.subtasks.forEach(st => { st.done = false; });
+            });
+          }
+        });
+
+        // Auto-create the carried-forward plan in DB
+        plan = await DirectorPlan.create({
+          date,
+          directorId: director.id,
+          categories: carried,
+          notes: '',
+          createdBy: previousPlan.createdBy,
+        });
+
+        return res.json({
+          success: true,
+          data: {
+            id: plan.id,
+            date: plan.date,
+            directorId: plan.directorId,
+            directorName: director.name,
+            categories: plan.categories,
+            notes: plan.notes,
+            createdBy: plan.createdBy,
+            isNew: false,
+            carriedForward: true,
+          },
+        });
+      }
+
+      // No previous plan — return empty defaults
       return res.json({
         success: true,
         data: {

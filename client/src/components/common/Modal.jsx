@@ -5,9 +5,14 @@ import { modalOverlay, modalContent } from '../../utils/animations';
 
 export default function Modal({ isOpen, onClose, title, children, footer, size = 'md', className = '' }) {
   const modalRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const hasAutoFocused = useRef(false);
+
+  // Keep onClose ref current without causing re-renders
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const handleKey = useCallback((e) => {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape') onCloseRef.current();
     // Focus trap: Tab cycles within modal
     if (e.key === 'Tab' && modalRef.current) {
       const focusable = modalRef.current.querySelectorAll(
@@ -22,19 +27,25 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
         if (document.activeElement === last) { e.preventDefault(); first.focus(); }
       }
     }
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
       document.addEventListener('keydown', handleKey);
       document.body.style.overflow = 'hidden';
-      // Auto-focus first focusable element
-      setTimeout(() => {
-        if (modalRef.current) {
-          const first = modalRef.current.querySelector('button, [href], input, select, textarea');
-          if (first) first.focus();
-        }
-      }, 100);
+      // Auto-focus first input (prefer input/textarea over buttons) — only on initial open
+      if (!hasAutoFocused.current) {
+        hasAutoFocused.current = true;
+        setTimeout(() => {
+          if (modalRef.current) {
+            const input = modalRef.current.querySelector('input, textarea, select');
+            const fallback = modalRef.current.querySelector('button, [href], [tabindex]:not([tabindex="-1"])');
+            (input || fallback)?.focus();
+          }
+        }, 100);
+      }
+    } else {
+      hasAutoFocused.current = false;
     }
     return () => { document.removeEventListener('keydown', handleKey); document.body.style.overflow = ''; };
   }, [isOpen, handleKey]);

@@ -28,6 +28,16 @@ const ICON_MAP = {
 const ICON_OPTIONS = ['Hammer','Receipt','Package','ClipboardList','Scale','FlaskConical','Factory','Bot','Monitor','Palette','Folder','Star','Target','BookOpen','Phone','Mail','Coffee','BriefcaseIcon','Paintbrush'];
 const COLOR_OPTIONS = ['#E8590C','#D6336C','#9333EA','#4F46E5','#2563EB','#059669','#D97706','#DC2626','#0D9488','#7C3AED','#6366F1','#EC4899','#14B8A6','#F97316'];
 
+const PRIORITY_OPTIONS = [
+  { value: 'urgent', label: 'Urgent', color: 'bg-red-500', bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  { value: 'high', label: 'High', color: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  { value: 'medium', label: 'Medium', color: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-200' },
+  { value: 'low', label: 'Low', color: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-500', border: 'border-gray-200' },
+];
+const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
+const sortByPriority = (tasks) => [...(tasks || [])].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
+const getPriorityStyle = (p) => PRIORITY_OPTIONS.find(o => o.value === p) || PRIORITY_OPTIONS[2];
+
 function getIcon(name, size = 18) {
   const Icon = ICON_MAP[name];
   return Icon ? <Icon size={size} /> : <Folder size={size} />;
@@ -224,6 +234,7 @@ export default function AssistantManagerPlanPage() {
             text, done: false, time: now,
             description: '', link: '',
             startTime: '', endTime: '',
+            priority: 'medium',
             subtasks: [],
           }],
         };
@@ -723,7 +734,8 @@ export default function AssistantManagerPlanPage() {
 
                 {/* Task list */}
                 <div className="space-y-2 mb-3">
-                  {(cat.tasks || []).map((task, taskIndex) => {
+                  {sortByPriority(cat.tasks || []).map((task) => {
+                    const taskIndex = (cat.tasks || []).indexOf(task);
                     const expandKey = `${catIndex}-${taskIndex}`;
                     const isExpanded = expandedTasks[expandKey];
                     const subDone = (task.subtasks || []).filter(s => s.done).length;
@@ -747,6 +759,15 @@ export default function AssistantManagerPlanPage() {
                           {/* Task text */}
                           <input type="text" value={task.text} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
                             className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-0 ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+
+                          {/* Priority selector */}
+                          <select
+                            value={task.priority || 'medium'}
+                            onChange={e => { updateTaskField(catIndex, taskIndex, 'priority', e.target.value); markDirty(); }}
+                            className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border cursor-pointer outline-none flex-shrink-0 ${getPriorityStyle(task.priority || 'medium').bg} ${getPriorityStyle(task.priority || 'medium').text} ${getPriorityStyle(task.priority || 'medium').border}`}
+                          >
+                            {PRIORITY_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                          </select>
 
                           {/* Task timing */}
                           <div className="flex items-center gap-1 flex-shrink-0">
