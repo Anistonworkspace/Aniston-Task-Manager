@@ -25,9 +25,13 @@ export default function PortalDropdown({ anchorRef, open, onClose, children, ali
       }
       if (left < 8) left = 8;
 
-      // Check if dropdown would go below viewport
+      // Check if dropdown would go below viewport — flip upward if needed
       let top = rect.bottom + 4;
-      // We'll let CSS handle max-height overflow
+      const menuH = menuRef.current?.offsetHeight || 400;
+      if (top + menuH > window.innerHeight - 16) {
+        // Not enough space below — position above the anchor
+        top = Math.max(8, rect.top - menuH - 4);
+      }
 
       setPos({ top, left });
     }

@@ -2,7 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const { authenticate } = require('../middleware/auth');
 const { User } = require('../models');
-const teamsConfig = require('../config/teams');
+const { getTeamsConfig } = require('../config/teams');
 
 const router = express.Router();
 
@@ -10,9 +10,10 @@ const router = express.Router();
  * GET /api/teams/auth
  * Start OAuth flow — redirect to Microsoft login.
  */
-router.get('/auth', authenticate, (req, res) => {
+router.get('/auth', authenticate, async (req, res) => {
+  const teamsConfig = await getTeamsConfig();
   if (!teamsConfig.isConfigured) {
-    return res.status(503).json({ success: false, message: 'Teams integration is not configured. Set TEAMS_CLIENT_ID and TEAMS_CLIENT_SECRET.' });
+    return res.status(503).json({ success: false, message: 'Teams integration is not configured. Set it up in Integrations page.' });
   }
 
   const state = Buffer.from(JSON.stringify({ userId: req.user.id })).toString('base64');
@@ -35,17 +36,21 @@ router.get('/auth', authenticate, (req, res) => {
 router.get('/callback', async (req, res) => {
   const { code, state, error: authError } = req.query;
 
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
   if (authError) {
-    return res.redirect(`${process.env.CLIENT_URL || 'http://localhost:3000'}/profile?teams=error&msg=${encodeURIComponent(authError)}`);
+    return res.redirect(`${clientUrl}/integrations?teams=error&msg=${encodeURIComponent(authError)}`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${process.env.CLIENT_URL || 'http://localhost:3000'}/profile?teams=error&msg=missing_params`);
+    return res.redirect(`${clientUrl}/integrations?teams=error&msg=missing_params`);
   }
 
   try {
     const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
     const { userId } = stateData;
+
+    const teamsConfig = await getTeamsConfig();
 
     // Exchange code for tokens
     const tokenRes = await axios.post(`${teamsConfig.authUrl}/token`, new URLSearchParams({
@@ -78,10 +83,21 @@ router.get('/callback', async (req, res) => {
       teamsUserId,
     }, { where: { id: userId } });
 
-    res.redirect(`${process.env.CLIENT_URL || 'http://localhost:3000'}/profile?teams=success`);
+    // Auto-sync M365 users on first connect (fire-and-forget)
+    const connectingUser = await User.findByPk(userId, { attributes: ['role'] });
+    if (connectingUser?.role === 'admin') {
+      const { syncUsersFromM365 } = require('../services/teamsUserSync');
+      syncUsersFromM365().then(r => {
+        console.log(`[Teams] Auto-sync on connect: ${r.created.length} created, ${r.existing.length} existing`);
+      }).catch(e => {
+        console.error('[Teams] Auto-sync on connect failed:', e.message);
+      });
+    }
+
+    res.redirect(`${clientUrl}/integrations?teams=success`);
   } catch (err) {
     console.error('[Teams] OAuth callback error:', err.response?.data || err.message);
-    res.redirect(`${process.env.CLIENT_URL || 'http://localhost:3000'}/profile?teams=error&msg=token_exchange_failed`);
+    res.redirect(`${clientUrl}/integrations?teams=error&msg=token_exchange_failed`);
   }
 });
 
@@ -90,20 +106,31 @@ router.get('/callback', async (req, res) => {
  * Check if current user has Teams connected.
  */
 router.get('/status', authenticate, async (req, res) => {
+  const teamsConfig = await getTeamsConfig();
   const user = await User.findByPk(req.user.id, {
     attributes: ['teamsUserId', 'teamsAccessToken', 'teamsTokenExpiry'],
   });
 
   const connected = !!(user?.teamsAccessToken);
   const expired = user?.teamsTokenExpiry && new Date(user.teamsTokenExpiry) < new Date();
+  const configValid = teamsConfig.isConfigured && !!teamsConfig.tenantId;
+
+  // Count M365-synced users for admin dashboard
+  let usersSynced = 0;
+  try {
+    usersSynced = await User.count({ where: { authProvider: 'microsoft' } });
+  } catch (_) { /* ignore */ }
 
   res.json({
     success: true,
     data: {
       configured: teamsConfig.isConfigured,
+      configValid,
       connected,
       expired: connected && expired,
       teamsUserId: user?.teamsUserId || null,
+      ssoEnabled: teamsConfig.ssoEnabled ?? false,
+      usersSynced,
     },
   });
 });
@@ -195,6 +222,30 @@ router.get('/preview-users', authenticate, async (req, res) => {
     console.error('[Teams] Preview error:', err.response?.data || err.message);
     const msg = err.response?.data?.error?.message || err.message;
     res.status(500).json({ success: false, message: `Failed to fetch M365 users: ${msg}` });
+  }
+});
+
+/**
+ * POST /api/teams/sync-status
+ * Sync active/disabled status from M365 for all Microsoft-linked users (admin only).
+ */
+router.post('/sync-status', authenticate, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'Admin access required.' });
+  }
+
+  try {
+    const { syncUserActiveStatus } = require('../services/teamsUserSync');
+    const results = await syncUserActiveStatus();
+    res.json({
+      success: true,
+      message: `Status sync complete: ${results.activated.length} activated, ${results.deactivated.length} deactivated, ${results.unchanged} unchanged.`,
+      data: results,
+    });
+  } catch (err) {
+    console.error('[Teams] Status sync error:', err.response?.data || err.message);
+    const msg = err.response?.data?.error?.message || err.message;
+    res.status(500).json({ success: false, message: `Status sync failed: ${msg}` });
   }
 });
 

@@ -33,7 +33,17 @@ export default function AddColumnModal({ onAdd, onClose, anchorRef }) {
       const rect = anchorRef.current.getBoundingClientRect();
       let left = rect.right - 288; // align right edge
       if (left < 8) left = 8;
-      setPos({ top: rect.bottom + 4, left });
+      // Prevent clipping on right edge
+      if (left + 288 > window.innerWidth - 16) {
+        left = window.innerWidth - 288 - 16;
+      }
+      let top = rect.bottom + 4;
+      // Flip upward if not enough space below
+      const menuH = 420;
+      if (top + menuH > window.innerHeight - 16) {
+        top = Math.max(8, rect.top - menuH - 4);
+      }
+      setPos({ top, left });
     }
   }, [anchorRef]);
 

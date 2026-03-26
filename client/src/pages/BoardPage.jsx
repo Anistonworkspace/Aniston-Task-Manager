@@ -25,6 +25,8 @@ import DueDateExtensionModal from '../components/board/DueDateExtensionModal';
 import HelpRequestModal from '../components/board/HelpRequestModal';
 import TimelineView from '../components/board/TimelineView';
 import { SkeletonBoard } from '../components/common/Skeleton';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 // Monday.com-style dropdown for "New task" split button
 function NewTaskDropdown({ onNewGroup, onImport, onClose }) {
@@ -92,13 +94,24 @@ export default function BoardPage() {
     return [...baseCols, ...boardCustomCols];
   }, [board?.customColumns]);
 
-  // Visible columns (exclude hidden, apply saved widths)
+  // Visible columns (exclude hidden, apply saved widths + order)
   const visibleColumns = useMemo(() => {
     const widths = JSON.parse(localStorage.getItem(`board_col_widths_${boardId}`) || '{}');
-    return allColumns
+    const savedOrder = JSON.parse(localStorage.getItem(`board_col_order_${boardId}`) || '[]');
+    let cols = allColumns
       .filter(col => !hiddenColumns.includes(col.id))
       .map(col => ({ ...col, width: widths[col.id] || col.width }));
-  }, [allColumns, hiddenColumns, board?._resizeTick, boardId]);
+    // Apply saved column order if available
+    if (savedOrder.length > 0) {
+      cols.sort((a, b) => {
+        const ai = savedOrder.indexOf(a.id);
+        const bi = savedOrder.indexOf(b.id);
+        // Columns not in savedOrder go to the end
+        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      });
+    }
+    return cols;
+  }, [allColumns, hiddenColumns, board?._resizeTick, board?._reorderTick, boardId]);
 
   // Persist hidden columns
   useEffect(() => {
@@ -289,14 +302,84 @@ export default function BoardPage() {
     localStorage.setItem(`board_col_titles_${boardId}`, JSON.stringify(overrides));
   }
 
-  function handleAddColumn(col) {
-    const cols = [...(board?.customColumns || []), col];
+  function handleAddColumn(col, afterColumnId) {
+    const cols = [...(board?.customColumns || [])];
+    if (afterColumnId) {
+      const idx = cols.findIndex(c => c.id === afterColumnId);
+      cols.splice(idx >= 0 ? idx + 1 : cols.length, 0, col);
+    } else {
+      cols.push(col);
+    }
     setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(err => {
+      console.error('Failed to save column:', err);
+    });
   }
 
   function handleRemoveColumn(colId) {
     const cols = (board?.customColumns || []).filter(c => c.id !== colId);
+    setBoard(prev => ({ ...prev, customColumns: cols }));
+    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+  }
+
+  // Duplicate column
+  function handleDuplicateColumn(column) {
+    const newCol = {
+      id: `custom_${Date.now()}`,
+      title: `${column.title} (copy)`,
+      type: column.type || 'text',
+      width: column.width || 130,
+    };
+    const cols = [...(board?.customColumns || [])];
+    const idx = cols.findIndex(c => c.id === column.id);
+    if (idx >= 0) {
+      // Custom column — insert right after it
+      cols.splice(idx + 1, 0, newCol);
+    } else {
+      // Built-in column — append to custom columns (will appear after built-ins)
+      cols.push(newCol);
+    }
+    setBoard(prev => ({ ...prev, customColumns: cols }));
+    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+  }
+
+  // Set column as required
+  function handleSetColumnRequired(colId) {
+    const cols = (board?.customColumns || []).map(c =>
+      c.id === colId ? { ...c, required: !c.required } : c
+    );
+    setBoard(prev => ({ ...prev, customColumns: cols }));
+    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+  }
+
+  // Set column description
+  function handleSetColumnDescription(colId, description) {
+    const cols = (board?.customColumns || []).map(c =>
+      c.id === colId ? { ...c, description } : c
+    );
+    setBoard(prev => ({ ...prev, customColumns: cols }));
+    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+  }
+
+  // Reorder columns via drag-and-drop
+  function handleReorderColumns(draggedColId, targetColId) {
+    // Save column order to localStorage (works for both built-in and custom)
+    const currentOrder = visibleColumns.map(c => c.id);
+    const fromIdx = currentOrder.indexOf(draggedColId);
+    const toIdx = currentOrder.indexOf(targetColId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const newOrder = [...currentOrder];
+    newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, draggedColId);
+    localStorage.setItem(`board_col_order_${boardId}`, JSON.stringify(newOrder));
+    setBoard(prev => ({ ...prev, _reorderTick: Date.now() })); // trigger re-render
+  }
+
+  // Change column type
+  function handleChangeColumnType(colId, newType) {
+    const cols = (board?.customColumns || []).map(c =>
+      c.id === colId ? { ...c, type: newType } : c
+    );
     setBoard(prev => ({ ...prev, customColumns: cols }));
     api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
   }
@@ -335,20 +418,115 @@ export default function BoardPage() {
   // CSV Export
   async function handleExportCSV() {
     try {
-      const csvRows = [['Title', 'Status', 'Priority', 'Due Date', 'Owner', 'Progress', 'Group'].join(',')];
-      tasks.forEach(t => {
-        const owner = members.find(m => m.id === t.assignedTo)?.name || '';
-        const boardGroups = board?.groups || [];
-        const group = boardGroups.find(g => g.id === t.groupId)?.title || '';
-        csvRows.push([t.title, t.status, t.priority, t.dueDate || '', owner, t.progress || 0, group].map(v => `"${v}"`).join(','));
-      });
-      const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${board?.name || 'board'}_tasks.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Monday Aniston';
+      wb.created = new Date();
+      const ws = wb.addWorksheet(board?.name || 'Board Tasks');
+
+      const boardGroups = board?.groups || [];
+      const customCols = board?.customColumns || [];
+
+      // Column headers
+      const headers = ['Task', 'Status', 'Owner', 'Due Date', 'Start Date', 'Priority', 'Progress', 'Description', ...customCols.map(c => c.title)];
+
+      // Status label map
+      const statusLabels = { not_started: 'Not Started', working_on_it: 'Working on it', stuck: 'Stuck', done: 'Done', review: 'In Review' };
+      const statusColors = { not_started: 'C4C4C4', working_on_it: 'FDAB3D', stuck: 'E2445C', done: '00C875', review: '579BFC' };
+      const priorityColors = { critical: '333333', high: 'E2445C', medium: 'FDAB3D', low: '579BFC' };
+
+      // Board title row
+      const titleRow = ws.addRow([board?.name || 'Board Export']);
+      titleRow.font = { bold: true, size: 16, color: { argb: 'FF323338' } };
+      ws.mergeCells(1, 1, 1, headers.length);
+      titleRow.alignment = { horizontal: 'left', vertical: 'middle' };
+      titleRow.height = 32;
+      ws.addRow([]); // spacing
+
+      // Process each group
+      const groupOrder = boardGroups.length > 0 ? boardGroups : [{ id: 'ungrouped', title: 'All Tasks', color: '#579bfc' }];
+
+      for (const group of groupOrder) {
+        const groupTasks = tasks.filter(t => boardGroups.length > 0 ? t.groupId === group.id : true);
+        const groupColor = (group.color || '#579bfc').replace('#', '');
+
+        // Group header row
+        const groupRow = ws.addRow([`${group.title} (${groupTasks.length} items)`, ...Array(headers.length - 1).fill('')]);
+        ws.mergeCells(groupRow.number, 1, groupRow.number, headers.length);
+        groupRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+        groupRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${groupColor}` } };
+        groupRow.alignment = { horizontal: 'left', vertical: 'middle' };
+        groupRow.height = 28;
+
+        // Column headers row
+        const headerRow = ws.addRow(headers);
+        headerRow.font = { bold: true, size: 10, color: { argb: 'FF676879' } };
+        headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F6F8' } };
+        headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        headerRow.height = 24;
+        headerRow.eachCell(cell => {
+          cell.border = { bottom: { style: 'thin', color: { argb: 'FFE6E9EF' } } };
+        });
+
+        // Task rows
+        if (groupTasks.length === 0) {
+          const emptyRow = ws.addRow(['No tasks in this group', ...Array(headers.length - 1).fill('')]);
+          emptyRow.font = { italic: true, color: { argb: 'FFC4C4C4' } };
+          emptyRow.height = 22;
+        } else {
+          for (const t of groupTasks) {
+            const owner = members.find(m => m.id === t.assignedTo)?.name || '';
+            const statusLabel = statusLabels[t.status] || t.status || '';
+            const row = ws.addRow([
+              t.title || '',
+              statusLabel,
+              owner,
+              t.dueDate ? t.dueDate.slice(0, 10) : '',
+              t.startDate ? t.startDate.slice(0, 10) : '',
+              (t.priority || 'medium').charAt(0).toUpperCase() + (t.priority || 'medium').slice(1),
+              `${t.progress || 0}%`,
+              t.description || '',
+              ...customCols.map(c => t.customFields?.[c.id] || ''),
+            ]);
+            row.height = 22;
+            row.alignment = { vertical: 'middle' };
+
+            // Color the status cell
+            const sColor = statusColors[t.status];
+            if (sColor) {
+              const statusCell = row.getCell(2);
+              statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${sColor}` } };
+              statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 9 };
+              statusCell.alignment = { horizontal: 'center' };
+            }
+
+            // Color the priority cell
+            const pColor = priorityColors[t.priority];
+            if (pColor) {
+              const prioCell = row.getCell(6);
+              prioCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${pColor}` } };
+              prioCell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 9 };
+              prioCell.alignment = { horizontal: 'center' };
+            }
+
+            // Light row border
+            row.eachCell(cell => {
+              cell.border = { bottom: { style: 'thin', color: { argb: 'FFF0F0F0' } } };
+            });
+          }
+        }
+
+        // Spacing between groups
+        ws.addRow([]);
+      }
+
+      // Set column widths
+      const widths = [35, 15, 20, 14, 14, 12, 10, 40, ...customCols.map(() => 15)];
+      headers.forEach((_, i) => { ws.getColumn(i + 1).width = widths[i] || 15; });
+
+      // Generate and download
+      const buffer = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      saveAs(blob, `${board?.name || 'Board'}_export.xlsx`);
     } catch (err) {
       console.error('Export failed:', err);
     }
@@ -502,9 +680,6 @@ export default function BoardPage() {
               {tab.label}
             </button>
           ))}
-          <button className="px-2 py-2 text-[#c4c4c4] hover:text-[#676879] transition-colors">
-            <Plus size={14} />
-          </button>
         </div>
 
         {/* Toolbar */}
@@ -530,11 +705,16 @@ export default function BoardPage() {
 
           <div className="flex items-center gap-0.5 ml-2">
             {/* Search */}
-            <button className="flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
+            <button onClick={() => {
+              const inp = document.querySelector('[data-search-input]');
+              if (inp) { inp.style.width = '160px'; inp.focus(); }
+            }} className={`flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] rounded-[4px] transition-colors ${searchQuery ? 'bg-[#cce5ff] text-[#0073ea]' : 'text-[#676879] hover:bg-[#dcdfec]'}`}>
               <Search size={14} /> Search
             </button>
-            <input data-search-input type="text" placeholder="" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-              className={`bg-transparent border-none outline-none text-[14px] text-[#323338] transition-all duration-300 ${searchQuery ? 'w-[140px] border-b border-[#0073ea] ml-1' : 'w-0'}`} />
+            <input data-search-input type="text" placeholder="Search tasks..." value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onBlur={(e) => { if (!e.target.value) e.target.style.width = '0'; }}
+              className={`bg-transparent border-none outline-none text-[14px] text-[#323338] transition-all duration-300 ${searchQuery ? 'w-[160px] border-b border-[#0073ea] ml-1' : 'w-0'}`} />
 
             {/* Filter */}
             <button onClick={() => setShowFilters(!showFilters)}
@@ -571,10 +751,6 @@ export default function BoardPage() {
               )}
             </div>
 
-            {/* More actions (⋯) */}
-            <button className="px-1.5 py-[6px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
-              <MoreHorizontal size={16} />
-            </button>
           </div>
 
           {/* Right side */}
@@ -666,6 +842,15 @@ export default function BoardPage() {
                   onSelectTask={handleSelectTask}
                   onArchiveGroup={handleArchiveGroup}
                   onRenameGroup={handleRenameGroup}
+                  onGroupBy={(col) => {
+                    const key = col.id === 'status' ? 'status' : col.id === 'date' ? 'dueDate' : col.id === 'priority' ? 'priority' : col.id;
+                    setSortConfig({ key, direction: 'asc' });
+                  }}
+                  onDuplicateColumn={handleDuplicateColumn}
+                  onChangeColumnType={handleChangeColumnType}
+                  onSetColumnRequired={handleSetColumnRequired}
+                  onSetColumnDescription={handleSetColumnDescription}
+                  onReorderColumns={handleReorderColumns}
                 />
               );
             })}
@@ -711,7 +896,7 @@ export default function BoardPage() {
 
       {/* CSV Import Modal */}
       {showCSVImport && (
-        <CSVImportModal boardId={boardId} onClose={() => setShowCSVImport(false)} onImported={loadTasks} />
+        <CSVImportModal boardId={boardId} board={board} columns={allColumns} members={members} onClose={() => setShowCSVImport(false)} onImported={loadTasks} />
       )}
 
       {/* Due Date Extension Modal */}

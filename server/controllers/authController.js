@@ -1,7 +1,9 @@
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 const { User } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
+const { getTeamsConfig } = require('../config/teams');
 
 /**
  * Validate password strength: 8+ chars, uppercase, lowercase, number, special char.
@@ -114,6 +116,14 @@ const login = async (req, res) => {
       });
     }
 
+    // Block password login for Microsoft SSO users
+    if (user.authProvider === 'microsoft' && !user.password) {
+      return res.status(400).json({
+        success: false,
+        message: 'This account uses Microsoft SSO. Please click "Sign in with Microsoft" to log in.',
+      });
+    }
+
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
@@ -172,6 +182,14 @@ const updateProfile = async (req, res) => {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
       }
+    }
+
+    // Block password change for Microsoft SSO users
+    if (req.body.newPassword && req.user.authProvider === 'microsoft') {
+      return res.status(400).json({
+        success: false,
+        message: 'Your account uses Microsoft SSO. To change your password, visit https://myaccount.microsoft.com/security-info',
+      });
     }
 
     // Allow password change if provided with current password
@@ -286,6 +304,15 @@ const forgotPassword = async (req, res) => {
       return res.json({ success: true, message: 'If that email exists, a reset link has been generated.' });
     }
 
+    // Redirect Microsoft SSO users to Microsoft's password reset
+    if (user.authProvider === 'microsoft') {
+      return res.json({
+        success: true,
+        message: 'This account uses Microsoft SSO. Please reset your password at Microsoft: https://passwordreset.microsoftonline.com/',
+        data: { ssoRedirect: 'https://passwordreset.microsoftonline.com/' },
+      });
+    }
+
     // Generate reset token (valid 1 hour)
     const resetToken = jwt.sign({ id: user.id, type: 'reset' }, process.env.JWT_SECRET, { expiresIn: '1h' });
     const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
@@ -326,6 +353,13 @@ const resetPassword = async (req, res) => {
 
     const user = await User.findByPk(decoded.id);
     if (!user) return res.status(400).json({ success: false, message: 'Invalid reset token.' });
+
+    if (user.authProvider === 'microsoft') {
+      return res.status(400).json({
+        success: false,
+        message: 'This account uses Microsoft SSO. Please reset your password at https://passwordreset.microsoftonline.com/',
+      });
+    }
 
     await user.update({ password: newPassword });
 
@@ -419,4 +453,189 @@ const refreshTokenEndpoint = async (req, res) => {
   }
 };
 
-module.exports = { register, login, getProfile, updateProfile, getAllUsers, uploadAvatar, forgotPassword, resetPassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint };
+/**
+ * GET /api/auth/microsoft
+ * Start Microsoft SSO flow — return the authorization URL.
+ */
+const microsoftAuthUrl = async (req, res) => {
+  try {
+    const config = await getTeamsConfig();
+    if (!config.isConfigured) {
+      return res.status(503).json({
+        success: false,
+        message: 'Microsoft integration is not configured. Ask your admin to set it up in Integrations.',
+      });
+    }
+    if (!config.ssoEnabled) {
+      return res.status(503).json({
+        success: false,
+        message: 'Microsoft SSO is not enabled. Ask your admin to enable it in Integrations.',
+      });
+    }
+
+    const state = jwt.sign({ type: 'sso_state' }, process.env.JWT_SECRET, { expiresIn: '10m' });
+
+    const authUrl = `${config.authUrl}/authorize?` + new URLSearchParams({
+      client_id: config.clientId,
+      response_type: 'code',
+      redirect_uri: config.ssoRedirectUri,
+      scope: config.ssoScopes.join(' '),
+      state,
+      response_mode: 'query',
+      prompt: 'select_account',
+    }).toString();
+
+    res.json({ success: true, data: { authUrl } });
+  } catch (error) {
+    console.error('[Auth] Microsoft SSO URL error:', error);
+    res.status(500).json({ success: false, message: 'Failed to start Microsoft sign-in.' });
+  }
+};
+
+/**
+ * GET /api/auth/microsoft/callback
+ * Microsoft SSO callback — exchange code for tokens, find/create user, issue JWT.
+ */
+const microsoftCallback = async (req, res) => {
+  const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+  const { code, state, error: authError } = req.query;
+
+  if (authError) {
+    return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(authError)}`);
+  }
+
+  if (!code || !state) {
+    return res.redirect(`${CLIENT_URL}/login?sso=error&msg=missing_params`);
+  }
+
+  try {
+    // Verify state token
+    try {
+      const decoded = jwt.verify(state, process.env.JWT_SECRET);
+      if (decoded.type !== 'sso_state') throw new Error('Invalid state');
+    } catch {
+      return res.redirect(`${CLIENT_URL}/login?sso=error&msg=invalid_state`);
+    }
+
+    const config = await getTeamsConfig();
+
+    // Exchange code for tokens
+    const tokenRes = await axios.post(
+      `${config.authUrl}/token`,
+      new URLSearchParams({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: config.ssoRedirectUri,
+        scope: config.ssoScopes.join(' '),
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { access_token, refresh_token, expires_in, id_token } = tokenRes.data;
+
+    // Decode id_token to get user info
+    let email, name, oid;
+    if (id_token) {
+      const payload = JSON.parse(Buffer.from(id_token.split('.')[1], 'base64').toString());
+      email = (payload.email || payload.preferred_username || '').toLowerCase();
+      name = payload.name || '';
+      oid = payload.oid || payload.sub || '';
+    }
+
+    // Fallback: fetch profile from Graph API
+    if (!email) {
+      try {
+        const profileRes = await axios.get('https://graph.microsoft.com/v1.0/me', {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        email = (profileRes.data.mail || profileRes.data.userPrincipalName || '').toLowerCase();
+        name = name || profileRes.data.displayName || '';
+        oid = oid || profileRes.data.id || '';
+      } catch (profileErr) {
+        console.error('[Auth] SSO profile fetch error:', profileErr.message);
+        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=profile_fetch_failed`);
+      }
+    }
+
+    if (!email) {
+      return res.redirect(`${CLIENT_URL}/login?sso=error&msg=no_email`);
+    }
+
+    // Find user by email or teamsUserId
+    let user = await User.findOne({
+      where: {
+        [Op.or]: [
+          { email },
+          ...(oid ? [{ teamsUserId: oid }] : []),
+        ],
+      },
+    });
+
+    if (user) {
+      // Update teams tokens and teamsUserId
+      const updates = {
+        teamsAccessToken: access_token,
+        teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
+      };
+      if (refresh_token) updates.teamsRefreshToken = refresh_token;
+      if (oid && !user.teamsUserId) updates.teamsUserId = oid;
+      if (user.authProvider === 'local' && !user.password) updates.authProvider = 'microsoft';
+      await user.update(updates);
+
+      // Check account status
+      if (!user.isActive) {
+        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account has been deactivated.')}`);
+      }
+      if (user.accountStatus === 'pending') {
+        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account is pending admin approval.')}`);
+      }
+      if (user.accountStatus === 'rejected') {
+        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account request was rejected.')}`);
+      }
+    } else {
+      // Auto-create new user
+      user = await User.create({
+        name: name || email.split('@')[0],
+        email,
+        password: null,
+        authProvider: 'microsoft',
+        role: 'member',
+        teamsUserId: oid,
+        teamsAccessToken: access_token,
+        teamsRefreshToken: refresh_token,
+        teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
+        isActive: true,
+        accountStatus: 'approved',
+      });
+    }
+
+    // Generate app JWT tokens
+    const token = generateToken(user.id);
+    const appRefreshToken = generateRefreshToken(user.id);
+
+    res.redirect(`${CLIENT_URL}/login?sso=success&token=${encodeURIComponent(token)}&refreshToken=${encodeURIComponent(appRefreshToken)}`);
+  } catch (error) {
+    console.error('[Auth] Microsoft SSO callback error:', error.response?.data || error.message);
+    res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Authentication failed. Please try again.')}`);
+  }
+};
+
+/**
+ * GET /api/auth/sso-status
+ * Check if Microsoft SSO is enabled (public — used by login page).
+ */
+const getSsoStatus = async (req, res) => {
+  try {
+    const config = await getTeamsConfig();
+    res.json({
+      success: true,
+      data: { ssoEnabled: config.isConfigured && config.ssoEnabled },
+    });
+  } catch {
+    res.json({ success: true, data: { ssoEnabled: false } });
+  }
+};
+
+module.exports = { register, login, getProfile, updateProfile, getAllUsers, uploadAvatar, forgotPassword, resetPassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint, microsoftAuthUrl, microsoftCallback, getSsoStatus };

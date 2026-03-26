@@ -184,7 +184,7 @@ const updateBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    const allowedFields = ['name', 'description', 'color', 'columns', 'groups', 'isArchived'];
+    const allowedFields = ['name', 'description', 'color', 'columns', 'groups', 'customColumns', 'isArchived', 'workspaceId'];
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {

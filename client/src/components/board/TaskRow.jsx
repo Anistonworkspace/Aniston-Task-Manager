@@ -38,7 +38,7 @@ const TaskRow = React.memo(function TaskRow({
       case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} />;
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
       case 'progress': return <ProgressCell value={task.progress || 0} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
-      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.taskLabels || []} />;
+      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;
       case 'text': return <TextCell value={customVal || ''} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
       case 'number': return <NumberCell value={customVal} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
       case 'checkbox': return <CheckboxCell value={customVal || false} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;

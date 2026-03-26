@@ -17,6 +17,7 @@ import WorkspaceAssignModal from '../components/workspace/WorkspaceAssignModal';
 import TeamPlannerModal from '../components/workspace/TeamPlannerModal';
 
 const ROLE_BADGE = {
+  superadmin: { bg: 'bg-red-100', text: 'text-red-700', label: 'Super Admin', icon: ShieldCheck },
   admin: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Admin', icon: ShieldCheck },
   manager: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Manager', icon: Shield },
   member: { bg: 'bg-green-100', text: 'text-green-700', label: 'Member', icon: UsersIcon },
@@ -329,7 +330,7 @@ export default function UserManagementPage() {
                   </thead>
                   <tbody>
                     {users.map(u => {
-                      const roleBadge = ROLE_BADGE[u.role] || ROLE_BADGE.member;
+                      const roleBadge = u.isSuperAdmin ? ROLE_BADGE.superadmin : (ROLE_BADGE[u.role] || ROLE_BADGE.member);
                       const RoleIcon = roleBadge.icon;
                       const isSelf = u.id === currentUser?.id;
                       // Find workspace this user is assigned to

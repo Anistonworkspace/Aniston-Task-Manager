@@ -1,8 +1,10 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, Check, AlertCircle, Download, Lock, FileText } from 'lucide-react';
 import api from '../../services/api';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
-export default function CSVImportModal({ boardId, onClose, onImported }) {
+export default function CSVImportModal({ boardId, board, columns = [], members = [], onClose, onImported }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [mapping, setMapping] = useState({});
@@ -12,7 +14,72 @@ export default function CSVImportModal({ boardId, onClose, onImported }) {
   const [dbLocked, setDbLocked] = useState(false);
   const fileRef = useRef(null);
 
-  const FIELDS = ['title', 'description', 'status', 'priority', 'dueDate', 'startDate', 'assignedTo', 'tags', 'progress'];
+  const FIELDS = ['title', 'description', 'status', 'priority', 'dueDate', 'startDate', 'assignedTo', 'tags', 'progress', 'group'];
+
+  // Generate and download an Excel template matching the board's export structure
+  async function downloadTemplate() {
+    const groups = board?.groups || [];
+    const boardName = board?.name || 'Board';
+    const customCols = (board?.customColumns || []).map(c => c.title);
+    const headers = ['Task', 'Status', 'Owner', 'Due Date', 'Start Date', 'Priority', 'Progress', 'Description', ...customCols];
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Monday Aniston';
+    const ws = wb.addWorksheet(boardName);
+
+    // Board title
+    const titleRow = ws.addRow([`${boardName} — Import Template`]);
+    titleRow.font = { bold: true, size: 16, color: { argb: 'FF323338' } };
+    ws.mergeCells(1, 1, 1, headers.length);
+    titleRow.height = 32;
+    ws.addRow([]); // spacing
+
+    // Reference row with valid values
+    const refRow = ws.addRow(['Fill tasks below. Valid statuses: not_started, working_on_it, stuck, done, review  |  Priorities: low, medium, high, critical']);
+    refRow.font = { italic: true, size: 9, color: { argb: 'FF999999' } };
+    ws.mergeCells(refRow.number, 1, refRow.number, headers.length);
+    ws.addRow([]);
+
+    const groupOrder = groups.length > 0 ? groups : [{ id: 'new', title: 'New', color: '#579bfc' }];
+
+    for (const group of groupOrder) {
+      const groupColor = (group.color || '#579bfc').replace('#', '');
+
+      // Group header
+      const gRow = ws.addRow([`${group.title}`, ...Array(headers.length - 1).fill('')]);
+      ws.mergeCells(gRow.number, 1, gRow.number, headers.length);
+      gRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      gRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${groupColor}` } };
+      gRow.height = 28;
+
+      // Column headers
+      const hRow = ws.addRow(headers);
+      hRow.font = { bold: true, size: 10, color: { argb: 'FF676879' } };
+      hRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F6F8' } };
+      hRow.alignment = { horizontal: 'center', vertical: 'middle' };
+      hRow.height = 24;
+      hRow.eachCell(cell => { cell.border = { bottom: { style: 'thin', color: { argb: 'FFE6E9EF' } } }; });
+
+      // 3 empty rows for user to fill in
+      for (let i = 0; i < 3; i++) {
+        const emptyRow = ws.addRow(Array(headers.length).fill(''));
+        emptyRow.height = 22;
+        emptyRow.eachCell(cell => {
+          cell.border = { bottom: { style: 'thin', color: { argb: 'FFF0F0F0' } } };
+        });
+      }
+
+      ws.addRow([]); // spacing between groups
+    }
+
+    // Set column widths
+    const widths = [35, 15, 20, 14, 14, 12, 10, 40, ...customCols.map(() => 15)];
+    headers.forEach((_, i) => { ws.getColumn(i + 1).width = widths[i] || 15; });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    saveAs(blob, `${boardName}_import_template.xlsx`);
+  }
 
   function handleFileSelect(e) {
     const f = e.target.files[0];
@@ -51,6 +118,7 @@ export default function CSVImportModal({ boardId, onClose, onImported }) {
         else if (lower.includes('assign') || lower.includes('owner')) autoMap[h] = 'assignedTo';
         else if (lower.includes('tag') || lower.includes('label')) autoMap[h] = 'tags';
         else if (lower.includes('progress') || lower.includes('percent')) autoMap[h] = 'progress';
+        else if (lower.includes('group') || lower.includes('sprint') || lower.includes('section')) autoMap[h] = 'group';
       });
       setMapping(autoMap);
     };
@@ -84,14 +152,22 @@ export default function CSVImportModal({ boardId, onClose, onImported }) {
       let imported = 0;
       let skipped = 0;
 
+      const groups = board?.groups || [];
       for (const taskData of tasks) {
         try {
+          // Resolve group name to groupId
+          let groupId = 'new';
+          if (taskData.group) {
+            const matchedGroup = groups.find(g => g.title.toLowerCase() === taskData.group.toLowerCase());
+            if (matchedGroup) groupId = matchedGroup.id;
+          }
+          const { group: _, ...rest } = taskData;
           await api.post('/tasks', {
-            ...taskData,
+            ...rest,
             boardId,
-            groupId: 'new',
-            status: taskData.status || 'not_started',
-            priority: taskData.priority || 'medium',
+            groupId,
+            status: rest.status || 'not_started',
+            priority: rest.priority || 'medium',
           });
           imported++;
         } catch (err) {
@@ -132,12 +208,31 @@ export default function CSVImportModal({ boardId, onClose, onImported }) {
               <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
                 <FileText size={28} className="text-primary" />
               </div>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">Upload a CSV file to import tasks. Existing tasks will NOT be replaced — data will be merged.</p>
-              <input ref={fileRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
-              <button onClick={() => fileRef.current?.click()}
-                className="px-5 py-2.5 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/90 inline-flex items-center gap-2">
-                <Upload size={16} /> Choose CSV File
-              </button>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Upload a CSV file to import tasks. Existing tasks will NOT be replaced — data will be merged.</p>
+              <p className="text-xs text-gray-400 mb-5">Download the template first, fill in your data, then upload it here.</p>
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={downloadTemplate}
+                  className="px-5 py-2.5 bg-white border border-primary text-primary text-sm font-medium rounded-lg hover:bg-primary/5 inline-flex items-center gap-2">
+                  <Download size={16} /> Download Template
+                </button>
+                <input ref={fileRef} type="file" accept=".csv" onChange={handleFileSelect} className="hidden" />
+                <button onClick={() => fileRef.current?.click()}
+                  className="px-5 py-2.5 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/90 inline-flex items-center gap-2">
+                  <Upload size={16} /> Choose CSV File
+                </button>
+              </div>
+              {board?.groups?.length > 0 && (
+                <div className="mt-4 text-left bg-gray-50 rounded-lg p-3">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Board Groups</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {board.groups.map(g => (
+                      <span key={g.id} className="text-[11px] px-2 py-0.5 rounded-full border" style={{ borderColor: g.color, color: g.color, backgroundColor: g.color + '10' }}>
+                        {g.title}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

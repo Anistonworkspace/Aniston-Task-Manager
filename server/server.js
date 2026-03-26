@@ -53,6 +53,7 @@ const directorPlanRoutes = require('./routes/directorPlan');
 const archiveRoutes = require('./routes/archive');
 const pushRoutes = require('./routes/push');
 const externalRoutes = require('./routes/external');
+const integrationConfigRoutes = require('./routes/integrationConfig');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -184,6 +185,7 @@ app.use('/api/hierarchy-levels', hierarchyRoutes);
 app.use('/api/director-plan', directorPlanRoutes);
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
+app.use('/api/integrations', integrationConfigRoutes);
 
 // Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
 app.use('/api', dependencyRoutes);

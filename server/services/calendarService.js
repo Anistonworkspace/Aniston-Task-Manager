@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { User, Task, Board } = require('../models');
-const teamsConfig = require('../config/teams');
+const { getTeamsConfig } = require('../config/teams');
 const { getAppToken } = require('./teamsUserSync');
 
 // In-memory cache for calendar events (5-minute TTL)
@@ -19,6 +19,7 @@ async function getAccessToken(userId) {
     // Refresh the token
     if (!user.teamsRefreshToken) return null;
     try {
+      const teamsConfig = await getTeamsConfig();
       const res = await axios.post(`${teamsConfig.authUrl}/token`, new URLSearchParams({
         client_id: teamsConfig.clientId,
         client_secret: teamsConfig.clientSecret,
@@ -49,6 +50,7 @@ async function getAccessToken(userId) {
  * Create a Teams calendar event for a task (app-level — no user OAuth needed).
  */
 async function createTaskEvent(taskId, userId) {
+  const teamsConfig = await getTeamsConfig();
   if (!teamsConfig.isConfigured) return null;
 
   // Look up assignee's teamsUserId (set during M365 user sync)
@@ -120,6 +122,7 @@ async function createTaskEvent(taskId, userId) {
  * Update an existing Teams calendar event (app-level).
  */
 async function updateTaskEvent(taskId, userId) {
+  const teamsConfig = await getTeamsConfig();
   if (!teamsConfig.isConfigured) return null;
 
   const assignee = await User.findByPk(userId, { attributes: ['id', 'name', 'teamsUserId'] });
@@ -168,6 +171,7 @@ async function updateTaskEvent(taskId, userId) {
  * Delete a Teams calendar event (app-level).
  */
 async function deleteTaskEvent(taskId, userId) {
+  const teamsConfig = await getTeamsConfig();
   if (!teamsConfig.isConfigured) return;
 
   const assignee = await User.findByPk(userId, { attributes: ['id', 'name', 'teamsUserId'] });
@@ -209,6 +213,7 @@ async function syncToTeamsCalendar(taskId, userId) {
  * Returns { timedEvents: [...], allDayEvents: [...] } or null if user has no teamsUserId.
  */
 async function fetchCalendarEvents(teamsUserId, startDate, endDate) {
+  const teamsConfig = await getTeamsConfig();
   if (!teamsConfig.isConfigured || !teamsUserId) return null;
 
   // Check cache

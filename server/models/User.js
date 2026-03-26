@@ -29,11 +29,12 @@ const User = sequelize.define(
     },
     password: {
       type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    authProvider: {
+      type: DataTypes.STRING(20),
       allowNull: false,
-      validate: {
-        notEmpty: { msg: 'Password is required' },
-        len: { args: [6, 255], msg: 'Password must be at least 6 characters' },
-      },
+      defaultValue: 'local',
     },
     avatar: {
       type: DataTypes.STRING(500),
@@ -120,6 +121,7 @@ const User = sequelize.define(
  * Compare a candidate password against the stored hash.
  */
 User.prototype.comparePassword = async function (candidatePassword) {
+  if (!this.password) return false;
   return bcrypt.compare(candidatePassword, this.password);
 };
 

@@ -296,77 +296,109 @@ export default function ProfilePage() {
             <Lock size={18} className="text-warning" />
             Change Password
           </h3>
-          {passwordFlash && (
-            <div className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium mb-4 animate-fade-in ${passwordFlash.type === 'error' ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
-              {passwordFlash.type === 'error' ? <AlertCircle size={16} /> : <Check size={16} />}
-              {passwordFlash.msg}
+          {user?.authProvider === 'microsoft' ? (
+            /* Microsoft SSO users — redirect to Microsoft portal */
+            <div className="p-4 rounded-lg bg-blue-50 border border-blue-200">
+              <div className="flex items-start gap-3">
+                <svg width="24" height="24" viewBox="0 0 21 21" fill="none" className="mt-0.5 flex-shrink-0">
+                  <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+                  <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+                  <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+                  <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+                </svg>
+                <div>
+                  <p className="text-sm font-medium text-blue-800 mb-1">Microsoft Account</p>
+                  <p className="text-xs text-blue-700 mb-3">
+                    Your account uses Microsoft SSO. To change your password, manage it through your Microsoft account settings.
+                  </p>
+                  <a
+                    href="https://myaccount.microsoft.com/security-info"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-[#0078D4] text-white text-xs font-medium rounded-lg hover:bg-[#106EBE] transition-colors"
+                  >
+                    <Lock size={13} />
+                    Manage Password at Microsoft
+                  </a>
+                </div>
+              </div>
             </div>
+          ) : (
+            /* Local users — normal password change form */
+            <>
+              {passwordFlash && (
+                <div className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium mb-4 animate-fade-in ${passwordFlash.type === 'error' ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success'}`}>
+                  {passwordFlash.type === 'error' ? <AlertCircle size={16} /> : <Check size={16} />}
+                  {passwordFlash.msg}
+                </div>
+              )}
+              <form onSubmit={handleChangePassword} className="space-y-4">
+                {/* Current Password */}
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">Current Password</label>
+                  <div className="relative">
+                    <input
+                      type={showPasswords.current ? 'text' : 'password'}
+                      value={passwords.current}
+                      onChange={(e) => setPasswords(p => ({ ...p, current: e.target.value }))}
+                      className="w-full px-3 py-2 pr-10 rounded-lg border border-border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                      placeholder="Enter current password"
+                    />
+                    <button type="button" onClick={() => setShowPasswords(s => ({ ...s, current: !s.current }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
+                      {showPasswords.current ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* New Password */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">New Password</label>
+                    <div className="relative">
+                      <input
+                        type={showPasswords.newPass ? 'text' : 'password'}
+                        value={passwords.newPass}
+                        onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
+                        className="w-full px-3 py-2 pr-10 rounded-lg border border-border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                        placeholder="Min 6 characters"
+                      />
+                      <button type="button" onClick={() => setShowPasswords(s => ({ ...s, newPass: !s.newPass }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
+                        {showPasswords.newPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                  </div>
+                  {/* Confirm Password */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Confirm New Password</label>
+                    <div className="relative">
+                      <input
+                        type={showPasswords.confirm ? 'text' : 'password'}
+                        value={passwords.confirm}
+                        onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
+                        className={`w-full px-3 py-2 pr-10 rounded-lg border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all ${passwords.confirm && passwords.newPass !== passwords.confirm ? 'border-danger focus:border-danger' : 'border-border focus:border-primary'}`}
+                        placeholder="Re-enter new password"
+                      />
+                      <button type="button" onClick={() => setShowPasswords(s => ({ ...s, confirm: !s.confirm }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
+                        {showPasswords.confirm ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                    {passwords.confirm && passwords.newPass !== passwords.confirm && (
+                      <p className="text-[11px] text-danger mt-1">Passwords do not match</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="submit"
+                    disabled={savingPassword || !passwords.current || !passwords.newPass || !passwords.confirm || passwords.newPass !== passwords.confirm}
+                    className="flex items-center gap-2 px-5 py-2 bg-warning text-white text-sm font-medium rounded-lg hover:bg-warning-dark disabled:opacity-50 transition-colors shadow-sm"
+                  >
+                    {savingPassword ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Lock size={15} />}
+                    {savingPassword ? 'Changing...' : 'Change Password'}
+                  </button>
+                </div>
+              </form>
+            </>
           )}
-          <form onSubmit={handleChangePassword} className="space-y-4">
-            {/* Current Password */}
-            <div>
-              <label className="block text-xs font-medium text-text-secondary mb-1.5">Current Password</label>
-              <div className="relative">
-                <input
-                  type={showPasswords.current ? 'text' : 'password'}
-                  value={passwords.current}
-                  onChange={(e) => setPasswords(p => ({ ...p, current: e.target.value }))}
-                  className="w-full px-3 py-2 pr-10 rounded-lg border border-border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
-                  placeholder="Enter current password"
-                />
-                <button type="button" onClick={() => setShowPasswords(s => ({ ...s, current: !s.current }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
-                  {showPasswords.current ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* New Password */}
-              <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5">New Password</label>
-                <div className="relative">
-                  <input
-                    type={showPasswords.newPass ? 'text' : 'password'}
-                    value={passwords.newPass}
-                    onChange={(e) => setPasswords(p => ({ ...p, newPass: e.target.value }))}
-                    className="w-full px-3 py-2 pr-10 rounded-lg border border-border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
-                    placeholder="Min 6 characters"
-                  />
-                  <button type="button" onClick={() => setShowPasswords(s => ({ ...s, newPass: !s.newPass }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
-                    {showPasswords.newPass ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                </div>
-              </div>
-              {/* Confirm Password */}
-              <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1.5">Confirm New Password</label>
-                <div className="relative">
-                  <input
-                    type={showPasswords.confirm ? 'text' : 'password'}
-                    value={passwords.confirm}
-                    onChange={(e) => setPasswords(p => ({ ...p, confirm: e.target.value }))}
-                    className={`w-full px-3 py-2 pr-10 rounded-lg border text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all ${passwords.confirm && passwords.newPass !== passwords.confirm ? 'border-danger focus:border-danger' : 'border-border focus:border-primary'}`}
-                    placeholder="Re-enter new password"
-                  />
-                  <button type="button" onClick={() => setShowPasswords(s => ({ ...s, confirm: !s.confirm }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary">
-                    {showPasswords.confirm ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                </div>
-                {passwords.confirm && passwords.newPass !== passwords.confirm && (
-                  <p className="text-[11px] text-danger mt-1">Passwords do not match</p>
-                )}
-              </div>
-            </div>
-            <div className="flex justify-end pt-2">
-              <button
-                type="submit"
-                disabled={savingPassword || !passwords.current || !passwords.newPass || !passwords.confirm || passwords.newPass !== passwords.confirm}
-                className="flex items-center gap-2 px-5 py-2 bg-warning text-white text-sm font-medium rounded-lg hover:bg-warning-dark disabled:opacity-50 transition-colors shadow-sm"
-              >
-                {savingPassword ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Lock size={15} />}
-                {savingPassword ? 'Changing...' : 'Change Password'}
-              </button>
-            </div>
-          </form>
         </div>
 
         {/* Teams Integration */}

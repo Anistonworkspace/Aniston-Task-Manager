@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText, Paperclip, Download } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText, Paperclip, Download, Eye, GripVertical } from 'lucide-react';
+import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { useToast } from '../components/common/Toast';
@@ -62,6 +63,8 @@ export default function AssistantManagerPlanPage() {
   const [copiedLink, setCopiedLink] = useState(null);
   const [directors, setDirectors] = useState([]);
   const [selectedDirectorId, setSelectedDirectorId] = useState(null);
+  const [viewingTask, setViewingTask] = useState(null); // { catIndex, taskIndex, task, catLabel }
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   const autoSaveTimer = useRef(null);
 
@@ -101,6 +104,57 @@ export default function AssistantManagerPlanPage() {
   useEffect(() => {
     if (selectedDirectorId) loadPlan();
   }, [loadPlan]);
+
+  // Update current time every minute for NOW detection
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Determine which category is "NOW" (current time falls within its range)
+  const nowCategoryIndex = useMemo(() => {
+    const now = currentTime.getHours() * 60 + currentTime.getMinutes();
+    return categories.findIndex(cat => {
+      if (!cat.startTime || !cat.endTime) return false;
+      const [sh, sm] = cat.startTime.split(':').map(Number);
+      const [eh, em] = cat.endTime.split(':').map(Number);
+      const start = sh * 60 + sm;
+      const end = eh * 60 + em;
+      return now >= start && now < end;
+    });
+  }, [categories, currentTime]);
+
+  // Build display order: NOW card first, then rest in saved order
+  const displayOrder = useMemo(() => {
+    const indices = categories.map((_, i) => i);
+    if (nowCategoryIndex >= 0) {
+      const filtered = indices.filter(i => i !== nowCategoryIndex);
+      return [nowCategoryIndex, ...filtered];
+    }
+    return indices;
+  }, [categories, nowCategoryIndex]);
+
+  // Drag-and-drop handler for category cards
+  function onDragEnd(result) {
+    if (!result.destination) return;
+    const srcDisplayIdx = result.source.index;
+    const destDisplayIdx = result.destination.index;
+    if (srcDisplayIdx === destDisplayIdx) return;
+
+    // Convert display indices back to actual category indices
+    const srcActualIdx = displayOrder[srcDisplayIdx];
+    const destActualIdx = displayOrder[destDisplayIdx];
+
+    setCategories(prev => {
+      const updated = [...prev];
+      const [moved] = updated.splice(srcActualIdx, 1);
+      // Find where destActualIdx ended up after the splice
+      const insertAt = srcActualIdx < destActualIdx ? destActualIdx : destActualIdx;
+      updated.splice(insertAt, 0, moved);
+      return updated;
+    });
+    markDirty();
+  }
 
   // Auto-save after 30 seconds of inactivity
   useEffect(() => {
@@ -201,8 +255,9 @@ export default function AssistantManagerPlanPage() {
     markDirty();
   }
 
-  // Delete task
+  // Delete task (with confirmation)
   function deleteTask(catIndex, taskIndex) {
+    if (!window.confirm('Are you sure you want to remove this task?')) return;
     setCategories(prev =>
       prev.map((cat, ci) => {
         if (ci !== catIndex) return cat;
@@ -602,16 +657,25 @@ export default function AssistantManagerPlanPage() {
       </div>
 
       {/* ═══ CATEGORY CARDS ═══ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
-        {categories.map((cat, catIndex) => {
+      <DragDropContext onDragEnd={onDragEnd}>
+        <Droppable droppableId="categories" direction="horizontal">
+          {(provided) => (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8" ref={provided.innerRef} {...provided.droppableProps}>
+        {displayOrder.map((catIndex, displayIdx) => {
+          const cat = categories[catIndex];
+          if (!cat) return null;
           const catTotal = cat.tasks?.length || 0;
           const catDone = cat.tasks?.filter(t => t.done).length || 0;
           const catPct = catTotal > 0 ? Math.round((catDone / catTotal) * 100) : 0;
+          const isNow = catIndex === nowCategoryIndex;
 
           return (
+            <Draggable key={cat.id || `cat-${catIndex}`} draggableId={cat.id || `cat-${catIndex}`} index={displayIdx} isDragDisabled={isNow}>
+              {(dragProvided, dragSnapshot) => (
             <div
-              key={cat.id || catIndex}
-              className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all relative overflow-hidden group"
+              ref={dragProvided.innerRef}
+              {...dragProvided.draggableProps}
+              className={`bg-white rounded-2xl border shadow-sm hover:shadow-md transition-all relative overflow-hidden group ${isNow ? 'border-emerald-400 ring-2 ring-emerald-200 shadow-emerald-100' : 'border-gray-100'} ${dragSnapshot.isDragging ? 'shadow-xl rotate-1' : ''}`}
             >
               {/* Color accent bar */}
               <div
@@ -623,6 +687,17 @@ export default function AssistantManagerPlanPage() {
                 {/* Category header */}
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
+                    {/* Drag handle */}
+                    {!isNow && (
+                      <div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors" title="Drag to reorder">
+                        <GripVertical size={16} />
+                      </div>
+                    )}
+                    {isNow && <div {...dragProvided.dragHandleProps} />}
+                    {/* NOW badge */}
+                    {isNow && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white shadow-sm animate-pulse">NOW</span>
+                    )}
                     {/* Icon with selector */}
                     <div className="relative">
                       <div
@@ -769,14 +844,11 @@ export default function AssistantManagerPlanPage() {
                             {PRIORITY_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
                           </select>
 
-                          {/* Task timing */}
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            <input type="time" value={task.startTime || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'startTime', e.target.value)}
-                              className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded px-1 py-0.5 w-[72px] focus:outline-none focus:ring-1 focus:ring-indigo-300" title="Task start time" />
-                            <span className="text-gray-300 text-[10px]">-</span>
-                            <input type="time" value={task.endTime || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'endTime', e.target.value)}
-                              className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded px-1 py-0.5 w-[72px] focus:outline-none focus:ring-1 focus:ring-indigo-300" title="Task end time" />
-                          </div>
+                          {/* View task button */}
+                          <button onClick={() => setViewingTask({ catIndex, taskIndex, task, catLabel: cat.label })}
+                            className="p-1 rounded-lg text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 transition-all flex-shrink-0" title="View task details">
+                            <Eye size={14} />
+                          </button>
 
                           {/* Subtask count badge */}
                           {subTotal > 0 && (
@@ -948,8 +1020,11 @@ export default function AssistantManagerPlanPage() {
                 </div>
               </div>
             </div>
+              )}
+            </Draggable>
           );
         })}
+        {provided.placeholder}
 
         {/* Add New Category card */}
         <div
@@ -977,6 +1052,9 @@ export default function AssistantManagerPlanPage() {
           </div>
         )}
       </div>
+          )}
+        </Droppable>
+      </DragDropContext>
 
       {/* ═══ NOTES SECTION ═══ */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-8">
@@ -995,6 +1073,84 @@ export default function AssistantManagerPlanPage() {
           className="w-full text-sm bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 placeholder-gray-400 resize-y"
         />
       </div>
+
+      {/* ═══ TASK VIEW MODAL ═══ */}
+      {viewingTask && (() => {
+        const { task, catLabel } = viewingTask;
+        const pStyle = getPriorityStyle(task.priority || 'medium');
+        const subDone = (task.subtasks || []).filter(s => s.done).length;
+        const subTotal = (task.subtasks || []).length;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setViewingTask(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="p-5 border-b border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">{catLabel}</p>
+                    <h3 className="text-base font-bold text-gray-900 mt-0.5">{task.text}</h3>
+                  </div>
+                  <button onClick={() => setViewingTask(null)} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className={`text-[10px] font-semibold rounded-full px-2.5 py-0.5 ${pStyle.bg} ${pStyle.text} ${pStyle.border} border`}>{pStyle.label}</span>
+                  {task.done && <span className="text-[10px] font-semibold rounded-full px-2.5 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200">Completed</span>}
+                  {subTotal > 0 && <span className="text-[10px] font-medium text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">{subDone}/{subTotal} subtasks</span>}
+                </div>
+              </div>
+              <div className="p-5 space-y-4">
+                {task.description && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Description</p>
+                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{task.description}</p>
+                  </div>
+                )}
+                {task.link && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Link</p>
+                    <a href={task.link} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 hover:underline break-all">{task.link}</a>
+                  </div>
+                )}
+                {(task.attachments || []).length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Attachments</p>
+                    <div className="space-y-1">
+                      {task.attachments.map((att, ai) => (
+                        <div key={ai} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <Paperclip size={12} className="text-gray-400" />
+                          <span className="text-xs text-gray-700 flex-1 truncate">{att.name}</span>
+                          <a href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`} target="_blank" rel="noopener noreferrer"
+                            className="text-[10px] text-indigo-500 hover:underline">Download</a>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {subTotal > 0 && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Subtasks ({subDone}/{subTotal})</p>
+                    <div className="space-y-1.5">
+                      {task.subtasks.map((sub, si) => (
+                        <div key={sub.id || si} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 ${sub.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300'}`}>
+                            {sub.done && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                          </div>
+                          <span className={`text-xs flex-1 ${sub.done ? 'line-through text-gray-400' : 'text-gray-700'}`}>{sub.title}</span>
+                          {sub.description && <span className="text-[10px] text-gray-400 truncate max-w-[120px]">{sub.description}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!task.description && !task.link && subTotal === 0 && (task.attachments || []).length === 0 && (
+                  <p className="text-sm text-gray-400 text-center py-4">No additional details for this task.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ═══ FLOATING SAVE INDICATOR ═══ */}
       {dirty && (

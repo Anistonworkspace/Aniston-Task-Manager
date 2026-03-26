@@ -122,6 +122,28 @@ export function AuthProvider({ children }) {
     return newUser;
   };
 
+  const loginWithToken = async (newToken, newRefreshToken) => {
+    sessionStorage.setItem('token', newToken);
+    if (newRefreshToken) sessionStorage.setItem('refreshToken', newRefreshToken);
+    setToken(newToken);
+    try {
+      const res = await api.get('/auth/me');
+      const u = res.data?.data?.user || res.data?.user || res.data;
+      setUser(u);
+      sessionStorage.setItem('user', JSON.stringify(u));
+      setViewAsRole(null);
+      lastActivityRef.current = Date.now();
+      connect(newToken);
+      return u;
+    } catch (err) {
+      sessionStorage.removeItem('token');
+      sessionStorage.removeItem('refreshToken');
+      setToken(null);
+      setUser(null);
+      throw err;
+    }
+  };
+
   const updateProfile = async (updates) => {
     const res = await api.put('/auth/profile', updates);
     const updatedUser = res.data?.data?.user || res.data?.user;
@@ -147,7 +169,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, logout, updateProfile,
+      user, token, loading, login, loginWithToken, logout, updateProfile,
       isAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
       isSuperAdmin, viewAsRole, switchViewAs, effectiveRole,
     }}>

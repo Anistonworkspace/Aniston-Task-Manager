@@ -1,9 +1,8 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { getSocket } from '../services/socket';
 
 export default function useSocket(event, callback) {
-  // Defensive: guard against corrupted React (null useRef)
-  const callbackRef = useRef ? useRef(callback) : { current: callback };
+  const callbackRef = useRef(callback);
 
   useEffect(() => {
     callbackRef.current = callback;

@@ -13,6 +13,7 @@ export default function TaskGroup({
   onTaskClick, onTaskUpdate, onAddTask, onArchiveTask,
   onRequestExtension, onRequestHelp, onEditColumn, onAddColumn, onRemoveColumn,
   onHideColumn, onResizeColumn, onSort, onArchiveGroup, onRenameGroup,
+  onDuplicateColumn, onChangeColumnType, onFilter, onGroupBy, onSetColumnRequired, onSetColumnDescription, onReorderColumns,
   color = '#579bfc', index, isDragEnabled = false,
   selectedTaskIds = [], onSelectTask,
 }) {
@@ -27,7 +28,10 @@ export default function TaskGroup({
   const [editingColId, setEditingColId] = useState(null);
   const [editingColTitle, setEditingColTitle] = useState('');
   const [showAddColumn, setShowAddColumn] = useState(false);
+  const [addAfterColId, setAddAfterColId] = useState(null);
   const [resizingCol, setResizingCol] = useState(null);
+  const [dragColId, setDragColId] = useState(null);
+  const [dragOverColId, setDragOverColId] = useState(null);
   const [taskColWidth, setTaskColWidth] = useState(() => {
     try { return parseInt(localStorage.getItem(`board_task_col_width_${boardId}`)) || 300; } catch { return 300; }
   });
@@ -209,7 +213,21 @@ export default function TaskGroup({
 
               {/* Scrollable columns */}
               {columns.map(col => (
-                <div key={col.id} className="flex-shrink-0 py-2.5 px-2 border-r border-[#e6e9ef] group/col relative"
+                <div key={col.id}
+                  draggable
+                  onDragStart={(e) => { setDragColId(col.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={(e) => { e.preventDefault(); setDragOverColId(col.id); }}
+                  onDragLeave={() => setDragOverColId(null)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragColId && dragColId !== col.id && onReorderColumns) {
+                      onReorderColumns(dragColId, col.id);
+                    }
+                    setDragColId(null);
+                    setDragOverColId(null);
+                  }}
+                  onDragEnd={() => { setDragColId(null); setDragOverColId(null); }}
+                  className={`flex-shrink-0 py-2.5 px-2 border-r border-[#e6e9ef] group/col relative cursor-grab active:cursor-grabbing transition-all ${dragOverColId === col.id ? 'bg-[#e6f0ff] border-l-2 border-l-[#0073ea]' : ''} ${dragColId === col.id ? 'opacity-40' : ''}`}
                   style={{ width: col.width || 140 }}>
                   {editingColId === col.id ? (
                     <div className="flex items-center gap-1">
@@ -221,7 +239,10 @@ export default function TaskGroup({
                     </div>
                   ) : (
                     <div className="flex items-center justify-center gap-1">
-                      <span className="truncate cursor-default" onDoubleClick={() => startEditColumn(col)}>{col.title}</span>
+                      <span className="truncate cursor-default" onDoubleClick={() => startEditColumn(col)}>
+                        {col.title}
+                        {col.required && <span className="text-[#e2445c] ml-0.5" title="Required">*</span>}
+                      </span>
                       <ColumnInfoTooltip column={col} />
                       <ColumnHeaderMenu
                         column={col}
@@ -229,7 +250,14 @@ export default function TaskGroup({
                         onRemove={onRemoveColumn}
                         onHide={onHideColumn}
                         onSort={onSort}
-                        onAddColumnRight={() => setShowAddColumn(true)}
+                        onAddColumnRight={() => { setAddAfterColId(col.id); setShowAddColumn(true); }}
+                        onDuplicate={onDuplicateColumn ? (c) => onDuplicateColumn(c) : undefined}
+                        onChangeType={onChangeColumnType ? (colId, type) => onChangeColumnType(colId, type) : undefined}
+                        onFilter={onFilter ? (c) => onFilter(c) : undefined}
+                        onCollapse={onHideColumn ? (c) => onHideColumn(c.id) : undefined}
+                        onGroupBy={onGroupBy ? (c) => onGroupBy(c) : undefined}
+                        onSetRequired={onSetColumnRequired}
+                        onSetDescription={onSetColumnDescription}
                       />
                     </div>
                   )}
@@ -252,7 +280,7 @@ export default function TaskGroup({
                   <Plus size={14} />
                 </button>
                 {showAddColumn && (
-                  <AddColumnModal anchorRef={addColBtnRef} onAdd={col => { onAddColumn?.(col); setShowAddColumn(false); }} onClose={() => setShowAddColumn(false)} />
+                  <AddColumnModal anchorRef={addColBtnRef} onAdd={col => { onAddColumn?.(col, addAfterColId); setShowAddColumn(false); setAddAfterColId(null); }} onClose={() => { setShowAddColumn(false); setAddAfterColId(null); }} />
                 )}
               </div>
             </div>

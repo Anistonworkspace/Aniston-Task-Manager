@@ -1,4 +1,4 @@
-const { Task, Board, User, Notification, Subtask } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
@@ -180,6 +180,7 @@ const getTasks = async (req, res) => {
         { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
+        { model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] },
       ],
       order,
     };
@@ -265,7 +266,7 @@ const updateTask = async (req, res) => {
       'assignedTo', 'isArchived', 'progress',
       'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',
     ];
-    const restrictedFields = ['status', 'progress', 'groupId', 'position'];
+    const restrictedFields = ['title', 'status', 'progress', 'groupId', 'position'];
 
     // Determine allowed fields based on role + task creator
     let allowedFields;

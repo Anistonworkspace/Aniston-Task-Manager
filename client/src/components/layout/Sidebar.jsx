@@ -47,6 +47,10 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace })
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <LayoutGrid size={14} strokeWidth={1.8} /> Browse all boards
       </button>
+      <button onClick={() => { onClose(); onNavigate('/users'); }}
+        className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
+        <Puzzle size={14} strokeWidth={1.8} /> Browse all workspaces
+      </button>
       <button onClick={() => { onClose(); onNavigate('/archive'); }}
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <Archive size={14} strokeWidth={1.8} /> View archive
@@ -75,6 +79,8 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [renamingWorkspace, setRenamingWorkspace] = useState(null);
   const [wsRenameValue, setWsRenameValue] = useState('');
   const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [dragBoardId, setDragBoardId] = useState(null);
+  const [dragOverWsId, setDragOverWsId] = useState(null);
   const resizing = useRef(false);
   const wsMenuBtnRef = useRef(null);
   const renameInputRef = useRef(null);
@@ -84,6 +90,17 @@ export default function Sidebar({ collapsed, onToggle }) {
   useSocket('board:created', () => loadData());
   useSocket('board:updated', () => loadData());
   useSocket('board:deleted', () => loadData());
+
+  // Drag-and-drop: move board to a different workspace
+  async function handleBoardDrop(boardId, targetWsId) {
+    if (!boardId) return;
+    try {
+      await api.put(`/boards/${boardId}`, { workspaceId: targetWsId || null });
+      loadData();
+    } catch (err) {
+      console.error('Failed to move board:', err);
+    }
+  }
 
   async function loadData() {
     try {
@@ -173,7 +190,11 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   function renderBoardItem(board) {
     return (
-      <div key={board.id} className="group flex items-center">
+      <div key={board.id}
+        draggable
+        onDragStart={(e) => { setDragBoardId(board.id); e.dataTransfer.effectAllowed = 'move'; }}
+        onDragEnd={() => { setDragBoardId(null); setDragOverWsId(null); }}
+        className={`group flex items-center ${dragBoardId === board.id ? 'opacity-40' : ''}`}>
         {renamingBoard === board.id ? (
           <div className="flex-1 px-2 py-1">
             <input ref={renameInputRef} type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)}
@@ -364,7 +385,11 @@ export default function Sidebar({ collapsed, onToggle }) {
               const isOpen = openWorkspaces[ws.id] !== false;
 
               return (
-                <div key={ws.id} className="group/ws relative">
+                <div key={ws.id}
+                  onDragOver={(e) => { if (dragBoardId) { e.preventDefault(); setDragOverWsId(ws.id); } }}
+                  onDragLeave={() => setDragOverWsId(null)}
+                  onDrop={(e) => { e.preventDefault(); if (dragBoardId) { handleBoardDrop(dragBoardId, ws.id); setDragBoardId(null); setDragOverWsId(null); } }}
+                  className={`group/ws relative transition-all ${dragOverWsId === ws.id ? 'bg-sidebar-hover ring-1 ring-sidebar-accent rounded-md' : ''}`}>
                   <button
                     onClick={() => setOpenWorkspaces(prev => ({ ...prev, [ws.id]: !isOpen }))}
                     className="flex items-center gap-2 pl-3 pr-7 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors">
@@ -440,7 +465,11 @@ export default function Sidebar({ collapsed, onToggle }) {
 
             {/* Unassigned boards (not in any workspace) */}
             {filteredUnassigned.length > 0 && (
-              <div>
+              <div
+                onDragOver={(e) => { if (dragBoardId) { e.preventDefault(); setDragOverWsId('unassigned'); } }}
+                onDragLeave={() => setDragOverWsId(null)}
+                onDrop={(e) => { e.preventDefault(); if (dragBoardId) { handleBoardDrop(dragBoardId, null); setDragBoardId(null); setDragOverWsId(null); } }}
+                className={`transition-all ${dragOverWsId === 'unassigned' ? 'bg-sidebar-hover ring-1 ring-sidebar-accent rounded-md' : ''}`}>
                 {workspaces.length > 0 && (
                   <div className="px-3 py-1 mt-1">
                     <span className="text-[10px] uppercase tracking-wide text-sidebar-text/40">Other Boards</span>

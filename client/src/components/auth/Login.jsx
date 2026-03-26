@@ -1,16 +1,50 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { FolderKanban, Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import api from '../../services/api';
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, loginWithToken } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+
+  // Check SSO status and handle SSO callback
+  useEffect(() => {
+    // Check if Microsoft SSO is enabled
+    api.get('/auth/sso-status').then(res => {
+      setSsoEnabled(res.data?.data?.ssoEnabled ?? false);
+    }).catch(() => {});
+
+    // Handle SSO callback params
+    const params = new URLSearchParams(window.location.search);
+    const ssoStatus = params.get('sso');
+
+    if (ssoStatus === 'success') {
+      const token = params.get('token');
+      const refreshToken = params.get('refreshToken');
+      // Clean up URL immediately
+      window.history.replaceState({}, '', window.location.pathname);
+
+      if (token) {
+        setSsoLoading(true);
+        loginWithToken(token, refreshToken)
+          .then(() => navigate('/'))
+          .catch(() => setError('SSO login failed. Please try again.'))
+          .finally(() => setSsoLoading(false));
+      }
+    } else if (ssoStatus === 'error') {
+      const msg = params.get('msg') || 'Microsoft sign-in failed.';
+      setError(decodeURIComponent(msg));
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -26,6 +60,35 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleMicrosoftSSO() {
+    setError('');
+    setSsoLoading(true);
+    try {
+      const res = await api.get('/auth/microsoft');
+      const authUrl = res.data?.data?.authUrl || res.data?.authUrl;
+      if (authUrl) {
+        window.location.href = authUrl;
+      } else {
+        setError('Could not start Microsoft sign-in.');
+        setSsoLoading(false);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to start Microsoft sign-in.');
+      setSsoLoading(false);
+    }
+  }
+
+  if (ssoLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-10 w-10 border-2 border-primary/20 border-t-primary mx-auto mb-4" />
+          <p className="text-sm text-text-secondary">Signing in with Microsoft...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -74,6 +137,34 @@ export default function Login() {
               {loading ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white/30 border-t-white" /> : <><span>Log in</span><ArrowRight size={16} /></>}
             </button>
           </form>
+
+          {/* Microsoft SSO Button */}
+          {ssoEnabled && (
+            <>
+              <div className="flex items-center gap-3 my-5">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-xs text-text-tertiary font-medium">or</span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+              <button
+                onClick={handleMicrosoftSSO}
+                disabled={ssoLoading}
+                className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 transition-all disabled:opacity-60 shadow-sm"
+              >
+                {ssoLoading ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-gray-600" />
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 21 21" fill="none">
+                    <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
+                    <rect x="11" y="1" width="9" height="9" fill="#7FBA00"/>
+                    <rect x="1" y="11" width="9" height="9" fill="#00A4EF"/>
+                    <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+                  </svg>
+                )}
+                <span>Sign in with Microsoft</span>
+              </button>
+            </>
+          )}
 
           <div className="text-center mt-4">
             <Link to="/forgot-password" className="text-xs text-text-tertiary hover:text-primary">Forgot password?</Link>

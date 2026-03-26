@@ -23,7 +23,8 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
   const { user, canManage, isMember, isManager, isAdmin } = useAuth();
   const isApproved = task?.approvalStatus === 'approved';
   // Approved tasks are fully read-only for members. Admin/manager can still edit.
-  const canEditAllFields = !isApproved && (isAdmin || (isManager && !!task?.creator && task.creator.role !== 'admin'));
+  const canEditAllFields = !isApproved && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
+  const canEditTitle = !isApproved && (canEditAllFields || (isMember && task?.assignedTo === user?.id));
   const canEditStatus = !isApproved; // No one edits status on approved tasks (already done)
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
@@ -184,15 +185,6 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
                 <Calendar size={13} /> Extend
               </button>
             )}
-            <button onClick={handleDuplicate} className="p-1.5 rounded-md hover:bg-surface text-text-secondary hover:text-primary transition-colors" title="Duplicate task">
-              <Copy size={16} />
-            </button>
-            {canManage && (
-              <button onClick={() => { if (confirm('Archive this task?')) { save({ isArchived: true }); onClose(); } }}
-                className="p-1.5 rounded-md hover:bg-yellow-50 text-text-secondary hover:text-yellow-600 transition-colors" title="Archive (tasks cannot be deleted)">
-                <Archive size={16} />
-              </button>
-            )}
             <button onClick={onClose} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
           </div>
         </div>
@@ -200,7 +192,7 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {/* Title */}
-          {canEditAllFields ? (
+          {canEditTitle ? (
             <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={handleTitleBlur}
               className="text-xl font-bold text-text-primary border-none outline-none w-full mb-4 placeholder:text-text-tertiary" placeholder="Task title" />
           ) : (

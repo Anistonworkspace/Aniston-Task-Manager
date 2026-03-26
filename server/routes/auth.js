@@ -14,6 +14,9 @@ const {
   approveAccount,
   rejectAccount,
   refreshTokenEndpoint,
+  microsoftAuthUrl,
+  microsoftCallback,
+  getSsoStatus,
 } = require('../controllers/authController');
 const { upload, handleMulterError } = require('../middleware/upload');
 
@@ -96,6 +99,11 @@ router.post('/avatar', authenticate, upload.single('avatar'), handleMulterError,
 
 // ─── GET /api/auth/users ─────────────────────────────────────
 router.get('/users', authenticate, getAllUsers);
+
+// ─── Microsoft SSO ────────────────────────────────────────────
+router.get('/microsoft', microsoftAuthUrl);
+router.get('/microsoft/callback', microsoftCallback);
+router.get('/sso-status', getSsoStatus);
 
 // ─── Account Approval (admin/manager only) ───────────────────
 router.get('/pending-accounts', authenticate, managerOrAdmin, getPendingAccounts);

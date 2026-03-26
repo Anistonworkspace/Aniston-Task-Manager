@@ -25,6 +25,7 @@ const DueDateExtension = require('./DueDateExtension');
 const HelpRequest = require('./HelpRequest');
 const PromotionHistory = require('./PromotionHistory');
 const HierarchyLevel = require('./HierarchyLevel');
+const IntegrationConfig = require('./IntegrationConfig');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -326,6 +327,7 @@ module.exports = {
   PromotionHistory,
   HierarchyLevel,
   DirectorPlan,
+  IntegrationConfig,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────
@@ -397,3 +399,6 @@ User.hasMany(HelpRequest, { foreignKey: 'requestedTo', as: 'helpRequestsReceived
 PromotionHistory.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
 PromotionHistory.belongsTo(User, { foreignKey: 'promotedBy', as: 'promoter', onDelete: 'CASCADE' });
 User.hasMany(PromotionHistory, { foreignKey: 'userId', as: 'promotions' });
+
+// ─── IntegrationConfig <-> User (configuredBy) ──────────────
+IntegrationConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
