@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Send, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive } from 'lucide-react';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
@@ -18,6 +18,9 @@ import WatcherSection from './WatcherSection';
 import RecurrenceSection from './RecurrenceSection';
 import DueDateExtensionModal from './DueDateExtensionModal';
 import HelpRequestModal from './HelpRequestModal';
+import ConflictWarning from './ConflictWarning';
+import useGrammarCorrection from '../../hooks/useGrammarCorrection';
+import GrammarSuggestion from '../common/GrammarSuggestion';
 
 export default function TaskModal({ task, boardId, members = [], onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin } = useAuth();
@@ -47,6 +50,10 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
   const [showExtension, setShowExtension] = useState(false);
   const [showHelpRequest, setShowHelpRequest] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+  const saveTimerRef = useRef(null);
+  const [conflicts, setConflicts] = useState([]);
+  const [showConflicts, setShowConflicts] = useState(false);
+  const { checkGrammar: checkDescGrammar, suggestion: descGrammarSuggestion, isChecking: isCheckingDescGrammar, applySuggestion: applyDescGrammar, dismissSuggestion: dismissDescGrammar } = useGrammarCorrection();
 
   useEffect(() => {
     if (task?.id) {
@@ -54,6 +61,12 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
       loadFiles();
     }
   }, [task?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, []);
 
   async function loadComments() {
     try {
@@ -75,11 +88,13 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
       await api.put(`/tasks/${task.id}`, updates);
       if (onUpdate) onUpdate({ ...task, ...updates });
       setSaveStatus('saved');
-      setTimeout(() => setSaveStatus(null), 2000);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
     } catch (err) {
       console.error('Failed to update task:', err);
       setSaveStatus('error');
-      setTimeout(() => setSaveStatus(null), 3000);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
     }
   }
 
@@ -93,8 +108,37 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
   function handleAssigneeChange(val) { setAssignee(val); setShowAssigneeDrop(false); save({ assignedTo: val }); }
 
   function handleDateChange(field, val) {
-    if (field === 'dueDate') { setDueDate(val); save({ dueDate: val || null }); }
-    else { setStartDate(val); save({ startDate: val || null }); }
+    if (field === 'dueDate') {
+      setDueDate(val);
+      save({ dueDate: val || null });
+      // Check for scheduling conflicts when due date changes
+      if (val && (assignee || task?.assignedTo)) {
+        const userId = assignee || task?.assignedTo;
+        const startTime = new Date(val);
+        const endTime = new Date(startTime.getTime() + (task?.estimatedHours || 1) * 60 * 60 * 1000);
+        api.post('/tasks/check-conflicts', {
+          userId,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          excludeTaskId: task?.id,
+        }).then(res => {
+          const data = res.data || res;
+          if (data.hasConflicts) {
+            setConflicts(data.conflicts);
+            setShowConflicts(true);
+          } else {
+            setConflicts([]);
+            setShowConflicts(false);
+          }
+        }).catch(() => {
+          setConflicts([]);
+          setShowConflicts(false);
+        });
+      }
+    } else {
+      setStartDate(val);
+      save({ startDate: val || null });
+    }
   }
 
   function handleAddTag(e) {
@@ -307,6 +351,25 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
               <span className="text-sm px-3 py-1.5">{dueDate || '—'}</span>
             )}
 
+            {/* Conflict Warning */}
+            {showConflicts && conflicts.length > 0 && (
+              <>
+                <span></span>
+                <ConflictWarning
+                  conflicts={conflicts}
+                  taskId={task?.id}
+                  dueDate={dueDate}
+                  estimatedHours={task?.estimatedHours || 1}
+                  onRescheduled={(result) => {
+                    setConflicts(prev => prev.filter(c => c.taskId !== result.taskId));
+                    if (conflicts.length <= 1) setShowConflicts(false);
+                    if (onUpdate) onUpdate({ ...task });
+                  }}
+                  onDismiss={() => setShowConflicts(false)}
+                />
+              </>
+            )}
+
             {/* Start Date */}
             <span className="text-sm text-text-secondary flex items-center">Start date</span>
             {canEditAllFields ? (
@@ -320,7 +383,7 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
             <span className="text-sm text-text-secondary flex items-center"><Tag size={14} className="mr-1" /> Tags</span>
             <div className="flex items-center gap-1.5 flex-wrap">
               {tags.map((tag, i) => (
-                <span key={i} className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs px-2 py-0.5 rounded-full">
+                <span key={tag} className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs px-2 py-0.5 rounded-full">
                   {tag}
                   {canEditAllFields && <button onClick={() => removeTag(i)} className="hover:text-danger"><X size={10} /></button>}
                 </span>
@@ -336,8 +399,16 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
           <div className="mb-6">
             <label className="text-sm font-medium text-text-primary mb-1.5 block">Description</label>
             {canEditAllFields ? (
-              <textarea value={description} onChange={(e) => setDescription(e.target.value)} onBlur={handleDescBlur}
-                placeholder="Add a description..." className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px]" />
+              <>
+                <textarea value={description} onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }} onBlur={handleDescBlur}
+                  placeholder="Add a description..." className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px]" />
+                <GrammarSuggestion
+                  suggestion={descGrammarSuggestion}
+                  isChecking={isCheckingDescGrammar}
+                  onApply={() => { const corrected = applyDescGrammar(); setDescription(corrected); save({ description: corrected }); }}
+                  onDismiss={dismissDescGrammar}
+                />
+              </>
             ) : (
               <p className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30">{description || 'No description'}</p>
             )}

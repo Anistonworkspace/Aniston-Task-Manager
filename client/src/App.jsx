@@ -33,6 +33,8 @@ const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage'));
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
 const DirectorDashboardPage = lazy(() => import('./pages/DirectorDashboardPage'));
 const AssistantManagerPlanPage = lazy(() => import('./pages/AssistantManagerPlanPage'));
+const NotesPage = lazy(() => import('./pages/NotesPage'));
+const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
 
 function PageLoader() {
   return (
@@ -114,8 +116,8 @@ export default function App() {
           <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
           <Route path="manager-dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
           <Route path="admin-dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="director-dashboard" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary>} />
-          <Route path="director-plan" element={<Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense>} />
+          <Route path="director-dashboard" element={<ManagerRoute><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></ManagerRoute>} />
+          <Route path="director-plan" element={<ManagerRoute><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></ManagerRoute>} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
           <Route path="reviews" element={<Suspense fallback={<PageLoader />}><ReviewPage /></Suspense>} />
@@ -129,6 +131,8 @@ export default function App() {
           <Route path="org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
+          <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
+          <Route path="feedback" element={<AdminRoute><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></AdminRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

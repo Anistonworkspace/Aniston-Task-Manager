@@ -125,7 +125,11 @@ function validateFileSignature(req, res, next) {
         return res.status(400).json({ success: false, message: 'File content does not match declared type. Upload rejected.' });
       }
     }
-  } catch (e) { /* file read error — let upload continue */ }
+  } catch (e) {
+    // File read failed — reject the upload
+    try { fs.unlinkSync(filePath); } catch {}
+    return res.status(400).json({ success: false, message: 'File validation failed' });
+  }
   next();
 }
 

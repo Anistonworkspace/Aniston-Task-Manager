@@ -1,4 +1,5 @@
 const { Announcement, User, Workspace } = require('../models');
+const { sanitizeInput } = require('../utils/sanitize');
 
 // GET /api/announcements
 exports.getAnnouncements = async (req, res) => {
@@ -28,8 +29,8 @@ exports.createAnnouncement = async (req, res) => {
     if (!title) return res.status(400).json({ success: false, message: 'Title is required.' });
 
     const announcement = await Announcement.create({
-      title,
-      content: content || '',
+      title: sanitizeInput(title),
+      content: sanitizeInput(content) || '',
       type: type || 'info',
       isPinned: isPinned || false,
       workspaceId: workspaceId || null,
@@ -56,8 +57,8 @@ exports.updateAnnouncement = async (req, res) => {
 
     const { title, content, type, isPinned, isActive } = req.body;
     await announcement.update({
-      ...(title !== undefined && { title }),
-      ...(content !== undefined && { content }),
+      ...(title !== undefined && { title: sanitizeInput(title) }),
+      ...(content !== undefined && { content: sanitizeInput(content) }),
       ...(type !== undefined && { type }),
       ...(isPinned !== undefined && { isPinned }),
       ...(isActive !== undefined && { isActive }),

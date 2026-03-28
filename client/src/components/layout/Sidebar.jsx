@@ -5,7 +5,8 @@ import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
   FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
   Puzzle, Archive, Settings, Link2, GitBranch, PanelLeftClose, PanelLeft,
-  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown, BookOpen
+  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown, BookOpen,
+  Mic, MessageSquare
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -47,7 +48,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace })
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <LayoutGrid size={14} strokeWidth={1.8} /> Browse all boards
       </button>
-      <button onClick={() => { onClose(); onNavigate('/users'); }}
+      <button onClick={() => { onClose(); onNavigate('/admin-settings'); }}
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <Puzzle size={14} strokeWidth={1.8} /> Browse all workspaces
       </button>
@@ -306,6 +307,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label="Tasks" path="/tasks" tourId="nav-tasks" />
             <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
+            <NavItem icon={Mic} label="Notes" path="/notes" tourId="nav-notes" />
             <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />
           </nav>
 
@@ -325,6 +327,7 @@ export default function Sidebar({ collapsed, onToggle }) {
               <nav className="py-1 flex flex-col gap-0.5">
                 <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
                 <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
+                <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
                 <NavItem icon={Archive} label="Archive" path="/archive" />
               </nav>
             </>

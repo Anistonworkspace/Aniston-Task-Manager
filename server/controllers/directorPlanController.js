@@ -2,6 +2,7 @@ const { DirectorPlan, User } = require('../models');
 const { Op } = require('sequelize');
 const DirectorPlanModel = require('../models/DirectorPlan');
 const { emitToUser } = require('../services/socketService');
+const { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } = require('../services/teamsCalendarService');
 
 /**
  * Find a specific director by ID, or fallback to first available.
@@ -212,6 +213,11 @@ const saveDailyPlan = async (req, res) => {
       });
     }
 
+    // Fire-and-forget: sync task deadlines to Teams calendar
+    syncDirectorPlanCalendarEvents(plan, director, date).catch(err => {
+      console.error('[DirectorPlan] Calendar sync error (non-blocking):', err.message);
+    });
+
     await broadcastPlanUpdate(director, date, plan);
     res.json({ success: true, data: plan });
   } catch (error) {
@@ -296,5 +302,85 @@ const updateNotes = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
+
+/**
+ * Sync director plan task deadlines to Teams calendar.
+ * Creates, updates, or deletes calendar events as deadlines change.
+ * Non-blocking — errors are logged but do not affect the save operation.
+ */
+async function syncDirectorPlanCalendarEvents(plan, director, date) {
+  const categories = plan.categories;
+  if (!Array.isArray(categories)) return;
+
+  const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+
+  for (const category of categories) {
+    if (!Array.isArray(category.tasks)) continue;
+
+    for (let i = 0; i < category.tasks.length; i++) {
+      const task = category.tasks[i];
+
+      // Build a deadline Date from the task's deadline field
+      let deadlineDate = null;
+      if (task.deadline) {
+        if (task.deadline.includes('T') || task.deadline.includes('-')) {
+          deadlineDate = new Date(task.deadline);
+        } else if (task.deadline.includes(':')) {
+          const [hours, minutes] = task.deadline.split(':').map(Number);
+          deadlineDate = new Date(date);
+          deadlineDate.setHours(hours, minutes, 0, 0);
+        }
+        if (deadlineDate && isNaN(deadlineDate.getTime())) deadlineDate = null;
+      }
+
+      const taskName = task.text || task.name || `Task ${i + 1}`;
+      const existingEventId = task.teamsEventId || null;
+
+      if (deadlineDate && !task.done) {
+        // Task has a deadline and is not done — create or update event
+        const startTime = new Date(deadlineDate.getTime() - 60 * 60 * 1000); // 1 hour before deadline
+        const endTime = deadlineDate;
+        const subject = `[Director Plan] ${taskName} — ${category.label}`;
+        const body = `
+          <b>Category:</b> ${category.label}<br>
+          <b>Task:</b> ${taskName}<br>
+          <b>Deadline:</b> ${deadlineDate.toLocaleString()}<br>
+          <b>Plan Date:</b> ${date}<br>
+          <br><a href="${CLIENT_URL}/director-plan">Open Director Plan</a>
+        `;
+
+        if (existingEventId) {
+          // Update existing event
+          await updateCalendarEvent(director.id, existingEventId, {
+            subject,
+            body,
+            startTime,
+            endTime,
+          });
+        } else {
+          // Create new event
+          const eventId = await createCalendarEvent(director.id, {
+            subject,
+            body,
+            startTime,
+            endTime,
+            reminder: 30,
+          });
+          if (eventId) {
+            // Store the eventId back on the task for future updates/deletes
+            task.teamsEventId = eventId;
+          }
+        }
+      } else if (existingEventId && (!deadlineDate || task.done)) {
+        // Deadline removed or task done — delete the calendar event
+        await deleteCalendarEvent(director.id, existingEventId);
+        delete task.teamsEventId;
+      }
+    }
+  }
+
+  // Persist any teamsEventId changes back to the plan
+  await plan.update({ categories: plan.categories });
+}
 
 module.exports = { getDirectors, getDailyPlan, saveDailyPlan, updateTask, updateNotes };

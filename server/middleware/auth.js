@@ -27,6 +27,13 @@ const authenticate = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    if (decoded.type === 'refresh') {
+      return res.status(401).json({
+        success: false,
+        message: 'Use refresh token only at the refresh endpoint.',
+      });
+    }
+
     const user = await User.findByPk(decoded.id);
 
     if (!user) {

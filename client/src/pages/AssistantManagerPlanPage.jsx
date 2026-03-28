@@ -39,6 +39,17 @@ const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 const sortByPriority = (tasks) => [...(tasks || [])].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
 const getPriorityStyle = (p) => PRIORITY_OPTIONS.find(o => o.value === p) || PRIORITY_OPTIONS[2];
 
+function getDeadlineUrgency(deadline) {
+  if (!deadline) return null;
+  const now = new Date();
+  const dl = new Date(deadline);
+  const hoursLeft = (dl - now) / (1000 * 60 * 60);
+  if (hoursLeft < 0) return { label: 'Overdue', color: 'bg-red-100 text-red-700 border-red-200' };
+  if (hoursLeft <= 24) return { label: 'Due Soon', color: 'bg-orange-100 text-orange-700 border-orange-200' };
+  if (hoursLeft <= 48) return { label: '2 Days', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' };
+  return { label: format(dl, 'MMM d'), color: 'bg-gray-100 text-gray-600 border-gray-200' };
+}
+
 function getIcon(name, size = 18) {
   const Icon = ICON_MAP[name];
   return Icon ? <Icon size={size} /> : <Folder size={size} />;
@@ -65,6 +76,7 @@ export default function AssistantManagerPlanPage() {
   const [selectedDirectorId, setSelectedDirectorId] = useState(null);
   const [viewingTask, setViewingTask] = useState(null); // { catIndex, taskIndex, task, catLabel }
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [users, setUsers] = useState([]);
 
   const autoSaveTimer = useRef(null);
 
@@ -80,6 +92,13 @@ export default function AssistantManagerPlanPage() {
         setSelectedDirectorId(dirs[0].id);
       }
     }).catch((e) => { console.error('Failed to load directors:', e); });
+  }, []);
+
+  // Load users for assignee selector
+  useEffect(() => {
+    api.get('/auth/users').then(res => {
+      setUsers(res.data?.data || res.data || []);
+    }).catch(() => {});
   }, []);
 
   // Load plan for selected date + director
@@ -134,9 +153,30 @@ export default function AssistantManagerPlanPage() {
     return indices;
   }, [categories, nowCategoryIndex]);
 
-  // Drag-and-drop handler for category cards
+  // Drag-and-drop handler for category cards and tasks
   function onDragEnd(result) {
     if (!result.destination) return;
+
+    if (result.type === 'TASK') {
+      // Task-level drag and drop
+      const srcCatIndex = parseInt(result.source.droppableId.split('-')[1]);
+      const destCatIndex = parseInt(result.destination.droppableId.split('-')[1]);
+      const srcTaskIndex = result.source.index;
+      const destTaskIndex = result.destination.index;
+
+      if (srcCatIndex === destCatIndex && srcTaskIndex === destTaskIndex) return;
+
+      setCategories(prev => {
+        const updated = prev.map(cat => ({ ...cat, tasks: [...(cat.tasks || [])] }));
+        const [movedTask] = updated[srcCatIndex].tasks.splice(srcTaskIndex, 1);
+        updated[destCatIndex].tasks.splice(destTaskIndex, 0, movedTask);
+        return updated;
+      });
+      markDirty();
+      return;
+    }
+
+    // Card-level drag and drop (type === 'CARD')
     const srcDisplayIdx = result.source.index;
     const destDisplayIdx = result.destination.index;
     if (srcDisplayIdx === destDisplayIdx) return;
@@ -290,6 +330,9 @@ export default function AssistantManagerPlanPage() {
             description: '', link: '',
             startTime: '', endTime: '',
             priority: 'medium',
+            deadline: null,
+            assigneeId: null,
+            assigneeName: null,
             subtasks: [],
           }],
         };
@@ -658,7 +701,7 @@ export default function AssistantManagerPlanPage() {
 
       {/* ═══ CATEGORY CARDS ═══ */}
       <DragDropContext onDragEnd={onDragEnd}>
-        <Droppable droppableId="categories" direction="horizontal">
+        <Droppable droppableId="categories" direction="horizontal" type="CARD">
           {(provided) => (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8" ref={provided.innerRef} {...provided.droppableProps}>
         {displayOrder.map((catIndex, displayIdx) => {
@@ -808,18 +851,27 @@ export default function AssistantManagerPlanPage() {
                 </div>
 
                 {/* Task list */}
-                <div className="space-y-2 mb-3">
-                  {sortByPriority(cat.tasks || []).map((task) => {
-                    const taskIndex = (cat.tasks || []).indexOf(task);
+                <Droppable droppableId={`tasks-${catIndex}`} type="TASK">
+                  {(taskDropProvided, taskDropSnapshot) => (
+                <div className={`space-y-2 mb-3 min-h-[20px] rounded-lg transition-colors ${taskDropSnapshot.isDraggingOver ? 'bg-indigo-50/50' : ''}`} ref={taskDropProvided.innerRef} {...taskDropProvided.droppableProps}>
+                  {(cat.tasks || []).map((task, taskIndex) => {
                     const expandKey = `${catIndex}-${taskIndex}`;
                     const isExpanded = expandedTasks[expandKey];
                     const subDone = (task.subtasks || []).filter(s => s.done).length;
                     const subTotal = (task.subtasks || []).length;
 
                     return (
-                      <div key={task.id || taskIndex} className={`rounded-xl border transition-all ${isExpanded ? 'border-indigo-200 shadow-sm' : 'border-transparent'} ${task.done ? 'bg-gray-50' : 'bg-white'}`}>
+                      <Draggable key={task.id || `task-${catIndex}-${taskIndex}`} draggableId={task.id || `task-${catIndex}-${taskIndex}`} index={taskIndex}>
+                        {(taskDragProvided, taskDragSnapshot) => (
+                      <div ref={taskDragProvided.innerRef} {...taskDragProvided.draggableProps}
+                        className={`rounded-xl border transition-all ${isExpanded ? 'border-indigo-200 shadow-sm' : 'border-transparent'} ${task.done ? 'bg-gray-50' : 'bg-white'} ${taskDragSnapshot.isDragging ? 'shadow-lg ring-2 ring-indigo-200' : ''}`}>
                         {/* Task header row */}
                         <div className="flex items-center gap-2 px-3 py-2.5 group">
+                          {/* Task drag handle */}
+                          <div {...taskDragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors flex-shrink-0">
+                            <GripVertical size={14} />
+                          </div>
+
                           {/* Expand toggle */}
                           <button onClick={() => toggleExpand(catIndex, taskIndex)} className="p-0.5 rounded text-gray-400 hover:text-indigo-500 flex-shrink-0">
                             <ChevronDownIcon size={14} className={`transition-transform duration-200 ${isExpanded ? '' : '-rotate-90'}`} />
@@ -842,6 +894,39 @@ export default function AssistantManagerPlanPage() {
                             className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border cursor-pointer outline-none flex-shrink-0 ${getPriorityStyle(task.priority || 'medium').bg} ${getPriorityStyle(task.priority || 'medium').text} ${getPriorityStyle(task.priority || 'medium').border}`}
                           >
                             {PRIORITY_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                          </select>
+
+                          {/* Deadline */}
+                          <input
+                            type="datetime-local"
+                            value={task.deadline || ''}
+                            onChange={e => updateTaskField(catIndex, taskIndex, 'deadline', e.target.value)}
+                            className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 w-[140px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
+                          />
+                          {task.deadline && (() => {
+                            const u = getDeadlineUrgency(task.deadline);
+                            return u ? <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${u.color}`}>{u.label}</span> : null;
+                          })()}
+                          {task.deadline && (
+                            <button onClick={() => updateTaskField(catIndex, taskIndex, 'deadline', null)}
+                              className="p-0.5 rounded text-gray-400 hover:text-red-500 transition-colors flex-shrink-0" title="Clear deadline">
+                              <X size={12} />
+                            </button>
+                          )}
+
+                          {/* Assignee */}
+                          <select
+                            value={task.assigneeId || ''}
+                            onChange={e => {
+                              const userId = e.target.value;
+                              const user = users.find(u => u.id === userId);
+                              updateTaskField(catIndex, taskIndex, 'assigneeId', userId || null);
+                              updateTaskField(catIndex, taskIndex, 'assigneeName', user?.name || null);
+                            }}
+                            className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 max-w-[100px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
+                          >
+                            <option value="">Unassigned</option>
+                            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                           </select>
 
                           {/* View task button */}
@@ -978,8 +1063,11 @@ export default function AssistantManagerPlanPage() {
                           </div>
                         )}
                       </div>
+                        )}
+                      </Draggable>
                     );
                   })}
+                  {taskDropProvided.placeholder}
 
                   {catTotal === 0 && (
                     <div className="text-center py-4 text-xs text-gray-400">
@@ -987,6 +1075,8 @@ export default function AssistantManagerPlanPage() {
                     </div>
                   )}
                 </div>
+                  )}
+                </Droppable>
 
                 {/* Add task input */}
                 <div className="flex items-center gap-2 mt-2">
@@ -1093,13 +1183,30 @@ export default function AssistantManagerPlanPage() {
                     <X size={18} />
                   </button>
                 </div>
-                <div className="flex items-center gap-2 mt-2">
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
                   <span className={`text-[10px] font-semibold rounded-full px-2.5 py-0.5 ${pStyle.bg} ${pStyle.text} ${pStyle.border} border`}>{pStyle.label}</span>
                   {task.done && <span className="text-[10px] font-semibold rounded-full px-2.5 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200">Completed</span>}
                   {subTotal > 0 && <span className="text-[10px] font-medium text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">{subDone}/{subTotal} subtasks</span>}
+                  {task.deadline && (() => {
+                    const u = getDeadlineUrgency(task.deadline);
+                    return u ? <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${u.color}`}>{u.label}</span> : null;
+                  })()}
+                  {task.assigneeName && <span className="text-[10px] font-semibold rounded-full px-2.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-200">{task.assigneeName}</span>}
                 </div>
               </div>
               <div className="p-5 space-y-4">
+                {task.deadline && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Deadline</p>
+                    <p className="text-sm text-gray-700">{format(new Date(task.deadline), 'MMM d, yyyy h:mm a')}</p>
+                  </div>
+                )}
+                {task.assigneeName && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Assignee</p>
+                    <p className="text-sm text-gray-700">{task.assigneeName}</p>
+                  </div>
+                )}
                 {task.description && (
                   <div>
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Description</p>
@@ -1143,7 +1250,7 @@ export default function AssistantManagerPlanPage() {
                     </div>
                   </div>
                 )}
-                {!task.description && !task.link && subTotal === 0 && (task.attachments || []).length === 0 && (
+                {!task.description && !task.link && !task.deadline && !task.assigneeName && subTotal === 0 && (task.attachments || []).length === 0 && (
                   <p className="text-sm text-gray-400 text-center py-4">No additional details for this task.</p>
                 )}
               </div>

@@ -51,6 +51,7 @@ router.post('/n8n/task-created', async (req, res) => {
       dueDate: dueDate || null,
       groupId: firstGroup?.id || 'new',
       position: 0,
+      createdBy: board.createdBy || null,
     });
 
     // Emit socket event

@@ -25,6 +25,7 @@ import DueDateExtensionModal from '../components/board/DueDateExtensionModal';
 import HelpRequestModal from '../components/board/HelpRequestModal';
 import TimelineView from '../components/board/TimelineView';
 import { SkeletonBoard } from '../components/common/Skeleton';
+import { useToast } from '../components/common/Toast';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 
@@ -58,6 +59,7 @@ export default function BoardPage() {
   const navigate = useNavigate();
   const { user, canManage } = useAuth();
   const { pushAction } = useUndo();
+  const { error: toastError, success: toastSuccess } = useToast();
   const [board, setBoard] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
@@ -129,16 +131,18 @@ export default function BoardPage() {
       const allUsers = usersRes.data.users || usersRes.data || [];
       setMembers(allUsers.length > 0 ? allUsers : data.members || data.Users || []);
     } catch (err) {
-      console.error('Failed to load board:', err);
+      console.error('[BoardPage] loadBoard error:', err);
+      toastError('Failed to load board. Please refresh the page.');
     }
   }, [boardId]);
 
   const loadTasks = useCallback(async () => {
     try {
-      let url = `/tasks?boardId=${boardId}`;
-      if (advFilters.person) url += `&assignedTo=${advFilters.person}`;
-      if (searchQuery) url += `&search=${searchQuery}`;
-      const res = await api.get(url);
+      const params = new URLSearchParams();
+      params.set('boardId', boardId);
+      if (advFilters.person) params.set('assignedTo', advFilters.person);
+      if (searchQuery) params.set('search', searchQuery);
+      const res = await api.get(`/tasks?${params.toString()}`);
       let fetched = res.data.tasks || res.data || [];
       if (advFilters.status.length > 0) {
         fetched = fetched.filter(t => advFilters.status.includes(t.status));
@@ -150,7 +154,8 @@ export default function BoardPage() {
       fetched = fetched.filter(t => !t.isArchived);
       setTasks(fetched);
     } catch (err) {
-      console.error('Failed to load tasks:', err);
+      console.error('[BoardPage] loadTasks error:', err);
+      toastError('Failed to load tasks. Please refresh the page.');
     } finally {
       setLoading(false);
     }
@@ -195,7 +200,8 @@ export default function BoardPage() {
         },
       });
     } catch (err) {
-      console.error('Failed to add task:', err);
+      console.error('[BoardPage] handleAddTask error:', err);
+      toastError('Failed to add task. Please try again.');
     }
   }
 
@@ -223,7 +229,8 @@ export default function BoardPage() {
         });
       }
     } catch (err) {
-      console.error('Failed to update task:', err);
+      console.error('[BoardPage] handleTaskUpdate error:', err);
+      toastError('Failed to update task. Please try again.');
     }
   }
 
@@ -244,7 +251,8 @@ export default function BoardPage() {
         },
       });
     } catch (err) {
-      console.error('Failed to archive task:', err);
+      console.error('[BoardPage] handleArchiveTask error:', err);
+      toastError('Failed to archive task. Please try again.');
     }
   }
 
@@ -269,7 +277,10 @@ export default function BoardPage() {
       setGroups(updatedGroups);
       setBoard(prev => ({ ...prev, archivedGroups: updatedArchivedGroups }));
       setTasks(prev => prev.filter(t => t.groupId !== groupId));
-    } catch (err) { console.error('Failed to archive group:', err); }
+    } catch (err) {
+      console.error('[BoardPage] handleArchiveGroup error:', err);
+      toastError('Failed to archive group. Please try again.');
+    }
   }
 
   async function handleRenameGroup(groupId, newName) {
@@ -277,7 +288,10 @@ export default function BoardPage() {
       const updatedGroups = groups.map(g => g.id === groupId ? { ...g, title: newName, name: newName } : g);
       await api.put(`/boards/${boardId}`, { groups: updatedGroups });
       setGroups(updatedGroups);
-    } catch (err) { console.error('Failed to rename group:', err); }
+    } catch (err) {
+      console.error('[BoardPage] handleRenameGroup error:', err);
+      toastError('Failed to rename group. Please try again.');
+    }
   }
 
   function handleSelectTask(taskId, selected) {
@@ -406,7 +420,10 @@ export default function BoardPage() {
     setBoard(prev => ({ ...prev, groups: updatedGroups }));
     try {
       await api.put(`/boards/${boardId}`, { groups: updatedGroups });
-    } catch (err) { console.error('Failed to add group:', err); }
+    } catch (err) {
+      console.error('[BoardPage] handleAddGroup error:', err);
+      toastError('Failed to add group. Please try again.');
+    }
   }
 
   function toggleHideColumn(colId) {
@@ -528,7 +545,8 @@ export default function BoardPage() {
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       saveAs(blob, `${board?.name || 'Board'}_export.xlsx`);
     } catch (err) {
-      console.error('Export failed:', err);
+      console.error('[BoardPage] handleExportCSV error:', err);
+      toastError('Export failed. Please try again.');
     }
   }
 

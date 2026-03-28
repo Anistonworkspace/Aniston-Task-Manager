@@ -54,6 +54,9 @@ const archiveRoutes = require('./routes/archive');
 const pushRoutes = require('./routes/push');
 const externalRoutes = require('./routes/external');
 const integrationConfigRoutes = require('./routes/integrationConfig');
+const noteRoutes = require('./routes/notes');
+const feedbackRoutes = require('./routes/feedback');
+const aiRoutes = require('./routes/ai');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -85,7 +88,7 @@ if (process.env.NODE_ENV === 'production') {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
     const origin = req.headers.origin || req.headers.referer;
     const allowed = process.env.CLIENT_URL || 'http://localhost:3000';
-    if (origin && !origin.startsWith(allowed)) {
+    if (origin && origin !== allowed) {
       return res.status(403).json({ success: false, message: 'Request origin not allowed' });
     }
     next();
@@ -186,6 +189,9 @@ app.use('/api/director-plan', directorPlanRoutes);
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/integrations', integrationConfigRoutes);
+app.use('/api/notes', noteRoutes);
+app.use('/api/feedback', feedbackRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
 app.use('/api', dependencyRoutes);
@@ -249,6 +255,22 @@ const start = async () => {
       // Ignore — type may not exist yet or value already exists
     }
 
+    // Create task_owners table for multi-owner support
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS task_owners (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        "userId" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "isPrimary" BOOLEAN DEFAULT false,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE("taskId", "userId")
+      )`);
+      console.log('[Server] task_owners table ensured.');
+    } catch (e) {
+      console.warn('[Server] task_owners migration warning:', e.message?.slice(0, 100));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
@@ -269,6 +291,8 @@ const start = async () => {
       'CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications("isRead")',
       'CREATE INDEX IF NOT EXISTS idx_activities_task_id ON activities("taskId")',
       'CREATE INDEX IF NOT EXISTS idx_activities_board_id ON activities("boardId")',
+      'CREATE INDEX IF NOT EXISTS idx_task_owners_task_id ON task_owners("taskId")',
+      'CREATE INDEX IF NOT EXISTS idx_task_owners_user_id ON task_owners("userId")',
     ];
     for (const sql of indices) {
       try { await sequelize.query(sql); } catch (e) { /* table may not exist yet */ }
@@ -289,6 +313,22 @@ const start = async () => {
       // Start recurring task job
       const { startRecurringTaskJob } = require('./jobs/recurringTaskJob');
       startRecurringTaskJob();
+
+      // Start director plan deadline notification job (every 30 minutes)
+      const cron = require('node-cron');
+      const { checkDirectorPlanDeadlines } = require('./services/deadlineNotificationService');
+      cron.schedule('*/30 * * * *', async () => {
+        try {
+          await checkDirectorPlanDeadlines();
+        } catch (err) {
+          console.error('[DeadlineNotification] Cron job error:', err.message);
+        }
+      });
+      console.log('[Server] Director plan deadline notification cron started (every 30 min)');
+
+      // Start priority escalation job (daily at midnight)
+      const { startPriorityEscalationJob } = require('./jobs/priorityEscalationJob');
+      startPriorityEscalationJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

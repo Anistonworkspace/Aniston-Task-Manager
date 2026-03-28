@@ -2,6 +2,7 @@ const { WorkLog, Task, User, Board } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
+const { sanitizeInput } = require('../utils/sanitize');
 
 /**
  * POST /api/worklogs
@@ -31,7 +32,7 @@ const createWorkLog = async (req, res) => {
     }
 
     const worklog = await WorkLog.create({
-      content,
+      content: sanitizeInput(content),
       taskId,
       date: date || new Date().toISOString().slice(0, 10),
       userId: req.user.id,
@@ -132,7 +133,7 @@ const updateWorkLog = async (req, res) => {
 
     const { content } = req.body;
     if (content !== undefined) {
-      await worklog.update({ content });
+      await worklog.update({ content: sanitizeInput(content) });
     }
 
     const fullLog = await WorkLog.findByPk(worklog.id, {

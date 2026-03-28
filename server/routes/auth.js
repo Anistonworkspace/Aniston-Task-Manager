@@ -18,7 +18,7 @@ const {
   microsoftCallback,
   getSsoStatus,
 } = require('../controllers/authController');
-const { upload, handleMulterError } = require('../middleware/upload');
+const { upload, handleMulterError, validateFileSignature } = require('../middleware/upload');
 
 const router = express.Router();
 
@@ -80,7 +80,8 @@ router.put(
       .isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters'),
     body('newPassword')
       .optional()
-      .isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+      .isStrongPassword({ minLength: 8, minLowercase: 1, minUppercase: 1, minNumbers: 1, minSymbols: 1 })
+      .withMessage('New password must be at least 8 characters and contain uppercase, lowercase, number, and special character'),
   ],
   updateProfile
 );
@@ -95,7 +96,7 @@ router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 
 // ─── POST /api/auth/avatar ────────────────────────────────────
-router.post('/avatar', authenticate, upload.single('avatar'), handleMulterError, uploadAvatar);
+router.post('/avatar', authenticate, upload.single('avatar'), handleMulterError, validateFileSignature, uploadAvatar);
 
 // ─── GET /api/auth/users ─────────────────────────────────────
 router.get('/users', authenticate, getAllUsers);

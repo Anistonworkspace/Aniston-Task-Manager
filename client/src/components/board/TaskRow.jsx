@@ -34,8 +34,8 @@ const TaskRow = React.memo(function TaskRow({
     const customVal = task.customFields?.[col.id];
     switch (col.type) {
       case 'status': return <StatusCell value={task.status} onChange={canEditStatus ? (val => onUpdate({ status: val })) : undefined} approvalStatus={task.approvalStatus} />;
-      case 'person': return <PersonCell value={task.assignedTo || task.assignee} members={members} onChange={canEditAllFields ? (val => onUpdate({ assignedTo: val })) : undefined} />;
-      case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} />;
+      case 'person': return <PersonCell value={task.assignedTo || task.assignee} owners={task.owners || []} members={members} onChange={canEditAllFields ? (val => onUpdate({ assignedTo: val })) : undefined} onOwnersChange={canEditAllFields ? (ids => onUpdate({ ownerIds: ids })) : undefined} />;
+      case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
       case 'progress': return <ProgressCell value={task.progress || 0} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
       case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;

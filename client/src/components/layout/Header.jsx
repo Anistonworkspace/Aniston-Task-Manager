@@ -90,6 +90,17 @@ export default function Header({ onToggleSidebar }) {
     if (path === '/reviews') return 'Reviews';
     if (path === '/users') return 'Team';
     if (path === '/profile') return 'Profile';
+    if (path === '/org-chart') return 'Org Chart';
+    if (path === '/cross-team') return 'Dependencies';
+    if (path === '/admin-settings') return 'Admin Settings';
+    if (path === '/admin-dashboard') return 'My Dashboard';
+    if (path === '/manager-dashboard') return 'My Dashboard';
+    if (path === '/member-dashboard') return 'My Dashboard';
+    if (path === '/tasks') return 'Tasks & Workflows';
+    if (path === '/integrations') return 'Integrations';
+    if (path === '/archive') return 'Archive';
+    if (path === '/director-dashboard') return 'Director Dashboard';
+    if (path === '/director-plan') return 'Director Plan';
     if (path.startsWith('/boards/')) return 'Board';
     return '';
   };

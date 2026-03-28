@@ -20,6 +20,13 @@ function swVersionPlugin() {
 
 export default defineConfig({
   plugins: [react(), swVersionPlugin()],
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.js'],
+    css: true,
+    include: ['src/**/*.{test,spec}.{js,jsx}'],
+  },
   server: {
     port: 3000,
     proxy: {

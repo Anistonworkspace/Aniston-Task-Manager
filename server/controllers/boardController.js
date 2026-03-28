@@ -1,7 +1,9 @@
-const { Board, User, Task, Workspace, sequelize } = require('../models');
+const { Board, User, Task, Workspace, TaskOwner, sequelize } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { emitToBoard, emitToUser } = require('../services/socketService');
+const { logActivity } = require('../services/activityService');
+const { sanitizeInput } = require('../utils/sanitize');
 
 /**
  * POST /api/boards
@@ -16,8 +18,8 @@ const createBoard = async (req, res) => {
     const { name, description, color, columns, groups } = req.body;
 
     const board = await Board.create({
-      name,
-      description: description || '',
+      name: sanitizeInput(name),
+      description: sanitizeInput(description) || '',
       color: color || '#0073ea',
       columns: columns || undefined,
       groups: groups || undefined,
@@ -39,6 +41,15 @@ const createBoard = async (req, res) => {
     const { getIO } = require('../services/socketService');
     try { getIO().emit('board:created', { board: fullBoard }); } catch {}
 
+    logActivity({
+      action: 'board_created',
+      description: `Created board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+    });
+
     res.status(201).json({
       success: true,
       message: 'Board created successfully.',
@@ -52,10 +63,19 @@ const createBoard = async (req, res) => {
 
 /**
  * GET /api/boards
+ * Query params: search, archived, page (default 1), limit (default 20)
  */
 const getBoards = async (req, res) => {
   try {
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(req.user.id)) {
+      return res.status(401).json({ success: false, message: 'Invalid user session' });
+    }
+
     const { search, archived } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const offset = (page - 1) * limit;
 
     const where = {};
 
@@ -67,7 +87,15 @@ const getBoards = async (req, res) => {
       where.name = { [Op.iLike]: `%${search}%` };
     }
 
-    const boards = await Board.findAll({
+    // Members only see boards they belong to — filter in SQL, not in memory
+    if (req.user.role === 'member') {
+      where[Op.or] = [
+        { createdBy: req.user.id },
+        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" = '${req.user.id}')`),
+      ];
+    }
+
+    const { count, rows: boards } = await Board.findAndCountAll({
       where,
       include: [
         { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
@@ -79,37 +107,42 @@ const getBoards = async (req, res) => {
         },
       ],
       order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      distinct: true,
     });
 
-    // Attach member count and task count
+    // Attach task counts for this page of boards only
     const boardIds = boards.map((b) => b.id);
-    const taskCounts = await Task.findAll({
-      attributes: ['boardId', [sequelize.fn('COUNT', sequelize.col('id')), 'taskCount']],
-      where: { boardId: { [Op.in]: boardIds }, isArchived: false },
-      group: ['boardId'],
-      raw: true,
-    });
-
     const taskCountMap = {};
-    taskCounts.forEach((tc) => {
-      taskCountMap[tc.boardId] = parseInt(tc.taskCount, 10);
-    });
 
-    // Members only see boards they belong to
-    let visibleBoards = boards;
-    if (req.user.role === 'member') {
-      visibleBoards = boards.filter((b) =>
-        b.members && b.members.some((m) => m.id === req.user.id)
-      );
+    if (boardIds.length > 0) {
+      const taskCounts = await Task.findAll({
+        attributes: ['boardId', [sequelize.fn('COUNT', sequelize.col('id')), 'taskCount']],
+        where: { boardId: { [Op.in]: boardIds }, isArchived: false },
+        group: ['boardId'],
+        raw: true,
+      });
+      taskCounts.forEach((tc) => {
+        taskCountMap[tc.boardId] = parseInt(tc.taskCount, 10);
+      });
     }
 
-    const data = visibleBoards.map((b) => ({
+    const data = boards.map((b) => ({
       ...b.toJSON(),
       memberCount: b.members ? b.members.length : 0,
       taskCount: taskCountMap[b.id] || 0,
     }));
 
-    res.json({ success: true, data: { boards: data } });
+    const totalPages = Math.ceil(count / limit);
+
+    res.json({
+      success: true,
+      data: {
+        boards: data,
+        pagination: { page, limit, total: count, totalPages },
+      },
+    });
   } catch (error) {
     console.error('[Board] GetBoards error:', error);
     res.status(500).json({ success: false, message: 'Server error fetching boards.' });
@@ -139,8 +172,10 @@ const getBoard = async (req, res) => {
           include: [
             { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
             { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+            { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
           ],
           order: [['position', 'ASC']],
+          limit: 500,
         },
       ],
     });
@@ -149,20 +184,27 @@ const getBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Members can view boards they belong to OR have tasks assigned on
+    // Members can view boards they belong to OR have tasks assigned/owned on
     if (req.user.role === 'member') {
       const isMember = board.members && board.members.some((m) => m.id === req.user.id);
       const hasAssignedTasks = board.tasks && board.tasks.some((t) => t.assignedTo === req.user.id);
-      if (!isMember && !hasAssignedTasks) {
+      const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => o.id === req.user.id));
+      if (!isMember && !hasAssignedTasks && !isTaskOwner) {
         return res.status(403).json({ success: false, message: 'Access denied. You are not a member of this board.' });
       }
-      // Auto-add as member if they have tasks but aren't a member yet
-      if (!isMember && hasAssignedTasks) {
+      // Auto-add as member if they have tasks/ownership but aren't a member yet
+      if (!isMember && (hasAssignedTasks || isTaskOwner)) {
         try { await board.addMember(req.user.id); } catch (e) { /* ignore */ }
       }
     }
 
-    res.json({ success: true, data: { board } });
+    const tasksTruncated = board.tasks && board.tasks.length >= 500;
+    const responseData = { board };
+    if (tasksTruncated) {
+      responseData.warning = 'This board has more than 500 tasks. Only the first 500 tasks are shown. Use filters to narrow results.';
+    }
+
+    res.json({ success: true, data: responseData });
   } catch (error) {
     console.error('[Board] GetBoard error:', error);
     res.status(500).json({ success: false, message: 'Server error fetching board.' });
@@ -184,13 +226,15 @@ const updateBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    const allowedFields = ['name', 'description', 'color', 'columns', 'groups', 'customColumns', 'isArchived', 'workspaceId'];
+    const allowedFields = ['name', 'description', 'color', 'columns', 'groups', 'archivedGroups', 'customColumns', 'isArchived', 'workspaceId'];
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
       }
     }
+    if (updates.name !== undefined) updates.name = sanitizeInput(updates.name);
+    if (updates.description !== undefined) updates.description = sanitizeInput(updates.description);
 
     await board.update(updates);
 
@@ -203,6 +247,18 @@ const updateBoard = async (req, res) => {
 
     // Real-time update
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
+
+    logActivity({
+      action: updates.isArchived ? 'board_archived' : 'board_updated',
+      description: updates.isArchived
+        ? `Archived board "${board.name}"`
+        : `Updated board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: { updatedFields: Object.keys(updates) },
+    });
 
     res.json({
       success: true,
@@ -243,11 +299,21 @@ const deleteBoard = async (req, res) => {
     }
 
     const boardId = board.id;
+    const boardName = board.name;
     await board.destroy();
 
     emitToBoard(boardId, 'board:deleted', { boardId });
     // Also broadcast to all for sidebar refresh
     try { const { getIO } = require('../services/socketService'); getIO().emit('board:deleted', { boardId }); } catch {}
+
+    logActivity({
+      action: 'board_deleted',
+      description: `Deleted board "${boardName}"`,
+      entityType: 'board',
+      entityId: boardId,
+      boardId: boardId,
+      userId: req.user.id,
+    });
 
     res.json({ success: true, message: 'Board deleted successfully.' });
   } catch (error) {
@@ -305,6 +371,16 @@ const addMember = async (req, res) => {
 
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
 
+    logActivity({
+      action: 'board_member_added',
+      description: `Added ${userToAdd.name} to board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: { addedUserId: userId, addedUserName: userToAdd.name },
+    });
+
     res.json({
       success: true,
       message: 'Member added successfully.',
@@ -336,6 +412,7 @@ const removeMember = async (req, res) => {
       });
     }
 
+    const removedUser = await User.findByPk(userId, { attributes: ['id', 'name'] });
     await board.removeMember(userId);
 
     emitToUser(userId, 'board:memberRemoved', {
@@ -351,6 +428,16 @@ const removeMember = async (req, res) => {
     });
 
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
+
+    logActivity({
+      action: 'board_member_removed',
+      description: `Removed ${removedUser?.name || userId} from board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: { removedUserId: userId, removedUserName: removedUser?.name },
+    });
 
     res.json({
       success: true,
@@ -443,22 +530,24 @@ const importTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'tasks array is required.' });
     }
 
-    const created = [];
     const groups = board.groups || [];
     const defaultGroupId = groups[0]?.id || 'new';
 
+    // Compute max position once before the loop to avoid N+1 queries
+    let nextPosition = (await Task.max('position', { where: { boardId: board.id, groupId: defaultGroupId } }) || 0) + 1;
+
+    const created = [];
     for (const item of importData) {
       if (!item.title) continue;
-      const maxPos = await Task.max('position', { where: { boardId: board.id, groupId: defaultGroupId } });
       const task = await Task.create({
-        title: item.title,
-        description: item.description || '',
+        title: sanitizeInput(item.title || item.name || 'Untitled'),
+        description: sanitizeInput(item.description || ''),
         status: ['not_started', 'working_on_it', 'stuck', 'done'].includes(item.status) ? item.status : 'not_started',
         priority: ['low', 'medium', 'high', 'critical'].includes(item.priority) ? item.priority : 'medium',
         dueDate: item.dueDate || null,
         startDate: item.startDate || null,
         groupId: defaultGroupId,
-        position: (maxPos || 0) + 1,
+        position: nextPosition++,
         boardId: board.id,
         createdBy: req.user.id,
       });

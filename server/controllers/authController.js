@@ -116,8 +116,8 @@ const login = async (req, res) => {
       });
     }
 
-    // Block password login for Microsoft SSO users
-    if (user.authProvider === 'microsoft' && !user.password) {
+    // Block password login for ALL Microsoft SSO users, regardless of residual password hash
+    if (user.authProvider === 'microsoft') {
       return res.status(400).json({
         success: false,
         message: 'This account uses Microsoft SSO. Please click "Sign in with Microsoft" to log in.',
@@ -317,8 +317,10 @@ const forgotPassword = async (req, res) => {
     const resetToken = jwt.sign({ id: user.id, type: 'reset' }, process.env.JWT_SECRET, { expiresIn: '1h' });
     const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
-    // In production, send email. For now, return the token directly.
-    console.log(`[Auth] Password reset requested for ${email}. Reset URL: ${resetUrl}`);
+    // In production, send email. For now, log only in development.
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[Auth] Password reset requested for ${email}. Reset URL: ${resetUrl}`);
+    }
 
     res.json({
       success: true,
@@ -358,6 +360,17 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'This account uses Microsoft SSO. Please reset your password at https://passwordreset.microsoftonline.com/',
+      });
+    }
+
+    // Single-use enforcement: reject if the user record was updated after the token was issued.
+    // A successful reset updates updatedAt, so re-use of the same token is caught here.
+    const tokenIssuedAt = decoded.iat * 1000; // iat is in seconds, convert to ms
+    const userUpdatedAt = new Date(user.updatedAt).getTime();
+    if (userUpdatedAt > tokenIssuedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reset link has already been used. Please request a new one.',
       });
     }
 

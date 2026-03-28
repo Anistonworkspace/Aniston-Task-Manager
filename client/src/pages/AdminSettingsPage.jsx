@@ -86,7 +86,7 @@ function UsersTab() {
 
   async function fetchUsers() {
     try {
-      const res = await api.get('/auth/users');
+      const res = await api.get('/users');
       setUsers(res.data.users || res.data.data?.users || res.data || []);
     } catch (err) { console.error(err); } finally { setLoading(false); }
   }

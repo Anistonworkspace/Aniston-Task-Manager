@@ -3,7 +3,7 @@ import {
   ExternalLink, Unplug, CheckCircle2, AlertCircle, RefreshCw, Calendar,
   Users, Download, Eye, EyeOff, ChevronDown, ChevronUp, Shield, Check, X,
   Settings, Save, TestTube2, Edit3, Trash2, ToggleLeft, ToggleRight,
-  Lock, Key, Globe, Link2,
+  Lock, Key, Globe, Link2, Bot, Sparkles, Cpu, Zap,
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -40,9 +40,24 @@ export default function IntegrationsPage() {
     ssoEnabled: false,
   });
 
+  // AI Config state
+  const [aiConfig, setAiConfig] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiEditing, setAiEditing] = useState(false);
+  const [aiSaving, setAiSaving] = useState(false);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [showAiKey, setShowAiKey] = useState(false);
+  const [aiForm, setAiForm] = useState({
+    provider: 'deepseek',
+    apiKey: '',
+    model: '',
+    baseUrl: '',
+  });
+
   useEffect(() => {
     loadStatus();
     if (isAdmin) loadConfig();
+    if (isAdmin) loadAiConfig();
     const params = new URLSearchParams(window.location.search);
     if (params.get('teams') === 'success') {
       setSuccessMsg('Microsoft Teams connected successfully! Users are being synced from M365.');
@@ -209,6 +224,111 @@ export default function IntegrationsPage() {
       setError(err.response?.data?.message || 'Status sync failed.');
     } finally { setSyncingStatus(false); }
   }
+
+  // ─── AI Config Handlers ────────────────────────────────────
+  async function loadAiConfig() {
+    setAiLoading(true);
+    try {
+      const res = await api.get('/ai/config');
+      const data = res.data?.data || res.data;
+      setAiConfig(data);
+      if (data) {
+        setAiForm({
+          provider: data.provider || 'deepseek',
+          apiKey: '',
+          model: data.model || '',
+          baseUrl: data.baseUrl || '',
+        });
+      }
+    } catch {
+      setAiConfig(null);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function handleSaveAiConfig() {
+    if (!aiForm.provider) {
+      setError('AI provider is required.');
+      return;
+    }
+    if (!aiForm.apiKey && !aiConfig?.hasKey) {
+      setError('API key is required.');
+      return;
+    }
+    // If editing and no new key provided, we need the key
+    if (aiEditing && !aiForm.apiKey) {
+      setError('Please enter the API key (it cannot be retrieved from the server).');
+      return;
+    }
+
+    setAiSaving(true);
+    setError('');
+    setSuccessMsg('');
+    try {
+      const res = await api.post('/ai/config', {
+        provider: aiForm.provider,
+        apiKey: aiForm.apiKey,
+        model: aiForm.model || '',
+        baseUrl: aiForm.baseUrl || '',
+      });
+      const data = res.data?.data || res.data;
+      setAiConfig(data);
+      setAiEditing(false);
+      setAiForm(prev => ({ ...prev, apiKey: '' }));
+      setSuccessMsg(res.data?.message || 'AI configuration saved successfully.');
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to save AI configuration.');
+    } finally {
+      setAiSaving(false);
+    }
+  }
+
+  async function handleTestAiConnection() {
+    setAiTesting(true);
+    setError('');
+    setSuccessMsg('');
+    try {
+      // Test with form data if editing, otherwise test saved config
+      const payload = aiEditing && aiForm.apiKey
+        ? { provider: aiForm.provider, apiKey: aiForm.apiKey, model: aiForm.model, baseUrl: aiForm.baseUrl }
+        : {};
+      const res = await api.post('/ai/test', payload);
+      if (res.data?.success) {
+        setSuccessMsg(res.data?.message || 'AI connection successful!');
+      } else {
+        setError(res.data?.message || 'AI connection test failed.');
+      }
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'AI connection test failed.');
+    } finally {
+      setAiTesting(false);
+    }
+  }
+
+  async function handleDeleteAiConfig() {
+    if (!confirm('Remove AI configuration? The AI Assistant will stop working.')) return;
+    try {
+      await api.delete('/ai/config');
+      setAiConfig(null);
+      setAiForm({ provider: 'deepseek', apiKey: '', model: '', baseUrl: '' });
+      setAiEditing(false);
+      setSuccessMsg('AI configuration removed.');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to remove AI configuration.');
+    }
+  }
+
+  const AI_PROVIDERS = [
+    { value: 'deepseek', label: 'DeepSeek', color: '#4F46E5', defaultModel: 'deepseek-chat' },
+    { value: 'openai', label: 'OpenAI', color: '#10A37F', defaultModel: 'gpt-3.5-turbo' },
+    { value: 'claude', label: 'Anthropic Claude', color: '#D97706', defaultModel: 'claude-3-haiku-20240307' },
+    { value: 'gemini', label: 'Google Gemini', color: '#4285F4', defaultModel: 'gemini-pro' },
+    { value: 'custom', label: 'Custom (OpenAI-compatible)', color: '#6B7280', defaultModel: '' },
+  ];
 
   if (loading) {
     return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>;
@@ -556,6 +676,225 @@ export default function IntegrationsPage() {
           </div>
         )}
       </div>
+
+      {/* AI Assistant Configuration Card */}
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-6">
+          {/* Header */}
+          <div className="flex items-center gap-4 p-5 border-b border-border">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg">
+              <Bot size={24} className="text-white" />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-base font-semibold text-text-primary">AI Assistant</h2>
+              <p className="text-xs text-text-tertiary">Configure AI provider for the built-in chat assistant</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {aiConfig?.hasKey ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full bg-success/10 text-success border border-success/20">
+                  <CheckCircle2 size={12} /> Configured
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full bg-gray-100 text-gray-500 border border-gray-200">
+                  Not Configured
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Configuration Body */}
+          <div className="p-5">
+            {aiLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary/20 border-t-primary" />
+              </div>
+            ) : !aiConfig?.hasKey || aiEditing ? (
+              /* Configuration Form */
+              <div className="space-y-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                    <Cpu size={15} /> Provider Configuration
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Provider Select */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                      <span className="flex items-center gap-1"><Sparkles size={12} /> AI Provider</span>
+                    </label>
+                    <select
+                      value={aiForm.provider}
+                      onChange={e => {
+                        const prov = AI_PROVIDERS.find(p => p.value === e.target.value);
+                        setAiForm(prev => ({ ...prev, provider: e.target.value, model: prov?.defaultModel || '' }));
+                      }}
+                      className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all bg-white"
+                    >
+                      {AI_PROVIDERS.map(p => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* API Key */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                      <span className="flex items-center gap-1"><Key size={12} /> API Key</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showAiKey ? 'text' : 'password'}
+                        value={aiForm.apiKey}
+                        onChange={e => setAiForm(prev => ({ ...prev, apiKey: e.target.value }))}
+                        placeholder={aiEditing ? 'Enter new API key (required)' : 'Enter your API key'}
+                        autoComplete="new-password"
+                        data-lpignore="true"
+                        data-1p-ignore
+                        className="w-full px-3 py-2 pr-10 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                      />
+                      <button type="button" onClick={() => setShowAiKey(s => !s)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary transition-colors">
+                        {showAiKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                    {aiEditing && aiConfig?.apiKey && (
+                      <p className="text-[10px] text-text-tertiary mt-1">Current: {aiConfig.apiKey}</p>
+                    )}
+                  </div>
+
+                  {/* Model */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                      <span className="flex items-center gap-1"><Zap size={12} /> Model Name</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={aiForm.model}
+                      onChange={e => setAiForm(prev => ({ ...prev, model: e.target.value }))}
+                      placeholder={AI_PROVIDERS.find(p => p.value === aiForm.provider)?.defaultModel || 'e.g. gpt-3.5-turbo'}
+                      className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                    />
+                    <p className="text-[10px] text-text-tertiary mt-1">Leave empty for default model</p>
+                  </div>
+
+                  {/* Custom Base URL */}
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                      <span className="flex items-center gap-1"><Globe size={12} /> Custom Base URL (optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={aiForm.baseUrl}
+                      onChange={e => setAiForm(prev => ({ ...prev, baseUrl: e.target.value }))}
+                      placeholder="Leave empty for default endpoint"
+                      className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                    />
+                    <p className="text-[10px] text-text-tertiary mt-1">For self-hosted or proxy endpoints</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button onClick={handleSaveAiConfig} disabled={aiSaving}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-violet-600 rounded-lg hover:bg-violet-700 transition-colors shadow-sm">
+                    {aiSaving ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Save size={14} />}
+                    {aiConfig?.hasKey ? 'Save Changes' : 'Save Configuration'}
+                  </button>
+                  {aiEditing && (
+                    <button onClick={() => { setAiEditing(false); loadAiConfig(); }}
+                      className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface rounded-lg border border-border transition-colors">
+                      Cancel
+                    </button>
+                  )}
+                </div>
+
+                {!aiConfig?.hasKey && (
+                  <div className="mt-3 p-3 rounded-lg bg-violet-50 border border-violet-200">
+                    <p className="text-xs text-violet-700 font-medium mb-1">Setup Guide</p>
+                    <ol className="text-[11px] text-violet-600 space-y-1 list-decimal list-inside">
+                      <li>Choose your preferred AI provider (DeepSeek is recommended for cost-effectiveness)</li>
+                      <li>Get an API key from the provider's website</li>
+                      <li>Paste the key above and optionally specify a model</li>
+                      <li>Click Save, then Test Connection to verify</li>
+                      <li>The AI Assistant chat widget will appear for all users</li>
+                    </ol>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Configured View (read-only) */
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                    <Cpu size={15} /> Provider Configuration
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button onClick={handleTestAiConnection} disabled={aiTesting}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-violet-600 hover:bg-violet-50 rounded-lg border border-violet-200 transition-colors">
+                      {aiTesting ? <div className="w-3 h-3 border-2 border-violet-400/20 border-t-violet-400 rounded-full animate-spin" /> : <TestTube2 size={13} />}
+                      Test Connection
+                    </button>
+                    <button onClick={() => { setAiEditing(true); setAiForm(prev => ({ ...prev, apiKey: '' })); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface rounded-lg border border-border transition-colors">
+                      <Edit3 size={13} /> Edit
+                    </button>
+                    <button onClick={handleDeleteAiConfig}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/5 rounded-lg border border-danger/20 transition-colors">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-lg bg-surface/50 border border-border">
+                    <p className="text-[10px] text-text-tertiary mb-1">Provider</p>
+                    <p className="text-xs font-medium text-text-primary capitalize">{aiConfig.provider}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-surface/50 border border-border">
+                    <p className="text-[10px] text-text-tertiary mb-1">API Key</p>
+                    <p className="text-xs font-mono text-text-primary">{aiConfig.apiKey}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-surface/50 border border-border">
+                    <p className="text-[10px] text-text-tertiary mb-1">Model</p>
+                    <p className="text-xs font-mono text-text-primary">{aiConfig.model || '(default)'}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-surface/50 border border-border">
+                    <p className="text-[10px] text-text-tertiary mb-1">Last Tested</p>
+                    <p className="text-xs text-text-primary">
+                      {aiConfig.lastTestedAt ? new Date(aiConfig.lastTestedAt).toLocaleString() : 'Never'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Features info */}
+                <div className="grid grid-cols-3 gap-3 mt-4">
+                  <div className="flex items-start gap-2.5 p-3 rounded-lg bg-success/5 border border-success/20">
+                    <Bot size={16} className="mt-0.5 text-success" />
+                    <div>
+                      <p className="text-xs font-medium text-text-primary">Chat Widget</p>
+                      <p className="text-[10px] text-text-tertiary">Available for all users</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-3 rounded-lg bg-success/5 border border-success/20">
+                    <Sparkles size={16} className="mt-0.5 text-success" />
+                    <div>
+                      <p className="text-xs font-medium text-text-primary">Context-Aware</p>
+                      <p className="text-[10px] text-text-tertiary">Knows current page</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-3 rounded-lg bg-success/5 border border-success/20">
+                    <Zap size={16} className="mt-0.5 text-success" />
+                    <div>
+                      <p className="text-xs font-medium text-text-primary">Multi-Provider</p>
+                      <p className="text-[10px] text-text-tertiary">Switch providers anytime</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Future Integrations */}
       <h2 className="text-sm font-semibold text-text-secondary mb-3">More Integrations</h2>

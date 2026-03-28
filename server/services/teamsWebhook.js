@@ -210,6 +210,8 @@ const sendTeamsNotification = async (payload) => {
 };
 
 module.exports = {
+  sendCard,
+  buildAdaptiveCard,
   sendTaskCreated,
   sendTaskUpdated,
   sendTaskCompleted,

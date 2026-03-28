@@ -22,7 +22,9 @@ function hashGradient(name) {
 
 function initials(name) {
   if (!name) return '?';
-  const p = name.trim().split(/\s+/);
+  const trimmed = name.trim();
+  if (!trimmed) return '?';
+  const p = trimmed.split(/\s+/);
   return p.length === 1 ? p[0][0].toUpperCase() : (p[0][0] + p[p.length - 1][0]).toUpperCase();
 }
 

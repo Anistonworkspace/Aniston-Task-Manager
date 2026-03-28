@@ -11,6 +11,9 @@ const {
   bulkUpdateTasks,
   reorderTasks,
   duplicateTask,
+  checkConflicts,
+  autoReschedule,
+  scheduleSummary,
 } = require('../controllers/taskController');
 const { getCrossTeamDependencies } = require('../controllers/dependencyController');
 
@@ -21,6 +24,15 @@ router.use(authenticate);
 
 // ─── GET /api/tasks/cross-team-deps (must be before /:id) ────
 router.get('/cross-team-deps', getCrossTeamDependencies);
+
+// ─── POST /api/tasks/check-conflicts (must be before /:id) ──
+router.post('/check-conflicts', checkConflicts);
+
+// ─── POST /api/tasks/auto-reschedule (must be before /:id) ──
+router.post('/auto-reschedule', autoReschedule);
+
+// ─── GET /api/tasks/schedule-summary (must be before /:id) ──
+router.get('/schedule-summary', scheduleSummary);
 
 // ─── PUT /api/tasks/reorder (all authenticated users) ────────
 router.put('/reorder', reorderTasks);

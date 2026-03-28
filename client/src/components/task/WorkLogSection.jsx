@@ -4,6 +4,8 @@ import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
+import useGrammarCorrection from '../../hooks/useGrammarCorrection';
+import GrammarSuggestion from '../common/GrammarSuggestion';
 
 export default function WorkLogSection({ taskId }) {
   const { user, canManage } = useAuth();
@@ -14,6 +16,7 @@ export default function WorkLogSection({ taskId }) {
   const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const { checkGrammar, suggestion: grammarSuggestion, isChecking: isCheckingGrammar, applySuggestion: applyGrammar, dismissSuggestion: dismissGrammar } = useGrammarCorrection();
 
   useEffect(() => {
     if (taskId) loadLogs();
@@ -115,11 +118,17 @@ export default function WorkLogSection({ taskId }) {
           </div>
           <textarea
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => { setContent(e.target.value); checkGrammar(e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Escape') { setAdding(false); setContent(''); } }}
             placeholder="What did you work on today?"
             className="w-full text-sm border border-border rounded-md px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px] mb-2"
             autoFocus
+          />
+          <GrammarSuggestion
+            suggestion={grammarSuggestion}
+            isChecking={isCheckingGrammar}
+            onApply={() => { const corrected = applyGrammar(); setContent(corrected); }}
+            onDismiss={dismissGrammar}
           />
           <div className="flex items-center gap-2">
             <button onClick={handleAdd} className="px-3 py-1.5 bg-primary text-white text-xs rounded-md hover:bg-primary-dark transition-colors">

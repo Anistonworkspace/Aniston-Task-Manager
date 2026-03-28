@@ -59,7 +59,11 @@ router.put(
 router.put(
   '/:id/reset-password',
   adminOnly,
-  [body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters.')],
+  [
+    body('newPassword')
+      .isStrongPassword({ minLength: 8, minLowercase: 1, minUppercase: 1, minNumbers: 1, minSymbols: 1 })
+      .withMessage('Password must be at least 8 characters and contain uppercase, lowercase, number, and special character.'),
+  ],
   resetPassword
 );
 

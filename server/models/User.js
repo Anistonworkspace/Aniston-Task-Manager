@@ -126,11 +126,14 @@ User.prototype.comparePassword = async function (candidatePassword) {
 };
 
 /**
- * Override toJSON to strip the password field from any serialized output.
+ * Override toJSON to strip sensitive fields from any serialized output.
  */
 User.prototype.toJSON = function () {
   const values = { ...this.get() };
   delete values.password;
+  delete values.teamsAccessToken;
+  delete values.teamsRefreshToken;
+  delete values.teamsTokenExpiry;
   return values;
 };
 

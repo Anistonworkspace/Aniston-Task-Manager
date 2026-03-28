@@ -26,6 +26,10 @@ const HelpRequest = require('./HelpRequest');
 const PromotionHistory = require('./PromotionHistory');
 const HierarchyLevel = require('./HierarchyLevel');
 const IntegrationConfig = require('./IntegrationConfig');
+const TaskOwner = require('./TaskOwner');
+const Note = require('./Note');
+const Feedback = require('./Feedback');
+const AIConfig = require('./AIConfig');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -295,6 +299,10 @@ Task.hasMany(TaskDependency, { as: 'dependents', foreignKey: 'dependsOnTaskId' }
 // ─── Task <-> User (scheduledBy) ─────────────────────────────
 Task.belongsTo(User, { as: 'scheduler', foreignKey: 'scheduledBy', onDelete: 'SET NULL' });
 
+// ─── Task <-> User (multi-owner via TaskOwner) ──────────────
+Task.belongsToMany(User, { through: TaskOwner, as: 'owners', foreignKey: 'taskId', otherKey: 'userId' });
+User.belongsToMany(Task, { through: TaskOwner, as: 'ownedTasks', foreignKey: 'userId', otherKey: 'taskId' });
+
 // ─── DirectorPlan <-> User ──────────────────────────────────
 DirectorPlan.belongsTo(User, { foreignKey: 'directorId', as: 'director', onDelete: 'CASCADE' });
 DirectorPlan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
@@ -328,6 +336,10 @@ module.exports = {
   HierarchyLevel,
   DirectorPlan,
   IntegrationConfig,
+  TaskOwner,
+  Note,
+  Feedback,
+  AIConfig,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────
@@ -402,3 +414,14 @@ User.hasMany(PromotionHistory, { foreignKey: 'userId', as: 'promotions' });
 
 // ─── IntegrationConfig <-> User (configuredBy) ──────────────
 IntegrationConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── AIConfig <-> User (configuredBy) ───────────────────────
+AIConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── Note <-> User ──────────────────────────────────────────
+Note.belongsTo(User, { foreignKey: 'userId', as: 'author', onDelete: 'CASCADE' });
+User.hasMany(Note, { foreignKey: 'userId', as: 'notes' });
+
+// ─── Feedback <-> User ──────────────────────────────────────
+Feedback.belongsTo(User, { foreignKey: 'userId', as: 'submitter', onDelete: 'CASCADE' });
+User.hasMany(Feedback, { foreignKey: 'userId', as: 'feedbacks' });

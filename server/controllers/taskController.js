@@ -1,4 +1,4 @@
-const { Task, Board, User, Notification, Subtask, Label } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label, TaskOwner } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
@@ -10,6 +10,14 @@ const depService = require('../services/dependencyService');
 const { processAutomations } = require('../services/automationService');
 const { sanitizeInput } = require('../utils/sanitize');
 const calendarService = require('../services/calendarService');
+const { checkConflicts: detectConflicts, autoReschedule: rescheduleTask, getScheduleSummary } = require('../services/conflictDetectionService');
+
+// Reusable include block for the two user associations that appear on every task query
+const TASK_INCLUDES = [
+  { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
+  { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+  { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
+];
 
 /**
  * POST /api/tasks
@@ -23,7 +31,7 @@ const createTask = async (req, res) => {
 
     const {
       title, description, status, priority, groupId,
-      dueDate, startDate, tags, customFields, boardId, assignedTo,
+      dueDate, startDate, tags, customFields, boardId, assignedTo, ownerIds,
     } = req.body;
 
     // Verify board exists
@@ -58,10 +66,23 @@ const createTask = async (req, res) => {
       createdBy: req.user.id,
     });
 
+    // Sync multi-owner records
+    if (Array.isArray(ownerIds) && ownerIds.length > 0 && canAssignOthers) {
+      const ownerRecords = ownerIds.map((uid, idx) => ({
+        taskId: task.id,
+        userId: uid,
+        isPrimary: idx === 0,
+      }));
+      await TaskOwner.bulkCreate(ownerRecords, { ignoreDuplicates: true });
+      // Auto-add all owners as board members
+      for (const uid of ownerIds) {
+        try { await board.addMember(uid); } catch (e) { /* already a member */ }
+      }
+    }
+
     const fullTask = await Task.findByPk(task.id, {
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        ...TASK_INCLUDES,
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });
@@ -131,6 +152,11 @@ const createTask = async (req, res) => {
  */
 const getTasks = async (req, res) => {
   try {
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(req.user.id)) {
+      return res.status(401).json({ success: false, message: 'Invalid user session' });
+    }
+
     const { boardId, status, priority, assignedTo, groupId, search, sortBy, sortOrder, limit, archived, context } = req.query;
 
     const where = {};
@@ -143,16 +169,24 @@ const getTasks = async (req, res) => {
 
     if (boardId) where.boardId = boardId;
 
-    // Support "me" shorthand for current user's tasks across all boards
+    // Visibility filter for multi-owner support
+    const ownershipFilter = [
+      { assignedTo: req.user.id },
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = '${req.user.id}')`),
+    ];
+
+    // Support "me" shorthand for current user's tasks across all boards (including multi-owner)
     if (assignedTo === 'me') {
-      where.assignedTo = req.user.id;
+      if (!where[Op.and]) where[Op.and] = [];
+      where[Op.and].push({ [Op.or]: ownershipFilter });
     } else if (assignedTo) {
       where.assignedTo = assignedTo;
     }
 
     // Members without boardId can only see their own tasks (unless fetching for dependency selector)
-    if (!boardId && req.user.role === 'member' && context !== 'dependency') {
-      where.assignedTo = req.user.id;
+    if (!boardId && req.user.role === 'member' && context !== 'dependency' && assignedTo !== 'me') {
+      if (!where[Op.and]) where[Op.and] = [];
+      where[Op.and].push({ [Op.or]: ownershipFilter });
     }
 
     if (status) where.status = status;
@@ -160,14 +194,18 @@ const getTasks = async (req, res) => {
     if (groupId) where.groupId = groupId;
 
     if (search) {
-      where[Op.or] = [
-        { title: { [Op.iLike]: `%${search}%` } },
-        { description: { [Op.iLike]: `%${search}%` } },
-      ];
+      if (!where[Op.and]) where[Op.and] = [];
+      where[Op.and].push({
+        [Op.or]: [
+          { title: { [Op.iLike]: `%${search}%` } },
+          { description: { [Op.iLike]: `%${search}%` } },
+        ],
+      });
     }
 
+    const ALLOWED_SORT_FIELDS = ['title', 'status', 'priority', 'dueDate', 'position', 'createdAt', 'progress', 'startDate', 'updatedAt'];
     const order = [];
-    if (sortBy) {
+    if (sortBy && ALLOWED_SORT_FIELDS.includes(sortBy)) {
       order.push([sortBy, sortOrder === 'desc' ? 'DESC' : 'ASC']);
     } else {
       order.push(['position', 'ASC']);
@@ -176,8 +214,7 @@ const getTasks = async (req, res) => {
     const queryOpts = {
       where,
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        ...TASK_INCLUDES,
         { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
         { model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] },
@@ -213,8 +250,7 @@ const getTask = async (req, res) => {
   try {
     const task = await Task.findByPk(req.params.id, {
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        ...TASK_INCLUDES,
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
       ],
     });
@@ -248,16 +284,20 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
-    // Members can only update tasks assigned to them
+    // Members can only update tasks assigned to them or where they are an owner
     const isMember = req.user.role === 'member';
     const isManager = req.user.role === 'manager';
     const isAssistantManager = req.user.role === 'assistant_manager';
     const isAdmin = req.user.role === 'admin';
     if (isMember && task.assignedTo !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only update tasks assigned to you.',
-      });
+      // Check if user is a task owner
+      const isOwner = await TaskOwner.findOne({ where: { taskId: task.id, userId: req.user.id } });
+      if (!isOwner) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only update tasks assigned to you.',
+        });
+      }
     }
 
     const allFields = [
@@ -301,10 +341,34 @@ const updateTask = async (req, res) => {
 
     await task.update(updates);
 
+    // Sync multi-owner records if ownerIds provided
+    if (Array.isArray(req.body.ownerIds) && (isAdmin || isManager || isAssistantManager)) {
+      const newOwnerIds = req.body.ownerIds;
+      // Remove owners not in the new list
+      await TaskOwner.destroy({ where: { taskId: task.id, userId: { [Op.notIn]: newOwnerIds } } });
+      // Upsert new owners
+      for (let i = 0; i < newOwnerIds.length; i++) {
+        const [record] = await TaskOwner.findOrCreate({
+          where: { taskId: task.id, userId: newOwnerIds[i] },
+          defaults: { isPrimary: i === 0 },
+        });
+        // Update isPrimary for existing records
+        if (record.isPrimary !== (i === 0)) {
+          await record.update({ isPrimary: i === 0 });
+        }
+      }
+      // Auto-add all owners as board members
+      const board = await Board.findByPk(task.boardId);
+      if (board) {
+        for (const uid of newOwnerIds) {
+          try { await board.addMember(uid); } catch (e) { /* already a member */ }
+        }
+      }
+    }
+
     const fullTask = await Task.findByPk(task.id, {
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        ...TASK_INCLUDES,
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });
@@ -331,6 +395,20 @@ const updateTask = async (req, res) => {
 
     // Notification: task completed
     if (updates.status === 'done' && previousStatus !== 'done') {
+      // Update Teams calendar event with [DONE] prefix (fire-and-forget)
+      if (task.teamsEventId && task.assignedTo) {
+        const { updateCalendarEvent } = require('../services/teamsCalendarService');
+        (async () => {
+          try {
+            await updateCalendarEvent(task.assignedTo, task.teamsEventId, {
+              subject: `[DONE] ${task.title}`,
+            });
+          } catch (err) {
+            console.error('[Task] Teams calendar [DONE] update error:', err.message);
+          }
+        })();
+      }
+
       teamsWebhook.sendTaskCompleted({
         task: fullTask,
         boardName: task.board.name,
@@ -525,10 +603,7 @@ const moveTask = async (req, res) => {
     await task.update({ groupId: targetGroupId, position: targetPosition });
 
     const fullTask = await Task.findByPk(task.id, {
-      include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-      ],
+      include: [...TASK_INCLUDES],
     });
 
     emitToBoard(task.boardId, 'task:moved', { task: fullTask });
@@ -578,10 +653,7 @@ const bulkUpdateTasks = async (req, res) => {
 
     const updatedTasks = await Task.findAll({
       where: { id: { [Op.in]: taskIds } },
-      include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-      ],
+      include: [...TASK_INCLUDES],
     });
 
     // Emit to all affected boards
@@ -694,8 +766,7 @@ const duplicateTask = async (req, res) => {
 
     const fullTask = await Task.findByPk(newTask.id, {
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        ...TASK_INCLUDES,
         { model: Board, as: 'board', attributes: ['id', 'name'] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
       ],
@@ -732,6 +803,112 @@ const duplicateTask = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/tasks/check-conflicts
+ * Body: { userId, startTime, endTime, excludeTaskId? }
+ * Checks for scheduling conflicts for a user in a given time range.
+ */
+const checkConflicts = async (req, res) => {
+  try {
+    const { userId, startTime, endTime, excludeTaskId } = req.body;
+
+    if (!userId || !startTime || !endTime) {
+      return res.status(400).json({ success: false, message: 'userId, startTime, and endTime are required.' });
+    }
+
+    // Members can only check their own schedule
+    if (req.user.role === 'member' && userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const conflicts = await detectConflicts(userId, startTime, endTime, excludeTaskId || null);
+    res.json({ success: true, data: { conflicts, hasConflicts: conflicts.length > 0 } });
+  } catch (error) {
+    logger.error('[Task] checkConflicts error:', error);
+    res.status(500).json({ success: false, message: 'Failed to check conflicts.' });
+  }
+};
+
+/**
+ * POST /api/tasks/auto-reschedule
+ * Body: { taskId, afterTime }
+ * Auto-reschedules a conflicting task to start after the given time (with 15-min buffer).
+ */
+const autoReschedule = async (req, res) => {
+  try {
+    const { taskId, afterTime } = req.body;
+
+    if (!taskId || !afterTime) {
+      return res.status(400).json({ success: false, message: 'taskId and afterTime are required.' });
+    }
+
+    const result = await rescheduleTask(taskId, afterTime);
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Task not found.' });
+    }
+
+    logActivity({
+      action: 'task_auto_rescheduled',
+      description: `Task "${result.title}" auto-rescheduled to ${result.newDueDate} to avoid conflict`,
+      entityType: 'task',
+      entityId: taskId,
+      taskId,
+      userId: req.user.id,
+    });
+
+    // Refresh the full task for socket emit
+    const fullTask = await Task.findByPk(taskId, {
+      include: [
+        ...TASK_INCLUDES,
+        { model: Board, as: 'board', attributes: ['id', 'name'] },
+      ],
+    });
+
+    if (fullTask) {
+      emitToBoard(fullTask.boardId, 'task:updated', { task: fullTask });
+      if (fullTask.assignedTo) emitToUser(fullTask.assignedTo, 'task:updated', { task: fullTask });
+
+      // Sync rescheduled task to Teams calendar (fire-and-forget)
+      if (fullTask.teamsEventId && fullTask.assignedTo) {
+        calendarService.updateTaskEvent(fullTask.id, fullTask.assignedTo).catch(err =>
+          console.warn('[Teams] Calendar sync failed for rescheduled task:', err.message)
+        );
+      }
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    logger.error('[Task] autoReschedule error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reschedule task.' });
+  }
+};
+
+/**
+ * GET /api/tasks/schedule-summary
+ * Query: { userId, date }
+ * Returns a schedule summary for a user on a given date.
+ */
+const scheduleSummary = async (req, res) => {
+  try {
+    const { userId, date } = req.query;
+
+    if (!userId || !date) {
+      return res.status(400).json({ success: false, message: 'userId and date are required.' });
+    }
+
+    // Members can only check their own schedule
+    if (req.user.role === 'member' && userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    const summary = await getScheduleSummary(userId, date);
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    logger.error('[Task] scheduleSummary error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get schedule summary.' });
+  }
+};
+
 module.exports = {
   createTask,
   getTasks,
@@ -742,4 +919,7 @@ module.exports = {
   bulkUpdateTasks,
   reorderTasks,
   duplicateTask,
+  checkConflicts,
+  autoReschedule,
+  scheduleSummary,
 };

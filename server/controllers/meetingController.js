@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { emitToUser } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
+const { sanitizeInput } = require('../utils/sanitize');
 
 const MEETING_INCLUDES = [
   { model: User, as: 'organizer', attributes: ['id', 'name', 'email', 'avatar'] },
@@ -33,8 +34,8 @@ const createMeeting = async (req, res) => {
     }
 
     const meeting = await Meeting.create({
-      title,
-      description: description || null,
+      title: sanitizeInput(title),
+      description: sanitizeInput(description) || null,
       date,
       startTime,
       endTime,
@@ -154,6 +155,8 @@ const updateMeeting = async (req, res) => {
     for (const f of allowed) {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
     }
+    if (updates.title !== undefined) updates.title = sanitizeInput(updates.title);
+    if (updates.description !== undefined) updates.description = sanitizeInput(updates.description);
 
     await meeting.update(updates);
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
