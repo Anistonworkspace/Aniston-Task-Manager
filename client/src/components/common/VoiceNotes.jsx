@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, Square, X, ChevronDown, ChevronUp, Clock, FileText, Trash2, Save, Settings } from 'lucide-react';
+import { Mic, MicOff, Square, X, ChevronDown, ChevronUp, Clock, FileText, Trash2, Save, Settings, AlertCircle, Volume2, Shield } from 'lucide-react';
 import api from '../../services/api';
 
 const DEFAULT_SETTINGS = {
@@ -7,7 +7,10 @@ const DEFAULT_SETTINGS = {
   continuous: true,
   autoPunctuation: true,
   maxSilenceDuration: 'none',
-  sensitivity: 'medium',
+  sensitivity: 'high',
+  gainBoost: true,
+  noiseSuppression: false,
+  echoCancellation: true,
 };
 
 const LANGUAGES = [
@@ -35,9 +38,10 @@ const SILENCE_OPTIONS = [
 ];
 
 const SENSITIVITY_OPTIONS = [
-  { value: 'low', label: 'Low', maxAlternatives: 1 },
-  { value: 'medium', label: 'Medium', maxAlternatives: 3 },
-  { value: 'high', label: 'High', maxAlternatives: 5 },
+  { value: 'low', label: 'Low', gain: 1.0, maxAlternatives: 1 },
+  { value: 'medium', label: 'Medium', gain: 2.0, maxAlternatives: 3 },
+  { value: 'high', label: 'High', gain: 3.5, maxAlternatives: 5 },
+  { value: 'max', label: 'Max', gain: 5.0, maxAlternatives: 5 },
 ];
 
 function loadSettings() {
@@ -48,7 +52,7 @@ function loadSettings() {
   return { ...DEFAULT_SETTINGS };
 }
 
-function saveSettings(settings) {
+function saveSettingsToStorage(settings) {
   try {
     localStorage.setItem('voiceNoteSettings', JSON.stringify(settings));
   } catch {}
@@ -65,11 +69,25 @@ export default function VoiceNotes({ isOpen, onClose }) {
   const [supported, setSupported] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(loadSettings);
+  const [micPermission, setMicPermission] = useState('unknown'); // 'unknown' | 'granted' | 'denied' | 'prompt'
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
   const silenceTimerRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const gainNodeRef = useRef(null);
+  const animFrameRef = useRef(null);
+  const isRecordingRef = useRef(false);
 
+  // Keep ref in sync with state for use in callbacks
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  // Check Speech API support
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -77,9 +95,146 @@ export default function VoiceNotes({ isOpen, onClose }) {
     }
   }, []);
 
+  // Check microphone permission on mount
+  useEffect(() => {
+    checkMicPermission();
+  }, []);
+
   useEffect(() => {
     if (isOpen) loadRecentNotes();
   }, [isOpen]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, []);
+
+  async function checkMicPermission() {
+    try {
+      // Use Permissions API if available
+      if (navigator.permissions && navigator.permissions.query) {
+        const result = await navigator.permissions.query({ name: 'microphone' });
+        setMicPermission(result.state); // 'granted', 'denied', or 'prompt'
+        result.addEventListener('change', () => setMicPermission(result.state));
+        return;
+      }
+      // Fallback: check if we can enumerate devices
+      if (navigator.mediaDevices) {
+        setMicPermission('prompt');
+      } else {
+        setMicPermission('denied');
+      }
+    } catch {
+      setMicPermission('prompt');
+    }
+  }
+
+  async function requestMicPermission() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        }
+      });
+      // Permission granted - stop the test stream
+      stream.getTracks().forEach(t => t.stop());
+      setMicPermission('granted');
+      return true;
+    } catch (err) {
+      console.error('Mic permission denied:', err);
+      setMicPermission('denied');
+      return false;
+    }
+  }
+
+  function cleanupAudio() {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(t => t.stop());
+      mediaStreamRef.current = null;
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      try { audioContextRef.current.close(); } catch {}
+      audioContextRef.current = null;
+    }
+    gainNodeRef.current = null;
+    analyserRef.current = null;
+    setAudioLevel(0);
+  }
+
+  async function setupAudioProcessing() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        }
+      });
+      mediaStreamRef.current = stream;
+
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      audioContextRef.current = audioContext;
+
+      const source = audioContext.createMediaStreamSource(stream);
+
+      // Create gain node for sensitivity boost
+      const gainNode = audioContext.createGain();
+      const sensOption = SENSITIVITY_OPTIONS.find(s => s.value === settings.sensitivity);
+      gainNode.gain.value = settings.gainBoost ? (sensOption?.gain || 2.0) : 1.0;
+      gainNodeRef.current = gainNode;
+
+      // Create analyser for audio level visualization
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      analyserRef.current = analyser;
+
+      source.connect(gainNode);
+      gainNode.connect(analyser);
+      // Don't connect to destination (we don't want to play back audio)
+
+      // Start audio level monitoring
+      monitorAudioLevel();
+
+      return true;
+    } catch (err) {
+      console.error('Audio setup failed:', err);
+      return false;
+    }
+  }
+
+  function monitorAudioLevel() {
+    if (!analyserRef.current) return;
+
+    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+
+    function update() {
+      if (!analyserRef.current || !isRecordingRef.current) {
+        setAudioLevel(0);
+        return;
+      }
+      analyserRef.current.getByteFrequencyData(dataArray);
+      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+      setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
+      animFrameRef.current = requestAnimationFrame(update);
+    }
+    update();
+  }
 
   async function loadRecentNotes() {
     try {
@@ -91,7 +246,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
   const updateSetting = (key, value) => {
     setSettings(prev => {
       const updated = { ...prev, [key]: value };
-      saveSettings(updated);
+      saveSettingsToStorage(updated);
       return updated;
     });
   };
@@ -101,18 +256,28 @@ export default function VoiceNotes({ isOpen, onClose }) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
-    if (settings.maxSilenceDuration !== 'none' && isRecording) {
+    if (settings.maxSilenceDuration !== 'none' && isRecordingRef.current) {
       const ms = parseInt(settings.maxSilenceDuration) * 1000;
       silenceTimerRef.current = setTimeout(() => {
         stopRecording();
       }, ms);
     }
-  }, [settings.maxSilenceDuration, isRecording]);
+  }, [settings.maxSilenceDuration]);
 
-  const startRecording = useCallback(() => {
+  const startRecording = useCallback(async () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
+    // Step 1: Request mic permission if needed
+    if (micPermission !== 'granted') {
+      const granted = await requestMicPermission();
+      if (!granted) return;
+    }
+
+    // Step 2: Setup audio processing for gain boost and level meter
+    await setupAudioProcessing();
+
+    // Step 3: Start speech recognition
     const recognition = new SpeechRecognition();
     recognition.continuous = settings.continuous;
     recognition.interimResults = true;
@@ -137,7 +302,6 @@ export default function VoiceNotes({ isOpen, onClose }) {
       });
       setInterimTranscript(interim);
 
-      // Reset silence timer on any speech
       if (final.trim() || interim.trim()) {
         resetSilenceTimer();
       }
@@ -145,14 +309,16 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
     recognition.onerror = (event) => {
       console.error('Speech recognition error:', event.error);
-      if (event.error !== 'no-speech') {
+      if (event.error === 'not-allowed') {
+        setMicPermission('denied');
+        stopRecording();
+      } else if (event.error !== 'no-speech') {
         stopRecording();
       }
     };
 
     recognition.onend = () => {
-      // Auto-restart if still recording (browser may stop it)
-      if (isRecording && recognitionRef.current) {
+      if (isRecordingRef.current && recognitionRef.current) {
         try { recognitionRef.current.start(); } catch {}
       }
     };
@@ -169,14 +335,13 @@ export default function VoiceNotes({ isOpen, onClose }) {
       setDuration(prev => prev + 1);
     }, 1000);
 
-    // Start silence timer
     if (settings.maxSilenceDuration !== 'none') {
       const ms = parseInt(settings.maxSilenceDuration) * 1000;
       silenceTimerRef.current = setTimeout(() => {
         stopRecording();
       }, ms);
     }
-  }, [isRecording, settings]);
+  }, [settings, micPermission, resetSilenceTimer]);
 
   const stopRecording = useCallback(() => {
     if (recognitionRef.current) {
@@ -194,6 +359,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
+    cleanupAudio();
   }, []);
 
   const saveNote = async () => {
@@ -287,9 +453,45 @@ export default function VoiceNotes({ isOpen, onClose }) {
           </div>
         </div>
 
+        {/* Permission Required Banner */}
+        {micPermission === 'denied' && (
+          <div className="px-4 py-3 bg-red-50 dark:bg-red-900/30 border-b border-red-200 dark:border-red-800">
+            <div className="flex items-start gap-2">
+              <Shield size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs font-medium text-red-700 dark:text-red-400">Microphone access denied</p>
+                <p className="text-[10px] text-red-600 dark:text-red-500 mt-0.5">
+                  To use voice recording, allow microphone access in your browser settings.
+                  On mobile: Settings → App → Permissions → Microphone
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {micPermission === 'prompt' && !isRecording && !showSettings && (
+          <div className="px-4 py-3 bg-amber-50 dark:bg-amber-900/30 border-b border-amber-200 dark:border-amber-800">
+            <div className="flex items-start gap-2">
+              <AlertCircle size={14} className="text-amber-500 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-xs font-medium text-amber-700 dark:text-amber-400">Microphone permission required</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
+                  Click below to allow microphone access for voice recording.
+                </p>
+                <button
+                  onClick={requestMicPermission}
+                  className="mt-2 px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-medium rounded-md transition-colors"
+                >
+                  Allow Microphone
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Settings Panel */}
         {showSettings && !isRecording && (
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 space-y-3">
+          <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 space-y-3 max-h-[340px] overflow-y-auto">
             <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">Recording Settings</p>
 
             {/* Language */}
@@ -304,6 +506,50 @@ export default function VoiceNotes({ isOpen, onClose }) {
                   <option key={l.value} value={l.value}>{l.label}</option>
                 ))}
               </select>
+            </div>
+
+            {/* Sensitivity / Gain */}
+            <div>
+              <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                Sensitivity (pickup range)
+              </label>
+              <div className="flex gap-1">
+                {SENSITIVITY_OPTIONS.map(o => (
+                  <button
+                    key={o.value}
+                    onClick={() => updateSetting('sensitivity', o.value)}
+                    className={`flex-1 px-1.5 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${
+                      settings.sensitivity === o.value
+                        ? 'bg-emerald-500 text-white border-emerald-500'
+                        : 'text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[9px] text-gray-400 mt-1">
+                {settings.sensitivity === 'max' ? 'Maximum pickup range — picks up speech from across the room' :
+                 settings.sensitivity === 'high' ? 'High range — picks up nearby conversations' :
+                 settings.sensitivity === 'medium' ? 'Normal range — arm\'s length distance' :
+                 'Close range — speak directly into microphone'}
+              </p>
+            </div>
+
+            {/* Gain Boost Toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block">Audio Gain Boost</label>
+                <p className="text-[10px] text-gray-400">Amplify microphone input</p>
+              </div>
+              <button
+                onClick={() => updateSetting('gainBoost', !settings.gainBoost)}
+                className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${
+                  settings.gainBoost ? 'bg-emerald-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'
+                }`}
+              >
+                <div className="w-4 h-4 rounded-full bg-white shadow-sm transition-transform" />
+              </button>
             </div>
 
             {/* Continuous Mode */}
@@ -322,16 +568,32 @@ export default function VoiceNotes({ isOpen, onClose }) {
               </button>
             </div>
 
-            {/* Auto-punctuation */}
+            {/* Noise Suppression */}
             <div className="flex items-center justify-between">
               <div>
-                <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block">Auto-punctuation</label>
-                <p className="text-[10px] text-gray-400">Browser-dependent feature</p>
+                <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block">Noise Suppression</label>
+                <p className="text-[10px] text-gray-400">Filter background noise</p>
               </div>
               <button
-                onClick={() => updateSetting('autoPunctuation', !settings.autoPunctuation)}
+                onClick={() => updateSetting('noiseSuppression', !settings.noiseSuppression)}
                 className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${
-                  settings.autoPunctuation ? 'bg-emerald-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'
+                  settings.noiseSuppression ? 'bg-emerald-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'
+                }`}
+              >
+                <div className="w-4 h-4 rounded-full bg-white shadow-sm transition-transform" />
+              </button>
+            </div>
+
+            {/* Echo Cancellation */}
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block">Echo Cancellation</label>
+                <p className="text-[10px] text-gray-400">Prevent feedback loops</p>
+              </div>
+              <button
+                onClick={() => updateSetting('echoCancellation', !settings.echoCancellation)}
+                className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${
+                  settings.echoCancellation ? 'bg-emerald-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'
                 }`}
               >
                 <div className="w-4 h-4 rounded-full bg-white shadow-sm transition-transform" />
@@ -340,7 +602,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
             {/* Max Silence Duration */}
             <div>
-              <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1 block">Max Silence Duration</label>
+              <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1 block">Auto-stop on silence</label>
               <select
                 value={settings.maxSilenceDuration}
                 onChange={e => updateSetting('maxSilenceDuration', e.target.value)}
@@ -352,27 +614,9 @@ export default function VoiceNotes({ isOpen, onClose }) {
               </select>
             </div>
 
-            {/* Sensitivity */}
-            <div>
-              <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1 block">Sensitivity</label>
-              <div className="flex gap-1.5">
-                {SENSITIVITY_OPTIONS.map(o => (
-                  <button
-                    key={o.value}
-                    onClick={() => updateSetting('sensitivity', o.value)}
-                    className={`flex-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all border ${
-                      settings.sensitivity === o.value
-                        ? 'bg-emerald-500 text-white border-emerald-500'
-                        : 'text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-300'
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <p className="text-[9px] text-gray-400 italic">Powered by Web Speech API (Chrome recommended)</p>
+            <p className="text-[9px] text-gray-400 italic">
+              Powered by Web Speech API + MediaStream. Chrome/Edge recommended for best results.
+            </p>
           </div>
         )}
 
@@ -380,11 +624,26 @@ export default function VoiceNotes({ isOpen, onClose }) {
         <div className="p-4">
           {isRecording ? (
             <div className="space-y-3">
-              {/* Recording indicator */}
+              {/* Recording indicator + audio level */}
               <div className="flex items-center gap-3">
                 <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
                 <span className="text-sm font-medium text-red-600 dark:text-red-400">Recording</span>
                 <span className="text-sm text-gray-500 ml-auto font-mono">{formatDuration(duration)}</span>
+              </div>
+
+              {/* Audio level meter */}
+              <div className="flex items-center gap-2">
+                <Volume2 size={12} className="text-gray-400 flex-shrink-0" />
+                <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-100"
+                    style={{
+                      width: `${audioLevel}%`,
+                      backgroundColor: audioLevel > 70 ? '#ef4444' : audioLevel > 40 ? '#f59e0b' : '#10b981',
+                    }}
+                  />
+                </div>
+                <span className="text-[10px] text-gray-400 w-7 text-right">{audioLevel}%</span>
               </div>
 
               {/* Live transcript */}
@@ -392,7 +651,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
                 {transcript && <span>{transcript} </span>}
                 {interimTranscript && <span className="text-gray-400 italic">{interimTranscript}</span>}
                 {!transcript && !interimTranscript && (
-                  <span className="text-gray-400 italic">Start speaking...</span>
+                  <span className="text-gray-400 italic">Listening... speak now</span>
                 )}
               </div>
 
@@ -429,13 +688,21 @@ export default function VoiceNotes({ isOpen, onClose }) {
             </div>
           ) : (
             <div className="text-center py-4">
-              <button onClick={startRecording}
-                className="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white flex items-center justify-center mx-auto shadow-lg hover:shadow-xl transition-all transform hover:scale-105">
+              <button
+                onClick={startRecording}
+                disabled={micPermission === 'denied'}
+                className={`w-16 h-16 rounded-full text-white flex items-center justify-center mx-auto shadow-lg transition-all transform hover:scale-105 ${
+                  micPermission === 'denied'
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : 'bg-gradient-to-br from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 hover:shadow-xl'
+                }`}
+              >
                 <Mic size={24} />
               </button>
-              <p className="text-xs text-gray-400 mt-3">Tap to start recording</p>
-              <p className="text-[10px] text-gray-300 dark:text-gray-600 mt-1">
-                {LANGUAGES.find(l => l.value === settings.language)?.label || 'English'} | {settings.continuous ? 'Continuous' : 'Single'} | {settings.sensitivity} sensitivity
+              <p className="text-xs text-gray-400 mt-3">
+                {micPermission === 'denied'
+                  ? 'Microphone access required'
+                  : 'Tap to start recording'}
               </p>
             </div>
           )}
