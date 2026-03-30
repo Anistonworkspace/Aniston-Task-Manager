@@ -86,7 +86,8 @@ export default function AssistantManagerPlanPage() {
   // Load available directors on mount
   useEffect(() => {
     api.get('/director-plan/directors').then(res => {
-      const dirs = res.data?.data || [];
+      const d = res.data;
+      const dirs = Array.isArray(d) ? d : Array.isArray(d?.data) ? d.data : Array.isArray(d?.directors) ? d.directors : [];
       setDirectors(dirs);
       if (dirs.length > 0 && !selectedDirectorId) {
         setSelectedDirectorId(dirs[0].id);
@@ -97,7 +98,10 @@ export default function AssistantManagerPlanPage() {
   // Load users for assignee selector
   useEffect(() => {
     api.get('/auth/users').then(res => {
-      setUsers(res.data?.data || res.data || []);
+      const d = res.data;
+      // Handle various response shapes: { users: [...] }, [...], { data: { users: [...] } }
+      const userList = Array.isArray(d) ? d : Array.isArray(d?.users) ? d.users : Array.isArray(d?.data) ? d.data : [];
+      setUsers(userList);
     }).catch(() => {});
   }, []);
 
@@ -107,7 +111,8 @@ export default function AssistantManagerPlanPage() {
       setLoading(true);
       const dirParam = selectedDirectorId ? `?directorId=${selectedDirectorId}` : '';
       const res = await api.get(`/director-plan/${dateStr}${dirParam}`);
-      const plan = res.data?.data || res.data;
+      const raw = res.data;
+      const plan = (raw && typeof raw === 'object') ? raw : {};
       // Ensure categories is always an array with tasks as arrays
       const cats = Array.isArray(plan.categories) ? plan.categories : [];
       setCategories(cats.map(cat => ({
@@ -150,6 +155,7 @@ export default function AssistantManagerPlanPage() {
 
   // Build display order: NOW card first, then rest in saved order
   const displayOrder = useMemo(() => {
+    if (!Array.isArray(categories)) return [];
     const indices = categories.map((_, i) => i);
     if (nowCategoryIndex >= 0) {
       const filtered = indices.filter(i => i !== nowCategoryIndex);
