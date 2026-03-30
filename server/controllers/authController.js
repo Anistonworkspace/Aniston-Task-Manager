@@ -594,6 +594,7 @@ const microsoftCallback = async (req, res) => {
       };
       if (refresh_token) updates.teamsRefreshToken = refresh_token;
       if (oid && !user.teamsUserId) updates.teamsUserId = oid;
+      // Only change authProvider if user has no local password set
       if (user.authProvider === 'local' && !user.password) updates.authProvider = 'microsoft';
       await user.update(updates);
 

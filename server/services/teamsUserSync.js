@@ -77,7 +77,9 @@ async function syncUsersFromM365() {
         // Update teamsUserId and authProvider if not set
         const updates = {};
         if (!existing.teamsUserId && m365User.id) updates.teamsUserId = m365User.id;
-        if (existing.authProvider !== 'microsoft') updates.authProvider = 'microsoft';
+        // Only set authProvider to microsoft if user has NO local password
+        // This prevents breaking local login for users who have both
+        if (existing.authProvider !== 'microsoft' && !existing.password) updates.authProvider = 'microsoft';
         if (Object.keys(updates).length) await existing.update(updates);
         results.existing.push({ email, name: m365User.displayName, id: existing.id });
         continue;
