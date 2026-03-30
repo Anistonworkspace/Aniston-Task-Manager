@@ -103,11 +103,26 @@ const getDailyPlan = async (req, res) => {
     });
 
     if (!plan) {
-      // Carryforward: look for the most recent previous plan for this director
-      const previousPlan = await DirectorPlan.findOne({
+      // Carryforward: look for the most recent previous plan WITH actual tasks
+      // Search up to 30 days back to find a plan that has tasks in it
+      const previousPlans = await DirectorPlan.findAll({
         where: { directorId: director.id, date: { [Op.lt]: date } },
         order: [['date', 'DESC']],
+        limit: 30,
       });
+
+      // Find the first plan that has categories with tasks
+      let previousPlan = null;
+      for (const p of previousPlans) {
+        if (p.categories?.length > 0 && p.categories.some(c => c.tasks?.length > 0)) {
+          previousPlan = p;
+          break;
+        }
+      }
+      // If no plan with tasks found, use the most recent plan for category structure
+      if (!previousPlan && previousPlans.length > 0) {
+        previousPlan = previousPlans[0];
+      }
 
       if (previousPlan && previousPlan.categories?.length > 0) {
         // Deep copy categories, reset all tasks and subtasks to not-done
@@ -207,8 +222,12 @@ const saveDailyPlan = async (req, res) => {
     });
 
     if (!created) {
+      // Don't overwrite existing data with empty categories (prevents auto-save wipe)
+      const hasRealTasks = Array.isArray(categories) && categories.length > 0 &&
+        categories.some(c => Array.isArray(c.tasks) && c.tasks.length > 0);
+      const newCats = hasRealTasks ? categories : (categories && categories.length > 0 ? categories : plan.categories);
       await plan.update({
-        categories: categories || plan.categories,
+        categories: newCats,
         notes: notes !== undefined ? notes : plan.notes,
       });
     }

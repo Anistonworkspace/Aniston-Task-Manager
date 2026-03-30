@@ -207,9 +207,13 @@ export default function AssistantManagerPlanPage() {
     markDirty();
   }
 
-  // Auto-save after 30 seconds of inactivity
+  // Auto-save after 30 seconds of inactivity — only if there's real content
   useEffect(() => {
     if (!dirty) return;
+    // Don't auto-save if categories are empty or have no tasks (prevents data wipe)
+    const hasContent = Array.isArray(categories) && categories.length > 0 &&
+      categories.some(c => (c.tasks || []).length > 0);
+    if (!hasContent) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(() => {
       handleSave(true);
