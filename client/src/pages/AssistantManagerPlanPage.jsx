@@ -108,7 +108,12 @@ export default function AssistantManagerPlanPage() {
       const dirParam = selectedDirectorId ? `?directorId=${selectedDirectorId}` : '';
       const res = await api.get(`/director-plan/${dateStr}${dirParam}`);
       const plan = res.data?.data || res.data;
-      setCategories(plan.categories || []);
+      // Ensure categories is always an array with tasks as arrays
+      const cats = Array.isArray(plan.categories) ? plan.categories : [];
+      setCategories(cats.map(cat => ({
+        ...cat,
+        tasks: Array.isArray(cat.tasks) ? cat.tasks : [],
+      })));
       setNotes(plan.notes || '');
       setDirectorName(plan.directorName || 'Director');
       setDirty(false);
@@ -269,7 +274,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) =>
+          tasks: (cat.tasks || []).map((t, ti) =>
             ti === taskIndex ? { ...t, done: !t.done } : t
           ),
         };
@@ -286,7 +291,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) =>
+          tasks: (cat.tasks || []).map((t, ti) =>
             ti === taskIndex ? { ...t, text } : t
           ),
         };
@@ -347,7 +352,7 @@ export default function AssistantManagerPlanPage() {
     setCategories(prev =>
       prev.map((cat, ci) => {
         if (ci !== catIndex) return cat;
-        return { ...cat, tasks: cat.tasks.map((t, ti) => ti === taskIndex ? { ...t, [field]: value } : t) };
+        return { ...cat, tasks: (cat.tasks || []).map((t, ti) => ti === taskIndex ? { ...t, [field]: value } : t) };
       })
     );
     markDirty();
@@ -369,7 +374,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) => {
+          tasks: (cat.tasks || []).map((t, ti) => {
             if (ti !== taskIndex) return t;
             return {
               ...t,
@@ -394,7 +399,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) => {
+          tasks: (cat.tasks || []).map((t, ti) => {
             if (ti !== taskIndex) return t;
             return {
               ...t,
@@ -416,7 +421,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) => {
+          tasks: (cat.tasks || []).map((t, ti) => {
             if (ti !== taskIndex) return t;
             return {
               ...t,
@@ -438,7 +443,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) => {
+          tasks: (cat.tasks || []).map((t, ti) => {
             if (ti !== taskIndex) return t;
             return { ...t, subtasks: (t.subtasks || []).filter((_, si) => si !== subIndex) };
           }),
@@ -477,7 +482,7 @@ export default function AssistantManagerPlanPage() {
             if (ci !== catIndex) return cat;
             return {
               ...cat,
-              tasks: cat.tasks.map((t, ti) => {
+              tasks: (cat.tasks || []).map((t, ti) => {
                 if (ti !== taskIndex) return t;
                 return { ...t, attachments: [...(t.attachments || []), { name: fileName, url: fileUrl }] };
               }),
@@ -500,7 +505,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.map((t, ti) => {
+          tasks: (cat.tasks || []).map((t, ti) => {
             if (ti !== taskIndex) return t;
             return { ...t, attachments: (t.attachments || []).filter((_, fi) => fi !== fileIndex) };
           }),
@@ -1223,7 +1228,7 @@ export default function AssistantManagerPlanPage() {
                   <div>
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Attachments</p>
                     <div className="space-y-1">
-                      {task.attachments.map((att, ai) => (
+                      {(task.attachments || []).map((att, ai) => (
                         <div key={ai} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
                           <Paperclip size={12} className="text-gray-400" />
                           <span className="text-xs text-gray-700 flex-1 truncate">{att.name}</span>
@@ -1238,7 +1243,7 @@ export default function AssistantManagerPlanPage() {
                   <div>
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Subtasks ({subDone}/{subTotal})</p>
                     <div className="space-y-1.5">
-                      {task.subtasks.map((sub, si) => (
+                      {(task.subtasks || []).map((sub, si) => (
                         <div key={sub.id || si} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
                           <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 ${sub.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300'}`}>
                             {sub.done && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
