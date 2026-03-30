@@ -303,6 +303,33 @@ export default function DirectorDashboardPage() {
             ))}
           </div>
 
+          {/* Current Task Banner */}
+          {currentCat && (
+            <div className="rounded-2xl p-5 mb-6 text-white shadow-lg relative overflow-hidden"
+              style={{ background: `linear-gradient(135deg, ${currentCat.color || '#6366F1'}, ${currentCat.color || '#6366F1'}cc)` }}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
+                    {getIcon(currentCat.icon, 24)}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/30 backdrop-blur-sm">NOW</span>
+                      <h3 className="text-lg font-bold">{currentCat.label}</h3>
+                    </div>
+                    <p className="text-white/80 text-sm mt-0.5">
+                      {currentCat.startTime} - {currentCat.endTime} · {(currentCat.tasks || []).filter(t => !t.done).length} tasks pending
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => document.getElementById(`cat-${currentCat.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                  className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl text-sm font-semibold backdrop-blur-sm transition-colors">
+                  View Tasks
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Timeline Strip */}
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-8">
             <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
@@ -327,17 +354,21 @@ export default function DirectorDashboardPage() {
             </div>
           </div>
 
-          {/* Category Cards */}
+          {/* Category Cards — current card shown first */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-            {categories.map(c => {
+            {[...categories].sort((a, b) => {
+              const aIsCurrent = currentCat?.id === a.id ? -1 : 0;
+              const bIsCurrent = currentCat?.id === b.id ? -1 : 0;
+              return aIsCurrent - bIsCurrent;
+            }).map(c => {
               const isCurrent = currentCat?.id === c.id;
               const catTasks = c.tasks || [];
               const catDone = catTasks.filter(t => t.done).length;
               const catPct = catTasks.length ? Math.round((catDone / catTasks.length) * 100) : 0;
               return (
                 <div key={c.id} id={`cat-${c.id}`}
-                  className={`bg-white rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all relative overflow-hidden
-                    ${isCurrent ? 'border-emerald-200 ring-2 ring-emerald-50' : 'border-gray-100'}`}>
+                  className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all relative overflow-hidden
+                    ${isCurrent ? 'bg-emerald-50/50 border-emerald-300 ring-2 ring-emerald-200 shadow-emerald-100' : 'bg-white border-gray-100'}`}>
                   <div className="absolute top-0 left-0 right-0 h-1" style={{ background: c.color }} />
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-3">
@@ -406,7 +437,7 @@ export default function DirectorDashboardPage() {
                         return (
                           <div key={t.id || ti} className={`rounded-lg border transition-colors ${
                             t.done ? 'border-gray-100 bg-gray-50/50' :
-                            t.priority === 'urgent' ? 'border-red-200 bg-red-50/30 hover:border-red-300' :
+                            t.priority === 'urgent' ? 'border-red-300 bg-red-50/50 hover:border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.15)]' :
                             t.priority === 'high' ? 'border-orange-200 bg-orange-50/30 hover:border-orange-300' :
                             'border-gray-100 hover:border-gray-200'
                           }`}>
@@ -570,7 +601,11 @@ export default function DirectorDashboardPage() {
             </div>
           ) : (
             <div className="space-y-1">
-              {categories.map((c, i) => {
+              {[...categories].sort((a, b) => {
+                const aIsCurrent = currentCat?.id === a.id ? -1 : 0;
+                const bIsCurrent = currentCat?.id === b.id ? -1 : 0;
+                return aIsCurrent - bIsCurrent;
+              }).map((c, i) => {
                 const isCurrent = currentCat?.id === c.id;
                 const catTasks = c.tasks || [];
                 const catDone = catTasks.filter(t => t.done).length;
@@ -585,7 +620,7 @@ export default function DirectorDashboardPage() {
                       <div className={`w-3 h-3 rounded-full mt-4 flex-shrink-0 ${isCurrent ? 'bg-emerald-500 ring-4 ring-emerald-100' : ''}`} style={{ background: isCurrent ? undefined : c.color }} />
                       {i < categories.length - 1 && <div className="w-0.5 flex-1 bg-gray-200" />}
                     </div>
-                    <div className={`flex-1 p-4 rounded-2xl border mb-1 shadow-sm ${isCurrent ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-gray-100'}`}>
+                    <div className={`flex-1 p-4 rounded-2xl border mb-1 shadow-sm transition-all ${isCurrent ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-200 shadow-emerald-100' : 'bg-white border-gray-100'}`}>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className="text-lg" style={{ color: c.color }}>{getIcon(c.icon, 18)}</span>
@@ -598,10 +633,10 @@ export default function DirectorDashboardPage() {
                       {catTasks.length > 0 && (
                         <div className="mt-2 space-y-1">
                           {sortByPriority(catTasks).map((t, ti) => (
-                            <div key={ti} className={`flex items-center gap-2 text-xs py-1 px-2 rounded-md ${
+                            <div key={ti} className={`flex items-center gap-2 text-xs py-1.5 px-2.5 rounded-lg transition-all ${
                               t.done ? 'text-gray-400 bg-gray-50' :
-                              t.priority === 'urgent' ? 'text-red-700 bg-red-50' :
-                              t.priority === 'high' ? 'text-orange-700 bg-orange-50' :
+                              t.priority === 'urgent' ? 'text-red-700 bg-red-50 border border-red-200 shadow-[0_0_8px_rgba(239,68,68,0.12)]' :
+                              t.priority === 'high' ? 'text-orange-700 bg-orange-50 border border-orange-200' :
                               'text-gray-700'
                             }`}>
                               <div className={`w-2 h-2 rounded-full flex-shrink-0 ${

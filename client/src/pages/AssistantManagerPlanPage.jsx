@@ -80,7 +80,7 @@ export default function AssistantManagerPlanPage() {
   const [selectedDirectorId, setSelectedDirectorId] = useState(null);
   const [viewingTask, setViewingTask] = useState(null); // { catIndex, taskIndex, task, catLabel }
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [users, setUsers] = useState([]);
+  // users state removed — assignee dropdown uses directors list instead
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { type: 'task'|'card', catIndex, taskIndex?, taskText?, catLabel? }
   const [exportConfirm, setExportConfirm] = useState(null); // null or { catIndex? } for single card export
 
@@ -101,15 +101,7 @@ export default function AssistantManagerPlanPage() {
     }).catch((e) => { console.error('Failed to load directors:', e); });
   }, []);
 
-  // Load users for assignee selector
-  useEffect(() => {
-    api.get('/auth/users').then(res => {
-      const d = res.data;
-      // Handle various response shapes: { users: [...] }, [...], { data: { users: [...] } }
-      const userList = Array.isArray(d) ? d : Array.isArray(d?.users) ? d.users : Array.isArray(d?.data) ? d.data : [];
-      setUsers(userList);
-    }).catch(() => {});
-  }, []);
+  // Directors list is used for the assignee dropdown (only directors/superadmins can be assigned)
 
   // Load plan for selected date + director
   const loadPlan = useCallback(async () => {
@@ -1072,71 +1064,45 @@ export default function AssistantManagerPlanPage() {
                       <div ref={taskDragProvided.innerRef} {...taskDragProvided.draggableProps}
                         className={`rounded-xl border transition-all ${isExpanded ? 'border-indigo-200 shadow-sm' : 'border-transparent'} ${task.done ? 'bg-gray-50' : 'bg-white'} ${taskDragSnapshot.isDragging ? 'shadow-lg ring-2 ring-indigo-200' : ''}`}>
                         {/* Task header row */}
-                        <div className="flex items-center gap-2 px-3 py-2.5 group">
-                          {/* Task drag handle */}
-                          <div {...taskDragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors flex-shrink-0">
-                            <GripVertical size={14} />
-                          </div>
+                        <div className="px-3 py-2 group">
+                          <div className="flex items-center gap-2">
+                            {/* Task drag handle */}
+                            <div {...taskDragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing p-0.5 rounded text-gray-300 hover:text-gray-500 transition-colors flex-shrink-0">
+                              <GripVertical size={14} />
+                            </div>
 
-                          {/* Expand toggle */}
-                          <button onClick={() => toggleExpand(catIndex, taskIndex)} className="p-0.5 rounded text-gray-400 hover:text-indigo-500 flex-shrink-0">
-                            <ChevronDownIcon size={14} className={`transition-transform duration-200 ${isExpanded ? '' : '-rotate-90'}`} />
-                          </button>
-
-                          {/* Checkbox */}
-                          <button onClick={() => toggleTask(catIndex, taskIndex)}
-                            className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${task.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300 hover:border-indigo-400'}`}>
-                            {task.done && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-                          </button>
-
-                          {/* Task text */}
-                          <input type="text" value={task.text || task.title || ''} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
-                            placeholder="Task name..."
-                            className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-[120px] ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
-
-                          {/* Priority selector */}
-                          <select
-                            value={task.priority || 'medium'}
-                            onChange={e => { updateTaskField(catIndex, taskIndex, 'priority', e.target.value); markDirty(); }}
-                            className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border cursor-pointer outline-none flex-shrink-0 ${getPriorityStyle(task.priority || 'medium').bg} ${getPriorityStyle(task.priority || 'medium').text} ${getPriorityStyle(task.priority || 'medium').border}`}
-                          >
-                            {PRIORITY_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-                          </select>
-
-                          {/* Deadline */}
-                          <input
-                            type="datetime-local"
-                            value={task.deadline || ''}
-                            onChange={e => updateTaskField(catIndex, taskIndex, 'deadline', e.target.value)}
-                            className="text-[10px] text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 w-[140px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
-                          />
-                          {task.deadline && (() => {
-                            const u = getDeadlineUrgency(task.deadline);
-                            return u ? <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${u.color}`}>{u.label}</span> : null;
-                          })()}
-                          {task.deadline && (
-                            <button onClick={() => updateTaskField(catIndex, taskIndex, 'deadline', null)}
-                              className="p-0.5 rounded text-gray-400 hover:text-red-500 transition-colors flex-shrink-0" title="Clear deadline">
-                              <X size={12} />
+                            {/* Expand toggle */}
+                            <button onClick={() => toggleExpand(catIndex, taskIndex)} className="p-0.5 rounded text-gray-400 hover:text-indigo-500 flex-shrink-0">
+                              <ChevronDownIcon size={14} className={`transition-transform duration-200 ${isExpanded ? '' : '-rotate-90'}`} />
                             </button>
-                          )}
 
-                          {/* Assignee */}
-                          <select
-                            value={task.assigneeId || ''}
-                            onChange={e => {
-                              const userId = e.target.value;
-                              const user = users.find(u => u.id === userId);
-                              updateTaskField(catIndex, taskIndex, 'assigneeId', userId || null);
-                              updateTaskField(catIndex, taskIndex, 'assigneeName', user?.name || null);
-                            }}
-                            className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 max-w-[100px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
-                          >
-                            <option value="">Select assignee</option>
-                            {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}{u.role ? ` (${u.role})` : ''}</option>)}
-                          </select>
+                            {/* Checkbox */}
+                            <button onClick={() => toggleTask(catIndex, taskIndex)}
+                              className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${task.done ? 'border-emerald-500 bg-emerald-500' : 'border-gray-300 hover:border-indigo-400'}`}>
+                              {task.done && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                            </button>
 
-                          {/* View task button */}
+                            {/* Task text */}
+                            <input type="text" value={task.text || task.title || ''} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
+                              placeholder="Task name..."
+                              className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-[80px] ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+
+                            {/* Priority selector */}
+                            <select
+                              value={task.priority || 'medium'}
+                              onChange={e => { updateTaskField(catIndex, taskIndex, 'priority', e.target.value); markDirty(); }}
+                              className={`text-[10px] font-semibold rounded-full px-2 py-0.5 border cursor-pointer outline-none flex-shrink-0 ${getPriorityStyle(task.priority || 'medium').bg} ${getPriorityStyle(task.priority || 'medium').text} ${getPriorityStyle(task.priority || 'medium').border}`}
+                            >
+                              {PRIORITY_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                            </select>
+
+                            {/* Deadline badge (compact) */}
+                            {task.deadline && (() => {
+                              const u = getDeadlineUrgency(task.deadline);
+                              return u ? <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${u.color}`}>{u.label}</span> : null;
+                            })()}
+
+                            {/* View task button */}
                           <button onClick={() => setViewingTask({ catIndex, taskIndex, task, catLabel: cat.label })}
                             className="p-1 rounded-lg text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 transition-all flex-shrink-0" title="View task details">
                             <Eye size={14} />
@@ -1154,9 +1120,50 @@ export default function AssistantManagerPlanPage() {
                           </button>
                         </div>
 
+                          </div>
                         {/* Expanded detail panel */}
                         {isExpanded && (
-                          <div className="px-4 pb-4 pt-1 space-y-3 border-t border-gray-100 ml-6 mr-3">
+                          <div className="px-4 pb-4 pt-3 space-y-3 border-t border-gray-100 ml-6 mr-3">
+                            {/* Deadline + Assignee + Delete row */}
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <div className="flex items-center gap-1.5">
+                                <Clock size={11} className="text-gray-400" />
+                                <span className="text-[10px] text-gray-400 font-medium">Deadline:</span>
+                                <input
+                                  type="datetime-local"
+                                  value={task.deadline || ''}
+                                  onChange={e => { updateTaskField(catIndex, taskIndex, 'deadline', e.target.value); markDirty(); }}
+                                  className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                                />
+                                {task.deadline && (
+                                  <button onClick={() => { updateTaskField(catIndex, taskIndex, 'deadline', null); markDirty(); }}
+                                    className="p-0.5 rounded text-gray-400 hover:text-red-500 transition-colors" title="Clear deadline">
+                                    <X size={11} />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-gray-400 font-medium">Assignee:</span>
+                                <select
+                                  value={task.assigneeId || ''}
+                                  onChange={e => {
+                                    const userId = e.target.value;
+                                    const u = directors.find(x => x.id === userId);
+                                    updateTaskField(catIndex, taskIndex, 'assigneeId', userId || null);
+                                    updateTaskField(catIndex, taskIndex, 'assigneeName', u?.name || null);
+                                    markDirty();
+                                  }}
+                                  className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 max-w-[150px] focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                                >
+                                  <option value="">Select assignee</option>
+                                  {(directors || []).map(d => <option key={d.id} value={d.id}>{d.name}{d.isSuperAdmin ? ' (Super Admin)' : d.hierarchyLevel ? ` (${d.hierarchyLevel})` : ''}</option>)}
+                                </select>
+                              </div>
+                              <button onClick={() => confirmDeleteTask(catIndex, taskIndex)}
+                                className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium text-red-500 hover:bg-red-50 border border-red-200 transition-colors">
+                                <Trash2 size={11} /> Delete Task
+                              </button>
+                            </div>
                             {/* Description */}
                             <div>
                               <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-1">
