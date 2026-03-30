@@ -62,6 +62,8 @@ const getDirectors = async (req, res) => {
     const directors = await User.findAll({
       where: {
         isActive: true,
+        // Exclude the seed system account — it's for system management only
+        email: { [Op.ne]: 'superadmin@anistonav.com' },
         [Op.or]: [
           { isSuperAdmin: true },
           { hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } },
