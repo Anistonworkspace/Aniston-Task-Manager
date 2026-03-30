@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText, Paperclip, Download, Eye, GripVertical } from 'lucide-react';
+import { Calendar, Save, Plus, X, Clock, ChevronLeft, ChevronRight, ChevronDown as ChevronDownIcon, Trash2, Edit3, Hammer, Receipt, Package, ClipboardList, Scale, FlaskConical, Factory, Bot, Monitor, Palette, Folder, Star, Target, BookOpen, Phone, Mail, Coffee, Briefcase as BriefcaseIcon, Paintbrush, Link2, Copy, Check, ListChecks, FileText, Paperclip, Download, Eye, GripVertical, AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { useToast } from '../components/common/Toast';
+import { useUndo } from '../context/UndoContext';
 import useSocket from '../hooks/useSocket';
 import { format, addDays, subDays } from 'date-fns';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 const CATEGORY_ICONS = {
   briefcase: '\uD83D\uDCBC',
@@ -58,6 +61,7 @@ function getIcon(name, size = 18) {
 export default function AssistantManagerPlanPage() {
   const { isAssistantManager, isSuperAdmin } = useAuth();
   const toast = useToast();
+  const { pushAction } = useUndo();
 
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [categories, setCategories] = useState([]);
@@ -77,6 +81,8 @@ export default function AssistantManagerPlanPage() {
   const [viewingTask, setViewingTask] = useState(null); // { catIndex, taskIndex, task, catLabel }
   const [currentTime, setCurrentTime] = useState(new Date());
   const [users, setUsers] = useState([]);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { type: 'task'|'card', catIndex, taskIndex?, taskText?, catLabel? }
+  const [exportConfirm, setExportConfirm] = useState(null); // null or { catIndex? } for single card export
 
   const autoSaveTimer = useRef(null);
 
@@ -310,19 +316,194 @@ export default function AssistantManagerPlanPage() {
     markDirty();
   }
 
-  // Delete task (with confirmation)
-  function deleteTask(catIndex, taskIndex) {
-    if (!window.confirm('Are you sure you want to remove this task?')) return;
+  // Delete task — show confirmation modal
+  function confirmDeleteTask(catIndex, taskIndex) {
+    const task = categories[catIndex]?.tasks?.[taskIndex];
+    setDeleteConfirm({ type: 'task', catIndex, taskIndex, taskText: task?.text || 'Untitled task', catLabel: categories[catIndex]?.label });
+  }
+
+  function executeDeleteTask(catIndex, taskIndex) {
+    const deletedTask = categories[catIndex]?.tasks?.[taskIndex];
+    const deletedFrom = categories[catIndex]?.label;
+
     setCategories(prev =>
       prev.map((cat, ci) => {
         if (ci !== catIndex) return cat;
-        return {
-          ...cat,
-          tasks: (cat.tasks || []).filter((_, ti) => ti !== taskIndex),
-        };
+        return { ...cat, tasks: (cat.tasks || []).filter((_, ti) => ti !== taskIndex) };
       })
     );
     markDirty();
+    setDeleteConfirm(null);
+
+    // Push undo action — restore task for 5 seconds
+    if (deletedTask) {
+      pushAction({
+        type: 'delete_director_task',
+        description: `Deleted "${deletedTask.text || 'task'}" from ${deletedFrom}`,
+        undo: async () => {
+          setCategories(prev =>
+            prev.map((cat, ci) => {
+              if (ci !== catIndex) return cat;
+              const tasks = [...(cat.tasks || [])];
+              tasks.splice(taskIndex, 0, deletedTask);
+              return { ...cat, tasks };
+            })
+          );
+          markDirty();
+        },
+        redo: async () => {
+          setCategories(prev =>
+            prev.map((cat, ci) => {
+              if (ci !== catIndex) return cat;
+              return { ...cat, tasks: (cat.tasks || []).filter((_, ti) => ti !== taskIndex) };
+            })
+          );
+          markDirty();
+        },
+      });
+    }
+  }
+
+  // Delete card — show confirmation modal
+  function confirmDeleteCard(catIndex) {
+    const cat = categories[catIndex];
+    setDeleteConfirm({ type: 'card', catIndex, catLabel: cat?.label, taskCount: (cat?.tasks || []).length });
+  }
+
+  function executeDeleteCard(catIndex) {
+    const deletedCard = categories[catIndex];
+
+    setCategories(prev => prev.filter((_, i) => i !== catIndex));
+    markDirty();
+    setDeleteConfirm(null);
+
+    if (deletedCard) {
+      pushAction({
+        type: 'delete_director_card',
+        description: `Deleted card "${deletedCard.label}" with ${(deletedCard.tasks || []).length} tasks`,
+        undo: async () => {
+          setCategories(prev => {
+            const updated = [...prev];
+            updated.splice(catIndex, 0, deletedCard);
+            return updated;
+          });
+          markDirty();
+        },
+        redo: async () => {
+          setCategories(prev => prev.filter((_, i) => i !== catIndex));
+          markDirty();
+        },
+      });
+    }
+  }
+
+  // Export plan to Excel
+  async function exportToExcel(singleCatIndex = null) {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Director Plan');
+
+    // Title
+    ws.mergeCells('A1', 'G1');
+    const titleCell = ws.getCell('A1');
+    titleCell.value = `Director's Daily Plan — ${directorName}`;
+    titleCell.font = { bold: true, size: 16, color: { argb: 'FF1e1b4b' } };
+    titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
+    ws.getRow(1).height = 30;
+
+    ws.mergeCells('A2', 'G2');
+    ws.getCell('A2').value = `Date: ${displayDate}`;
+    ws.getCell('A2').font = { size: 11, color: { argb: 'FF6b7280' } };
+
+    // Column widths
+    ws.getColumn(1).width = 5;   // #
+    ws.getColumn(2).width = 40;  // Task
+    ws.getColumn(3).width = 12;  // Priority
+    ws.getColumn(4).width = 14;  // Status
+    ws.getColumn(5).width = 18;  // Deadline
+    ws.getColumn(6).width = 20;  // Assignee
+    ws.getColumn(7).width = 10;  // Subtasks
+
+    let row = 4;
+    const catsToExport = singleCatIndex !== null
+      ? [{ cat: categories[singleCatIndex], idx: singleCatIndex }]
+      : categories.map((cat, idx) => ({ cat, idx }));
+
+    for (const { cat } of catsToExport) {
+      if (!cat) continue;
+      const colorHex = (cat.color || '#6366F1').replace('#', '');
+
+      // Category header
+      ws.mergeCells(row, 1, row, 7);
+      const headerCell = ws.getCell(row, 1);
+      headerCell.value = `${cat.label}  (${cat.startTime || ''} - ${cat.endTime || ''})`;
+      headerCell.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+      headerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + colorHex } };
+      headerCell.alignment = { horizontal: 'left', vertical: 'middle' };
+      ws.getRow(row).height = 28;
+      row++;
+
+      // Column headers
+      const headers = ['#', 'Task', 'Priority', 'Status', 'Deadline', 'Assignee', 'Subtasks'];
+      const headerRow = ws.addRow(headers);
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, size: 10, color: { argb: 'FF374151' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
+      });
+      row++;
+
+      // Task rows
+      const tasks = cat.tasks || [];
+      if (tasks.length === 0) {
+        ws.mergeCells(row, 1, row, 7);
+        ws.getCell(row, 1).value = 'No tasks';
+        ws.getCell(row, 1).font = { italic: true, color: { argb: 'FF9CA3AF' } };
+        row++;
+      } else {
+        tasks.forEach((task, ti) => {
+          const priorityColors = { urgent: 'FFEF4444', high: 'FFF97316', medium: 'FF3B82F6', low: 'FF9CA3AF' };
+          const priorityColor = priorityColors[task.priority] || priorityColors.medium;
+          const deadlineStr = task.deadline ? format(new Date(task.deadline), 'MMM d, yyyy h:mm a') : '—';
+          const subCount = (task.subtasks || []).length;
+          const subDone = (task.subtasks || []).filter(s => s.done).length;
+
+          const taskRow = ws.addRow([
+            ti + 1,
+            task.text || task.title || '',
+            (task.priority || 'medium').charAt(0).toUpperCase() + (task.priority || 'medium').slice(1),
+            task.done ? 'Done' : 'Pending',
+            deadlineStr,
+            task.assigneeName || 'Unassigned',
+            subCount > 0 ? `${subDone}/${subCount}` : '—',
+          ]);
+
+          // Priority color
+          taskRow.getCell(3).font = { bold: true, color: { argb: priorityColor } };
+          // Status color
+          taskRow.getCell(4).font = { color: { argb: task.done ? 'FF10B981' : 'FFF59E0B' } };
+          // Strikethrough for done tasks
+          if (task.done) {
+            taskRow.getCell(2).font = { strike: true, color: { argb: 'FF9CA3AF' } };
+          }
+          row++;
+        });
+      }
+
+      row++; // Spacing between categories
+    }
+
+    // Footer
+    ws.getCell(row + 1, 1).value = `Exported from Monday Aniston — ${format(new Date(), 'MMM d, yyyy h:mm a')}`;
+    ws.getCell(row + 1, 1).font = { size: 9, italic: true, color: { argb: 'FF9CA3AF' } };
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const filename = singleCatIndex !== null
+      ? `${categories[singleCatIndex]?.label || 'Card'}_${dateStr}.xlsx`
+      : `Director_Plan_${directorName}_${dateStr}.xlsx`;
+    saveAs(blob, filename.replace(/[^a-zA-Z0-9_\-\.]/g, '_'));
+    setExportConfirm(null);
+    toast?.success?.('Excel exported successfully');
   }
 
   // Add task to category
@@ -633,6 +814,11 @@ export default function AssistantManagerPlanPage() {
             <span className="text-sm font-semibold text-gray-700">{displayDate}</span>
           </div>
 
+          {/* Export Button */}
+          <button onClick={() => setExportConfirm({})} className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200 transition-all">
+            <Download size={16} /> Export
+          </button>
+
           {/* Save Button */}
           <button
             onClick={() => handleSave(false)}
@@ -815,8 +1001,13 @@ export default function AssistantManagerPlanPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    {/* Export card button */}
+                    <button onClick={() => setExportConfirm({ catIndex })}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 transition-all opacity-0 group-hover:opacity-100" title="Export this card">
+                      <Download size={14} />
+                    </button>
                     {/* Delete category button */}
-                    <button onClick={() => { setCategories(prev => prev.filter((_, i) => i !== catIndex)); markDirty(); }}
+                    <button onClick={() => confirmDeleteCard(catIndex)}
                       className="p-1 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all">
                       <Trash2 size={14} />
                     </button>
@@ -957,7 +1148,7 @@ export default function AssistantManagerPlanPage() {
                           )}
 
                           {/* Delete */}
-                          <button onClick={() => deleteTask(catIndex, taskIndex)}
+                          <button onClick={() => confirmDeleteTask(catIndex, taskIndex)}
                             className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-all flex-shrink-0" title="Remove task">
                             <X size={14} />
                           </button>
@@ -1288,6 +1479,78 @@ export default function AssistantManagerPlanPage() {
               {saving ? 'Saving...' : 'Unsaved Changes - Save Plan'}
             </span>
           </button>
+        </div>
+      )}
+
+      {/* ═══ DELETE CONFIRMATION MODAL ═══ */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setDeleteConfirm(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden" onClick={e => e.stopPropagation()}
+            style={{ animation: 'voicePanelSlideIn 200ms cubic-bezier(0.16, 1, 0.3, 1) both' }}>
+            <div className="p-5 text-center">
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
+                <Trash2 size={22} className="text-red-500" />
+              </div>
+              <h3 className="text-base font-bold text-gray-900">
+                {deleteConfirm.type === 'card' ? 'Delete Category Card?' : 'Delete Task?'}
+              </h3>
+              <p className="text-sm text-gray-500 mt-2">
+                {deleteConfirm.type === 'card'
+                  ? `"${deleteConfirm.catLabel}" has ${deleteConfirm.taskCount} task${deleteConfirm.taskCount !== 1 ? 's' : ''}. This will remove the card and all its tasks.`
+                  : `Remove "${deleteConfirm.taskText}" from ${deleteConfirm.catLabel}?`}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">You can undo this within 5 seconds (Ctrl+Z)</p>
+            </div>
+            <div className="flex border-t border-gray-100">
+              <button onClick={() => setDeleteConfirm(null)}
+                className="flex-1 py-3 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+                Cancel
+              </button>
+              <button onClick={() => deleteConfirm.type === 'card' ? executeDeleteCard(deleteConfirm.catIndex) : executeDeleteTask(deleteConfirm.catIndex, deleteConfirm.taskIndex)}
+                className="flex-1 py-3 text-sm font-bold text-red-600 hover:bg-red-50 transition-colors border-l border-gray-100">
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ EXPORT CONFIRMATION MODAL ═══ */}
+      {exportConfirm !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setExportConfirm(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden" onClick={e => e.stopPropagation()}
+            style={{ animation: 'voicePanelSlideIn 200ms cubic-bezier(0.16, 1, 0.3, 1) both' }}>
+            <div className="p-5 text-center">
+              <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center mx-auto mb-3">
+                <Download size={22} className="text-indigo-500" />
+              </div>
+              <h3 className="text-base font-bold text-gray-900">Export Director Plan</h3>
+              <p className="text-sm text-gray-500 mt-2">
+                {exportConfirm.catIndex !== undefined
+                  ? `Export "${categories[exportConfirm.catIndex]?.label}" card to Excel`
+                  : 'Choose what to export'}
+              </p>
+            </div>
+            <div className="px-5 pb-5 space-y-2">
+              {exportConfirm.catIndex !== undefined ? (
+                <button onClick={() => exportToExcel(exportConfirm.catIndex)}
+                  className="w-full py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-colors">
+                  Export This Card
+                </button>
+              ) : (
+                <>
+                  <button onClick={() => exportToExcel(null)}
+                    className="w-full py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-colors">
+                    Export Full Plan
+                  </button>
+                </>
+              )}
+              <button onClick={() => setExportConfirm(null)}
+                className="w-full py-2 text-sm font-medium text-gray-500 hover:bg-gray-50 rounded-xl transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
