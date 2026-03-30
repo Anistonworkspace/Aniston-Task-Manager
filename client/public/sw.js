@@ -7,36 +7,49 @@ const STATIC_ASSETS = [
   '/icons/anistonlogo.png',
 ];
 
-// Install — cache static assets + offline page
+// Install — cache static assets + IMMEDIATELY activate (no waiting)
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS);
     })
   );
-  // Do NOT auto-skipWaiting — wait for user to click "Update" in the UI
+  // Force immediate activation — don't wait for user to click update
+  self.skipWaiting();
 });
 
-// Listen for SKIP_WAITING message from client to activate new SW
+// Listen for SKIP_WAITING message (fallback for older pattern)
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
 });
 
-// Activate — clean old caches
+// Activate — delete ALL old caches, then claim all clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key !== CACHE_NAME).map((key) => {
+          console.log('[SW] Deleting old cache:', key);
+          return caches.delete(key);
+        })
       );
+    }).then(() => {
+      // Take control of all open tabs immediately
+      return self.clients.claim();
+    }).then(() => {
+      // Notify all clients to reload with the new version
+      return self.clients.matchAll({ type: 'window' }).then((clients) => {
+        clients.forEach((client) => {
+          client.postMessage({ type: 'SW_UPDATED', cacheName: CACHE_NAME });
+        });
+      });
     })
   );
-  self.clients.claim();
 });
 
-// Fetch — network-first for API, cache-first for static assets
+// Fetch — network-first for EVERYTHING to prevent stale content
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -44,7 +57,7 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
-  // Skip non-http(s) requests (chrome-extension://, etc.)
+  // Skip non-http(s) requests
   if (!url.protocol.startsWith('http')) return;
 
   // Skip socket.io requests
@@ -55,12 +68,9 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          // Cache successful GET API responses for offline use
           if (response.ok) {
             const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(request, clone);
-            });
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
           }
           return response;
         })
@@ -76,13 +86,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Navigation requests (page loads): ALWAYS network-first
-  // This prevents stale index.html from being served after deploys
+  // Navigation requests: ALWAYS network-first (prevents stale index.html)
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          // Cache the latest index.html
           if (response.ok) {
             const clone = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
@@ -90,7 +98,6 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => {
-          // Offline: try cache, then offline page
           return caches.match(request).then((cached) => {
             return cached || caches.match(OFFLINE_URL);
           });
@@ -99,22 +106,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets (JS/CSS/images): cache-first, fallback to network
+  // Static assets (JS/CSS with hashed filenames): network-first with cache fallback
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-      return fetch(request)
-        .then((response) => {
-          if (response.ok && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.svg') || url.pathname.endsWith('.png'))) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => {
+    fetch(request)
+      .then((response) => {
+        if (response.ok && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.svg') || url.pathname.endsWith('.png') || url.pathname.endsWith('.woff2'))) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(request).then((cached) => {
+          if (cached) return cached;
+          if (request.mode === 'navigate') return caches.match(OFFLINE_URL);
           return new Response('', { status: 503 });
         });
-    })
+      })
   );
 });
 
@@ -145,7 +153,6 @@ self.addEventListener('notificationclick', (event) => {
   const url = event.notification.data?.url || '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      // Focus existing window or open new
       for (const client of clients) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           client.focus();
