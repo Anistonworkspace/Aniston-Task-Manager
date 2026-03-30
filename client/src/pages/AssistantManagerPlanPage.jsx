@@ -308,7 +308,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: cat.tasks.filter((_, ti) => ti !== taskIndex),
+          tasks: (cat.tasks || []).filter((_, ti) => ti !== taskIndex),
         };
       })
     );
@@ -329,7 +329,7 @@ export default function AssistantManagerPlanPage() {
         if (ci !== catIndex) return cat;
         return {
           ...cat,
-          tasks: [...cat.tasks, {
+          tasks: [...(cat.tasks || []), {
             id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
             text, done: false, time: now,
             description: '', link: '',
@@ -581,7 +581,7 @@ export default function AssistantManagerPlanPage() {
                 onChange={e => { setSelectedDirectorId(e.target.value); setDirty(false); }}
                 className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-300"
               >
-                {directors.map(d => (
+                {(directors || []).map(d => (
                   <option key={d.id} value={d.id}>
                     {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
                   </option>
@@ -709,7 +709,7 @@ export default function AssistantManagerPlanPage() {
         <Droppable droppableId="categories" direction="horizontal" type="CARD">
           {(provided) => (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8" ref={provided.innerRef} {...provided.droppableProps}>
-        {displayOrder.map((catIndex, displayIdx) => {
+        {(displayOrder || []).map((catIndex, displayIdx) => {
           const cat = categories[catIndex];
           if (!cat) return null;
           const catTotal = cat.tasks?.length || 0;
@@ -931,7 +931,7 @@ export default function AssistantManagerPlanPage() {
                             className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 max-w-[100px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
                           >
                             <option value="">Unassigned</option>
-                            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                            {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                           </select>
 
                           {/* View task button */}
