@@ -899,8 +899,9 @@ export default function AssistantManagerPlanPage() {
                           </button>
 
                           {/* Task text */}
-                          <input type="text" value={task.text} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
-                            className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-0 ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+                          <input type="text" value={task.text || task.title || ''} onChange={e => updateTaskText(catIndex, taskIndex, e.target.value)}
+                            placeholder="Task name..."
+                            className={`flex-1 text-sm bg-transparent border-none outline-none focus:ring-0 min-w-[120px] ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
 
                           {/* Priority selector */}
                           <select
