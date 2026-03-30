@@ -404,20 +404,39 @@ export default function DirectorDashboardPage() {
                         const subTotal = (t.subtasks || []).length;
                         const subDone = (t.subtasks || []).filter(s => s.done).length;
                         return (
-                          <div key={t.id || ti} className="rounded-lg border border-gray-100 hover:border-gray-200 transition-colors">
+                          <div key={t.id || ti} className={`rounded-lg border transition-colors ${
+                            t.done ? 'border-gray-100 bg-gray-50/50' :
+                            t.priority === 'urgent' ? 'border-red-200 bg-red-50/30 hover:border-red-300' :
+                            t.priority === 'high' ? 'border-orange-200 bg-orange-50/30 hover:border-orange-300' :
+                            'border-gray-100 hover:border-gray-200'
+                          }`}>
+                            {/* Priority left accent */}
+                            <div className="flex">
+                              <div className={`w-1 rounded-l-lg flex-shrink-0 ${
+                                t.done ? 'bg-emerald-400' :
+                                t.priority === 'urgent' ? 'bg-red-500' :
+                                t.priority === 'high' ? 'bg-orange-500' :
+                                t.priority === 'medium' ? 'bg-blue-400' : 'bg-gray-300'
+                              }`} />
+                              <div className="flex-1">
                             {/* Task header */}
                             <div className="flex items-center gap-2.5 py-2 px-3">
                               <button onClick={() => toggleTask(c.id, ti)}
                                 className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all text-[11px] ${t.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300 hover:border-gray-400'}`}>
                                 {t.done ? '✓' : ''}
                               </button>
-                              <span className={`text-sm flex-1 font-medium ${t.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>{t.text}</span>
-                              {t.priority && t.priority !== 'medium' && (
-                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${getPStyle(t.priority).bg} ${getPStyle(t.priority).text}`}>
-                                  {getPStyle(t.priority).label}
+                              <span className={`text-sm flex-1 font-medium ${t.done ? 'line-through text-gray-400' : t.priority === 'urgent' ? 'text-red-700' : t.priority === 'high' ? 'text-orange-700' : 'text-gray-800'}`}>{t.text}</span>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${getPStyle(t.priority).bg} ${getPStyle(t.priority).text}`}>
+                                {getPStyle(t.priority).label}
+                              </span>
+                              {t.deadline && (
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                                  new Date(t.deadline) < new Date() ? 'bg-red-100 text-red-600' : 'bg-amber-50 text-amber-600'
+                                }`}>
+                                  {format(new Date(t.deadline), 'MMM d, h:mm a')}
                                 </span>
                               )}
-                              {t.startTime && t.endTime && (
+                              {t.startTime && t.endTime && !t.deadline && (
                                 <span className="text-[10px] font-mono text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">{t.startTime}-{t.endTime}</span>
                               )}
                               {subTotal > 0 && (
@@ -481,6 +500,8 @@ export default function DirectorDashboardPage() {
                                 ))}
                               </div>
                             )}
+                              </div>
+                            </div>
                           </div>
                         );
                       })}
@@ -575,10 +596,30 @@ export default function DirectorDashboardPage() {
                       </div>
                       <div className="text-[11px] text-gray-400 mt-1">{c.startTime} - {c.endTime} · {catDone}/{catTasks.length} tasks</div>
                       {catTasks.length > 0 && (
-                        <div className="mt-2 space-y-0.5">
-                          {catTasks.map((t, ti) => (
-                            <div key={ti} className={`text-xs py-0.5 ${t.done ? 'text-gray-400' : 'text-gray-700'}`}>
-                              {t.done ? '✅' : '⬜'} {t.text}
+                        <div className="mt-2 space-y-1">
+                          {sortByPriority(catTasks).map((t, ti) => (
+                            <div key={ti} className={`flex items-center gap-2 text-xs py-1 px-2 rounded-md ${
+                              t.done ? 'text-gray-400 bg-gray-50' :
+                              t.priority === 'urgent' ? 'text-red-700 bg-red-50' :
+                              t.priority === 'high' ? 'text-orange-700 bg-orange-50' :
+                              'text-gray-700'
+                            }`}>
+                              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                t.done ? 'bg-emerald-400' : (getPStyle(t.priority).dot || 'bg-gray-400')
+                              }`} />
+                              <span className={`flex-1 ${t.done ? 'line-through' : ''}`}>{t.text}</span>
+                              {!t.done && (
+                                <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${getPStyle(t.priority).bg} ${getPStyle(t.priority).text}`}>
+                                  {getPStyle(t.priority).label}
+                                </span>
+                              )}
+                              {t.deadline && !t.done && (
+                                <span className={`text-[8px] px-1 py-0.5 rounded ${
+                                  new Date(t.deadline) < new Date() ? 'bg-red-100 text-red-600' : 'text-gray-400'
+                                }`}>
+                                  {format(new Date(t.deadline), 'MMM d')}
+                                </span>
+                              )}
                             </div>
                           ))}
                         </div>
