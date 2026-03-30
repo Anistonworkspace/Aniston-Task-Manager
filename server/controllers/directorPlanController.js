@@ -102,6 +102,38 @@ const getDailyPlan = async (req, res) => {
       where: { date, directorId: director.id },
     });
 
+    // If plan exists but has no tasks (possibly wiped by auto-save during crash),
+    // try to recover tasks from the most recent plan that has them
+    if (plan && plan.categories) {
+      const hasTasks = plan.categories.some(c => c.tasks?.length > 0);
+      if (!hasTasks) {
+        const planWithTasks = await DirectorPlan.findOne({
+          where: { directorId: director.id, date: { [Op.lt]: date } },
+          order: [['date', 'DESC']],
+        });
+        // Search deeper if needed
+        let bestPlan = planWithTasks;
+        if (bestPlan && !bestPlan.categories?.some(c => c.tasks?.length > 0)) {
+          const older = await DirectorPlan.findAll({
+            where: { directorId: director.id, date: { [Op.lt]: date } },
+            order: [['date', 'DESC']],
+            limit: 30,
+          });
+          bestPlan = older.find(p => p.categories?.some(c => c.tasks?.length > 0)) || null;
+        }
+        if (bestPlan && bestPlan.categories?.some(c => c.tasks?.length > 0)) {
+          // Recover tasks from the older plan into today's empty plan
+          const recovered = JSON.parse(JSON.stringify(bestPlan.categories));
+          recovered.forEach(cat => {
+            if (cat.tasks) cat.tasks.forEach(t => { t.done = false; if (t.subtasks) t.subtasks.forEach(s => { s.done = false; }); });
+          });
+          await plan.update({ categories: recovered });
+          plan = await plan.reload();
+          console.log(`[DirectorPlan] Recovered tasks from ${bestPlan.date} into ${date}`);
+        }
+      }
+    }
+
     if (!plan) {
       // Carryforward: look for the most recent previous plan WITH actual tasks
       // Search up to 30 days back to find a plan that has tasks in it

@@ -940,8 +940,8 @@ export default function AssistantManagerPlanPage() {
                             }}
                             className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-1.5 py-0.5 max-w-[100px] focus:outline-none focus:ring-1 focus:ring-indigo-300 flex-shrink-0"
                           >
-                            <option value="">Unassigned</option>
-                            {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                            <option value="">Select assignee</option>
+                            {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}{u.role ? ` (${u.role})` : ''}</option>)}
                           </select>
 
                           {/* View task button */}
