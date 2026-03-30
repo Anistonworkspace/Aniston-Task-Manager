@@ -21,7 +21,7 @@ const SMART_VIEWS_ALL = [
 ];
 
 /**
- * Shared dashboard component for all 3 role-based dashboards.
+ * Shared dashboard component for all role-based dashboards.
  * @param {string} scope - 'member' | 'manager' | 'admin'
  * @param {string} title - Dashboard title
  * @param {string} subtitle - Role subtitle
@@ -37,18 +37,18 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
   const [smartViewOpen, setSmartViewOpen] = useState(false);
   const [personOpen, setPersonOpen] = useState(false);
   const [page, setPage] = useState(1);
+  const [showFilters, setShowFilters] = useState(false);
 
   const smartViews = showUnassigned ? SMART_VIEWS_ALL : SMART_VIEWS_ALL.filter(v => v.id !== 'unassigned');
 
-  // Load person list from API response or users endpoint
+  // Load person list for admin/manager scopes
   useEffect(() => {
-    if (scope === 'admin') {
+    if (showPersonFilter) {
       api.get('/auth/users').then(res => {
         setPersonList(res.data.users || res.data.data?.users || res.data || []);
       }).catch(() => {});
     }
-    // Manager gets teamMembers from dashboard response
-  }, [scope]);
+  }, [showPersonFilter]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -67,7 +67,7 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
       const d = res.data.data || res.data;
       setData(d);
       // Manager: use teamMembers from response for person dropdown
-      if (scope === 'manager' && d.teamMembers?.length) {
+      if (scope === 'manager' && d.teamMembers?.length && !showPersonFilter) {
         setPersonList(d.teamMembers);
       }
     } catch (err) {
@@ -75,7 +75,7 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
     } finally {
       setLoading(false);
     }
-  }, [filters, page, scope]);
+  }, [filters, page, scope, showPersonFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -122,6 +122,8 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
     name: PRIORITY_CONFIG[key]?.label || key, value, color: PRIORITY_CONFIG[key]?.color || '#94a3b8',
   }));
 
+  const activeFilterCount = (filters.status.length || 0) + (filters.priority.length || 0) + (filters.person ? 1 : 0) + (filters.dateFilter ? 1 : 0) + (filters.smartView ? 1 : 0);
+
   return (
     <div className="min-h-screen bg-background p-6 space-y-5">
       {/* Header */}
@@ -131,101 +133,6 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
             <LayoutDashboard size={24} className="text-primary" /> {title}
           </h1>
           {subtitle && <p className="text-sm text-text-tertiary mt-0.5">{subtitle}</p>}
-        </div>
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
-          <input type="text" placeholder="Search tasks..." value={filters.search}
-            onChange={e => { setFilters(f => ({ ...f, search: e.target.value })); setPage(1); }}
-            className="pl-8 pr-3 py-2 text-sm border border-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
-        </div>
-      </div>
-
-      {/* ═══ FILTER BAR ═══ */}
-      <div className="bg-white rounded-xl border border-border p-4 space-y-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Smart Views */}
-          <div className="relative">
-            <button onClick={() => setSmartViewOpen(!smartViewOpen)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${filters.smartView ? 'bg-primary text-white border-primary' : 'bg-surface border-border text-text-primary hover:border-primary/40'}`}>
-              <Filter size={13} />
-              {filters.smartView ? smartViews.find(v => v.id === filters.smartView)?.label : 'Smart Views'}
-              <ChevronDown size={12} />
-            </button>
-            {smartViewOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-20 w-48 py-1">
-                {smartViews.map(v => {
-                  const Icon = v.icon;
-                  return (
-                    <button key={v.id} onClick={() => applySmartView(v.id)}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface transition-colors ${filters.smartView === v.id ? 'bg-primary/5 font-semibold' : ''}`}>
-                      <Icon size={13} style={{ color: v.color }} /> {v.label}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Status</span>
-          {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
-            <button key={key} onClick={() => toggleStatus(key)}
-              className="px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all border"
-              style={{
-                backgroundColor: filters.status.includes(key) ? cfg.color : 'transparent',
-                color: filters.status.includes(key) ? '#fff' : cfg.color,
-                borderColor: filters.status.includes(key) ? cfg.color : '#e5e7eb',
-              }}>
-              {cfg.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Priority</span>
-          {Object.entries(PRIORITY_CONFIG).map(([key, cfg]) => (
-            <button key={key} onClick={() => togglePriority(key)}
-              className="px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all border"
-              style={{
-                backgroundColor: filters.priority.includes(key) ? cfg.color : 'transparent',
-                color: filters.priority.includes(key) ? '#fff' : cfg.color,
-                borderColor: filters.priority.includes(key) ? cfg.color : '#e5e7eb',
-              }}>
-              {cfg.label}
-            </button>
-          ))}
-
-          {showPersonFilter && (
-            <>
-              <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider ml-2">Person</span>
-              <div className="relative">
-                <button onClick={() => setPersonOpen(!personOpen)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:border-primary/40 bg-white transition-colors">
-                  {filters.person && filters.person !== 'unassigned'
-                    ? (personList.find(u => u.id === filters.person)?.name || 'Selected')
-                    : filters.person === 'unassigned' ? 'Unassigned' : 'All'}
-                  <ChevronDown size={12} />
-                </button>
-                {personOpen && (
-                  <div className="absolute top-full left-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-20 w-56 max-h-60 overflow-y-auto py-1">
-                    <button onClick={() => { setFilters(f => ({ ...f, person: '' })); setPersonOpen(false); setPage(1); }}
-                      className="w-full text-left px-3 py-2 text-xs hover:bg-surface">All</button>
-                    {personList.filter(u => u.isActive !== false).map(u => (
-                      <button key={u.id} onClick={() => { setFilters(f => ({ ...f, person: u.id })); setPersonOpen(false); setPage(1); }}
-                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface ${filters.person === u.id ? 'bg-primary/5 font-semibold' : ''}`}>
-                        <Avatar name={u.name} size="xs" /> {u.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {hasFilters && (
-            <button onClick={clearFilters} className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-danger hover:bg-danger/5 transition-colors ml-auto">
-              <X size={12} /> Clear Filters
-            </button>
-          )}
         </div>
       </div>
 
@@ -297,7 +204,8 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
             </thead>
             <tbody>
               {memberStats.map(m => (
-                <tr key={m.id} className="border-t border-border hover:bg-surface/30">
+                <tr key={m.id} className="border-t border-border hover:bg-surface/30 cursor-pointer"
+                  onClick={() => { setFilters(f => ({ ...f, person: m.id, smartView: '' })); setPage(1); }}>
                   <td className="py-2 px-4"><div className="flex items-center gap-2"><Avatar name={m.name} size="xs" /><span className="text-sm">{m.name}</span></div></td>
                   <td className="py-2 px-4 text-center text-sm font-semibold">{m.total}</td>
                   <td className="py-2 px-4 text-center text-sm text-success font-semibold">{m.done}</td>
@@ -311,12 +219,127 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
         </div>
       )}
 
-      {/* ═══ TASK TABLE ═══ */}
+      {/* ═══ TASK TABLE WITH INLINE FILTERS ═══ */}
       <div className="bg-white rounded-xl border border-border overflow-hidden">
+        {/* Task table header with search, filter toggle, and person filter */}
         <div className="px-5 py-3 border-b border-border">
-          <h3 className="text-sm font-semibold text-text-primary">
-            Tasks {pagination.total != null && <span className="text-text-tertiary font-normal">({pagination.total})</span>}
-          </h3>
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              Tasks {pagination.total != null && <span className="text-text-tertiary font-normal">({pagination.total})</span>}
+            </h3>
+
+            <div className="flex items-center gap-2 flex-1 justify-end">
+              {/* Person filter (for admin/superadmin/assistant_manager) */}
+              {showPersonFilter && (
+                <div className="relative">
+                  <button onClick={() => setPersonOpen(!personOpen)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:border-primary/40 bg-white transition-colors">
+                    <Users size={12} />
+                    {filters.person && filters.person !== 'unassigned'
+                      ? (personList.find(u => u.id === filters.person)?.name || 'Selected')
+                      : filters.person === 'unassigned' ? 'Unassigned' : 'All Members'}
+                    <ChevronDown size={12} />
+                  </button>
+                  {personOpen && (
+                    <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-20 w-56 max-h-60 overflow-y-auto py-1">
+                      <button onClick={() => { setFilters(f => ({ ...f, person: '' })); setPersonOpen(false); setPage(1); }}
+                        className={`w-full text-left px-3 py-2 text-xs hover:bg-surface ${!filters.person ? 'bg-primary/5 font-semibold' : ''}`}>
+                        All Members
+                      </button>
+                      {personList.filter(u => u.isActive !== false).map(u => (
+                        <button key={u.id} onClick={() => { setFilters(f => ({ ...f, person: u.id, smartView: '' })); setPersonOpen(false); setPage(1); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface ${filters.person === u.id ? 'bg-primary/5 font-semibold' : ''}`}>
+                          <Avatar name={u.name} size="xs" /> {u.name}
+                          {u.role && <span className="text-[9px] text-text-tertiary ml-auto">{u.role}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Smart Views */}
+              <div className="relative">
+                <button onClick={() => setSmartViewOpen(!smartViewOpen)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${filters.smartView ? 'bg-primary text-white border-primary' : 'bg-surface border-border text-text-primary hover:border-primary/40'}`}>
+                  <Filter size={13} />
+                  {filters.smartView ? smartViews.find(v => v.id === filters.smartView)?.label : 'Smart Views'}
+                  <ChevronDown size={12} />
+                </button>
+                {smartViewOpen && (
+                  <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-20 w-48 py-1">
+                    {smartViews.map(v => {
+                      const Icon = v.icon;
+                      return (
+                        <button key={v.id} onClick={() => applySmartView(v.id)}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface transition-colors ${filters.smartView === v.id ? 'bg-primary/5 font-semibold' : ''}`}>
+                          <Icon size={13} style={{ color: v.color }} /> {v.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Filter toggle */}
+              <button onClick={() => setShowFilters(!showFilters)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${showFilters || activeFilterCount > 0 ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border hover:border-primary/40 text-text-secondary'}`}>
+                <Filter size={12} />
+                Filters
+                {activeFilterCount > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">{activeFilterCount}</span>
+                )}
+              </button>
+
+              {/* Search */}
+              <div className="relative">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                <input type="text" placeholder="Search tasks..." value={filters.search}
+                  onChange={e => { setFilters(f => ({ ...f, search: e.target.value })); setPage(1); }}
+                  className="pl-8 pr-3 py-1.5 text-xs border border-border rounded-lg w-48 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+              </div>
+
+              {hasFilters && (
+                <button onClick={clearFilters} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium text-danger hover:bg-danger/5 transition-colors">
+                  <X size={12} /> Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Expandable filter bar */}
+          {showFilters && (
+            <div className="mt-3 pt-3 border-t border-border space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Status</span>
+                {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
+                  <button key={key} onClick={() => toggleStatus(key)}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold transition-all border"
+                    style={{
+                      backgroundColor: filters.status.includes(key) ? cfg.color : 'transparent',
+                      color: filters.status.includes(key) ? '#fff' : cfg.color,
+                      borderColor: filters.status.includes(key) ? cfg.color : '#e5e7eb',
+                    }}>
+                    {cfg.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Priority</span>
+                {Object.entries(PRIORITY_CONFIG).map(([key, cfg]) => (
+                  <button key={key} onClick={() => togglePriority(key)}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold transition-all border"
+                    style={{
+                      backgroundColor: filters.priority.includes(key) ? cfg.color : 'transparent',
+                      color: filters.priority.includes(key) ? '#fff' : cfg.color,
+                      borderColor: filters.priority.includes(key) ? cfg.color : '#e5e7eb',
+                    }}>
+                    {cfg.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {loading ? (

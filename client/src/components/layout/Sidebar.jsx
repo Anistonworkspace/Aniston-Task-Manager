@@ -297,10 +297,10 @@ export default function Sidebar({ collapsed, onToggle }) {
           {/* Main Nav */}
           <nav className="py-2 flex flex-col gap-0.5">
             <NavItem icon={Home} label="Home" path="/" tourId="nav-home" />
-            <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />
+            {!isSuperAdmin && <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />}
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
             {(isSuperAdmin || isAssistantManager) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
-            {isAssistantManager && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
+            {(isSuperAdmin || isAssistantManager) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
