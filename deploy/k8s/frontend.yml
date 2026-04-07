@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aniston-hub-frontend
+  namespace: aniston-apps
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aniston-hub-frontend
+  template:
+    metadata:
+      labels:
+        app: aniston-hub-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/anistonworkspace/aniston-hub-frontend:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aniston-hub-frontend-service
+  namespace: aniston-apps
+spec:
+  selector:
+    app: aniston-hub-frontend
+  ports:
+    - port: 80
+      targetPort: 80

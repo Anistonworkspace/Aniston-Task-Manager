@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aniston-hub-backend
+  namespace: aniston-apps
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aniston-hub-backend
+  template:
+    metadata:
+      labels:
+        app: aniston-hub-backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/anistonworkspace/aniston-hub-backend:latest
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: aniston-hub-config
+            - secretRef:
+                name: aniston-hub-secrets
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: uploads-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+  namespace: aniston-apps
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aniston-hub-backend-service
+  namespace: aniston-apps
+spec:
+  selector:
+    app: aniston-hub-backend
+  ports:
+    - port: 5000
+      targetPort: 5000

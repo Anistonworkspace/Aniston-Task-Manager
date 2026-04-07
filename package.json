@@ -1,0 +1,21 @@
+{
+  "name": "aniston-project-hub",
+  "version": "1.1.0",
+  "description": "Project Management Platform for Aniston Technologies LLP",
+  "private": true,
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start",
+    "db:sync": "cd server && npm run db:sync",
+    "docker:dev": "cd deploy && docker-compose -f docker-compose.dev.yml up -d",
+    "docker:prod": "cd deploy && docker-compose up -d --build",
+    "docker:down": "cd deploy && docker-compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
