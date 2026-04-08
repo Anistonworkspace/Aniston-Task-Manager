@@ -41,8 +41,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd server && npm ci --prefer-offline
-          cd ../client && npm ci --prefer-offline
+          cd server && npm install --production=false
+          cd ../client && npm install
 
       - name: Lint check
         run: |
