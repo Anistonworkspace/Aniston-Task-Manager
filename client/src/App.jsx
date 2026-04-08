@@ -6,7 +6,6 @@ import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Auth pages — loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login';
-import Register from './components/auth/Register';
 import ForgotPassword from './components/auth/ForgotPassword';
 import ResetPassword from './components/auth/ResetPassword';
 // Lazy-loaded pages — code-split for smaller initial bundle
@@ -103,7 +102,6 @@ export default function App() {
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-        <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
         <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>

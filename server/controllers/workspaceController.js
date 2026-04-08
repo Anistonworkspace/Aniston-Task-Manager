@@ -9,9 +9,9 @@ const { logActivity } = require('../services/activityService');
 exports.getMyWorkspaces = async (req, res) => {
   try {
     const userId = req.user.id;
-    const isAdminOrManager = req.user.role === 'admin' || req.user.role === 'manager';
+    const isAdminOrManager = !!req.user.isSuperAdmin || req.user.role === 'admin' || req.user.role === 'manager';
 
-    // Admins and Managers see all workspaces
+    // Admins, Managers, and Super Admins see all workspaces
     if (isAdminOrManager) {
       const workspaces = await Workspace.findAll({
         where: { isActive: true },
@@ -25,16 +25,38 @@ exports.getMyWorkspaces = async (req, res) => {
       return res.json({ success: true, data: { workspaces } });
     }
 
-    // Members: strict visibility
+    // Members / assistant_managers: strict visibility based on board access
     const { sequelize } = require('../config/db');
 
-    // Find workspace IDs where user has assigned tasks
-    const [assignedWsRows] = await sequelize.query(
-      `SELECT DISTINCT b."workspaceId" FROM tasks t JOIN boards b ON b.id = t."boardId"
-       WHERE t."assignedTo" = :userId AND b."workspaceId" IS NOT NULL AND b."isArchived" = false AND (t."isArchived" = false OR t."isArchived" IS NULL)`,
-      { replacements: { userId } }
+    // Build list of user IDs whose work grants visibility
+    let visibleUserIds = [userId];
+    if (req.user.role === 'assistant_manager') {
+      const teamMembers = await User.findAll({
+        where: { managerId: userId },
+        attributes: ['id'],
+        raw: true,
+      });
+      visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
+    }
+
+    const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+
+    // Find ALL accessible board IDs for this user (or team) — used to filter both workspaces AND boards within them
+    const accessibleBoardCondition = `
+      b."isArchived" = false AND (
+        b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
+        OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+        OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+        OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+        OR b."createdBy" IN (${userIdList})
+      )`;
+
+    const [accessibleBoardRows] = await sequelize.query(
+      `SELECT DISTINCT b.id, b."workspaceId" FROM boards b WHERE ${accessibleBoardCondition}`,
+      { replacements: {} }
     );
-    const assignedWsIds = assignedWsRows.map(r => r.workspaceId).filter(Boolean);
+    const accessibleBoardIds = new Set(accessibleBoardRows.map(r => r.id));
+    const assignedWsIds = [...new Set(accessibleBoardRows.map(r => r.workspaceId).filter(Boolean))];
 
     const userRecord = await User.findByPk(userId, { attributes: ['id', 'workspaceId'] });
 
@@ -48,17 +70,31 @@ exports.getMyWorkspaces = async (req, res) => {
       order: [['createdAt', 'ASC']],
     });
 
-    const myWorkspaces = allWorkspaces.filter(ws => {
-      // 1. Created by me
-      if (ws.createdBy === userId) return true;
-      // 2. My workspaceId matches
-      if (userRecord?.workspaceId && ws.id === userRecord.workspaceId) return true;
-      // 3. I'm in workspaceMembers
-      if (ws.workspaceMembers?.some(m => m.id === userId)) return true;
-      // 4. I have tasks assigned to me in this workspace's boards
-      if (assignedWsIds.includes(ws.id)) return true;
-      return false;
-    });
+    const myWorkspaces = allWorkspaces
+      .filter(ws => {
+        // 1. Created by me
+        if (ws.createdBy === userId) return true;
+        // 2. My workspaceId matches
+        if (userRecord?.workspaceId && ws.id === userRecord.workspaceId) return true;
+        // 3. I'm in workspaceMembers
+        if (ws.workspaceMembers?.some(m => visibleUserIds.includes(m.id))) return true;
+        // 4. I have accessible boards in this workspace (via any assignment path)
+        if (assignedWsIds.includes(ws.id)) return true;
+        return false;
+      })
+      .map(ws => {
+        // Filter boards within each workspace to only show accessible ones
+        const wsJSON = ws.toJSON();
+        wsJSON.boards = (wsJSON.boards || []).filter(b => accessibleBoardIds.has(b.id));
+        return wsJSON;
+      })
+      // Remove workspaces with zero accessible boards (unless user is creator/member)
+      .filter(ws => {
+        if (ws.createdBy === userId) return true;
+        if (userRecord?.workspaceId && ws.id === userRecord.workspaceId) return true;
+        if (ws.workspaceMembers?.some(m => visibleUserIds.includes(m.id))) return true;
+        return ws.boards.length > 0;
+      });
 
     res.json({ success: true, data: { workspaces: myWorkspaces } });
   } catch (err) {
@@ -68,8 +104,17 @@ exports.getMyWorkspaces = async (req, res) => {
 };
 
 // GET /api/workspaces
+// Non-admin/manager users are redirected to the filtered /mine endpoint logic
 exports.getWorkspaces = async (req, res) => {
   try {
+    const role = req.user.role;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+
+    // Only admin/manager/superadmin see all workspaces
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+      return exports.getMyWorkspaces(req, res);
+    }
+
     const workspaces = await Workspace.findAll({
       where: { isActive: true },
       include: [
@@ -97,6 +142,67 @@ exports.getWorkspace = async (req, res) => {
       ],
     });
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
+
+    // Access control: non-admin/manager users must have a reason to see this workspace
+    const role = req.user.role;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+      const userId = req.user.id;
+      let visibleUserIds = [userId];
+      if (role === 'assistant_manager') {
+        const teamMembers = await User.findAll({
+          where: { managerId: userId },
+          attributes: ['id'],
+          raw: true,
+        });
+        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
+      }
+
+      const isCreator = workspace.createdBy === userId;
+      const userRecord = await User.findByPk(userId, { attributes: ['id', 'workspaceId'] });
+      const isAssignedWorkspace = userRecord?.workspaceId === workspace.id;
+      const isWsMember = workspace.workspaceMembers?.some(m => visibleUserIds.includes(m.id));
+
+      // Check if user has any accessible boards in this workspace
+      let hasAccessibleBoard = false;
+      if (!isCreator && !isAssignedWorkspace && !isWsMember) {
+        const { sequelize } = require('../config/db');
+        const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+        const [rows] = await sequelize.query(
+          `SELECT 1 FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
+            b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
+            OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+            OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+            OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+          ) LIMIT 1`,
+          { replacements: { wsId: workspace.id } }
+        );
+        hasAccessibleBoard = rows.length > 0;
+      }
+
+      if (!isCreator && !isAssignedWorkspace && !isWsMember && !hasAccessibleBoard) {
+        return res.status(403).json({ success: false, message: 'Access denied. You do not have access to this workspace.' });
+      }
+
+      // Filter boards within the workspace to only show accessible ones
+      const { sequelize } = require('../config/db');
+      const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+      const [accessibleBoardRows] = await sequelize.query(
+        `SELECT DISTINCT b.id FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
+          b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
+          OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+          OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
+          OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+          OR b."createdBy" IN (${userIdList})
+        )`,
+        { replacements: { wsId: workspace.id } }
+      );
+      const accessibleBoardIds = new Set(accessibleBoardRows.map(r => r.id));
+      const wsJSON = workspace.toJSON();
+      wsJSON.boards = (wsJSON.boards || []).filter(b => accessibleBoardIds.has(b.id));
+      return res.json({ success: true, data: { workspace: wsJSON } });
+    }
+
     res.json({ success: true, data: { workspace } });
   } catch (err) {
     console.error('[Workspace] getWorkspace error:', err.message);

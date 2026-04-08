@@ -57,11 +57,11 @@ const createTask = async (req, res) => {
     } else if (assignedTo) {
       assigneeIds = canAssignOthers ? [assignedTo] : [req.user.id];
     }
-    // If no assignee specified, the creator is always linked to the task
-    // (members self-assign; managers/assistant_managers are linked as creator)
-    if (assigneeIds.length === 0) {
+    // Members must always self-assign (they can't leave tasks unassigned)
+    if (assigneeIds.length === 0 && isMemberRole) {
       assigneeIds = [req.user.id];
     }
+    // For admin/manager/assistant_manager: if no assignee specified, leave unassigned (NULL)
 
     const supervisorIds = (Array.isArray(supervisors) && canAssignOthers) ? supervisors : [];
     // Keep backward compat: set assignedTo to first assignee
@@ -473,12 +473,20 @@ const updateTask = async (req, res) => {
           }
         }
       } else if (updates.assignedTo && typeof updates.assignedTo === 'string') {
-        // Single assignedTo string — also sync into task_assignees for consistency
+        // Single assignedTo string — sync into task_assignees (remove old assignees, add new one)
         try {
+          await TaskAssignee.destroy({
+            where: { taskId: task.id, role: 'assignee', userId: { [Op.ne]: updates.assignedTo } },
+          });
           await TaskAssignee.findOrCreate({
             where: { taskId: task.id, userId: updates.assignedTo, role: 'assignee' },
             defaults: { assignedAt: new Date() },
           });
+        } catch (e) { /* task_assignees table may not exist yet */ }
+      } else if (updates.assignedTo === null) {
+        // Explicitly unassigned — remove all assignee entries from task_assignees
+        try {
+          await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee' } });
         } catch (e) { /* task_assignees table may not exist yet */ }
       }
 
@@ -523,19 +531,24 @@ const updateTask = async (req, res) => {
           await record.update({ isPrimary: i === 0 });
         }
       }
-      // Also sync ownerIds into task_assignees so visibility filters find them
-      for (const uid of newOwnerIds) {
-        try {
-          await TaskAssignee.findOrCreate({
-            where: { taskId: task.id, userId: uid, role: 'assignee' },
-            defaults: { assignedAt: new Date() },
+      // Sync ownerIds into task_assignees (remove old, add new) so visibility filters find them
+      try {
+        if (newOwnerIds.length > 0) {
+          await TaskAssignee.destroy({
+            where: { taskId: task.id, role: 'assignee', userId: { [Op.notIn]: newOwnerIds } },
           });
-        } catch (e) { /* task_assignees table may not exist yet */ }
-      }
-      // Update legacy assignedTo to first owner if not already set
-      if (newOwnerIds.length > 0 && !task.assignedTo) {
-        await task.update({ assignedTo: newOwnerIds[0] });
-      }
+          for (const uid of newOwnerIds) {
+            await TaskAssignee.findOrCreate({
+              where: { taskId: task.id, userId: uid, role: 'assignee' },
+              defaults: { assignedAt: new Date() },
+            });
+          }
+        } else {
+          await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee' } });
+        }
+      } catch (e) { /* task_assignees table may not exist yet */ }
+      // Update legacy assignedTo to first owner (or null if empty)
+      await task.update({ assignedTo: newOwnerIds.length > 0 ? newOwnerIds[0] : null });
       const boardForOwners = await Board.findByPk(task.boardId);
       if (boardForOwners) {
         for (const uid of newOwnerIds) {

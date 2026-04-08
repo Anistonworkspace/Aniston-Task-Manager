@@ -1,13 +1,20 @@
 /**
  * Microsoft Graph API Client for Teams Chat Notifications
  *
- * Uses the client credentials flow (app-level permissions) to send
- * Adaptive Cards directly into users' Teams 1:1 chats.
+ * Hybrid approach:
+ *   1. App-level token (client credentials) — creates 1:1 chats, resolves users
+ *   2. Delegated token (from a Teams-connected admin/manager) — sends messages
+ *
+ * This avoids needing the ChatMessage.Send application permission, which
+ * requires a Teams bot registration. Instead, messages are sent on behalf of
+ * a connected admin whose delegated token includes Chat.ReadWrite.
  *
  * Required Azure AD Application Permissions (with admin consent):
- *   - Chat.Create          — create 1:1 chats with users
- *   - ChatMessage.Send     — send messages in chats
+ *   - Chat.Create          — create 1:1 chats between users
  *   - User.Read.All        — resolve user emails to Azure AD IDs
+ *
+ * The delegated token is obtained from a Teams-connected admin's stored
+ * OAuth credentials (teamsAccessToken / teamsRefreshToken in the users table).
  *
  * Azure AD Setup:
  *   1. Go to Azure Portal → App Registrations → find the existing SSO app.
@@ -62,13 +69,20 @@ async function getAppToken() {
 }
 
 /**
- * Make an authenticated request to Microsoft Graph API.
+ * Make an authenticated request to Microsoft Graph API using the app token.
  */
 async function graphRequest(method, path, data = null) {
   const token = await getAppToken();
+  return graphRequestWithToken(method, path, data, token);
+}
+
+/**
+ * Make an authenticated request to Microsoft Graph API using a specific token.
+ */
+async function graphRequestWithToken(method, path, data, token) {
   const url = path.startsWith('http') ? path : `${GRAPH_BASE}${path}`;
 
-  const config = {
+  const reqConfig = {
     method,
     url,
     headers: {
@@ -78,9 +92,70 @@ async function graphRequest(method, path, data = null) {
     timeout: 15000,
   };
 
-  if (data) config.data = data;
+  if (data) reqConfig.data = data;
 
-  return axios(config);
+  return axios(reqConfig);
+}
+
+/**
+ * Get a valid delegated access token from a Teams-connected admin/manager.
+ * Tries to find any admin or manager with a valid (or refreshable) Teams token.
+ * Returns { token, senderTeamsId } or null if no connected sender is available.
+ */
+async function getDelegatedSenderToken() {
+  const { User } = require('../models');
+  const { Op } = require('sequelize');
+  const config = await getTeamsConfig();
+
+  // Find admins/managers with Teams tokens, preferring admins first
+  const candidates = await User.findAll({
+    where: {
+      teamsAccessToken: { [Op.ne]: null },
+      teamsUserId: { [Op.ne]: null },
+      isActive: true,
+      role: { [Op.in]: ['admin', 'manager'] },
+    },
+    attributes: ['id', 'teamsUserId', 'teamsAccessToken', 'teamsRefreshToken', 'teamsTokenExpiry', 'role'],
+    order: [['role', 'ASC']], // admin sorts before manager
+    limit: 5,
+  });
+
+  for (const user of candidates) {
+    let token = user.teamsAccessToken;
+
+    // Check if token is expired (with 5 min buffer)
+    if (user.teamsTokenExpiry && new Date(user.teamsTokenExpiry) < new Date(Date.now() + 5 * 60 * 1000)) {
+      if (!user.teamsRefreshToken) continue;
+
+      // Refresh the token
+      try {
+        const res = await axios.post(`${config.authUrl}/token`, new URLSearchParams({
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          grant_type: 'refresh_token',
+          refresh_token: user.teamsRefreshToken,
+        }).toString(), {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          timeout: 10000,
+        });
+
+        await user.update({
+          teamsAccessToken: res.data.access_token,
+          teamsRefreshToken: res.data.refresh_token || user.teamsRefreshToken,
+          teamsTokenExpiry: new Date(Date.now() + res.data.expires_in * 1000),
+        });
+
+        token = res.data.access_token;
+      } catch (err) {
+        logger.warn(`[TeamsGraph] Token refresh failed for sender ${user.id}:`, err.message);
+        continue;
+      }
+    }
+
+    return { token, senderTeamsId: user.teamsUserId };
+  }
+
+  return null;
 }
 
 /**
@@ -101,18 +176,54 @@ async function getUserTeamsId(email) {
 }
 
 /**
- * Create (or retrieve) a 1:1 chat between the app/bot and a user,
- * then send an Adaptive Card message into that chat.
+ * Send an Adaptive Card to a user's Teams chat.
  *
- * @param {string} userTeamsId - The user's Azure AD object ID
+ * Strategy (in order of preference):
+ *   1. App-level: If ChatMessage.Send application permission is granted,
+ *      create a chat between a sender and the target user, then send using
+ *      the app token directly.
+ *   2. Delegated fallback: If app-level send fails with 403, try using a
+ *      delegated token from a Teams-connected admin/manager.
+ *
+ * @param {string} userTeamsId - The target user's Azure AD object ID
  * @param {object} adaptiveCard - The Adaptive Card JSON payload
  * @returns {object} The sent message data from Graph API
  */
 async function sendChatMessage(userTeamsId, adaptiveCard) {
-  // Step 1: Create a 1:1 chat (idempotent — returns existing chat if one exists)
+  // Find a sender — use a delegated admin token if available, otherwise
+  // we still need two members for the chat creation
+  const sender = await getDelegatedSenderToken();
+
+  // Determine the sender's Teams ID — we need a second user for the 1:1 chat
+  let senderTeamsId;
+  if (sender) {
+    senderTeamsId = sender.senderTeamsId;
+  } else {
+    // Fall back to finding any other user in the org to pair with
+    const { User } = require('../models');
+    const { Op } = require('sequelize');
+    const otherUser = await User.findOne({
+      where: {
+        teamsUserId: { [Op.ne]: null, [Op.ne]: userTeamsId },
+        isActive: true,
+      },
+      attributes: ['teamsUserId'],
+    });
+    if (!otherUser) {
+      throw new Error('No sender available for Teams chat. At least one admin must connect Teams.');
+    }
+    senderTeamsId = otherUser.teamsUserId;
+  }
+
+  // Step 1: Create a 1:1 chat between sender and target user (app token)
   const chatResponse = await graphRequest('POST', '/chats', {
     chatType: 'oneOnOne',
     members: [
+      {
+        '@odata.type': '#microsoft.graph.aadUserConversationMember',
+        roles: ['owner'],
+        'user@odata.bind': `${GRAPH_BASE}/users('${senderTeamsId}')`,
+      },
       {
         '@odata.type': '#microsoft.graph.aadUserConversationMember',
         roles: ['owner'],
@@ -123,42 +234,68 @@ async function sendChatMessage(userTeamsId, adaptiveCard) {
 
   const chatId = chatResponse.data.id;
 
-  // Step 2: Send the Adaptive Card as a message in the chat
-  const messageResponse = await graphRequest('POST', `/chats/${chatId}/messages`, {
-    body: {
-      contentType: 'html',
-      content: '<attachment id="adaptiveCard"></attachment>',
-    },
-    attachments: [
-      {
-        id: 'adaptiveCard',
-        contentType: 'application/vnd.microsoft.card.adaptive',
-        content: JSON.stringify(adaptiveCard),
+  // Step 2: Try sending with app token first (requires ChatMessage.Send permission)
+  try {
+    const messageResponse = await graphRequest('POST', `/chats/${chatId}/messages`, {
+      body: {
+        contentType: 'html',
+        content: '<attachment id="adaptiveCard"></attachment>',
       },
-    ],
-  });
-
-  return messageResponse.data;
+      attachments: [
+        {
+          id: 'adaptiveCard',
+          contentType: 'application/vnd.microsoft.card.adaptive',
+          content: JSON.stringify(adaptiveCard),
+        },
+      ],
+    });
+    return messageResponse.data;
+  } catch (appErr) {
+    // If app-level send fails with 403, try delegated token
+    if (appErr.response?.status === 403 && sender) {
+      logger.info('[TeamsGraph] App-level ChatMessage.Send not available, using delegated token fallback');
+      const messageResponse = await graphRequestWithToken('POST', `/chats/${chatId}/messages`, {
+        body: {
+          contentType: 'html',
+          content: '<attachment id="adaptiveCard"></attachment>',
+        },
+        attachments: [
+          {
+            id: 'adaptiveCard',
+            contentType: 'application/vnd.microsoft.card.adaptive',
+            content: JSON.stringify(adaptiveCard),
+          },
+        ],
+      }, sender.token);
+      return messageResponse.data;
+    }
+    throw appErr;
+  }
 }
 
 /**
  * Check if the Teams Graph API integration is properly configured and can authenticate.
- * Returns { configured, authenticated, error? }
+ * Returns { configured, authenticated, hasSender, error? }
  */
 async function checkConnection() {
   try {
     const config = await getTeamsConfig();
     if (!config.isConfigured) {
-      return { configured: false, authenticated: false };
+      return { configured: false, authenticated: false, hasSender: false };
     }
 
     // Try to get an app token to verify credentials work
     await getAppToken();
-    return { configured: true, authenticated: true };
+
+    // Check if we have a delegated sender available
+    const sender = await getDelegatedSenderToken();
+
+    return { configured: true, authenticated: true, hasSender: !!sender };
   } catch (err) {
     return {
       configured: true,
       authenticated: false,
+      hasSender: false,
       error: err.message,
     };
   }

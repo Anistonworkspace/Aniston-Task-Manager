@@ -170,8 +170,7 @@ export default function Login() {
             <Link to="/forgot-password" className="text-xs text-text-tertiary hover:text-primary">Forgot password?</Link>
           </div>
           <p className="text-sm text-text-secondary text-center mt-4">
-            Don't have an account?{' '}
-            <Link to="/register" className="text-primary font-semibold hover:underline">Sign up</Link>
+            Need an account? Contact your administrator.
           </p>
         </div>
       </div>

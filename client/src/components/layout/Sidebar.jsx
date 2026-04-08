@@ -16,7 +16,7 @@ import ProfileModal from '../common/ProfileModal';
 import { canUser } from '../../utils/permissions';
 
 // Portal-based dropdown that renders outside sidebar overflow
-function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, canCreateWorkspace }) {
+function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, canCreateWorkspace, canManage }) {
   const menuRef = useRef(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
@@ -51,14 +51,18 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, c
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <LayoutGrid size={14} strokeWidth={1.8} /> Browse all boards
       </button>
-      <button onClick={() => { onClose(); onNavigate('/admin-settings'); }}
-        className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-        <Puzzle size={14} strokeWidth={1.8} /> Browse all workspaces
-      </button>
-      <button onClick={() => { onClose(); onNavigate('/archive'); }}
-        className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-        <Archive size={14} strokeWidth={1.8} /> View archive
-      </button>
+      {canManage && (
+        <button onClick={() => { onClose(); onNavigate('/admin-settings'); }}
+          className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
+          <Puzzle size={14} strokeWidth={1.8} /> Browse all workspaces
+        </button>
+      )}
+      {canManage && (
+        <button onClick={() => { onClose(); onNavigate('/archive'); }}
+          className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
+          <Archive size={14} strokeWidth={1.8} /> View archive
+        </button>
+      )}
     </div>,
     document.body
   );
@@ -534,6 +538,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         onNavigate={(path) => navigate(path)}
         onAddWorkspace={() => setShowCreateWorkspace(true)}
         canCreateWorkspace={canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions)}
+        canManage={canManage}
       />
 
       {/* Create Workspace Modal */}

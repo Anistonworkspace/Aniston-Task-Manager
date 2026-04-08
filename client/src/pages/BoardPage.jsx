@@ -135,9 +135,15 @@ export default function BoardPage() {
       setMembers(allUsers.length > 0 ? allUsers : data.members || data.Users || []);
     } catch (err) {
       console.error('[BoardPage] loadBoard error:', err);
+      // If access denied (403), redirect to home instead of showing broken board
+      if (err?.response?.status === 403) {
+        toastError('You do not have access to this board.');
+        navigate('/');
+        return;
+      }
       toastError('Failed to load board. Please refresh the page.');
     }
-  }, [boardId]);
+  }, [boardId, navigate]);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -211,9 +217,12 @@ export default function BoardPage() {
   async function handleTaskUpdate(taskId, updates) {
     const oldTask = tasks.find(t => t.id === taskId);
     try {
-      await api.put(`/tasks/${taskId}`, updates);
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
-      if (selectedTask?.id === taskId) setSelectedTask(prev => ({ ...prev, ...updates }));
+      const res = await api.put(`/tasks/${taskId}`, updates);
+      // Use the full task from server response to get correct assignedTo/taskAssignees
+      const serverTask = res.data?.task || res.data?.data?.task;
+      const mergeData = serverTask || updates;
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...mergeData } : t));
+      if (selectedTask?.id === taskId) setSelectedTask(prev => ({ ...prev, ...mergeData }));
 
       // Push to undo stack
       if (oldTask) {

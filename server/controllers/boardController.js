@@ -1,4 +1,4 @@
-const { Board, User, Task, Workspace, TaskOwner, sequelize } = require('../models');
+const { Board, User, Task, Workspace, TaskOwner, TaskAssignee, sequelize } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { emitToBoard, emitToUser } = require('../services/socketService');
@@ -87,11 +87,38 @@ const getBoards = async (req, res) => {
       where.name = { [Op.iLike]: `%${search}%` };
     }
 
-    // Members only see boards they belong to — filter in SQL, not in memory
-    if (req.user.role === 'member') {
+    // Non-admin/manager users only see boards they have access to
+    const role = req.user.role;
+    const userId = req.user.id;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+      // Build list of user IDs whose boards this user can see
+      let visibleUserIds = [userId];
+
+      // Assistant managers can also see boards of their team members
+      if (role === 'assistant_manager') {
+        const teamMembers = await User.findAll({
+          where: { managerId: userId },
+          attributes: ['id'],
+          raw: true,
+        });
+        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
+      }
+
+      const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+
       where[Op.or] = [
-        { createdBy: req.user.id },
-        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" = '${req.user.id}')`),
+        // Board created by user (or team member for assistant_manager)
+        { createdBy: { [Op.in]: visibleUserIds } },
+        // User (or team) is a board member
+        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`),
+        // User (or team) is assigned to a task in the board (via task_assignees)
+        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`),
+        // User (or team) is a task owner in the board (via task_owners)
+        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`),
+        // Legacy: user (or team) is in assignedTo column
+        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
       ];
     }
 
@@ -184,16 +211,42 @@ const getBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Members can view boards they belong to OR have tasks assigned/owned on
-    if (req.user.role === 'member') {
-      const isMember = board.members && board.members.some((m) => m.id === req.user.id);
-      const hasAssignedTasks = board.tasks && board.tasks.some((t) => t.assignedTo === req.user.id);
-      const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => o.id === req.user.id));
+    // Access control for non-admin/manager users
+    const role = req.user.role;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+      const userId = req.user.id;
+
+      // Build the set of user IDs this person can "see through"
+      let visibleUserIds = [userId];
+      if (role === 'assistant_manager') {
+        const teamMembers = await User.findAll({
+          where: { managerId: userId },
+          attributes: ['id'],
+          raw: true,
+        });
+        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
+      }
+
+      const isMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
+      const hasAssignedTasks = board.tasks && board.tasks.some((t) => visibleUserIds.includes(t.assignedTo));
+      const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => visibleUserIds.includes(o.id)));
+
+      // Also check task_assignees table (not loaded via eager-load above)
+      let isTaskAssignee = false;
       if (!isMember && !hasAssignedTasks && !isTaskOwner) {
+        const assigneeCount = await TaskAssignee.count({
+          where: { userId: { [Op.in]: visibleUserIds } },
+          include: [{ model: Task, as: 'task', attributes: [], where: { boardId: board.id, isArchived: false }, required: true }],
+        });
+        isTaskAssignee = assigneeCount > 0;
+      }
+
+      if (!isMember && !hasAssignedTasks && !isTaskOwner && !isTaskAssignee) {
         return res.status(403).json({ success: false, message: 'Access denied. You are not a member of this board.' });
       }
       // Auto-add as member if they have tasks/ownership but aren't a member yet
-      if (!isMember && (hasAssignedTasks || isTaskOwner)) {
+      if (!isMember && (hasAssignedTasks || isTaskOwner || isTaskAssignee)) {
         try { await board.addMember(req.user.id); } catch (e) { /* ignore */ }
       }
     }
