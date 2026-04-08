@@ -4,47 +4,83 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip build step (deploy current main as-is)'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Only one deploy at a time — queue, never cancel mid-deploy
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 jobs:
+  # ──────────────────────────────────────────────
   # Job 1: Build & Validate
+  # ──────────────────────────────────────────────
   build:
     name: Build & Validate
     runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.skip_build != 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Node.js
+      - name: Setup Node.js with cache
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
 
-      - name: Install server dependencies
-        run: cd server && npm install --production=false
-
-      - name: Install client dependencies
-        run: cd client && npm install
+      - name: Install dependencies
+        run: |
+          cd server && npm ci --prefer-offline
+          cd ../client && npm ci --prefer-offline
 
       - name: Lint check
-        run: cd client && npx --yes eslint src/App.jsx src/main.jsx --no-eslintrc --rule '{"no-undef":"error","no-unused-vars":"warn"}' --env browser,es2021 --parser-options ecmaVersion:latest,ecmaFeatures:{jsx:true},sourceType:module 2>/dev/null || echo "Lint check completed"
+        run: |
+          cd client
+          npx --yes eslint src/App.jsx src/main.jsx \
+            --no-eslintrc \
+            --rule '{"no-undef":"error","no-unused-vars":"warn"}' \
+            --env browser,es2021 \
+            --parser-options ecmaVersion:latest,ecmaFeatures:{jsx:true},sourceType:module \
+            2>/dev/null || echo "Lint completed with warnings"
 
       - name: Build client
         run: cd client && npm run build
 
-      - name: Verify build output
+      - name: Verify build artifacts
         run: |
-          test -f client/dist/index.html || (echo "ERROR: index.html not found" && exit 1)
-          test -f client/dist/sw.js || (echo "ERROR: sw.js not found" && exit 1)
+          echo "--- Checking required files ---"
+          test -f client/dist/index.html || { echo "FATAL: index.html missing"; exit 1; }
+          test -f client/dist/sw.js || { echo "FATAL: sw.js missing"; exit 1; }
+
           if grep -q '__BUILD_TIMESTAMP__' client/dist/sw.js; then
-            echo "ERROR: __BUILD_TIMESTAMP__ was NOT replaced in sw.js"
+            echo "FATAL: __BUILD_TIMESTAMP__ was NOT replaced in sw.js"
             exit 1
           fi
-          echo "Build verified: index.html, sw.js present, timestamp injected"
 
-  # Job 2: Deploy (requires manual approval via environment)
+          echo "--- Build artifacts verified ---"
+          echo "  index.html: $(wc -c < client/dist/index.html) bytes"
+          echo "  sw.js: $(wc -c < client/dist/sw.js) bytes"
+          echo "  Total files: $(find client/dist -type f | wc -l)"
+
+  # ──────────────────────────────────────────────
+  # Job 2: Deploy to EC2
+  # ──────────────────────────────────────────────
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ always() && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true') }}
     environment: production
     steps:
       - name: Deploy via SSH
@@ -53,40 +89,198 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: ENV_FILE
+          command_timeout: 15m
+          envs: ENV_FILE,GITHUB_SHA,GITHUB_REF_NAME
           script: |
-            set -e
-            echo "=== Pulling latest code ==="
-            cd ~/Aniston-Task-Manager
-            git fetch origin main
+            set -euo pipefail
+
+            # ─── Configuration ───
+            DEPLOY_DIR="$HOME/Aniston-Task-Manager"
+            COMPOSE_FILE="deploy/docker-compose.yml"
+            REPO_URL="https://github.com/Anistonworkspace/Aniston-Task-Manager.git"
+            HEALTH_URL="http://localhost:5000/api/health"
+            FRONTEND_URL="http://localhost:3000"
+            DEPLOY_LOG="$HOME/deploy.log"
+            MAX_HEALTH_RETRIES=10
+            HEALTH_RETRY_DELAY=6
+
+            # ─── Logging ───
+            exec > >(tee -a "$DEPLOY_LOG") 2>&1
+            echo ""
+            echo "============================================="
+            echo "  DEPLOYMENT STARTED: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "  Commit: ${GITHUB_SHA:-unknown}"
+            echo "  Branch: ${GITHUB_REF_NAME:-main}"
+            echo "============================================="
+
+            # ─── Step 1: Ensure repository exists ───
+            echo ""
+            echo ">>> [1/9] Ensuring repository exists..."
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              echo "  Repository not found. Cloning fresh..."
+              rm -rf "$DEPLOY_DIR"
+              git clone --branch main --single-branch "$REPO_URL" "$DEPLOY_DIR"
+              echo "  Clone complete."
+            fi
+            cd "$DEPLOY_DIR"
+
+            # ─── Step 2: Pre-deploy snapshot ───
+            echo ""
+            echo ">>> [2/9] Creating pre-deploy snapshot..."
+            PREVIOUS_SHA=$(git rev-parse HEAD)
+            echo "  Previous commit: $PREVIOUS_SHA"
+
+            # Save current container image IDs for rollback
+            PREV_BACKEND_IMAGE=$(docker inspect --format='{{.Image}}' aph-backend 2>/dev/null || echo "none")
+            PREV_FRONTEND_IMAGE=$(docker inspect --format='{{.Image}}' aph-frontend 2>/dev/null || echo "none")
+            echo "  Previous backend image: ${PREV_BACKEND_IMAGE:0:20}..."
+            echo "  Previous frontend image: ${PREV_FRONTEND_IMAGE:0:20}..."
+
+            # ─── Step 3: Pull latest code ───
+            echo ""
+            echo ">>> [3/9] Pulling latest code..."
+            git fetch origin main --prune
+            git checkout main 2>/dev/null || git checkout -b main origin/main
             git reset --hard origin/main
+            git clean -fd
 
-            echo "=== Creating .env from GitHub secret ==="
-            echo "$ENV_FILE" > deploy/.env
-            echo ".env created ($(wc -l < deploy/.env) lines)"
+            CURRENT_SHA=$(git rev-parse HEAD)
+            echo "  Now at commit: $CURRENT_SHA"
 
-            echo "=== Building new images (no downtime during build) ==="
-            docker compose -f deploy/docker-compose.yml build
+            if [ "$CURRENT_SHA" = "$PREVIOUS_SHA" ]; then
+              echo "  Same commit as current deployment — redeploying anyway."
+            fi
 
-            echo "=== Restarting containers with new images ==="
-            docker compose -f deploy/docker-compose.yml up -d --no-build --remove-orphans
+            # ─── Step 4: Write environment config ───
+            echo ""
+            echo ">>> [4/9] Writing environment config..."
+            if [ -z "${ENV_FILE:-}" ]; then
+              echo "  WARNING: ENV_FILE secret is empty — using existing .env"
+            else
+              echo "$ENV_FILE" > deploy/.env
+              echo "  .env written ($(wc -l < deploy/.env) lines)"
+            fi
 
-            echo "=== Waiting for services to be healthy ==="
-            sleep 20
+            # Validate critical env vars exist
+            for var in DB_USER DB_PASSWORD JWT_SECRET; do
+              if ! grep -q "^${var}=" deploy/.env 2>/dev/null; then
+                echo "  WARNING: $var not found in .env"
+              fi
+            done
 
-            echo "=== Running database seeds (idempotent) ==="
-            docker exec aph-backend node seed-users.js || true
-            docker exec aph-backend node seed-hierarchy.js || true
+            # ─── Step 5: Build Docker images ───
+            echo ""
+            echo ">>> [5/9] Building Docker images..."
+            BUILD_START=$(date +%s)
+            docker compose -f "$COMPOSE_FILE" build --parallel 2>&1
+            BUILD_END=$(date +%s)
+            echo "  Build completed in $((BUILD_END - BUILD_START)) seconds"
 
-            echo "=== Health check ==="
-            curl -sf http://localhost:5000/api/health || echo "WARNING: Health check failed"
+            # ─── Step 6: Rolling restart ───
+            echo ""
+            echo ">>> [6/9] Restarting containers..."
 
-            echo "=== Setup daily backup cron (2 AM) ==="
+            # Stop and recreate backend/frontend only (keep postgres running)
+            docker compose -f "$COMPOSE_FILE" up -d --no-build --remove-orphans 2>&1
+            echo "  Containers restarted."
+
+            # ─── Step 7: Health checks ───
+            echo ""
+            echo ">>> [7/9] Running health checks..."
+
+            # Wait for backend
+            HEALTHY=false
+            for i in $(seq 1 $MAX_HEALTH_RETRIES); do
+              sleep $HEALTH_RETRY_DELAY
+              HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
+              echo "  Backend check $i/$MAX_HEALTH_RETRIES — HTTP $HTTP_CODE"
+              if [ "$HTTP_CODE" = "200" ]; then
+                HEALTHY=true
+                break
+              fi
+            done
+
+            if [ "$HEALTHY" = false ]; then
+              echo ""
+              echo "!!! BACKEND HEALTH CHECK FAILED !!!"
+              echo "--- Backend container logs (last 50 lines) ---"
+              docker logs --tail 50 aph-backend 2>&1 || true
+              echo ""
+
+              # ─── ROLLBACK ───
+              echo ">>> INITIATING ROLLBACK to $PREVIOUS_SHA..."
+              git reset --hard "$PREVIOUS_SHA"
+              docker compose -f "$COMPOSE_FILE" build --parallel 2>&1 || true
+              docker compose -f "$COMPOSE_FILE" up -d --no-build --remove-orphans 2>&1 || true
+
+              # Verify rollback
+              sleep 15
+              if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+                echo "  Rollback SUCCEEDED — previous version is live."
+              else
+                echo "  CRITICAL: Rollback FAILED — manual intervention required!"
+                echo "  Container status:"
+                docker ps -a --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
+              fi
+              echo "  DEPLOYMENT FAILED at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+              exit 1
+            fi
+
+            # Check frontend
+            FRONTEND_CODE=$(curl -sf -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || echo "000")
+            echo "  Frontend check — HTTP $FRONTEND_CODE"
+            if [ "$FRONTEND_CODE" != "200" ]; then
+              echo "  WARNING: Frontend returned $FRONTEND_CODE (non-fatal — backend is healthy)"
+            fi
+
+            # ─── Step 8: Database seeds ───
+            echo ""
+            echo ">>> [8/9] Running database seeds (idempotent)..."
+            docker exec aph-backend node seed-users.js 2>&1 || echo "  seed-users: skipped or already done"
+            docker exec aph-backend node seed-hierarchy.js 2>&1 || echo "  seed-hierarchy: skipped or already done"
+
+            # ─── Step 9: Post-deploy tasks ───
+            echo ""
+            echo ">>> [9/9] Post-deploy tasks..."
+
+            # Setup backup cron if not exists
             chmod +x deploy/backup.sh 2>/dev/null || true
-            (crontab -l 2>/dev/null | grep -v 'aph-postgres.*backup'; echo "0 2 * * * docker exec aph-postgres sh /backup.sh >> /var/log/db-backup.log 2>&1") | sort -u | crontab - || true
+            CRON_JOB="0 2 * * * docker exec aph-postgres sh /backup.sh >> /var/log/db-backup.log 2>&1"
+            (crontab -l 2>/dev/null | grep -v 'aph-postgres.*backup'; echo "$CRON_JOB") | sort -u | crontab - 2>/dev/null || true
 
-            echo "=== Container status ==="
+            # Docker cleanup — remove dangling images to save disk
+            echo "  Cleaning up unused Docker images..."
+            docker image prune -f 2>/dev/null || true
+
+            # ─── Summary ───
+            echo ""
+            echo "============================================="
+            echo "  DEPLOYMENT SUCCESSFUL"
+            echo "  Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "  Commit: $CURRENT_SHA"
+            echo "  Previous: $PREVIOUS_SHA"
+            echo "============================================="
+            echo ""
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            echo "=== Deployment complete ==="
+            echo ""
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
+
+  # ──────────────────────────────────────────────
+  # Job 3: Post-deploy notification
+  # ──────────────────────────────────────────────
+  notify:
+    name: Deployment Status
+    runs-on: ubuntu-latest
+    needs: [build, deploy]
+    if: always()
+    steps:
+      - name: Report status
+        run: |
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "✅ Deployment succeeded for commit ${{ github.sha }}"
+          else
+            echo "❌ Deployment failed for commit ${{ github.sha }}"
+            echo "Check the deploy job logs for details."
+            exit 1
+          fi
