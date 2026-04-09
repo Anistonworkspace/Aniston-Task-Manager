@@ -85,6 +85,63 @@ export const DEFAULT_COLUMNS = [
   { id: 'priority', title: 'Priority', type: COLUMN_TYPES.PRIORITY, width: 130 },
 ];
 
+// Default board statuses — used when a board has no custom status config
+export const DEFAULT_STATUSES = [
+  { key: 'not_started', label: 'Not Started', color: '#c4c4c4' },
+  { key: 'ready_to_start', label: 'Ready to Start', color: '#fdab3d' },
+  { key: 'working_on_it', label: 'Working on it', color: '#fdab3d' },
+  { key: 'in_progress', label: 'In Progress', color: '#0073ea' },
+  { key: 'waiting_for_review', label: 'Waiting for Review', color: '#fdab3d' },
+  { key: 'pending_deploy', label: 'Pending Deploy', color: '#a25ddc' },
+  { key: 'stuck', label: 'Stuck', color: '#e2445c' },
+  { key: 'done', label: 'Done', color: '#00c875' },
+  { key: 'review', label: 'In Review', color: '#a25ddc' },
+];
+
+/**
+ * Extract the status configuration array from a board's columns JSONB.
+ * Returns the board's custom statuses if configured, otherwise DEFAULT_STATUSES.
+ */
+export function getBoardStatuses(board) {
+  if (!board?.columns) return DEFAULT_STATUSES;
+  const statusCol = (Array.isArray(board.columns) ? board.columns : []).find(c => c.type === 'status');
+  if (statusCol?.statuses && statusCol.statuses.length > 0) return statusCol.statuses;
+  return DEFAULT_STATUSES;
+}
+
+/**
+ * Resolve the effective statuses for a task, following the priority chain:
+ *   1. task.statusConfig (task-specific)
+ *   2. board-level statuses (from board.columns)
+ *   3. DEFAULT_STATUSES (global fallback)
+ *
+ * @param {Object} task  - Task object (may have .statusConfig array)
+ * @param {Object} board - Board object (may have .columns JSONB)
+ * @returns {Array} Array of { key, label, color }
+ */
+export function getTaskStatuses(task, board) {
+  // 1. Task-level
+  if (task?.statusConfig && Array.isArray(task.statusConfig) && task.statusConfig.length > 0) {
+    return task.statusConfig;
+  }
+  // 2. Board-level
+  if (board) return getBoardStatuses(board);
+  // 3. Global
+  return DEFAULT_STATUSES;
+}
+
+/**
+ * Build a lookup map { key → { label, color, bgColor, textColor } } from a statuses array.
+ * Falls back to STATUS_CONFIG for any unknown key.
+ */
+export function buildStatusLookup(statuses) {
+  const map = {};
+  (statuses || DEFAULT_STATUSES).forEach(s => {
+    map[s.key] = { label: s.label, color: s.color, bgColor: s.color, textColor: '#fff' };
+  });
+  return map;
+}
+
 export const STATUS_PRESET_COLORS = [
   '#94a3b8', '#3b82f6', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444',
   '#f97316', '#06b6d4', '#eab308', '#84cc16', '#ec4899', '#14b8a6',

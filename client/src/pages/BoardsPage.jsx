@@ -49,11 +49,6 @@ export default function BoardsPage() {
           <h1 className="text-xl font-bold text-text-primary">Boards</h1>
           <p className="text-sm text-text-secondary mt-0.5">Manage all your project boards</p>
         </div>
-        {canCreateBoard && (
-          <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 px-4 py-2 bg-primary hover:bg-primary-hover text-white text-sm font-medium rounded-md transition-colors">
-            <Plus size={16} /> New Board
-          </button>
-        )}
       </div>
 
       <div className="flex items-center gap-3 mb-5">

@@ -92,7 +92,7 @@ const adminOnly = (req, res, next) => {
  * Must be used AFTER the authenticate middleware.
  */
 const managerOrAdmin = (req, res, next) => {
-  if (!req.user || !['admin', 'manager', 'assistant_manager'].includes(req.user.role)) {
+  if (!req.user || (!['admin', 'manager', 'assistant_manager'].includes(req.user.role) && !req.user.isSuperAdmin)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Manager or admin privileges required.',

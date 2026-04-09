@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  ClipboardCheck, Clock, Send, HelpCircle, ChevronDown, Check, X,
+  ClipboardCheck, Clock, HelpCircle, ChevronDown, Check, X,
   AlertTriangle, Calendar, MessageSquare, ExternalLink, Filter,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -11,7 +11,6 @@ import Avatar from '../components/common/Avatar';
 const TABS = [
   { id: 'approvals', label: 'Approvals', icon: ClipboardCheck, color: '#8b5cf6' },
   { id: 'extensions', label: 'Extensions', icon: Clock, color: '#f59e0b' },
-  { id: 'delegations', label: 'Delegations', icon: Send, color: '#0073ea' },
   { id: 'help', label: 'Help Requests', icon: HelpCircle, color: '#e2445c' },
 ];
 
@@ -36,7 +35,7 @@ const URGENCY_COLORS = {
 export default function TasksPage() {
   const { canManage, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('approvals');
-  const [data, setData] = useState({ approvals: [], extensions: [], delegations: [], helpRequests: [] });
+  const [data, setData] = useState({ approvals: [], extensions: [], helpRequests: [] });
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
   const [actionLoading, setActionLoading] = useState(null);
@@ -111,7 +110,7 @@ export default function TasksPage() {
   const counts = {
     approvals: data.approvals?.filter(t => t.approvalStatus === 'pending_approval').length || 0,
     extensions: data.extensions?.filter(e => e.status === 'pending').length || 0,
-    delegations: data.delegations?.length || 0,
+
     help: data.helpRequests?.filter(h => h.status !== 'resolved').length || 0,
   };
 
@@ -131,7 +130,7 @@ export default function TasksPage() {
         <h1 className="text-2xl font-bold text-text-primary flex items-center gap-2">
           <ClipboardCheck size={24} className="text-primary" /> Tasks & Workflows
         </h1>
-        <p className="text-sm text-text-tertiary mt-0.5">Approvals, extensions, delegations, and help requests</p>
+        <p className="text-sm text-text-tertiary mt-0.5">Approvals, extensions, and help requests</p>
       </div>
 
       {/* Tabs */}
@@ -284,35 +283,6 @@ export default function TasksPage() {
                       </button>
                     </div>
                   )}
-                </div>
-              </div>
-            ))
-          )}
-
-          {/* ═══ DELEGATIONS TAB ═══ */}
-          {activeTab === 'delegations' && (
-            (data.delegations || []).length === 0 ? (
-              <EmptyState icon={Send} message="No delegations" />
-            ) : (data.delegations || []).map(act => (
-              <div key={act.id} className="bg-white rounded-xl border border-border p-4 hover:shadow-sm transition-shadow">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0">
-                    <Send size={16} className="text-blue-500" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm text-text-primary">
-                      <span className="font-semibold">{act.actor?.name || act.meta?.fromUserName || 'User'}</span> delegated
-                      {act.task ? <span className="font-semibold text-primary"> "{act.task.title}"</span> : null}
-                      {act.meta?.toUserName ? <span> to <span className="font-semibold">{act.meta.toUserName}</span></span> : null}
-                    </p>
-                    {!act.task?.title && act.description && <p className="text-xs text-text-secondary mt-0.5">{act.description}</p>}
-                    {act.meta?.notes && (
-                      <p className="text-xs text-text-secondary bg-surface/50 px-2.5 py-1.5 rounded-md mt-1.5 border-l-2 border-blue-300 italic">
-                        Handoff notes: "{act.meta.notes}"
-                      </p>
-                    )}
-                    <p className="text-[10px] text-text-tertiary mt-1">{formatDistanceToNow(new Date(act.createdAt), { addSuffix: true })}</p>
-                  </div>
                 </div>
               </div>
             ))

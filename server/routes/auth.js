@@ -18,6 +18,7 @@ const {
   microsoftAuthUrl,
   microsoftCallback,
   getSsoStatus,
+  getAssignableUsersList,
 } = require('../controllers/authController');
 const { upload, handleMulterError, validateFileSignature } = require('../middleware/upload');
 
@@ -63,7 +64,7 @@ router.get('/me/permissions', authenticate, async (req, res) => {
     const ROLE_PERMISSIONS = {
       admin:             { create_workspace: true, edit_workspace: true, delete_workspace: true, create_board: true, edit_board: true, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: true, manage_settings: true, manage_board_settings: true, view_dashboard: true, manage_users: true },
       manager:           { create_workspace: true, edit_workspace: true, delete_workspace: false, create_board: true, edit_board: true, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: true, manage_settings: false, manage_board_settings: false, view_dashboard: true, manage_users: true },
-      assistant_manager: { create_workspace: true, edit_workspace: true, delete_workspace: false, create_board: false, edit_board: false, delete_board: false, create_task: true, assign_members: true, edit_others_tasks: false, manage_settings: false, manage_board_settings: false, view_dashboard: true, manage_users: false },
+      assistant_manager: { create_workspace: true, edit_workspace: true, delete_workspace: false, create_board: false, edit_board: false, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: false, manage_settings: false, manage_board_settings: false, view_dashboard: true, manage_users: false },
       member:            { create_workspace: false, edit_workspace: false, delete_workspace: false, create_board: false, edit_board: false, delete_board: false, create_task: false, assign_members: false, edit_others_tasks: false, manage_settings: false, manage_board_settings: false, view_dashboard: false, manage_users: false },
     };
 
@@ -198,6 +199,9 @@ router.post('/avatar', authenticate, upload.single('avatar'), handleMulterError,
 
 // ─── GET /api/auth/users ─────────────────────────────────────
 router.get('/users', authenticate, getAllUsers);
+
+// ─── GET /api/auth/assignable-users — hierarchy-filtered user list for task assignment ───
+router.get('/assignable-users', authenticate, getAssignableUsersList);
 
 // ─── Microsoft SSO ────────────────────────────────────────────
 router.get('/microsoft', microsoftAuthUrl);

@@ -2,10 +2,10 @@ import React, { useState, useCallback } from 'react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { MessageSquare, ListChecks, Clock, Plus, ChevronDown, ChevronRight, AlertTriangle, Zap, Link2, ChevronsDown } from 'lucide-react';
 import { format, parseISO, isPast } from 'date-fns';
-import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES } from '../../utils/constants';
 import Avatar from '../common/Avatar';
 
-const KANBAN_COLUMNS = [
+const FALLBACK_KANBAN_COLUMNS = [
   { id: 'not_started', label: 'Not Started', color: '#c4c4c4', emoji: '' },
   { id: 'working_on_it', label: 'Working on it', color: '#fdab3d', emoji: '' },
   { id: 'stuck', label: 'Stuck', color: '#e2445c', emoji: '' },
@@ -14,8 +14,31 @@ const KANBAN_COLUMNS = [
 
 const PRIORITY_BORDER = { critical: '#e2445c', high: '#ff642e', medium: '#fdab3d', low: '#579bfc' };
 
-export default function KanbanView({ tasks = [], members = [], onTaskClick, onTaskUpdate, onAddTask, groups }) {
+export default function KanbanView({ tasks = [], members = [], onTaskClick, onTaskUpdate, onAddTask, groups, boardStatuses }) {
   const INITIAL_CARD_LIMIT = 50;
+  const baseColumns = boardStatuses && boardStatuses.length > 0
+    ? boardStatuses.map(s => ({ id: s.key, label: s.label, color: s.color, emoji: '' }))
+    : FALLBACK_KANBAN_COLUMNS;
+
+  // Collect any task-level custom status keys not already in board columns
+  const baseIds = new Set(baseColumns.map(c => c.id));
+  const extraColumns = [];
+  tasks.forEach(t => {
+    if (t.status && !baseIds.has(t.status)) {
+      baseIds.add(t.status);
+      // Try to find label/color from the task's own statusConfig
+      const taskCfg = t.statusConfig && Array.isArray(t.statusConfig)
+        ? t.statusConfig.find(s => s.key === t.status)
+        : null;
+      extraColumns.push({
+        id: t.status,
+        label: taskCfg?.label || t.status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        color: taskCfg?.color || '#94a3b8',
+        emoji: '',
+      });
+    }
+  });
+  const KANBAN_COLUMNS = [...baseColumns, ...extraColumns];
   const [collapsedCols, setCollapsedCols] = useState({});
   const [filterPerson, setFilterPerson] = useState('');
   const [newTaskCol, setNewTaskCol] = useState(null);

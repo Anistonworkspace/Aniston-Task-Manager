@@ -141,7 +141,14 @@ const removeDependency = async (req, res) => {
 
     const task = await Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId'] });
 
+    const wasBocking = ['blocks', 'required_for'].includes(dep.dependencyType);
+
     await dep.destroy();
+
+    // If the removed dependency was blocking, check if the task is now unblocked
+    if (wasBocking) {
+      await depService.unlockTaskIfUnblocked(taskId);
+    }
 
     logActivity({
       action: 'dependency_removed',
@@ -400,6 +407,12 @@ const archiveDependency = async (req, res) => {
     }
 
     await dep.update({ isArchived: true, archivedAt: new Date(), archivedBy: req.user.id });
+
+    // Check if the blocked task is now unblocked after archiving this dependency
+    if (['blocks', 'required_for'].includes(dep.dependencyType) && dep.task?.id) {
+      await depService.unlockTaskIfUnblocked(dep.task.id);
+    }
+
     logActivity({ action: 'dependency_archived', description: `${req.user.name} archived a dependency`, entityType: 'dependency', entityId: dep.id, userId: req.user.id });
 
     res.json({ success: true, message: 'Dependency archived.' });
@@ -493,6 +506,15 @@ const restoreDependency = async (req, res) => {
     if (!dep) return res.status(404).json({ success: false, message: 'Dependency not found.' });
 
     await dep.update({ isArchived: false, archivedAt: null, archivedBy: null });
+
+    // If restored dependency is blocking, re-check if the task should be locked
+    if (['blocks', 'required_for'].includes(dep.dependencyType)) {
+      const blockerTask = await Task.findByPk(dep.dependsOnTaskId, { attributes: ['id', 'status'] });
+      if (blockerTask && blockerTask.status !== 'done') {
+        await depService.lockTaskAsDependencyBlocked(dep.taskId);
+      }
+    }
+
     res.json({ success: true, message: 'Dependency restored.' });
   } catch (error) {
     console.error('[Dependency] restore error:', error);

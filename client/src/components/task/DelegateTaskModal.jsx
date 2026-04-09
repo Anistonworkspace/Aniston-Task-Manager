@@ -13,7 +13,7 @@ export default function DelegateTaskModal({ task, onClose, onDelegated }) {
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
-    api.get('/auth/users').then(res => {
+    api.get('/auth/assignable-users').then(res => {
       const all = res.data.users || res.data || [];
       // Exclude current assignee
       setUsers(all.filter(u => u.id !== task.assignedTo));

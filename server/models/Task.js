@@ -23,9 +23,16 @@ const Task = sequelize.define(
       defaultValue: '',
     },
     status: {
-      type: DataTypes.ENUM('not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review'),
+      type: DataTypes.STRING(50),
       defaultValue: 'not_started',
       allowNull: false,
+      comment: 'Task status — validated against task-level then board-level status config',
+    },
+    statusConfig: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Task-specific allowed statuses: [{ key, label, color }]. Overrides board/global defaults when set.',
     },
     priority: {
       type: DataTypes.ENUM('low', 'medium', 'high', 'critical'),

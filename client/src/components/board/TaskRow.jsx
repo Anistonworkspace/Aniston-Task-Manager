@@ -15,7 +15,7 @@ import LinkCell from './LinkCell';
 
 const TaskRow = React.memo(function TaskRow({
   task, members = [], color, columns = [], boardId,
-  taskColWidth = 300,
+  taskColWidth = 300, boardStatuses,
   onClick, onUpdate, onArchive, onRequestExtension, onRequestHelp,
   dragHandleProps, selected = false, onSelect,
 }) {
@@ -28,12 +28,13 @@ const TaskRow = React.memo(function TaskRow({
   const isApproved = task.approvalStatus === 'approved';
   // Approved tasks are fully read-only. Otherwise: Admin edit all, Manager/AssistantManager edit unless admin-created, Member restricted.
   const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
-  const canEditStatus = !isApproved;
+  const isBlockedByDependency = !!task.customFields?.blockedByDependency;
+  const canEditStatus = !isApproved && !isBlockedByDependency;
 
   function renderCell(col) {
     const customVal = task.customFields?.[col.id];
     switch (col.type) {
-      case 'status': return <StatusCell value={task.status} onChange={canEditStatus ? (val => onUpdate({ status: val })) : undefined} approvalStatus={task.approvalStatus} />;
+      case 'status': return <StatusCell value={task.status} onChange={canEditStatus ? (val => onUpdate({ status: val })) : undefined} taskStatuses={task.statusConfig} boardStatuses={boardStatuses} onSaveTaskStatuses={canEditAllFields ? (cfg => onUpdate({ statusConfig: cfg })) : undefined} canConfigureStatuses={canEditAllFields} approvalStatus={task.approvalStatus} isBlocked={isBlockedByDependency} />;
       case 'person': return <PersonCell value={task.assignedTo || task.assignee} owners={task.owners || []} members={members} taskAssignees={task.taskAssignees || []} onChange={canEditAllFields ? (val => onUpdate({ assignedTo: val })) : undefined} onOwnersChange={canEditAllFields ? (ids => onUpdate({ ownerIds: ids })) : undefined} />;
       case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;

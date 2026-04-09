@@ -238,16 +238,37 @@ const start = async () => {
     // Test DB connection
     await testConnection();
 
-    // Extend task status ENUM with new values (safe to re-run — IF NOT EXISTS)
-    const newStatuses = ['ready_to_start', 'in_progress', 'waiting_for_review', 'pending_deploy', 'review'];
-    for (const val of newStatuses) {
-      try {
-        await sequelize.query(`ALTER TYPE "enum_tasks_status" ADD VALUE IF NOT EXISTS '${val}';`);
-      } catch (e) {
-        // Ignore — type may not exist yet or value already exists
+    // ── Auto-migration: Convert tasks.status from ENUM to VARCHAR(50) ──
+    // This is required for custom task-level statuses. Safe to re-run.
+    try {
+      const [colInfo] = await sequelize.query(
+        `SELECT data_type, udt_name FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'status'`
+      );
+      if (colInfo.length > 0 && colInfo[0].data_type === 'USER-DEFINED') {
+        console.log('[Server] Converting tasks.status from ENUM to VARCHAR(50)...');
+        await sequelize.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status_new VARCHAR(50)`);
+        await sequelize.query(`UPDATE tasks SET status_new = status::text WHERE status_new IS NULL`);
+        await sequelize.query(`ALTER TABLE tasks DROP COLUMN status`);
+        await sequelize.query(`ALTER TABLE tasks RENAME COLUMN status_new TO status`);
+        await sequelize.query(`ALTER TABLE tasks ALTER COLUMN status SET NOT NULL`);
+        await sequelize.query(`ALTER TABLE tasks ALTER COLUMN status SET DEFAULT 'not_started'`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS tasks_status ON tasks (status)`);
+        await sequelize.query(`DROP TYPE IF EXISTS "enum_tasks_status"`);
+        console.log('[Server] tasks.status converted to VARCHAR(50) successfully.');
+      } else {
+        console.log('[Server] tasks.status is already VARCHAR — no ENUM conversion needed.');
       }
+    } catch (e) {
+      console.warn('[Server] Status ENUM migration warning:', e.message?.slice(0, 120));
     }
-    console.log('[Server] Status ENUM migration complete.');
+
+    // ── Auto-migration: Add statusConfig JSONB column to tasks ──
+    try {
+      await sequelize.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "statusConfig" JSONB DEFAULT NULL`);
+      console.log('[Server] tasks.statusConfig column ensured.');
+    } catch (e) {
+      console.warn('[Server] statusConfig column migration warning:', e.message?.slice(0, 100));
+    }
 
     // Extend user role ENUM with assistant_manager (safe to re-run)
     try {
@@ -360,6 +381,14 @@ const start = async () => {
       try { await sequelize.query(sql); } catch (e) { /* table may not exist yet */ }
     }
     console.log('[Server] Database indices ensured.');
+
+    // Migrate legacy AIConfig records to AIProvider table (fire-and-forget)
+    try {
+      const { migrateFromLegacy } = require('./services/aiService');
+      migrateFromLegacy();
+    } catch (migErr) {
+      console.warn('[Server] AI migration skipped:', migErr.message?.slice(0, 80));
+    }
 
     server.listen(PORT, () => {
       const logger = require('./utils/logger');

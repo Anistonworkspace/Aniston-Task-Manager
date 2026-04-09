@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Send, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive, Search, Eye, Users, Check } from 'lucide-react';
+import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive, Search, Eye, Users, Check, Lock, Settings, Plus, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
-import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup, getTaskStatuses, getBoardStatuses, STATUS_PRESET_COLORS } from '../../utils/constants';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import TaskComments from './TaskComments';
@@ -12,7 +12,7 @@ import WorkLogSection from './WorkLogSection';
 import ActivityFeed from './ActivityFeed';
 import DependencyBadge from '../dependencies/DependencyBadge';
 import DependencySelector from '../dependencies/DependencySelector';
-import DelegateTaskModal from './DelegateTaskModal';
+
 import ApprovalSection from './ApprovalSection';
 import WatcherSection from './WatcherSection';
 import RecurrenceSection from './RecurrenceSection';
@@ -22,13 +22,14 @@ import ConflictWarning from './ConflictWarning';
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
 
-export default function TaskModal({ task, boardId, members = [], onClose, onUpdate, onDelete }) {
+export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin } = useAuth();
   const isApproved = task?.approvalStatus === 'approved';
   // Approved tasks are fully read-only for members. Admin/manager can still edit.
   const canEditAllFields = !isApproved && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
   const canEditTitle = !isApproved && (canEditAllFields || (isMember && task?.assignedTo === user?.id));
-  const canEditStatus = !isApproved; // No one edits status on approved tasks (already done)
+  const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
+  const canEditStatus = !isApproved && !isBlockedByDependency;
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
   const [status, setStatus] = useState(task?.status || 'not_started');
@@ -58,7 +59,15 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
   const [activeTab, setActiveTab] = useState('comments');
   const [showStatusDrop, setShowStatusDrop] = useState(false);
   const [showPriorityDrop, setShowPriorityDrop] = useState(false);
-  const [showDelegate, setShowDelegate] = useState(false);
+
+  // Task-level status configuration
+  const [taskStatusConfig, setTaskStatusConfig] = useState(task?.statusConfig || null);
+  const [showStatusConfig, setShowStatusConfig] = useState(false);
+  const [newStatusLabel, setNewStatusLabel] = useState('');
+  const [newStatusColor, setNewStatusColor] = useState('#3b82f6');
+  const [editingStatusKey, setEditingStatusKey] = useState(null);
+  const [editStatusLabel, setEditStatusLabel] = useState('');
+
   const [showDepSelector, setShowDepSelector] = useState(false);
   const [depKey, setDepKey] = useState(0);
   const [showExtension, setShowExtension] = useState(false);
@@ -67,12 +76,14 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
   const saveTimerRef = useRef(null);
   const [conflicts, setConflicts] = useState([]);
   const [showConflicts, setShowConflicts] = useState(false);
+  const [isDependencyReceiver, setIsDependencyReceiver] = useState(false);
   const { checkGrammar: checkDescGrammar, suggestion: descGrammarSuggestion, isChecking: isCheckingDescGrammar, applySuggestion: applyDescGrammar, dismissSuggestion: dismissDescGrammar } = useGrammarCorrection();
 
   useEffect(() => {
     if (task?.id) {
       loadComments();
       loadFiles();
+      loadDependencyRole();
     }
   }, [task?.id]);
 
@@ -96,6 +107,18 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
     } catch {}
   }
 
+  async function loadDependencyRole() {
+    try {
+      const res = await api.get(`/tasks/${task.id}/dependencies`);
+      const depData = res.data?.data || res.data;
+      // "blocking" = tasks that depend on this task (this task is dependsOnTaskId)
+      const blockingOthers = (depData.blocking || []).length > 0;
+      setIsDependencyReceiver(blockingOthers);
+    } catch {
+      setIsDependencyReceiver(false);
+    }
+  }
+
   async function save(updates) {
     setSaveStatus('saving');
     try {
@@ -106,7 +129,12 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
     } catch (err) {
       console.error('Failed to update task:', err);
+      const msg = err.response?.data?.message;
       setSaveStatus('error');
+      // If blocked by dependency, revert status to 'stuck'
+      if (msg && msg.includes('blocked by')) {
+        setStatus('stuck');
+      }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
     }
@@ -117,7 +145,17 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
     if (title !== task.title) save({ title });
   }
   function handleDescBlur() { if (description !== task.description) save({ description }); }
-  function handleStatusChange(val) { setStatus(val); setShowStatusDrop(false); save({ status: val }); }
+  async function handleStatusChange(val) {
+    setStatus(val);
+    setShowStatusDrop(false);
+    // Auto-fill startDate locally when moving to an active status (mirrors backend logic)
+    const ACTIVE_STATUSES = ['working_on_it', 'stuck', 'review', 'done'];
+    if (ACTIVE_STATUSES.includes(val) && !startDate) {
+      const today = new Date().toISOString().slice(0, 10);
+      setStartDate(today);
+    }
+    save({ status: val });
+  }
   function handlePriorityChange(val) { setPriority(val); setShowPriorityDrop(false); save({ priority: val }); }
   async function saveTaskMembers(assignees, supervisors) {
     setSaveStatus('saving');
@@ -225,9 +263,19 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
     } catch (err) { console.error('Failed to duplicate:', err); }
   }
 
-  const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.not_started;
+  // Resolve statuses: task-level → board-level → global defaults
+  const activeStatuses = (taskStatusConfig && Array.isArray(taskStatusConfig) && taskStatusConfig.length > 0)
+    ? taskStatusConfig
+    : (boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES);
+  const statusLookup = buildStatusLookup(activeStatuses);
+  const statusCfg = statusLookup[status] || STATUS_CONFIG[status] || { label: status || 'Unknown', color: '#c4c4c4', bgColor: '#c4c4c4', textColor: '#fff' };
+  // The full palette for the status config editor (board-level or defaults)
+  const availableStatusPalette = boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES;
   const priorityCfg = PRIORITY_CONFIG[priority];
   const isMyTask = task?.assignedTo === user?.id || selectedAssignees.includes(user?.id);
+  // Start date editable for the dependency SETTER side (the task that added the dependency, even if blocked).
+  // NOT editable for the dependency RECEIVER side (the task others depend on — isDependencyReceiver).
+  const canEditStartDate = !isApproved && !isDependencyReceiver && (canEditAllFields || isMyTask);
 
   const tabs = [
     { id: 'comments', label: 'Comments', icon: MessageSquare, count: comments.length },
@@ -254,13 +302,6 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
             )}
           </div>
           <div className="flex items-center gap-1">
-            {/* Delegate button — visible to assignee */}
-            {isMyTask && (
-              <button onClick={() => setShowDelegate(true)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-primary hover:bg-primary/5 transition-colors" title="Delegate to teammate">
-                <Send size={13} /> Delegate
-              </button>
-            )}
             <button onClick={() => setShowHelpRequest(true)}
               className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/10 transition-colors" title="Request help">
               <HelpCircle size={13} /> Help
@@ -304,7 +345,20 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
           )}
 
           {/* Dependency Badge + Add button */}
-          <DependencyBadge key={depKey} taskId={task?.id} boardId={boardId || task?.boardId} onRefresh={() => setDepKey(k => k + 1)} />
+          <DependencyBadge key={depKey} taskId={task?.id} boardId={boardId || task?.boardId} onRefresh={async () => {
+            setDepKey(k => k + 1);
+            // Refresh task data since dependency removal may unblock the task
+            try {
+              const res = await api.get(`/tasks/${task.id}`);
+              const updated = res.data?.data?.task || res.data?.task || res.data;
+              if (updated) {
+                setStatus(updated.status || status);
+                if (onUpdate) onUpdate(updated);
+              }
+            } catch {}
+            // Refresh dependency role (task may no longer be a receiver after removal)
+            loadDependencyRole();
+          }} />
           <button onClick={() => setShowDepSelector(true)}
             className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors mb-3">
             <Link2 size={13} /> Add Dependency
@@ -316,12 +370,23 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
             <span className="text-sm text-text-secondary flex items-center">Status</span>
             <div className="relative">
               {isApproved && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200 mr-2">Approved</span>}
-              <button onClick={() => canEditStatus && setShowStatusDrop(!showStatusDrop)} className={`status-pill ${isApproved ? 'opacity-60 cursor-not-allowed' : ''}`} style={{ backgroundColor: statusCfg.bgColor }}>{statusCfg.label}</button>
-              {showStatusDrop && (
+              {isBlockedByDependency && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-600 border border-red-200 mr-2">
+                  <Lock size={10} /> Blocked by dependency
+                </span>
+              )}
+              <button onClick={() => canEditStatus && setShowStatusDrop(!showStatusDrop)} className={`status-pill ${(!canEditStatus) ? 'opacity-60 cursor-not-allowed' : ''}`} style={{ backgroundColor: statusCfg.bgColor }}
+                title={isBlockedByDependency ? 'Blocked by dependency — complete the blocking task first' : ''}>
+                {isBlockedByDependency && <Lock size={10} className="inline mr-1" />}{statusCfg.label}
+              </button>
+              {showStatusDrop && canEditStatus && (
                 <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border p-1.5 z-50 min-w-[140px] dropdown-enter">
-                  {Object.entries(STATUS_CONFIG).map(([k, c]) => (
-                    <button key={k} onClick={() => handleStatusChange(k)} className="status-pill w-full mb-1 last:mb-0" style={{ backgroundColor: c.bgColor }}>{c.label}</button>
-                  ))}
+                  {activeStatuses.map(s => {
+                    const sCfg = statusLookup[s.key] || { label: s.label, bgColor: s.color };
+                    return (
+                      <button key={s.key} onClick={() => handleStatusChange(s.key)} className="status-pill w-full mb-1 last:mb-0" style={{ backgroundColor: sCfg.bgColor }}>{sCfg.label}</button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -497,9 +562,9 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
               </>
             )}
 
-            {/* Start Date */}
+            {/* Start Date — editable only for primary owner on non-blocked tasks */}
             <span className="text-sm text-text-secondary flex items-center">Start date</span>
-            {canEditAllFields ? (
+            {canEditStartDate ? (
               <input type="date" value={startDate} onChange={(e) => handleDateChange('startDate', e.target.value)}
                 className="text-sm px-3 py-1.5 border border-border rounded-md focus:outline-none focus:border-primary w-fit" />
             ) : (
@@ -521,6 +586,183 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
               )}
             </div>
           </div>
+
+          {/* Task-Level Status Configuration — visible to creators/managers/admins */}
+          {canEditAllFields && (
+            <div className="mb-6 border border-border/60 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setShowStatusConfig(!showStatusConfig)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-medium text-text-primary hover:bg-surface/40 transition-colors"
+              >
+                <Settings size={14} className="text-text-tertiary" />
+                <span className="flex-1 text-left">Configure Task Statuses</span>
+                {taskStatusConfig && taskStatusConfig.length > 0 && (
+                  <span className="text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full">
+                    {taskStatusConfig.length} custom
+                  </span>
+                )}
+                {showStatusConfig ? <ChevronDown size={14} className="text-text-tertiary" /> : <ChevronRight size={14} className="text-text-tertiary" />}
+              </button>
+
+              {showStatusConfig && (
+                <div className="px-3 pb-3 border-t border-border/40 space-y-2 pt-2">
+                  <p className="text-[11px] text-text-tertiary mb-2">
+                    Select which statuses are available for this task. Members will only see these options. Leave empty to use board defaults.
+                  </p>
+
+                  {/* Current task statuses */}
+                  {(taskStatusConfig || []).map((s, i) => (
+                    <div key={s.key} className="flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-surface/20 group/status">
+                      <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
+                      {editingStatusKey === s.key ? (
+                        <div className="flex items-center gap-1.5 flex-1">
+                          <input
+                            value={editStatusLabel}
+                            onChange={e => setEditStatusLabel(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                if (!editStatusLabel.trim()) return;
+                                const updated = (taskStatusConfig || []).map(st =>
+                                  st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st
+                                );
+                                setTaskStatusConfig(updated);
+                                save({ statusConfig: updated });
+                                setEditingStatusKey(null);
+                              }
+                            }}
+                            className="flex-1 px-2 py-1 border border-primary rounded text-xs focus:outline-none"
+                            autoFocus
+                            onClick={e => e.stopPropagation()}
+                          />
+                          <button onClick={() => {
+                            if (!editStatusLabel.trim()) return;
+                            const updated = (taskStatusConfig || []).map(st =>
+                              st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st
+                            );
+                            setTaskStatusConfig(updated);
+                            save({ statusConfig: updated });
+                            setEditingStatusKey(null);
+                          }} className="p-0.5 text-green-600 hover:bg-green-50 rounded"><Check size={12} /></button>
+                          <button onClick={() => setEditingStatusKey(null)} className="p-0.5 text-text-tertiary hover:bg-surface rounded"><X size={12} /></button>
+                        </div>
+                      ) : (
+                        <>
+                          <span className="text-xs font-medium text-text-primary flex-1">{s.label}</span>
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover/status:opacity-100 transition-opacity">
+                            {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
+                              <button key={c} onClick={() => {
+                                const updated = (taskStatusConfig || []).map(st =>
+                                  st.key === s.key ? { ...st, color: c } : st
+                                );
+                                setTaskStatusConfig(updated);
+                                save({ statusConfig: updated });
+                              }}
+                                className={`w-3 h-3 rounded-full transition-all ${s.color === c ? 'ring-1 ring-offset-1 ring-primary' : 'hover:scale-110'}`}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+                          </div>
+                          <button onClick={() => { setEditingStatusKey(s.key); setEditStatusLabel(s.label); }}
+                            className="p-0.5 text-text-tertiary hover:text-primary opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
+                            <Pencil size={11} />
+                          </button>
+                          <button onClick={() => {
+                            const updated = (taskStatusConfig || []).filter(st => st.key !== s.key);
+                            const result = updated.length > 0 ? updated : null;
+                            setTaskStatusConfig(result);
+                            save({ statusConfig: result });
+                          }}
+                            className="p-0.5 text-text-tertiary hover:text-red-500 opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
+                            <X size={11} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Quick-add from available palette (board or defaults) */}
+                  <div className="pt-1">
+                    <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Add from available statuses</p>
+                    <div className="flex flex-wrap gap-1">
+                      {availableStatusPalette
+                        .filter(s => !(taskStatusConfig || []).some(ts => ts.key === s.key))
+                        .map(s => (
+                          <button key={s.key} onClick={() => {
+                            const updated = [...(taskStatusConfig || []), { key: s.key, label: s.label, color: s.color }];
+                            setTaskStatusConfig(updated);
+                            save({ statusConfig: updated });
+                          }}
+                            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                          >
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                            {s.label}
+                            <Plus size={10} className="text-text-tertiary" />
+                          </button>
+                        ))
+                      }
+                    </div>
+                  </div>
+
+                  {/* Add custom status */}
+                  <div className="pt-1 border-t border-border/30">
+                    <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Or create custom</p>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={newStatusLabel}
+                        onChange={e => setNewStatusLabel(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && newStatusLabel.trim()) {
+                            const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
+                            if ((taskStatusConfig || []).some(s => s.key === key)) return;
+                            const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
+                            setTaskStatusConfig(updated);
+                            save({ statusConfig: updated });
+                            setNewStatusLabel('');
+                          }
+                        }}
+                        placeholder="Custom status name..."
+                        className="flex-1 px-2 py-1.5 border border-border rounded-md text-xs focus:outline-none focus:border-primary"
+                        onClick={e => e.stopPropagation()}
+                      />
+                      <div className="flex gap-0.5">
+                        {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
+                          <button key={c} onClick={() => setNewStatusColor(c)}
+                            className={`w-4 h-4 rounded-full transition-all ${newStatusColor === c ? 'ring-2 ring-offset-1 ring-primary scale-110' : 'hover:scale-105'}`}
+                            style={{ backgroundColor: c }} />
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!newStatusLabel.trim()) return;
+                          const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
+                          if ((taskStatusConfig || []).some(s => s.key === key)) return;
+                          const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
+                          setTaskStatusConfig(updated);
+                          save({ statusConfig: updated });
+                          setNewStatusLabel('');
+                        }}
+                        disabled={!newStatusLabel.trim()}
+                        className="px-2.5 py-1.5 text-[11px] font-medium bg-primary text-white rounded-md hover:bg-primary-dark transition-colors disabled:opacity-40"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Reset to defaults */}
+                  {taskStatusConfig && taskStatusConfig.length > 0 && (
+                    <button
+                      onClick={() => { setTaskStatusConfig(null); save({ statusConfig: null }); }}
+                      className="text-[11px] text-text-tertiary hover:text-text-secondary transition-colors mt-1"
+                    >
+                      Clear task statuses (use board defaults)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Description */}
           <div className="mb-6">
@@ -564,18 +806,6 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
         </div>
       </div>
 
-      {/* Delegate Modal */}
-      {showDelegate && (
-        <DelegateTaskModal
-          task={task}
-          onClose={() => setShowDelegate(false)}
-          onDelegated={(newAssigneeId) => {
-            setAssignee(newAssigneeId);
-            if (onUpdate) onUpdate({ ...task, assignedTo: newAssigneeId });
-          }}
-        />
-      )}
-
       {/* Dependency Selector */}
       {showDepSelector && (
         <DependencySelector
@@ -583,7 +813,21 @@ export default function TaskModal({ task, boardId, members = [], onClose, onUpda
           taskTitle={task.title}
           boardId={boardId || task.boardId}
           onClose={() => setShowDepSelector(false)}
-          onCreated={() => setDepKey(k => k + 1)}
+          onCreated={async () => {
+            setDepKey(k => k + 1);
+            // Refresh task data since dependency creation may have changed status to 'stuck' and auto-set startDate
+            try {
+              const res = await api.get(`/tasks/${task.id}`);
+              const updated = res.data?.data?.task || res.data?.task || res.data;
+              if (updated) {
+                setStatus(updated.status || status);
+                if (updated.startDate) setStartDate(updated.startDate.slice(0, 10));
+                if (onUpdate) onUpdate(updated);
+              }
+            } catch {}
+            // Refresh dependency role (this task may now be a receiver)
+            loadDependencyRole();
+          }}
         />
       )}
 

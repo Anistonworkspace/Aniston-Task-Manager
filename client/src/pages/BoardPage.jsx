@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { useUndo } from '../context/UndoContext';
 import useSocket from '../hooks/useSocket';
 import { joinBoard, leaveBoard } from '../services/socket';
-import { DEFAULT_COLUMNS } from '../utils/constants';
+import { DEFAULT_COLUMNS, getBoardStatuses } from '../utils/constants';
 import TaskGroup from '../components/board/TaskGroup';
 import TaskModal from '../components/task/TaskModal';
 import BoardSettingsModal from '../components/board/BoardSettingsModal';
@@ -127,7 +127,7 @@ export default function BoardPage() {
     try {
       const [boardRes, usersRes] = await Promise.all([
         api.get(`/boards/${boardId}`),
-        api.get('/auth/users'),
+        api.get('/auth/assignable-users'),
       ]);
       const data = boardRes.data.board || boardRes.data;
       setBoard(data);
@@ -815,6 +815,7 @@ export default function BoardPage() {
               filters={advFilters}
               onChange={setAdvFilters}
               members={members}
+              boardStatuses={getBoardStatuses(board)}
               onClear={() => setAdvFilters({ status: [], priority: [], person: '' })}
             />
           </div>
@@ -836,6 +837,7 @@ export default function BoardPage() {
             tasks={sortedTasks}
             members={members}
             groups={groups}
+            boardStatuses={getBoardStatuses(board)}
             onTaskClick={setSelectedTask}
             onTaskUpdate={(taskId, updates) => handleTaskUpdate(taskId, updates)}
             onAddTask={handleAddTask}
@@ -867,6 +869,7 @@ export default function BoardPage() {
                   members={members}
                   columns={visibleColumns}
                   boardId={boardId}
+                  boardStatuses={getBoardStatuses(board)}
                   color={group.color}
                   index={idx}
                   onTaskClick={setSelectedTask}
@@ -908,6 +911,7 @@ export default function BoardPage() {
           task={selectedTask}
           boardId={boardId}
           members={members}
+          boardStatuses={getBoardStatuses(board)}
           onClose={() => setSelectedTask(null)}
           onUpdate={(updated) => {
             setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
@@ -921,6 +925,7 @@ export default function BoardPage() {
       <BulkActionBar
         selectedIds={selectedTaskIds}
         members={members}
+        boardStatuses={getBoardStatuses(board)}
         onDone={() => { setSelectedTaskIds([]); loadTasks(); }}
         onClear={() => setSelectedTaskIds([])}
       />

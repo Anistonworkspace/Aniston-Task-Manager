@@ -191,7 +191,7 @@ export function AuthProvider({ children }) {
   const isManager = effectiveRole === 'manager';
   const isAssistantManager = effectiveRole === 'assistant_manager';
   const isMember = effectiveRole === 'member';
-  const canManage = isAdmin || isManager || isAssistantManager;
+  const canManage = isAdmin || isManager || isAssistantManager || user?.isSuperAdmin;
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
   const switchViewAs = (role) => {

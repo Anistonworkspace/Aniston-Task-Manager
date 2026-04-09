@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { X, CheckSquare, Archive, UserPlus, ArrowRight } from 'lucide-react';
-import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup } from '../../utils/constants';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 
-export default function BulkActionBar({ selectedIds, members = [], onDone, onClear }) {
+export default function BulkActionBar({ selectedIds, members = [], boardStatuses, onDone, onClear }) {
   const [saving, setSaving] = useState(false);
   const count = selectedIds.length;
 
@@ -42,10 +42,13 @@ export default function BulkActionBar({ selectedIds, members = [], onDone, onCle
       <div className="relative group">
         <button className="text-xs px-2.5 py-1.5 rounded-md hover:bg-zinc-800 transition-colors">Status</button>
         <div className="absolute bottom-full left-0 mb-2 bg-white rounded-lg shadow-dropdown border border-border p-1.5 min-w-[130px] hidden group-hover:block">
-          {Object.entries(STATUS_CONFIG).map(([k, c]) => (
-            <button key={k} onClick={() => bulkUpdate({ status: k })}
-              className="status-pill w-full mb-1 last:mb-0 text-[11px]" style={{ backgroundColor: c.bgColor }}>{c.label}</button>
-          ))}
+          {(boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES).map(s => {
+            const cfg = buildStatusLookup([s])[s.key];
+            return (
+              <button key={s.key} onClick={() => bulkUpdate({ status: s.key })}
+                className="status-pill w-full mb-1 last:mb-0 text-[11px]" style={{ backgroundColor: cfg.bgColor }}>{cfg.label}</button>
+            );
+          })}
         </div>
       </div>
 

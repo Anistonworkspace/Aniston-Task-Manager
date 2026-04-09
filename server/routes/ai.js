@@ -1,27 +1,33 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, adminOnly } = require('../middleware/auth');
-const { getConfig, saveConfig, testConfig, deleteConfig, chatWithAI, checkGrammar } = require('../controllers/aiController');
+const {
+  getConfig, saveConfig, testConfig, deleteConfig,
+  getProviders, createProvider, updateProvider, deleteProvider,
+  setDefaultProvider, toggleProvider, testProvider,
+  chatWithAI, checkGrammar,
+} = require('../controllers/aiController');
 
 // All routes require authentication
 router.use(authenticate);
 
-// GET /api/ai/config — Get active AI config (masked key)
+// ─── Legacy single-config endpoints (backward compat) ───────
 router.get('/config', getConfig);
-
-// POST /api/ai/config — Save AI config (admin only)
 router.post('/config', adminOnly, saveConfig);
-
-// POST /api/ai/test — Test AI connection
 router.post('/test', adminOnly, testConfig);
-
-// DELETE /api/ai/config — Remove AI config (admin only)
 router.delete('/config', adminOnly, deleteConfig);
 
-// POST /api/ai/chat — Chat with AI assistant (all authenticated users)
-router.post('/chat', chatWithAI);
+// ─── Multi-provider CRUD endpoints ──────────────────────────
+router.get('/providers', getProviders);
+router.post('/providers', adminOnly, createProvider);
+router.put('/providers/:id', adminOnly, updateProvider);
+router.delete('/providers/:id', adminOnly, deleteProvider);
+router.post('/providers/:id/set-default', adminOnly, setDefaultProvider);
+router.post('/providers/:id/toggle', adminOnly, toggleProvider);
+router.post('/providers/:id/test', adminOnly, testProvider);
 
-// POST /api/ai/grammar — Grammar correction (all authenticated users)
+// ─── Chat & Grammar (all authenticated users) ──────────────
+router.post('/chat', chatWithAI);
 router.post('/grammar', checkGrammar);
 
 module.exports = router;

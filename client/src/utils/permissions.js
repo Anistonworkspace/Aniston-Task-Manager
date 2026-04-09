@@ -17,7 +17,7 @@ const PERMISSIONS = {
   delete_workspace:    ['admin'],
   create_board:        ['manager', 'admin'],
   edit_board:          ['manager', 'admin'],
-  delete_board:        ['manager', 'admin'],
+  delete_board:        ['assistant_manager', 'manager', 'admin'],
   create_task:         ['assistant_manager', 'manager', 'admin'],
   assign_members:      ['assistant_manager', 'manager', 'admin'],
   edit_others_tasks:   ['manager', 'admin'],

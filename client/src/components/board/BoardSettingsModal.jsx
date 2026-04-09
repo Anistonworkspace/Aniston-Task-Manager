@@ -2,15 +2,16 @@ import React, { useState, useEffect } from 'react';
 import {
   X, Settings, Palette, Columns3, Layers, Users, Trash2,
   Plus, GripVertical, Pencil, Check, AlertTriangle, Archive,
-  ChevronRight, UserPlus, UserMinus
+  ChevronRight, UserPlus, UserMinus, Circle
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
-import { BOARD_COLORS } from '../../utils/constants';
+import { BOARD_COLORS, DEFAULT_STATUSES, STATUS_PRESET_COLORS, getBoardStatuses } from '../../utils/constants';
 import Avatar from '../common/Avatar';
 
 const TABS = [
   { id: 'general', label: 'General', icon: Settings },
+  { id: 'statuses', label: 'Statuses', icon: Circle },
   { id: 'columns', label: 'Columns', icon: Columns3 },
   { id: 'groups', label: 'Groups', icon: Layers },
   { id: 'members', label: 'Members', icon: Users },
@@ -51,6 +52,14 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
   const [groups, setGroups] = useState(board.groups || []);
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editGroupTitle, setEditGroupTitle] = useState('');
+
+  // Statuses
+  const [statuses, setStatuses] = useState(() => getBoardStatuses(board));
+  const [editingStatusKey, setEditingStatusKey] = useState(null);
+  const [editStatusLabel, setEditStatusLabel] = useState('');
+  const [newStatusLabel, setNewStatusLabel] = useState('');
+  const [newStatusColor, setNewStatusColor] = useState('#3b82f6');
+  const [showAddStatus, setShowAddStatus] = useState(false);
 
   // Members
   const [allUsers, setAllUsers] = useState([]);
@@ -164,6 +173,61 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
     const updated = newGroups.map((g, i) => ({ ...g, position: i }));
     setGroups(updated);
     saveBoard({ groups: updated });
+  }
+
+  // ── Statuses ──
+  function saveStatusesToBoard(updatedStatuses) {
+    setStatuses(updatedStatuses);
+    // Persist into the status column entry within the columns JSONB
+    const updatedColumns = (columns || []).map(col =>
+      col.type === 'status' ? { ...col, statuses: updatedStatuses } : col
+    );
+    setColumns(updatedColumns);
+    saveBoard({ columns: updatedColumns });
+  }
+
+  function handleAddStatus() {
+    if (!newStatusLabel.trim()) return;
+    const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
+    if (statuses.some(s => s.key === key)) return; // prevent duplicates
+    const updated = [...statuses, { key, label: newStatusLabel.trim(), color: newStatusColor }];
+    saveStatusesToBoard(updated);
+    setNewStatusLabel('');
+    setNewStatusColor('#3b82f6');
+    setShowAddStatus(false);
+  }
+
+  function handleRemoveStatus(key) {
+    if (statuses.length <= 1) return; // must keep at least one
+    const updated = statuses.filter(s => s.key !== key);
+    saveStatusesToBoard(updated);
+  }
+
+  function handleRenameStatus(key) {
+    if (!editStatusLabel.trim()) return;
+    // Only update the display label — keep the key stable to preserve existing task data
+    const updated = statuses.map(s =>
+      s.key === key ? { ...s, label: editStatusLabel.trim() } : s
+    );
+    saveStatusesToBoard(updated);
+    setEditingStatusKey(null);
+  }
+
+  function handleStatusColorChange(key, color) {
+    const updated = statuses.map(s => s.key === key ? { ...s, color } : s);
+    saveStatusesToBoard(updated);
+  }
+
+  function handleMoveStatus(index, direction) {
+    const newStatuses = [...statuses];
+    const swapIdx = index + direction;
+    if (swapIdx < 0 || swapIdx >= newStatuses.length) return;
+    [newStatuses[index], newStatuses[swapIdx]] = [newStatuses[swapIdx], newStatuses[index]];
+    saveStatusesToBoard(newStatuses);
+  }
+
+  function handleResetStatuses() {
+    saveStatusesToBoard([...DEFAULT_STATUSES]);
   }
 
   // ── Members ──
@@ -318,6 +382,127 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
                     className="px-5 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary-dark transition-colors disabled:opacity-40"
                   >
                     {saving ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STATUSES ── */}
+            {activeTab === 'statuses' && (
+              <div className="space-y-3">
+                <p className="text-xs text-text-tertiary mb-3">
+                  Configure which status options are available for tasks on this board. Members will only see these options.
+                </p>
+                {statuses.map((s, i) => (
+                  <div key={s.key} className="flex items-center gap-2 p-2.5 rounded-lg border border-border/60 bg-surface/20 group">
+                    <div className="flex flex-col gap-0.5">
+                      <button onClick={() => handleMoveStatus(i, -1)} disabled={i === 0}
+                        className="text-text-tertiary hover:text-text-primary disabled:opacity-20 p-0.5">
+                        <ChevronRight size={12} className="-rotate-90" />
+                      </button>
+                      <button onClick={() => handleMoveStatus(i, 1)} disabled={i === statuses.length - 1}
+                        className="text-text-tertiary hover:text-text-primary disabled:opacity-20 p-0.5">
+                        <ChevronRight size={12} className="rotate-90" />
+                      </button>
+                    </div>
+                    <div className="w-5 h-5 rounded-full flex-shrink-0 relative" style={{ backgroundColor: s.color }}>
+                    </div>
+                    {editingStatusKey === s.key ? (
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          value={editStatusLabel}
+                          onChange={e => setEditStatusLabel(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleRenameStatus(s.key)}
+                          className="flex-1 px-2 py-1 border border-primary rounded text-sm focus:outline-none"
+                          autoFocus
+                        />
+                        <button onClick={() => handleRenameStatus(s.key)} className="p-1 text-success hover:bg-success/10 rounded">
+                          <Check size={14} />
+                        </button>
+                        <button onClick={() => setEditingStatusKey(null)} className="p-1 text-text-tertiary hover:bg-surface rounded">
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-sm font-medium text-text-primary flex-1">{s.label}</span>
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {STATUS_PRESET_COLORS.slice(0, 8).map(c => (
+                            <button
+                              key={c}
+                              onClick={() => handleStatusColorChange(s.key, c)}
+                              className={`w-3.5 h-3.5 rounded-full transition-all ${s.color === c ? 'ring-1 ring-offset-1 ring-primary' : 'hover:scale-110'}`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => { setEditingStatusKey(s.key); setEditStatusLabel(s.label); }}
+                          className="p-1 text-text-tertiary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity rounded"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleRemoveStatus(s.key)}
+                          disabled={statuses.length <= 1}
+                          className="p-1 text-text-tertiary hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity rounded disabled:opacity-20"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+
+                {/* Add New Status */}
+                {showAddStatus ? (
+                  <div className="p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-2">
+                    <input
+                      type="text"
+                      value={newStatusLabel}
+                      onChange={e => setNewStatusLabel(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleAddStatus()}
+                      placeholder="Status label (e.g. QA Testing)"
+                      className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:border-primary"
+                      autoFocus
+                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {STATUS_PRESET_COLORS.map(c => (
+                        <button
+                          key={c}
+                          onClick={() => setNewStatusColor(c)}
+                          className={`w-5 h-5 rounded-full transition-all ${newStatusColor === c ? 'ring-2 ring-offset-1 ring-primary scale-110' : 'hover:scale-105'}`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={handleAddStatus} disabled={!newStatusLabel.trim()}
+                        className="px-4 py-1.5 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors disabled:opacity-40">
+                        Add Status
+                      </button>
+                      <button onClick={() => { setShowAddStatus(false); setNewStatusLabel(''); }}
+                        className="px-3 py-1.5 text-sm text-text-tertiary hover:text-text-secondary">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowAddStatus(true)}
+                    className="flex items-center gap-2 text-sm text-primary hover:bg-primary/5 px-3 py-2 rounded-lg transition-colors w-full"
+                  >
+                    <Plus size={15} /> Add Status
+                  </button>
+                )}
+
+                {/* Reset to Defaults */}
+                <div className="pt-2 border-t border-border">
+                  <button
+                    onClick={handleResetStatuses}
+                    className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+                  >
+                    Reset to default statuses
                   </button>
                 </div>
               </div>

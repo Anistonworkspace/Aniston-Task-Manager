@@ -26,7 +26,7 @@ function getPageContext(pathname) {
     '/director-plan': 'Director Plan - daily task schedule with category cards, drag-drop tasks, deadlines, assignees',
     '/archive': 'Archive - archived tasks, boards, workspaces',
     '/cross-team': 'Dependencies - cross-board task dependencies',
-    '/tasks': 'Tasks & Workflows - approvals, extensions, delegations, help requests',
+    '/tasks': 'Tasks & Workflows - approvals, extensions, help requests',
     '/timeline': 'Timeline page - Gantt chart view with zoom controls',
   };
 

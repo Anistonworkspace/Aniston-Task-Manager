@@ -41,10 +41,10 @@ router.get('/my-team', managerOrAdmin, getMyTeam);
 // GET /api/users — Admin/Manager lists all users
 router.get('/', managerOrAdmin, getAllUsersAdmin);
 
-// PUT /api/users/:id — Admin updates user details
+// PUT /api/users/:id — Admin/Manager updates user details
 router.put(
   '/:id',
-  adminOnly,
+  managerOrAdmin,
   [
     body('name').optional().trim().isLength({ min: 2, max: 100 }),
     body('email').optional().isEmail(),

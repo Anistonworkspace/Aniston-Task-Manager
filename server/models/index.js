@@ -32,6 +32,7 @@ const TaskReminder = require('./TaskReminder');
 const Note = require('./Note');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
+const AIProvider = require('./AIProvider');
 const ApiKey = require('./ApiKey');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
 
@@ -356,6 +357,7 @@ module.exports = {
   Note,
   Feedback,
   AIConfig,
+  AIProvider,
   ApiKey,
   TeamsNotificationLog,
 };
@@ -435,6 +437,9 @@ IntegrationConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer'
 
 // ─── AIConfig <-> User (configuredBy) ───────────────────────
 AIConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── AIProvider <-> User (configuredBy) ─────────────────────
+AIProvider.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
 
 // ─── Note <-> User ──────────────────────────────────────────
 Note.belongsTo(User, { foreignKey: 'userId', as: 'author', onDelete: 'CASCADE' });

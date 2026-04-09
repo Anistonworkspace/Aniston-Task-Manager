@@ -8,7 +8,11 @@ const { logActivity } = require('./activityService');
  */
 async function isTaskBlocked(taskId) {
   const deps = await TaskDependency.findAll({
-    where: { taskId, dependencyType: { [Op.in]: ['blocks', 'required_for'] } },
+    where: {
+      taskId,
+      dependencyType: { [Op.in]: ['blocks', 'required_for'] },
+      [Op.or]: [{ isArchived: false }, { isArchived: null }],
+    },
     include: [{ model: Task, as: 'dependsOnTask', attributes: ['id', 'status'] }],
   });
 
@@ -79,7 +83,11 @@ async function processTaskCompletion(completedTaskId, completedByUserId) {
       if (stillBlocked) continue;
 
       // Task is now unblocked!
-      const updates = { status: 'not_started' };
+      const currentCustomFields = depTask.customFields || {};
+      const updates = {
+        status: 'not_started',
+        customFields: { ...currentCustomFields, blockedByDependency: false },
+      };
 
       // Auto-assign if configured
       if (dep.autoAssignOnComplete && dep.autoAssignToUserId) {
@@ -150,6 +158,50 @@ async function checkCircularDependency(taskId, dependsOnTaskId, visited = new Se
 }
 
 /**
+ * Force a task into 'stuck' status and flag it as blocked by dependency.
+ * Called when a blocking dependency is created and the blocker is not yet done.
+ */
+async function lockTaskAsDependencyBlocked(taskId) {
+  const task = await Task.findByPk(taskId);
+  if (!task || task.status === 'done') return;
+
+  const currentCustomFields = task.customFields || {};
+  await task.update({
+    status: 'stuck',
+    customFields: { ...currentCustomFields, blockedByDependency: true },
+  });
+
+  // Emit real-time update so all connected clients see the status change
+  if (task.boardId) {
+    emitToBoard(task.boardId, 'task:updated', { task: task.toJSON() });
+  }
+}
+
+/**
+ * Check if a task is still blocked after a dependency is removed.
+ * If no longer blocked, clear the blockedByDependency flag so the user can edit status again.
+ */
+async function unlockTaskIfUnblocked(taskId) {
+  const stillBlocked = await isTaskBlocked(taskId);
+  if (stillBlocked) return;
+
+  const task = await Task.findByPk(taskId);
+  if (!task) return;
+
+  const currentCustomFields = task.customFields || {};
+  if (!currentCustomFields.blockedByDependency) return; // Not flagged, nothing to do
+
+  await task.update({
+    customFields: { ...currentCustomFields, blockedByDependency: false },
+  });
+
+  // Emit update so frontend re-enables status editing
+  if (task.boardId) {
+    emitToBoard(task.boardId, 'task:updated', { task: task.toJSON() });
+  }
+}
+
+/**
  * Create a dependency link between tasks.
  */
 async function createDependency({ taskId, dependsOnTaskId, dependencyType, autoAssignOnComplete, autoAssignToUserId, createdById }) {
@@ -176,6 +228,29 @@ async function createDependency({ taskId, dependsOnTaskId, dependencyType, autoA
     createdById,
   });
 
+  // If this is a blocking dependency and the blocker is not yet done,
+  // force the blocked task into 'stuck' status immediately
+  const effectiveType = dependencyType || 'blocks';
+  if (['blocks', 'required_for'].includes(effectiveType)) {
+    const blockerTask = await Task.findByPk(dependsOnTaskId, { attributes: ['id', 'status'] });
+    if (blockerTask && blockerTask.status !== 'done') {
+      await lockTaskAsDependencyBlocked(taskId);
+    }
+  }
+
+  // Auto-set startDate on the blocked task when a dependency is created (set-if-empty).
+  // A dependency means the task has entered its active lifecycle.
+  if (['blocks', 'required_for'].includes(effectiveType)) {
+    const blockedTask = await Task.findByPk(taskId, { attributes: ['id', 'startDate', 'boardId'] });
+    if (blockedTask && !blockedTask.startDate) {
+      const today = new Date().toISOString().slice(0, 10);
+      await blockedTask.update({ startDate: today });
+      if (blockedTask.boardId) {
+        emitToBoard(blockedTask.boardId, 'task:updated', { task: blockedTask.toJSON() });
+      }
+    }
+  }
+
   return dep;
 }
 
@@ -186,4 +261,6 @@ module.exports = {
   processTaskCompletion,
   checkCircularDependency,
   createDependency,
+  lockTaskAsDependencyBlocked,
+  unlockTaskIfUnblocked,
 };

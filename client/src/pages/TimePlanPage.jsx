@@ -10,9 +10,86 @@ import { useToast } from '../components/common/Toast';
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8AM - 8PM
 const BLOCK_COLORS = ['#4285f4', '#00c875', '#fdab3d', '#e2445c', '#a855f7', '#0ea5e9', '#f97316', '#06b6d4'];
+const MIN_BLOCK_HEIGHT = 28; // minimum px height so short tasks stay visible
+const COLUMN_GAP = 2; // px gap between side-by-side blocks
+const COLUMN_PADDING = 4; // px padding on left/right edges of day column
 
 function timeToMinutes(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
 function minsToPos(mins) { return ((mins - 480) / 60) * 60; } // 480 = 8AM in mins, 60px/hour
+
+/**
+ * Compute overlap layout for a list of time items.
+ * Each item must have startTime and endTime ("HH:MM" strings).
+ * Returns a Map of item → { col, totalCols } for width/offset calculation.
+ */
+function computeOverlapLayout(items) {
+  if (!items.length) return new Map();
+
+  // Sort by start time, then by longer duration first (so wider blocks come first)
+  const sorted = [...items].sort((a, b) => {
+    const aStart = timeToMinutes(a.startTime);
+    const bStart = timeToMinutes(b.startTime);
+    if (aStart !== bStart) return aStart - bStart;
+    // Longer duration first
+    const aDur = timeToMinutes(a.endTime) - aStart;
+    const bDur = timeToMinutes(b.endTime) - bStart;
+    return bDur - aDur;
+  });
+
+  // Build overlap clusters using a sweep approach
+  // Two items overlap if one starts before the other ends
+  const clusters = [];
+  let currentCluster = [sorted[0]];
+  let clusterEnd = timeToMinutes(sorted[0].endTime);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const itemStart = timeToMinutes(sorted[i].startTime);
+    if (itemStart < clusterEnd) {
+      // Overlaps with current cluster
+      currentCluster.push(sorted[i]);
+      clusterEnd = Math.max(clusterEnd, timeToMinutes(sorted[i].endTime));
+    } else {
+      // No overlap — start new cluster
+      clusters.push(currentCluster);
+      currentCluster = [sorted[i]];
+      clusterEnd = timeToMinutes(sorted[i].endTime);
+    }
+  }
+  clusters.push(currentCluster);
+
+  // For each cluster, assign column indices using a greedy algorithm
+  const layoutMap = new Map();
+
+  for (const cluster of clusters) {
+    const columns = []; // each column tracks the end time of its last item
+
+    for (const item of cluster) {
+      const itemStart = timeToMinutes(item.startTime);
+      // Find the first column where this item fits (no overlap)
+      let placed = false;
+      for (let c = 0; c < columns.length; c++) {
+        if (itemStart >= columns[c]) {
+          columns[c] = timeToMinutes(item.endTime);
+          layoutMap.set(item, { col: c, totalCols: 0 }); // totalCols set below
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        layoutMap.set(item, { col: columns.length, totalCols: 0 });
+        columns.push(timeToMinutes(item.endTime));
+      }
+    }
+
+    // Set totalCols for all items in this cluster
+    const totalCols = columns.length;
+    for (const item of cluster) {
+      layoutMap.get(item).totalCols = totalCols;
+    }
+  }
+
+  return layoutMap;
+}
 
 export default function TimePlanPage() {
   const { canManage, user } = useAuth();
@@ -349,56 +426,81 @@ export default function TimePlanPage() {
                     );
                   })()}
 
-                  {/* Time blocks */}
-                  {dayBlocks.map((block, idx) => {
-                    const startMins = timeToMinutes(block.startTime);
-                    const endMins = timeToMinutes(block.endTime);
-                    const top = minsToPos(startMins);
-                    const height = Math.max(((endMins - startMins) / 60) * 60, 24);
-                    const color = BLOCK_COLORS[(dayIdx + idx) % BLOCK_COLORS.length];
+                  {/* Time blocks + Teams calendar events with overlap layout */}
+                  {(() => {
+                    const dayTeamsEvents = calendarEvents.filter(e => e.date === dateStr);
+                    // Combine blocks and teams events for unified overlap detection
+                    const allItems = [
+                      ...dayBlocks.map(b => ({ ...b, _type: 'block' })),
+                      ...dayTeamsEvents.map(e => ({ ...e, _type: 'teams' })),
+                    ];
+                    const layoutMap = computeOverlapLayout(allItems);
 
-                    return (
-                      <div key={block.id} className="absolute left-1 right-1 rounded-md px-2 py-1 cursor-pointer group hover:shadow-md transition-shadow overflow-hidden z-10"
-                        style={{ top, height, backgroundColor: `${color}15`, borderLeft: `3px solid ${color}` }}
-                        onClick={() => handleEditBlock(block)}>
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] font-semibold" style={{ color }}>{block.startTime}–{block.endTime}</p>
-                            {(block.task?.title || block.description) && height > 30 && (
-                              <p className="text-[10px] text-text-primary font-medium truncate">{block.task?.title || block.description}</p>
+                    return allItems.map((item, idx) => {
+                      const layout = layoutMap.get(item) || { col: 0, totalCols: 1 };
+                      const startMins = timeToMinutes(item.startTime);
+                      const endMins = timeToMinutes(item.endTime);
+                      const top = minsToPos(startMins);
+                      const height = Math.max(((endMins - startMins) / 60) * 60, MIN_BLOCK_HEIGHT);
+
+                      // Calculate horizontal position within the day column
+                      const usableWidth = 100 - COLUMN_PADDING * 2;
+                      const leftPercent = COLUMN_PADDING + layout.col * usableWidth / layout.totalCols;
+                      const widthPercent = usableWidth / layout.totalCols - (layout.totalCols > 1 ? COLUMN_GAP / 2 : 0);
+
+                      if (item._type === 'teams') {
+                        return (
+                          <div key={`teams-${item.id || idx}`}
+                            className="absolute rounded-md px-1.5 py-1 z-[5] overflow-hidden pointer-events-auto"
+                            style={{
+                              top, height,
+                              left: `calc(${leftPercent}% + ${layout.col > 0 ? COLUMN_GAP / 2 : 0}px)`,
+                              width: `calc(${widthPercent}%)`,
+                              backgroundColor: '#7b83eb12', borderLeft: '3px dashed #7b83eb', opacity: 0.85,
+                            }}
+                            title={`Teams: ${item.subject}\n${item.startTime}–${item.endTime}${item.location ? '\n📍 ' + item.location : ''}`}>
+                            <div className="flex items-center gap-1">
+                              <CalendarDays size={9} className="text-[#7b83eb] flex-shrink-0" />
+                              <p className="text-[10px] font-semibold text-[#7b83eb] truncate">{item.startTime}–{item.endTime}</p>
+                            </div>
+                            {height > 30 && (
+                              <p className="text-[10px] text-text-primary font-medium truncate">{item.subject}</p>
+                            )}
+                            {height > 48 && item.location && (
+                              <p className="text-[9px] text-text-tertiary truncate">📍 {item.location}</p>
                             )}
                           </div>
-                          <button onClick={(e) => { e.stopPropagation(); handleDelete(block.id); }}
-                            className="opacity-0 group-hover:opacity-100 text-text-tertiary hover:text-danger p-0.5"><Trash2 size={10} /></button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                        );
+                      }
 
-                  {/* Teams calendar events (read-only overlay) */}
-                  {calendarEvents.filter(e => e.date === dateStr).map((event, idx) => {
-                    const startMins = timeToMinutes(event.startTime);
-                    const endMins = timeToMinutes(event.endTime);
-                    const top = minsToPos(startMins);
-                    const height = Math.max(((endMins - startMins) / 60) * 60, 24);
-                    return (
-                      <div key={`teams-${event.id || idx}`}
-                        className="absolute left-1 right-1 rounded-md px-2 py-1 z-[5] overflow-hidden pointer-events-auto"
-                        style={{ top, height, backgroundColor: '#7b83eb12', borderLeft: '3px dashed #7b83eb', opacity: 0.85 }}
-                        title={`Teams: ${event.subject}\n${event.startTime}–${event.endTime}${event.location ? '\n📍 ' + event.location : ''}`}>
-                        <div className="flex items-center gap-1">
-                          <CalendarDays size={9} className="text-[#7b83eb] flex-shrink-0" />
-                          <p className="text-[10px] font-semibold text-[#7b83eb]">{event.startTime}–{event.endTime}</p>
+                      // Regular time block
+                      const color = BLOCK_COLORS[(dayIdx + idx) % BLOCK_COLORS.length];
+                      return (
+                        <div key={item.id}
+                          className="absolute rounded-md px-1.5 py-1 cursor-pointer group hover:shadow-md transition-shadow overflow-hidden z-10"
+                          style={{
+                            top, height,
+                            left: `calc(${leftPercent}% + ${layout.col > 0 ? COLUMN_GAP / 2 : 0}px)`,
+                            width: `calc(${widthPercent}%)`,
+                            backgroundColor: `${color}15`, borderLeft: `3px solid ${color}`,
+                          }}
+                          onClick={() => handleEditBlock(item)}>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[10px] font-semibold truncate" style={{ color }}>{item.startTime}–{item.endTime}</p>
+                              {(item.task?.title || item.description) && height > 30 && (
+                                <p className="text-[10px] text-text-primary font-medium truncate">{item.task?.title || item.description}</p>
+                              )}
+                            </div>
+                            {widthPercent > 20 && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                                className="opacity-0 group-hover:opacity-100 text-text-tertiary hover:text-danger p-0.5 flex-shrink-0"><Trash2 size={10} /></button>
+                            )}
+                          </div>
                         </div>
-                        {height > 30 && (
-                          <p className="text-[10px] text-text-primary font-medium truncate">{event.subject}</p>
-                        )}
-                        {height > 48 && event.location && (
-                          <p className="text-[9px] text-text-tertiary truncate">📍 {event.location}</p>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    });
+                  })()}
 
                   {/* Click to add (empty area) */}
                   <div className="absolute inset-0 z-0 cursor-pointer" onClick={() => handleAddBlock(dateStr)} />

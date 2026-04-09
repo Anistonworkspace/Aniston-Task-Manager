@@ -23,7 +23,7 @@ exports.promoteUser = async (req, res) => {
 
     // Update user — set role, title, AND hierarchyLevel
     const updates = { title: newTitle || user.title };
-    if (['admin', 'manager', 'member'].includes(newRole)) {
+    if (['admin', 'manager', 'assistant_manager', 'member'].includes(newRole)) {
       updates.role = newRole;
     }
     if (newHierarchyLevel) updates.hierarchyLevel = newHierarchyLevel;
@@ -108,11 +108,51 @@ exports.getOrgChart = async (req, res) => {
 exports.updateManager = async (req, res) => {
   try {
     const { userId, managerId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, message: 'userId is required.' });
+
+    // Prevent self-assignment
+    if (managerId && managerId === userId) {
+      return res.status(400).json({ success: false, message: 'Invalid manager assignment: a user cannot be their own manager.' });
+    }
+
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    // Circular hierarchy detection — walk up from proposed manager to ensure userId is not an ancestor
+    if (managerId) {
+      const manager = await User.findByPk(managerId);
+      if (!manager) return res.status(404).json({ success: false, message: 'Manager not found.' });
+
+      let currentId = manager.managerId;
+      const visited = new Set([userId, managerId]);
+      while (currentId) {
+        if (currentId === userId) {
+          return res.status(400).json({ success: false, message: 'Invalid manager assignment: circular hierarchy detected.' });
+        }
+        if (visited.has(currentId)) break; // already checked or cycle in existing data
+        visited.add(currentId);
+        const ancestor = await User.findByPk(currentId, { attributes: ['id', 'managerId'] });
+        if (!ancestor) break;
+        currentId = ancestor.managerId;
+      }
+    }
+
+    const previousManagerId = user.managerId;
     await user.update({ managerId: managerId || null });
+
+    // Activity logging
+    logActivity({
+      action: 'manager_updated',
+      description: `${req.user.name} changed ${user.name}'s manager`,
+      entityType: 'user',
+      entityId: userId,
+      userId: req.user.id,
+      meta: { previousManagerId, newManagerId: managerId || null },
+    });
+
     res.json({ success: true, data: { user } });
   } catch (err) {
+    console.error('[UpdateManager] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to update manager.' });
   }
 };

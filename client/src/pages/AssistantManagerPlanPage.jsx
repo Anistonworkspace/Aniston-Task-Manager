@@ -6,7 +6,7 @@ import api from '../services/api';
 import { useToast } from '../components/common/Toast';
 import { useUndo } from '../context/UndoContext';
 import useSocket from '../hooks/useSocket';
-import { format, addDays, subDays } from 'date-fns';
+import { format, addDays, subDays, isToday, isYesterday, isTomorrow, isFuture } from 'date-fns';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 
@@ -56,6 +56,14 @@ function getDeadlineUrgency(deadline) {
 function getIcon(name, size = 18) {
   const Icon = ICON_MAP[name];
   return Icon ? <Icon size={size} /> : <Folder size={size} />;
+}
+
+function getRelativeDayLabel(date) {
+  if (isToday(date)) return 'Today';
+  if (isYesterday(date)) return 'Yesterday';
+  if (isTomorrow(date)) return 'Tomorrow';
+  if (isFuture(date)) return 'Future';
+  return 'Past';
 }
 
 export default function AssistantManagerPlanPage() {
@@ -883,7 +891,7 @@ export default function AssistantManagerPlanPage() {
         </div>
 
         <div className="flex items-center gap-3 mt-4 sm:mt-0">
-          {/* Date Navigation */}
+          {/* Date Selector */}
           <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-xl p-1 shadow-sm">
             <button
               onClick={goToPrev}
@@ -894,9 +902,11 @@ export default function AssistantManagerPlanPage() {
             </button>
             <button
               onClick={goToToday}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-indigo-600 hover:bg-indigo-50 transition-colors"
+              className="flex flex-col items-center px-4 py-1 rounded-lg hover:bg-indigo-50 transition-colors min-w-[140px]"
+              title="Go to today"
             >
-              Today
+              <span className="text-sm font-bold text-gray-800">{format(selectedDate, 'MMMM d, yyyy')}</span>
+              <span className="text-xs font-medium text-indigo-500">{getRelativeDayLabel(selectedDate)}</span>
             </button>
             <button
               onClick={goToNext}
@@ -905,11 +915,6 @@ export default function AssistantManagerPlanPage() {
             >
               <ChevronRight size={16} className="text-gray-600" />
             </button>
-          </div>
-
-          {/* Date Display */}
-          <div className="bg-white border border-gray-200 rounded-xl px-4 py-2 shadow-sm">
-            <span className="text-sm font-semibold text-gray-700">{displayDate}</span>
           </div>
 
           {/* Export Button */}

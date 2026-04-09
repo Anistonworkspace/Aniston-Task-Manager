@@ -1,4 +1,4 @@
-const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
@@ -15,6 +15,7 @@ const { buildTaskVisibilityFilter, checkTaskAction } = require('../middleware/ta
 const { scheduleReminders, cancelReminders, rescheduleReminders } = require('../services/reminderService');
 const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentNotificationService');
 const teamsNotif = require('../services/teamsNotificationService');
+const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 
 // Reusable include block for the two user associations that appear on every task query
 const TASK_INCLUDES = [
@@ -37,7 +38,7 @@ const createTask = async (req, res) => {
     const {
       title, description, status, priority, groupId,
       dueDate, startDate, tags, customFields, boardId,
-      assignedTo, ownerIds, supervisors,
+      assignedTo, ownerIds, supervisors, statusConfig,
     } = req.body;
 
     // Verify board exists
@@ -46,9 +47,21 @@ const createTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Members can only create tasks assigned to themselves; all other roles can assign anyone
+    // Validate status against task-level config (if provided), then board config
+    if (status) {
+      const tempTask = statusConfig ? { statusConfig } : {};
+      if (!isValidStatusForTask(status, tempTask, board)) {
+        return res.status(400).json({ success: false, message: `Invalid status "${status}" for this task.` });
+      }
+    }
+
+    // Only authorized users (non-members) can set statusConfig
     const canAssignOthers = ['admin', 'manager', 'assistant_manager'].includes(req.user.role);
     const isMemberRole = !canAssignOthers;
+
+    // Members cannot configure task-level statuses
+    const safeStatusConfig = (!isMemberRole && Array.isArray(statusConfig) && statusConfig.length > 0)
+      ? statusConfig : null;
 
     // Support both single assignedTo (backward compat) and array format
     let assigneeIds = [];
@@ -64,6 +77,19 @@ const createTask = async (req, res) => {
     // For admin/manager/assistant_manager: if no assignee specified, leave unassigned (NULL)
 
     const supervisorIds = (Array.isArray(supervisors) && canAssignOthers) ? supervisors : [];
+
+    // Hierarchy-based assignment validation: managers can only assign within their subtree
+    if (canAssignOthers && (assigneeIds.length > 0 || supervisorIds.length > 0)) {
+      const { canAssignTo } = require('../services/hierarchyService');
+      const allTargetIds = [...assigneeIds, ...supervisorIds];
+      for (const targetId of allTargetIds) {
+        const allowed = await canAssignTo(req.user, targetId);
+        if (!allowed) {
+          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
+        }
+      }
+    }
+
     // Keep backward compat: set assignedTo to first assignee
     const primaryAssignee = assigneeIds.length > 0 ? assigneeIds[0] : null;
 
@@ -76,6 +102,7 @@ const createTask = async (req, res) => {
       title: sanitizeInput(title),
       description: sanitizeInput(description) || '',
       status: status || 'not_started',
+      statusConfig: safeStatusConfig,
       priority: isMemberRole ? 'medium' : (priority || 'medium'),
       groupId: groupId || 'new',
       dueDate: dueDate || null,
@@ -369,12 +396,13 @@ const updateTask = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      logger.warn('[Task] UpdateTask validation errors:', JSON.stringify(errors.array()));
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
     const task = await Task.findByPk(req.params.id, {
       include: [
-        { model: Board, as: 'board', attributes: ['id', 'name'] },
+        { model: Board, as: 'board', attributes: ['id', 'name', 'columns'] },
         { model: User, as: 'creator', attributes: ['id', 'role'] },
         { model: TaskAssignee, as: 'taskAssignees' },
       ],
@@ -412,6 +440,7 @@ const updateTask = async (req, res) => {
       'dueDate', 'startDate', 'position', 'tags', 'customFields',
       'assignedTo', 'isArchived', 'progress',
       'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',
+      'statusConfig',
     ];
 
     // Use Layer 3 allowedFields if set, otherwise allow all
@@ -432,6 +461,57 @@ const updateTask = async (req, res) => {
     const previousStatus = task.status;
     const previousAssignee = task.assignedTo;
     const previousDueDate = task.dueDate;
+
+    // Members cannot modify statusConfig — only creators/managers/admins
+    if (updates.statusConfig !== undefined && isMember) {
+      delete updates.statusConfig;
+      delete changes.statusConfig;
+    }
+
+    // When statusConfig is being updated alongside status, validate against the NEW config
+    // Otherwise validate against the task's existing config → board → global fallback
+    if (updates.status) {
+      const effectiveTask = updates.statusConfig ? { statusConfig: updates.statusConfig } : task;
+      const board = task.board || await Board.findByPk(task.boardId);
+      if (!isValidStatusForTask(updates.status, effectiveTask, board)) {
+        const { getAllowedStatusesForTask } = require('../utils/statusConfig');
+        const allowed = getAllowedStatusesForTask(effectiveTask, board);
+        logger.warn(`[Task] Status validation failed: "${updates.status}" not in allowed [${allowed.join(', ')}]. Task statusConfig: ${JSON.stringify(task.statusConfig)}`);
+        return res.status(400).json({ success: false, message: `Invalid status "${updates.status}" for this task. Allowed: ${allowed.join(', ')}` });
+      }
+    }
+
+    // Prevent status changes on tasks blocked by dependencies
+    if (updates.status && updates.status !== task.status) {
+      const blocked = await depService.isTaskBlocked(task.id);
+      if (blocked) {
+        return res.status(403).json({
+          success: false,
+          message: 'This task is blocked by an incomplete dependency and cannot have its status changed. Complete the blocking task(s) first.',
+        });
+      }
+    }
+
+    // Prevent manual startDate edits on dependency RECEIVER tasks
+    // (tasks that other tasks depend on — appear as dependsOnTaskId in TaskDependency)
+    if (updates.startDate !== undefined && updates.startDate !== task.startDate) {
+      const blockingOthers = await TaskDependency.findOne({
+        where: { dependsOnTaskId: task.id },
+        attributes: ['id'],
+      });
+      if (blockingOthers) {
+        delete updates.startDate;
+        delete changes.startDate;
+      }
+    }
+
+    // Auto-set startDate when task moves into an active status (set-if-empty)
+    const ACTIVE_STATUSES = ['working_on_it', 'stuck', 'review', 'done'];
+    if (updates.status && ACTIVE_STATUSES.includes(updates.status) && !task.startDate && !updates.startDate) {
+      const today = new Date().toISOString().slice(0, 10);
+      updates.startDate = today;
+      changes.startDate = today;
+    }
 
     await task.update(updates);
 
@@ -902,6 +982,20 @@ const bulkUpdateTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid update fields provided.' });
     }
 
+    // Validate status against task-level then board config for all affected tasks
+    if (safeUpdates.status) {
+      const affectedTasks = await Task.findAll({
+        where: { id: { [Op.in]: taskIds } },
+        attributes: ['id', 'boardId', 'statusConfig'],
+        include: [{ model: Board, as: 'board', attributes: ['id', 'columns'] }],
+      });
+      for (const t of affectedTasks) {
+        if (!isValidStatusForTask(safeUpdates.status, t, t.board)) {
+          return res.status(400).json({ success: false, message: `Invalid status "${safeUpdates.status}" for task "${t.id}".` });
+        }
+      }
+    }
+
     await Task.update(safeUpdates, {
       where: { id: { [Op.in]: taskIds } },
     });
@@ -1009,6 +1103,7 @@ const duplicateTask = async (req, res) => {
       title: `${original.title} (copy)`,
       description: original.description,
       status: 'not_started',
+      statusConfig: original.statusConfig,
       priority: original.priority,
       groupId: original.groupId,
       dueDate: original.dueDate,
@@ -1203,6 +1298,18 @@ const manageTaskMembers = async (req, res) => {
 
     const { assignees, supervisors } = req.body;
     const board = task.board ? await Board.findByPk(task.boardId) : null;
+
+    // Hierarchy-based assignment validation
+    const allTargetIds = [...(Array.isArray(assignees) ? assignees : []), ...(Array.isArray(supervisors) ? supervisors : [])];
+    if (allTargetIds.length > 0) {
+      const { canAssignTo } = require('../services/hierarchyService');
+      for (const targetId of allTargetIds) {
+        const allowed = await canAssignTo(req.user, targetId);
+        if (!allowed) {
+          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
+        }
+      }
+    }
 
     // Sync assignees
     if (Array.isArray(assignees)) {

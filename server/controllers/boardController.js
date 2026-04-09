@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { emitToBoard, emitToUser } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
+const { isValidStatus } = require('../utils/statusConfig');
 
 /**
  * POST /api/boards
@@ -334,11 +335,12 @@ const deleteBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Only the creator or an admin may delete
-    if (board.createdBy !== req.user.id && req.user.role !== 'admin') {
+    // Only the creator, an admin, or an assistant_manager may delete
+    const canDelete = req.user.role === 'admin' || board.createdBy === req.user.id || req.user.role === 'assistant_manager';
+    if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Only the board creator or an admin can delete this board.',
+        message: 'Only the board creator, an admin, or an assistant manager can delete this board.',
       });
     }
 
@@ -595,7 +597,7 @@ const importTasks = async (req, res) => {
       const task = await Task.create({
         title: sanitizeInput(item.title || item.name || 'Untitled'),
         description: sanitizeInput(item.description || ''),
-        status: ['not_started', 'working_on_it', 'stuck', 'done'].includes(item.status) ? item.status : 'not_started',
+        status: isValidStatus(item.status, board) ? item.status : 'not_started',
         priority: ['low', 'medium', 'high', 'critical'].includes(item.priority) ? item.priority : 'medium',
         dueDate: item.dueDate || null,
         startDate: item.startDate || null,

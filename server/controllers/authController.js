@@ -830,4 +830,19 @@ const getSsoStatus = async (req, res) => {
   }
 };
 
-module.exports = { register, login, getProfile, updateProfile, getAllUsers, uploadAvatar, forgotPassword, resetPassword, createPassword, changePassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint, microsoftAuthUrl, microsoftCallback, getSsoStatus };
+/**
+ * GET /api/auth/assignable-users
+ * Returns users that the current user can assign tasks to, based on org hierarchy.
+ */
+const getAssignableUsersList = async (req, res) => {
+  try {
+    const { getAssignableUsers } = require('../services/hierarchyService');
+    const users = await getAssignableUsers(req.user);
+    res.json({ success: true, data: { users } });
+  } catch (error) {
+    console.error('[Auth] getAssignableUsers error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch assignable users.' });
+  }
+};
+
+module.exports = { register, login, getProfile, updateProfile, getAllUsers, getAssignableUsersList, uploadAvatar, forgotPassword, resetPassword, createPassword, changePassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint, microsoftAuthUrl, microsoftCallback, getSsoStatus };

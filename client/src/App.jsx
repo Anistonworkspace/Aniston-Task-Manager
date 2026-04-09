@@ -70,7 +70,7 @@ function PublicRoute({ children }) {
 }
 
 function ManagerRoute({ children }) {
-  const { user, loading, canManage } = useAuth();
+  const { user, loading, canManage, isSuperAdmin } = useAuth();
   if (loading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-surface">
@@ -79,7 +79,7 @@ function ManagerRoute({ children }) {
     );
   }
   if (!user) return <Navigate to="/login" replace />;
-  if (!canManage) return <Navigate to="/" replace />;
+  if (!canManage && !isSuperAdmin) return <Navigate to="/" replace />;
   return children;
 }
 

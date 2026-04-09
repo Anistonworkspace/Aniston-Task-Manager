@@ -67,7 +67,9 @@ router.post(
       .isUUID().withMessage('boardId must be a valid UUID'),
     body('status')
       .optional()
-      .isIn(['not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review']).withMessage('Invalid status value'),
+      .isString().withMessage('status must be a string')
+      .trim()
+      .isLength({ min: 1, max: 50 }).withMessage('status must be between 1 and 50 characters'),
     body('priority')
       .optional()
       .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
@@ -82,6 +84,9 @@ router.post(
     body('startDate')
       .optional({ nullable: true })
       .isISO8601().withMessage('startDate must be a valid date'),
+    body('statusConfig')
+      .optional({ nullable: true })
+      .isArray().withMessage('statusConfig must be an array'),
   ],
   createTask
 );
@@ -113,7 +118,9 @@ router.put(
       .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
     body('status')
       .optional()
-      .isIn(['not_started', 'ready_to_start', 'working_on_it', 'in_progress', 'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review']).withMessage('Invalid status value'),
+      .isString().withMessage('status must be a string')
+      .trim()
+      .isLength({ min: 1, max: 50 }).withMessage('status must be between 1 and 50 characters'),
     body('priority')
       .optional()
       .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
@@ -128,6 +135,8 @@ router.put(
     body('startDate')
       .optional({ nullable: true })
       .isISO8601().withMessage('startDate must be a valid date'),
+    body('statusConfig')
+      .optional({ nullable: true }),
   ],
   updateTask
 );

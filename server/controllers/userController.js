@@ -135,6 +135,23 @@ const updateUser = async (req, res) => {
       }
     }
 
+    // Safe demotion: if role is being downgraded and user has direct reports,
+    // reassign those reports to this user's own manager (bubble up)
+    if (updates.role && updates.role !== user.role) {
+      const wasManager = ['admin', 'manager', 'assistant_manager'].includes(user.role);
+      const isNowLower = updates.role === 'member';
+      if (wasManager && isNowLower) {
+        const directReports = await User.findAll({ where: { managerId: user.id, isActive: true }, attributes: ['id'] });
+        if (directReports.length > 0) {
+          // Reassign direct reports to the demoted user's own manager (or null if no manager)
+          await User.update(
+            { managerId: user.managerId || null },
+            { where: { managerId: user.id } }
+          );
+        }
+      }
+    }
+
     await user.update(updates);
 
     logActivity({

@@ -2,20 +2,61 @@ const axios = require('axios');
 const { decrypt } = require('../utils/encryption');
 
 /**
- * Get the active AI configuration from the database.
+ * Get a specific AI provider by ID from the new AIProvider table.
+ * Decrypts the API key before returning.
+ */
+async function getProviderById(providerId) {
+  const { AIProvider } = require('../models');
+  const provider = await AIProvider.findByPk(providerId);
+  if (!provider || !provider.isActive) return null;
+  try {
+    return { ...provider.toJSON(), apiKey: decrypt(provider.apiKey) };
+  } catch (err) {
+    console.error('[AIService] Failed to decrypt API key for provider:', providerId, err.message);
+    return null;
+  }
+}
+
+/**
+ * Get the default AI provider (isDefault=true) from the AIProvider table.
+ * Falls back to any active provider, then legacy AIConfig.
  * Decrypts the API key before returning.
  */
 async function getActiveConfig() {
-  // Lazy-require to avoid circular dependency at startup
-  const { AIConfig } = require('../models');
+  const { AIProvider, AIConfig } = require('../models');
+
+  // 1. Try new AIProvider table — default first
+  let provider = await AIProvider.findOne({ where: { isActive: true, isDefault: true } });
+  if (!provider) {
+    // Fallback to any active provider
+    provider = await AIProvider.findOne({ where: { isActive: true }, order: [['createdAt', 'ASC']] });
+  }
+
+  if (provider) {
+    try {
+      return { ...provider.toJSON(), apiKey: decrypt(provider.apiKey) };
+    } catch (err) {
+      console.error('[AIService] Failed to decrypt AIProvider key:', err.message);
+    }
+  }
+
+  // 2. Fallback to legacy AIConfig table
   const config = await AIConfig.findOne({ where: { isActive: true } });
   if (!config) return null;
   try {
     return { ...config.toJSON(), apiKey: decrypt(config.apiKey) };
   } catch (err) {
-    console.error('[AIService] Failed to decrypt API key:', err.message);
+    console.error('[AIService] Failed to decrypt legacy AIConfig key:', err.message);
     return null;
   }
+}
+
+/**
+ * Get all active providers from the AIProvider table.
+ */
+async function getAllProviders() {
+  const { AIProvider } = require('../models');
+  return AIProvider.findAll({ where: { isActive: true }, order: [['createdAt', 'ASC']] });
 }
 
 /**
@@ -32,6 +73,11 @@ function getProviderConfig(config) {
       url: config.baseUrl || 'https://api.openai.com/v1/chat/completions',
       model: config.model || 'gpt-3.5-turbo',
       type: 'openai',
+    },
+    anthropic: {
+      url: config.baseUrl || 'https://api.anthropic.com/v1/messages',
+      model: config.model || 'claude-3-haiku-20240307',
+      type: 'anthropic',
     },
     claude: {
       url: config.baseUrl || 'https://api.anthropic.com/v1/messages',
@@ -56,10 +102,17 @@ function getProviderConfig(config) {
  * Send a chat request to the configured AI provider.
  * @param {Array} messages - Array of { role, content }
  * @param {string} systemPrompt - System-level instructions
+ * @param {string} [providerId] - Optional specific provider ID to use
  * @returns {string} The assistant's reply text
  */
-async function chat(messages, systemPrompt) {
-  const config = await getActiveConfig();
+async function chat(messages, systemPrompt, providerId) {
+  let config;
+  if (providerId) {
+    config = await getProviderById(providerId);
+    if (!config) throw new Error('The selected AI provider is not available or inactive.');
+  } else {
+    config = await getActiveConfig();
+  }
   if (!config) throw new Error('AI is not configured. Ask an admin to set up AI in Integrations.');
 
   return callProvider(config, messages, systemPrompt);
@@ -172,4 +225,36 @@ async function testConnection(provider, apiKey, model, baseUrl) {
   }
 }
 
-module.exports = { chat, getActiveConfig, testConnection };
+/**
+ * Migrate legacy AIConfig records to AIProvider table.
+ * Called once at startup or on first access.
+ */
+async function migrateFromLegacy() {
+  const { AIConfig, AIProvider } = require('../models');
+  try {
+    const providerCount = await AIProvider.count();
+    if (providerCount > 0) return; // Already migrated or has data
+
+    const legacyConfigs = await AIConfig.findAll();
+    if (legacyConfigs.length === 0) return;
+
+    for (const cfg of legacyConfigs) {
+      await AIProvider.create({
+        provider: cfg.provider,
+        displayName: cfg.provider.charAt(0).toUpperCase() + cfg.provider.slice(1),
+        apiKey: cfg.apiKey, // Already encrypted
+        model: cfg.model || '',
+        baseUrl: cfg.baseUrl || '',
+        isActive: cfg.isActive,
+        isDefault: cfg.isActive, // The active legacy config becomes the default
+        lastTestedAt: cfg.lastTestedAt,
+        configuredBy: cfg.configuredBy,
+      });
+    }
+    console.log(`[AIService] Migrated ${legacyConfigs.length} legacy AIConfig(s) to AIProvider table.`);
+  } catch (err) {
+    console.error('[AIService] Legacy migration failed (non-fatal):', err.message);
+  }
+}
+
+module.exports = { chat, getActiveConfig, getProviderById, getAllProviders, testConnection, migrateFromLegacy };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, BookmarkCheck, ChevronDown, Filter, Clock, AlertCircle, Calendar, User, Tag } from 'lucide-react';
-import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup } from '../../utils/constants';
 
 const SMART_VIEWS = [
   { id: 'overdue', label: 'Overdue', icon: AlertCircle, color: '#e2445c', filter: { dateFilter: 'overdue' } },
@@ -13,7 +13,7 @@ const SMART_VIEWS = [
   { id: 'unassigned', label: 'Unassigned', icon: User, color: '#c4c4c4', filter: { unassigned: true } },
 ];
 
-export default function AdvancedFilters({ filters, onChange, members = [], onClear, currentUserId }) {
+export default function AdvancedFilters({ filters, onChange, members = [], onClear, currentUserId, boardStatuses }) {
   const { status = [], priority = [], person = '', dateFilter = '', approvalStatus = '', tags = [], assignedToMe = false, unassigned = false, createdByMe = false, hasSubtasks = '', dueDateRange = '' } = filters;
   const [showSaved, setShowSaved] = useState(false);
   const [showSmartViews, setShowSmartViews] = useState(false);
@@ -119,15 +119,18 @@ export default function AdvancedFilters({ filters, onChange, members = [], onCle
         {/* Status chips */}
         <div className="flex items-center gap-1">
           <span className="text-[10px] uppercase tracking-wider text-text-tertiary font-semibold mr-0.5">Status</span>
-          {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
-            <button key={key} onClick={() => toggleStatus(key)}
-              className={`text-[11px] font-medium px-2 py-1 rounded-md transition-all border ${
-                status.includes(key) ? 'text-white border-transparent shadow-sm' : 'bg-white dark:bg-zinc-700 text-text-secondary border-border/60 hover:border-border'
-              }`}
-              style={status.includes(key) ? { backgroundColor: cfg.color } : {}}>
-              {cfg.label}
-            </button>
-          ))}
+          {(boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES).map(s => {
+            const cfg = buildStatusLookup([s])[s.key];
+            return (
+              <button key={s.key} onClick={() => toggleStatus(s.key)}
+                className={`text-[11px] font-medium px-2 py-1 rounded-md transition-all border ${
+                  status.includes(s.key) ? 'text-white border-transparent shadow-sm' : 'bg-white dark:bg-zinc-700 text-text-secondary border-border/60 hover:border-border'
+                }`}
+                style={status.includes(s.key) ? { backgroundColor: cfg.color } : {}}>
+                {cfg.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className="w-px h-5 bg-border/60" />

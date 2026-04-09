@@ -17,8 +17,8 @@ npm run dev               # Starts both server (5000) and client (3000)
 
 ## Tech Stack
 
-- **Frontend:** React 18, Vite (port 3000), TailwindCSS, Recharts, lucide-react, date-fns, react-beautiful-dnd, Socket.io client
-- **Backend:** Express.js (port 5000), Sequelize ORM, PostgreSQL 16 (Docker), JWT auth, Socket.io, Multer, pdfkit
+- **Frontend:** React 18, Vite (port 3000), TailwindCSS, Recharts, lucide-react, date-fns, @hello-pangea/dnd, Socket.io client, framer-motion, exceljs, file-saver
+- **Backend:** Express.js (port 5000), Sequelize ORM, PostgreSQL 16 (Docker), JWT auth, Socket.io, Multer, pdfkit, helmet, morgan, express-rate-limit, express-validator, xss, web-push, winston, node-cron
 - **DB:** PostgreSQL with UUID primary keys, JSONB columns, ENUM types
 
 ## Architecture
@@ -26,38 +26,62 @@ npm run dev               # Starts both server (5000) and client (3000)
 ```
 client/src/
 ├── components/
-│   ├── auth/             # Login, Register
-│   ├── board/            # BoardCard, TaskGroup, TaskRow, StatusCell, PersonCell, DateCell, PriorityCell, BoardSettingsModal, CreateBoardModal, AdvancedFilters
-│   ├── task/             # TaskModal, TaskComments, TaskFiles, SubtaskList, ActivityFeed, WorkLogSection
+│   ├── auth/             # Login, Register, ForgotPassword, ResetPassword
+│   ├── board/            # BoardCard, TaskGroup, TaskRow, StatusCell, PersonCell, DateCell, PriorityCell, BoardSettingsModal, CreateBoardModal, AdvancedFilters, AddColumnModal, AutomationsPanel, BulkActionBar, CSVImportModal, CalendarView, KanbanView, CheckboxCell, ColumnHeaderMenu, ColumnInfoTooltip, CreateWorkspaceModal, DueDateExtensionModal, HelpRequestModal, LabelCell, LinkCell, NumberCell, ProgressCell, SortDropdown, TextCell, TimelineView
+│   ├── task/             # TaskModal, TaskComments, TaskFiles, SubtaskList, ActivityFeed, WorkLogSection, ApprovalSection, ConflictWarning, DelegateTaskModal, DueDateExtensionModal, HelpRequestModal, RecurrenceSection, WatcherSection
 │   ├── layout/           # Layout, Sidebar (dark theme), Header
-│   ├── common/           # Modal, Button, Avatar, LoadingSpinner, DropdownMenu, NotificationsPanel, GlobalSearch
-│   ├── dashboard/        # MemberDrillDown
+│   ├── common/           # Modal, Button, Avatar, LoadingSpinner, DropdownMenu, NotificationsPanel, GlobalSearch, AIAssistant, ErrorBoundary, FeedbackWidget, GrammarSuggestion, KeyboardShortcuts, OnboardingTour, PageTransition, PortalDropdown, ProfileModal, SOPViewer, Skeleton, Toast, ToolsFAB, UpdatePrompt, VoiceNotes
+│   ├── dashboard/        # MemberDrillDown, RoleDashboard
 │   ├── department/       # DepartmentModal
+│   ├── dependencies/     # DependencyBadge, DependencySelector, TeamsIntegrationSettings, TeamPlannerModal, WorkspaceAssignModal, WorkspaceSetupModal
 │   ├── meeting/          # MeetingModal
 │   ├── user/             # CreateUserModal, EditUserModal, ResetPasswordModal
 │   └── timeplan/         # DayTimeline, TimeBlockForm
 ├── context/AuthContext.jsx   # Auth state + role helpers (isAdmin, isManager, isMember, canManage)
-├── hooks/useSocket.js
-├── pages/                # HomePage, MyWorkPage, BoardPage, BoardsPage, DashboardPage, TimelinePage, TimePlanPage, ReviewPage, ProfilePage, UserManagementPage, MeetingsPage
+├── hooks/                # useSocket.js, useGrammarCorrection.js
+├── pages/                # 28 page components (see Pages & Routes table)
 ├── services/
 │   ├── api.js            # Axios with JWT interceptor, base: /api
-│   └── socket.js         # Socket.io client (connect, disconnect, subscribe, joinBoard, leaveBoard)
+│   ├── socket.js         # Socket.io client (connect, disconnect, subscribe, joinBoard, leaveBoard)
+│   └── pushNotifications.js # Web push subscription management
 ├── utils/constants.js    # STATUS_CONFIG, PRIORITY_CONFIG, BOARD_DEFAULTS
-└── App.jsx               # Routes with ProtectedRoute, ManagerRoute wrappers
+└── App.jsx               # Routes with ProtectedRoute, ManagerRoute, AdminRoute wrappers
 
 server/
 ├── config/db.js          # Sequelize connection
-├── models/               # User, Board, Task, Comment, FileAttachment, Notification, Subtask, WorkLog, Activity, TimeBlock, Department, Meeting
+├── models/               # 36 model files (see Database Models table)
 │   └── index.js          # All associations defined here
-├── controllers/          # auth, board, task, subtask, worklog, comment, file, notification, activity, dashboard, user, timePlan, review, search, department, meeting
+├── controllers/          # 30+ controller files (one per resource)
 ├── middleware/
 │   ├── auth.js           # authenticate, adminOnly, managerOrAdmin
-│   └── upload.js         # Multer config (25MB max, images + docs)
-├── routes/               # 17 route files
+│   ├── upload.js         # Multer config (25MB max, images + docs)
+│   ├── permissions.js    # hasPermission(resourceType, requiredLevel) — PermissionGrant-based access
+│   ├── taskPermissions.js # attachTaskPermissions — 4-level role hierarchy (admin/manager/assistant_manager/member)
+│   └── apiKeyAuth.js     # apiKeyOrJwt — API key or JWT authentication for external integrations
+├── routes/               # 39 route files
 ├── services/
 │   ├── socketService.js  # Socket.io init, emitToBoard, emitToUser
 │   ├── activityService.js # Fire-and-forget logActivity()
-│   └── teamsWebhook.js   # Microsoft Teams webhook notifications
+│   ├── teamsWebhook.js   # Microsoft Teams webhook notifications
+│   ├── aiService.js      # AI provider abstraction (OpenAI/Ollama/DeepSeek)
+│   ├── automationService.js # Automation rule evaluation engine
+│   ├── assignmentNotificationService.js # Assignment-specific notifications
+│   ├── calendarService.js # Calendar event management
+│   ├── conflictDetectionService.js # Schedule conflict detection
+│   ├── deadlineNotificationService.js # Director plan deadline checks
+│   ├── dependencyService.js # Dependency resolution and auto-unblocking
+│   ├── notificationService.js # General notification dispatch
+│   ├── pushService.js    # Web push (VAPID) notification sending
+│   ├── reminderService.js # Reminder processing for deadlineReminderJob
+│   ├── teamsCalendarService.js # Teams calendar event sync
+│   ├── teamsGraphClient.js # Microsoft Graph API client
+│   ├── teamsNotificationService.js # Teams-specific notification sending
+│   └── teamsUserSync.js  # M365 user sync logic
+├── jobs/
+│   ├── reminderJob.js    # Hourly overdue/due-soon checks, daily 3-day warning
+│   ├── recurringTaskJob.js # Hourly: creates recurring task instances
+│   ├── deadlineReminderJob.js # Every 15 min: processes pending deadline reminders
+│   └── priorityEscalationJob.js # Daily midnight: auto-escalates tasks at ≥80% progress to critical
 ├── server.js             # Entry point — mounts all routes under /api/*
 └── seed-users.js         # Seeds 4 test users
 ```
@@ -66,18 +90,35 @@ server/
 
 | Route | Page | Access | Description |
 |-------|------|--------|-------------|
+| `/login` | Login | Public | Login page (redirects if already logged in) |
+| `/forgot-password` | ForgotPassword | Public | Token-based password reset request |
+| `/reset-password` | ResetPassword | Public | Password reset with token |
 | `/` | HomePage | All | Greeting, quick actions, My Tasks table, recent boards, notification feed |
 | `/my-work` | MyWorkPage | All | Personal task view with Table & Calendar tabs, grouped by due date |
 | `/boards` | BoardsPage | All | Board library with grid/list view, search, create board |
 | `/boards/:id` | BoardPage | All | Board with task groups, drag-drop, filters, search, settings |
 | `/boards/:id/dashboard` | DashboardPage | Manager+ | Board-specific analytics |
 | `/dashboard` | DashboardPage | Manager+ | Global analytics, stat cards, charts, team overview, member drill-down |
+| `/member-dashboard` | MemberDashboardPage | All | Member-specific dashboard view |
+| `/manager-dashboard` | ManagerDashboardPage | Manager+ | Manager-specific dashboard with team insights |
+| `/admin-dashboard` | AdminDashboardPage | Admin | Admin-level system dashboard |
+| `/director-dashboard` | DirectorDashboardPage | Manager+ | Director-level dashboard with high-level stats |
+| `/director-plan` | AssistantManagerPlanPage | Manager+ | Daily planner with drag-drop task categories, deadline urgency, Excel export |
 | `/timeline` | TimelinePage | All | Gantt chart view with zoom controls |
 | `/time-plan` | TimePlanPage | All | Daily time planner (personal + team view for managers) |
 | `/reviews` | ReviewPage | All | Weekly review with PDF/CSV export |
 | `/profile` | ProfilePage | All | Avatar upload, edit name/department/designation, change password |
 | `/meetings` | MeetingsPage | All | Meeting scheduling, accept/decline, stats, date-grouped list |
+| `/integrations` | IntegrationsPage | Manager+ | Premium integrations hub (Teams, Slack, Google, Jira) |
+| `/archive` | ArchivedPage | Manager+ | View/restore/permanently delete archived boards |
 | `/users` | UserManagementPage | Manager+ | Users tab + Departments tab, create/edit/deactivate users, CRUD departments |
+| `/admin-settings` | AdminSettingsPage | Admin | System-wide admin settings |
+| `/access-requests` | AccessRequestPage | Manager+ | Review/approve/reject access requests |
+| `/org-chart` | OrgChartPage | All | Visual org hierarchy tree with promotion history |
+| `/cross-team` | CrossTeamTasksPage | All | Cross-team task visibility |
+| `/tasks` | TasksPage | All | Global tasks view |
+| `/notes` | NotesPage | All | Personal/shared notes |
+| `/feedback` | FeedbackPage | Admin | View/manage user feedback submissions |
 
 ## API Routes
 
@@ -85,28 +126,50 @@ All routes prefixed with `/api/`:
 
 | Endpoint | Description |
 |----------|-------------|
-| `/auth` | Login, register, profile (GET/PUT), avatar upload, list users |
-| `/boards` | CRUD, board members (add/remove), group reorder |
-| `/tasks` | CRUD with RBAC, reorder (drag-drop), bulk update. Supports `assignedTo=me` for cross-board fetch |
+| `/auth` | Login, register, forgot/reset password, profile (GET/PUT), avatar upload, list users |
+| `/boards` | CRUD, board members (add/remove), group reorder, export/import, templates |
+| `/tasks` | CRUD with RBAC, reorder (drag-drop), bulk update, duplicate, archive. Supports `assignedTo=me` for cross-board fetch |
 | `/subtasks` | CRUD within tasks |
 | `/worklogs` | Daily work updates per task |
-| `/comments` | Task comments |
-| `/files` | File uploads (Multer, 25MB max), download |
+| `/comments` | Task comments with @mentions |
+| `/files` | File uploads (Multer, 25MB max), download (rate limited) |
 | `/notifications` | List (paginated), mark read, unread count |
 | `/activities` | Activity audit log with filters |
-| `/dashboard` | Stats, member task breakdown |
+| `/dashboard` | Stats, member task breakdown, completion trends, workload charts |
 | `/users` | Admin user management: create, update, reset password, toggle status |
 | `/timeplans` | Time blocks: CRUD, my blocks, team view, employee view |
 | `/reviews` | Weekly review data, PDF download, CSV download |
-| `/search` | Global search across tasks and boards (RBAC-aware) |
+| `/search` | Global search across tasks and boards (RBAC-aware, rate limited) |
 | `/departments` | CRUD departments, assign users |
 | `/meetings` | CRUD meetings, my meetings, team meetings, accept/decline |
 | `/webhooks` | Microsoft Teams / n8n integration webhooks |
-| `/tasks/:id/dependencies` | Get/create/remove task dependencies, delegate task |
 | `/teams` | Microsoft Teams OAuth (auth, callback, status, disconnect, sync-task) |
+| `/automations` | CRUD automation rules per board (trigger → action) |
+| `/workspaces` | Workspace CRUD, member management |
+| `/permissions` | PermissionGrant management |
+| `/access-requests` | Access request flow (request/approve/reject) |
+| `/task-extras` | Task watchers, approval workflow, recurrence |
+| `/announcements` | Team/board announcements CRUD |
+| `/labels` | Label CRUD per board |
+| `/extensions` | Due date extension requests and approvals |
+| `/help-requests` | Help request system (request/respond) |
+| `/promotions` | Promotion history records |
+| `/hierarchy-levels` | Custom org hierarchy level management |
+| `/director-plan` | Director/assistant-manager daily plan CRUD |
+| `/archive` | Archive page operations (view/restore archived boards) |
+| `/push` | Web push notification subscriptions (VAPID) |
+| `/integrations` | Integration configuration (Teams, SSO) |
+| `/notes` | Personal notes CRUD |
+| `/feedback` | In-app feedback submissions and admin review |
+| `/ai` | AI assistant chat, grammar correction, config management |
+| `/api-keys` | API key generation/management for external integrations |
+| `/external` | HRMS/external employee API (API key authenticated, rate limited) |
+| Dependencies | Task dependency get/create/remove, delegate task (mounted at `/api`) |
 | `/health` | Health check |
 
 ## Role-Based Access Control (RBAC)
+
+**4 roles:** admin, manager, assistant_manager, member. Role hierarchy levels: admin(4) > manager(3) > assistant_manager(2) > member(1). Additionally, `isSuperAdmin` flag grants elevated access.
 
 ### Admin (e.g., admin@aniston.com)
 **Full system access — the boss who manages everything.**
@@ -116,12 +179,14 @@ All routes prefixed with `/api/`:
 | **Users** | Create/edit/deactivate any user, reset passwords, change roles |
 | **Departments** | Create/edit/delete departments, assign department heads |
 | **Boards** | Create/edit/delete any board, manage members, configure columns/groups |
-| **Tasks** | Create/assign tasks to ANY employee, set priority/dates, delete tasks |
+| **Tasks** | Create/assign tasks to ANY employee, set priority/dates, archive tasks |
 | **Assignment** | Assign tasks to employees from the Owner column or TaskModal |
-| **Dashboard** | View all boards' stats, team overview, member drill-down |
+| **Dashboard** | View all boards' stats, team overview, member drill-down, admin dashboard |
 | **Meetings** | Schedule meetings/reminders with any employee, cancel/edit any meeting |
 | **Reviews** | View all employee reviews, download PDF/CSV |
 | **Time Plan** | View any employee's time plan |
+| **Admin Settings** | System-wide configuration, AI config, API keys, feedback review |
+| **Approvals** | Approve/reject due date extensions, help requests, access requests |
 
 ### Manager (e.g., manager@aniston.com)
 **Team lead — manages boards, assigns work, tracks progress.**
@@ -131,12 +196,24 @@ All routes prefixed with `/api/`:
 | **Users** | Create member accounts, view all users |
 | **Departments** | Create/edit departments |
 | **Boards** | Create/edit boards, manage members, configure settings |
-| **Tasks** | Create/assign tasks, set priority/dates, drag-drop reorder, delete tasks |
+| **Tasks** | Create/assign tasks, set priority/dates, drag-drop reorder, archive tasks |
 | **Assignment** | Assign tasks to employees from Owner column or TaskModal |
-| **Dashboard** | View stats for their boards, team overview, member drill-down |
+| **Dashboard** | View stats for their boards, team overview, member drill-down, manager dashboard |
 | **Meetings** | Schedule meetings/reminders, edit/cancel own meetings |
 | **Reviews** | View team reviews |
 | **Time Plan** | View team time plans |
+| **Director Plan** | Daily planner with task categories and deadline tracking |
+| **Approvals** | Approve/reject due date extensions and help requests |
+
+### Assistant Manager
+**Mid-level role — partial management access, team coordination.**
+
+| Area | Capabilities |
+|------|-------------|
+| **Tasks** | Board-level access, can manage tasks within assigned boards |
+| **Dashboard** | Access to director dashboard and director plan |
+| **Time Plan** | View team time plans |
+| **Boards** | Partial access based on PermissionGrant records |
 
 ### Member / Employee (e.g., john@aniston.com, sara@aniston.com)
 **Individual contributor — works on assigned tasks, gives updates.**
@@ -154,6 +231,8 @@ All routes prefixed with `/api/`:
 | **Time Plan** | Plan their own daily schedule with time blocks |
 | **Reviews** | View/download their own weekly review |
 | **Profile** | Edit name, department, designation, avatar, change password |
+| **Notes** | Create and manage personal notes |
+| **Feedback** | Submit feedback via in-app widget |
 
 ## How to Assign Work to an Employee
 
@@ -181,7 +260,7 @@ All routes prefixed with `/api/`:
 ## Completed Features
 
 ### Phase 1 — Core Features
-1. **RBAC** — Admin/Manager/Member roles at route + controller level
+1. **RBAC** — Admin/Manager/Assistant Manager/Member roles at route + controller level
 2. **Subtasks** — Checklist items within tasks with status & assignee
 3. **Daily Work Updates** — Per-task daily worklogs, grouped by date, RBAC-restricted
 4. **Activity Feed** — Auto-logged actions with relative timestamps
@@ -194,7 +273,7 @@ All routes prefixed with `/api/`:
 9. **Employee Time Planning** — Daily time planner with hourly blocks, team view for managers
 10. **Review Sheet Download** — Weekly review with task summary, PDF/CSV export
 11. **Board Settings/Customization** — 5-tab modal: General, Columns, Groups, Members, Danger Zone
-12. **Drag & Drop Reordering** — react-beautiful-dnd for task reordering within/across groups
+12. **Drag & Drop Reordering** — @hello-pangea/dnd for task reordering within/across groups
 13. **Search & Filters** — Global Ctrl+K search + board-level multi-select status/priority/person filters
 
 ### Phase 3 — Premium Features
@@ -267,6 +346,27 @@ All routes prefixed with `/api/`:
 68. **Smooth Animations** — CSS cubic-bezier transitions on all interactive elements, page transitions, dropdown animations, hover effects
 69. **Enhanced Monday.com UI** — Clean sidebar with sections (Management, Admin), user footer, emerald accents, rounded corners, shadow hierarchy
 
+### Phase 10 — AI, External APIs & Enterprise Extras
+70. **AI Assistant** — AI chat endpoint (`/api/ai/chat`), grammar correction (`/api/ai/grammar`), admin-configurable provider (OpenAI/Ollama/DeepSeek), AIConfig model, AIAssistant component, GrammarSuggestion component, useGrammarCorrection hook
+71. **Web Push Notifications** — VAPID-based web push via `web-push` package, PushSubscription storage, pushService, push route, client pushNotifications service
+72. **External/HRMS API** — `/api/external/employees` endpoints with API key authentication (`apiKeyAuth.js`), ApiKey model with hashed keys, rate limited
+73. **Notes System** — Note model, `/api/notes` CRUD, NotesPage for personal notes
+74. **Feedback Widget** — Feedback model, `/api/feedback` endpoint, FeedbackWidget common component, FeedbackPage (admin-only) for review
+75. **SOP Viewer** — SOPViewer component with sopContent utility
+76. **Onboarding Tour** — OnboardingTour component for new user guidance
+77. **Voice Notes** — VoiceNotes component for audio note capture
+78. **Assistant Manager Role** — 4th role (`assistant_manager`) in User ENUM, taskPermissions middleware with 4-level hierarchy, AssistantManagerPlanPage
+79. **Super Admin Flag** — `isSuperAdmin` boolean on User model for elevated access
+80. **Priority Escalation** — Cron job auto-escalates tasks with ≥80% progress to critical priority daily
+81. **Conflict Detection** — conflictDetectionService for schedule conflicts, ConflictWarning component in TaskModal
+82. **Director Plan** — DirectorPlan model with 10 default task categories, daily planner with drag-drop, deadline urgency indicators, Excel export (exceljs/file-saver)
+83. **Multi-Assignee Support** — TaskAssignee junction table with assignee/supervisor roles, TaskOwner model for primary ownership
+84. **Task Reminders** — TaskReminder model with 2-day and 2-hour pre-deadline notifications, deadlineReminderJob processes every 15 minutes
+85. **Teams Notification Log** — TeamsNotificationLog model for tracking Teams notification sends with retry support
+86. **Integration Config** — IntegrationConfig model for managing provider settings (Teams, SSO), admin configuration UI
+87. **Custom Hierarchy Levels** — HierarchyLevel model for defining custom org levels beyond built-in ENUM
+88. **API Key Management** — ApiKey model with SHA-256 hashed keys, `/api/api-keys` CRUD, prefix-based identification
+
 ### Core Platform Features (Built from Start)
 - JWT Authentication (login/register)
 - Board CRUD with member management
@@ -279,13 +379,13 @@ All routes prefixed with `/api/`:
 - Microsoft Teams webhook integration
 - n8n automation webhooks
 
-## Database Models (18+)
+## Database Models (36)
 
 | Model | Table | Key Fields |
 |-------|-------|------------|
-| User | users | name, email, password, role, department, designation, departmentId, avatar, isActive, managerId, hierarchyLevel, title |
+| User | users | name, email, password, role (admin/manager/assistant_manager/member), department, designation, departmentId, avatar, isActive, managerId, hierarchyLevel, title, isSuperAdmin, accountStatus, hasLocalPassword, passwordResetToken, teamsUserId, teamsAccessToken, teamsNotificationsEnabled |
 | Board | boards | name, description, color, columns (JSONB), groups (JSONB), customColumns (JSONB), isArchived, workspaceId, createdBy |
-| Task | tasks | title, description, status, priority, groupId, dueDate, startDate, position, tags (JSONB), customFields (JSONB), progress, isArchived, labels (JSONB), boardId, assignedTo, createdBy |
+| Task | tasks | title, description, status, priority, groupId, dueDate, startDate, position, tags (JSONB), customFields (JSONB), progress, isArchived, archivedAt, archivedBy, labels (JSONB), boardId, assignedTo, createdBy, approvalStatus, approvalChain (JSONB), recurrence (JSONB), lastRecurrenceAt, escalationLevel, plannedStartTime, plannedEndTime, estimatedHours, actualHours, autoAssigned, teamsEventId |
 | Subtask | subtasks | title, status, position, taskId, assignedTo, createdBy |
 | Comment | comments | content, attachments (JSONB), taskId, userId |
 | FileAttachment | file_attachments | filename, originalName, mimetype, size, url, taskId, uploadedBy |
@@ -297,10 +397,26 @@ All routes prefixed with `/api/`:
 | Meeting | meetings | title, description, date, startTime, endTime, location, type, status, participants (JSONB), boardId, taskId, createdBy |
 | Label | labels | name, color, boardId, createdBy |
 | TaskLabel | task_labels | taskId, labelId (junction table) |
+| TaskDependency | task_dependencies | taskId, dependsOnTaskId, dependencyType (blocks/required_for/related), autoAssignOnComplete, autoAssignToUserId, createdById, isArchived |
+| TaskAssignee | task_assignees | taskId, userId, role (assignee/supervisor), assignedAt |
+| TaskOwner | task_owners | taskId, userId, isPrimary |
+| TaskWatcher | task_watchers | userId, taskId |
+| TaskReminder | task_reminders | taskId, reminderType (2_day/2_hour), scheduledFor, sentAt, cancelled |
 | DueDateExtension | due_date_extensions | taskId, requestedBy, currentDueDate, proposedDueDate, reason, status, reviewedBy, reviewNote |
 | HelpRequest | help_requests | taskId, requestedBy, requestedTo, description, urgency, status, meetingLink, meetingScheduledAt |
 | PromotionHistory | promotion_history | userId, previousRole, newRole, previousTitle, newTitle, promotedBy, notes, effectiveDate |
 | Workspace | workspaces | name, description, color, icon, isDefault, isActive, createdBy |
+| Automation | automations | name, boardId, trigger, triggerValue, action, actionConfig (JSONB), isActive, createdBy |
+| DirectorPlan | director_plans | date, directorId, categories (JSONB), notes, createdBy. Unique on (date, directorId) |
+| AIConfig | ai_configs | provider (default 'deepseek'), apiKey, model, baseUrl, isActive, lastTestedAt, configuredBy |
+| AccessRequest | access_requests | userId, resourceType, resourceId, requestType (view/edit/assign/admin), reason, status (pending/approved/rejected/expired), reviewedBy, reviewNote, isTemporary |
+| Announcement | announcements | title, content, type (info/warning/success/urgent), isPinned, isActive, workspaceId, createdBy |
+| ApiKey | api_keys | name, keyHash (SHA-256), keyPrefix, expiresAt, lastUsedAt, isActive, createdBy |
+| Feedback | feedback | category, rating (1-5), message, page, status, adminNotes, userId |
+| HierarchyLevel | hierarchy_levels | name, label, order, color, icon, description, isActive |
+| IntegrationConfig | integration_configs | provider (unique), clientId, clientSecret, tenantId, redirectUri, ssoRedirectUri, ssoEnabled, isActive, configuredBy |
+| Note | notes | title, content, duration, type (default 'voice_note'), userId |
+| TeamsNotificationLog | teams_notification_log | eventId, taskId, userId, notificationType, cardPayload (JSONB), status, sentAt, errorMessage, retryCount. Uses INTEGER autoincrement PK |
 
 ## Key Patterns
 
@@ -310,6 +426,11 @@ All routes prefixed with `/api/`:
 - **Socket.io:** JWT auth on handshake, rooms per board (`board:<id>`) and user (`user:<id>`). Events: task updates, typing indicators, notifications.
 - **Constants:** Status values: `not_started`, `working_on_it`, `stuck`, `done`, `review`. Priority: `low`, `medium`, `high`, `critical`.
 - **Sidebar theme:** Pure black zinc-based (bg: #18181b, hover: #27272a, active: #3f3f46), emerald logo gradient, left accent borders on active items.
+- **Rate limiting:** Multiple limiters in server.js — authLimiter, uploadLimiter, searchLimiter, generalLimiter, externalLimiter. Applied per-route.
+- **Security:** Helmet for headers, XSS sanitization on all user inputs, express-validator for request validation.
+- **Cron jobs:** 4 job files in `server/jobs/` + 1 inline cron in server.js. All fire-and-forget, never block the request cycle.
+- **Task permissions:** `taskPermissions.js` middleware attaches `req.taskPermissions` with role-based access context (fullAccess/boardAccess/partialAccess).
+- **API key auth:** External endpoints use `apiKeyOrJwt` middleware — authenticates via `X-API-Key` header or JWT Bearer token.
 
 ## Environment Variables
 

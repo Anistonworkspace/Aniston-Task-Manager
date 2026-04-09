@@ -7,10 +7,10 @@ import TaskRow from './TaskRow';
 import AddColumnModal from './AddColumnModal';
 import ColumnHeaderMenu from './ColumnHeaderMenu';
 import ColumnInfoTooltip from './ColumnInfoTooltip';
-import { STATUS_CONFIG } from '../../utils/constants';
+import { STATUS_CONFIG, buildStatusLookup } from '../../utils/constants';
 
 export default function TaskGroup({
-  group, tasks = [], members = [], columns = [], boardId,
+  group, tasks = [], members = [], columns = [], boardId, boardStatuses,
   onTaskClick, onTaskUpdate, onAddTask, onArchiveTask,
   onRequestExtension, onRequestHelp, onEditColumn, onAddColumn, onRemoveColumn,
   onHideColumn, onResizeColumn, onSort, onArchiveGroup, onRenameGroup,
@@ -98,14 +98,16 @@ export default function TaskGroup({
     document.addEventListener(isTouch ? 'touchend' : 'mouseup', onEnd);
   }, [onResizeColumn]);
 
+  const statusLookup = useMemo(() => buildStatusLookup(boardStatuses), [boardStatuses]);
+
   const statusSummary = useMemo(() => {
     const counts = {};
     tasks.forEach(t => { const s = t.status || 'not_started'; counts[s] = (counts[s] || 0) + 1; });
     return Object.entries(counts).map(([status, count]) => ({
-      status, count, color: STATUS_CONFIG[status]?.bgColor || '#c4c4c4',
+      status, count, color: statusLookup[status]?.bgColor || STATUS_CONFIG[status]?.bgColor || '#c4c4c4',
       pct: tasks.length > 0 ? (count / tasks.length) * 100 : 0,
     }));
-  }, [tasks]);
+  }, [tasks, statusLookup]);
 
   function handleAddTask(e) {
     if (e.key === 'Enter' && newTaskTitle.trim()) { onAddTask(group.id, newTaskTitle.trim()); setNewTaskTitle(''); setAdding(false); }
@@ -127,7 +129,7 @@ export default function TaskGroup({
       {visibleTasks.map((task, taskIndex) => {
         const rowContent = (dragHandleProps) => (
           <TaskRow task={task} members={members} columns={columns} boardId={boardId} color={color}
-            taskColWidth={taskColWidth}
+            taskColWidth={taskColWidth} boardStatuses={boardStatuses}
             onClick={() => onTaskClick(task)} onUpdate={(u) => onTaskUpdate(task.id, u)} onArchive={onArchiveTask}
             onRequestExtension={onRequestExtension} onRequestHelp={onRequestHelp}
             dragHandleProps={dragHandleProps} selected={selectedTaskIds.includes(task.id)}
@@ -345,7 +347,7 @@ export default function TaskGroup({
                   {col.type === 'status' && tasks.length > 0 ? (
                     <div className="flex h-[24px] w-full rounded-[4px] overflow-hidden bg-[#c4c4c4]">
                       {statusSummary.map((s, i) => (
-                        <div key={i} className="h-full transition-all" style={{ width: `${s.pct}%`, backgroundColor: s.color }} title={`${STATUS_CONFIG[s.status]?.label}: ${s.count}`} />
+                        <div key={i} className="h-full transition-all" style={{ width: `${s.pct}%`, backgroundColor: s.color }} title={`${statusLookup[s.status]?.label || STATUS_CONFIG[s.status]?.label || s.status}: ${s.count}`} />
                       ))}
                     </div>
                   ) : col.type === 'priority' && tasks.length > 0 ? (

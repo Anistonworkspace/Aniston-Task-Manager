@@ -63,8 +63,8 @@ router.put(
   updateBoard
 );
 
-// ─── DELETE /api/boards/:id (manager/admin only) ─────────────
-router.delete('/:id', boardMutate, deleteBoard);
+// ─── DELETE /api/boards/:id (assistant_manager/manager/admin) ─
+router.delete('/:id', requireRole('assistant_manager', 'manager', 'admin'), deleteBoard);
 
 // ─── PUT /api/boards/:id/groups/reorder (manager/admin only) ─
 router.put('/:id/groups/reorder', boardMutate, reorderGroups);

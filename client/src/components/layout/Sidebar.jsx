@@ -12,6 +12,7 @@ import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import useSocket from '../../hooks/useSocket';
 import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
+import CreateBoardModal from '../board/CreateBoardModal';
 import ProfileModal from '../common/ProfileModal';
 import { canUser } from '../../utils/permissions';
 
@@ -79,6 +80,7 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [favoritesOpen, setFavoritesOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [showCreateBoard, setShowCreateBoard] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const [wsActionMenu, setWsActionMenu] = useState(null);
@@ -134,6 +136,14 @@ export default function Sidebar({ collapsed, onToggle }) {
         });
       }
     } catch (err) { console.error('Failed to load sidebar data:', err); }
+  }
+
+  async function handleCreateBoard(data) {
+    const res = await api.post('/boards', data);
+    const newBoard = res.data.board || res.data;
+    loadData();
+    setShowCreateBoard(false);
+    navigate(`/boards/${newBoard.id}`);
   }
 
   function toggleFavorite(e, boardId) {
@@ -312,7 +322,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
-            <NavItem icon={ClipboardCheck} label="Tasks" path="/tasks" tourId="nav-tasks" />
+            <NavItem icon={ClipboardCheck} label="Tasks & Workflows" path="/tasks" tourId="nav-tasks" />
             <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
             <NavItem icon={Mic} label="Notes" path="/notes" tourId="nav-notes" />
             <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />
@@ -335,6 +345,14 @@ export default function Sidebar({ collapsed, onToggle }) {
                 <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
                 <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
                 <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
+              </nav>
+            </>
+          )}
+
+          {(canManage || isSuperAdmin) && (
+            <>
+              {!isAdmin && <div className="border-t border-sidebar-border mx-3 my-1" />}
+              <nav className="py-1 flex flex-col gap-0.5">
                 <NavItem icon={Archive} label="Archive" path="/archive" />
               </nav>
             </>
@@ -498,10 +516,20 @@ export default function Sidebar({ collapsed, onToggle }) {
 
           {/* Add Workspace — admin/super_admin only */}
           {canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions) && (
-            <div className="px-2 pb-4">
+            <div className="px-2 pb-1">
               <button onClick={() => setShowCreateWorkspace(true)}
                 className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
                 <Plus size={14} /> Add new workspace
+              </button>
+            </div>
+          )}
+
+          {/* Create Board — manager/admin/super_admin only */}
+          {canUser(user?.role, 'create_board', isSuperAdmin, permissionGrants, effectivePermissions) && (
+            <div className="px-2 pb-4">
+              <button onClick={() => setShowCreateBoard(true)}
+                className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
+                <FolderKanban size={14} /> Create new board
               </button>
             </div>
           )}
@@ -546,6 +574,15 @@ export default function Sidebar({ collapsed, onToggle }) {
         <CreateWorkspaceModal
           onClose={() => setShowCreateWorkspace(false)}
           onCreated={() => { loadData(); setShowCreateWorkspace(false); }}
+        />
+      )}
+
+      {/* Create Board Modal */}
+      {showCreateBoard && (
+        <CreateBoardModal
+          isOpen={showCreateBoard}
+          onClose={() => setShowCreateBoard(false)}
+          onSubmit={handleCreateBoard}
         />
       )}
 

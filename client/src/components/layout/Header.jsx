@@ -136,13 +136,6 @@ export default function Header({ onToggleSidebar }) {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-1">
-          {/* Quick Create */}
-          {canManage && (
-            <button data-tour="quick-create" onClick={() => navigate('/boards')} className="btn-primary text-xs py-1.5 px-3 mr-2">
-              <Plus size={14} /> New
-            </button>
-          )}
-
           {/* Notifications */}
           <button data-tour="notifications" onClick={() => setShowNotifications(!showNotifications)}
             className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
