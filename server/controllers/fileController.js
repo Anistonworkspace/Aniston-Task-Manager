@@ -1,8 +1,14 @@
-const path = require('path');
-const fs = require('fs');
 const { FileAttachment, Task, User, Board } = require('../models');
 const { emitToBoard } = require('../services/socketService');
-const { uploadDir } = require('../middleware/upload');
+const {
+  storeFile,
+  deleteFile,
+  resolveFile,
+  fileExists,
+  normalizeMetadata,
+  cleanupOnError,
+  sanitizeOriginalName,
+} = require('../services/storageService');
 
 /**
  * Check if user has access to a task (is assignee, creator, board member, or admin/manager)
@@ -15,14 +21,14 @@ const canAccessTask = async (taskId, user) => {
   if (!task) return false;
   if (task.assignedTo === user.id || task.createdBy === user.id) return true;
   if (user.role === 'manager') return true;
-  // Check board membership
   if (task.board?.members?.some(m => m.id === user.id)) return true;
   return false;
 };
 
 /**
  * POST /api/files
- * Uses multer middleware; expects field name "file".
+ * Upload a file attached to a task.
+ * Category validation is handled by middleware before this runs.
  */
 const uploadFile = async (req, res) => {
   try {
@@ -31,27 +37,37 @@ const uploadFile = async (req, res) => {
     }
 
     const { taskId } = req.body;
+    const category = req._uploadCategory || 'task_attachment';
 
     if (!taskId) {
-      // Clean up the orphaned upload
-      fs.unlink(req.file.path, () => {});
+      cleanupOnError(req.file);
       return res.status(400).json({ success: false, message: 'taskId is required.' });
     }
 
     const task = await Task.findByPk(taskId);
     if (!task) {
-      fs.unlink(req.file.path, () => {});
+      cleanupOnError(req.file);
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
-    const fileUrl = `/uploads/${req.file.filename}`;
-
-    const attachment = await FileAttachment.create({
+    // Store through provider
+    const { url, provider } = await storeFile({
+      filePath: req.file.path,
       filename: req.file.filename,
       originalName: req.file.originalname,
       mimetype: req.file.mimetype,
       size: req.file.size,
-      url: fileUrl,
+      category,
+    });
+
+    const attachment = await FileAttachment.create({
+      filename: req.file.filename,
+      originalName: sanitizeOriginalName(req.file.originalname),
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      url,
+      provider,
+      category,
       taskId,
       uploadedBy: req.user.id,
     });
@@ -74,10 +90,7 @@ const uploadFile = async (req, res) => {
     });
   } catch (error) {
     console.error('[File] Upload error:', error);
-    // Clean up on error
-    if (req.file && req.file.path) {
-      fs.unlink(req.file.path, () => {});
-    }
+    cleanupOnError(req.file);
     res.status(500).json({ success: false, message: 'Server error uploading file.' });
   }
 };
@@ -93,7 +106,6 @@ const getFiles = async (req, res) => {
       return res.status(400).json({ success: false, message: 'taskId query parameter is required.' });
     }
 
-    // RBAC: verify user can access this task
     const hasAccess = await canAccessTask(taskId, req.user);
     if (!hasAccess) {
       return res.status(403).json({ success: false, message: 'You do not have access to this task.' });
@@ -117,7 +129,7 @@ const getFiles = async (req, res) => {
 /**
  * DELETE /api/files/:id
  */
-const deleteFile = async (req, res) => {
+const deleteFileHandler = async (req, res) => {
   try {
     const attachment = await FileAttachment.findByPk(req.params.id, {
       include: [{ model: Task, as: 'task', attributes: ['id', 'boardId'] }],
@@ -135,11 +147,8 @@ const deleteFile = async (req, res) => {
       });
     }
 
-    // Remove physical file
-    const filePath = path.join(uploadDir, attachment.filename);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    // Remove through storage provider
+    await deleteFile(attachment.filename, attachment.category);
 
     const taskId = attachment.taskId;
     const boardId = attachment.task.boardId;
@@ -167,23 +176,64 @@ const downloadFile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'File not found.' });
     }
 
-    // RBAC: verify user can access the task this file belongs to
     const hasAccess = await canAccessTask(attachment.taskId, req.user);
     if (!hasAccess) {
       return res.status(403).json({ success: false, message: 'You do not have access to this file.' });
     }
 
-    const filePath = path.join(uploadDir, attachment.filename);
+    const filePath = await resolveFile(attachment.filename, attachment.category);
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, message: 'File not found on disk.' });
+    if (!filePath || !(await fileExists(attachment.filename, attachment.category))) {
+      return res.status(404).json({ success: false, message: 'File not found on storage.' });
     }
 
-    res.download(filePath, attachment.originalName);
+    res.download(filePath, sanitizeOriginalName(attachment.originalName));
   } catch (error) {
     console.error('[File] Download error:', error);
     res.status(500).json({ success: false, message: 'Server error downloading file.' });
   }
 };
 
-module.exports = { uploadFile, getFiles, deleteFile, downloadFile };
+/**
+ * POST /api/files/upload-general
+ * General-purpose upload not tied to a task.
+ */
+const uploadGeneral = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded.' });
+    }
+
+    const category = req._uploadCategory || 'general';
+
+    const { url, provider } = await storeFile({
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      category,
+    });
+
+    const meta = normalizeMetadata(req.file, category);
+
+    res.json({
+      success: true,
+      data: {
+        url,
+        filename: req.file.filename,
+        originalName: sanitizeOriginalName(req.file.originalname),
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        provider,
+        category,
+      },
+    });
+  } catch (error) {
+    console.error('[File] General upload error:', error);
+    cleanupOnError(req.file);
+    res.status(500).json({ success: false, message: 'Server error uploading file.' });
+  }
+};
+
+module.exports = { uploadFile, uploadGeneral, getFiles, deleteFile: deleteFileHandler, downloadFile };

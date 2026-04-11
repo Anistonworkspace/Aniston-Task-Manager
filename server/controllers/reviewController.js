@@ -1,6 +1,7 @@
 const PDFDocument = require('pdfkit');
 const { Task, User, Board, WorkLog } = require('../models');
 const { Op } = require('sequelize');
+const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 
 /**
  * Get the Monday and Sunday of the week containing `dateStr` (ISO string or Date).
@@ -39,7 +40,7 @@ async function fetchReviewData(userId, weekDate) {
     include: [
       { model: Board, as: 'board', attributes: ['id', 'name'] },
     ],
-    order: [['status', 'ASC'], ['updatedAt', 'DESC']],
+    order: buildPendingPriorityOrder(),
   });
 
   // Work logs for this week

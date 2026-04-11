@@ -68,7 +68,27 @@ The application sidebar has these sections:
 
 Key features: task boards with multiple views (table/kanban/calendar/gantt), drag-drop, multi-owner tasks, subtasks, time planning, meetings, voice notes, AI assistant.`;
 
-export default function AIAssistant({ isOpen: externalOpen, onClose }) {
+/**
+ * Extract page state metadata from the current URL and optional props.
+ * This tells the backend which page and context to fetch real data for.
+ */
+function buildPageState(pathname, search, extraState = {}) {
+  const state = { route: pathname, ...extraState };
+
+  // Extract board ID from /boards/:id or /boards/:id/dashboard
+  const boardMatch = pathname.match(/^\/boards\/([a-f0-9-]+)/i);
+  if (boardMatch) state.boardId = boardMatch[1];
+
+  // Extract query params that are useful for context
+  const params = new URLSearchParams(search);
+  if (params.get('tab')) state.tab = params.get('tab');
+  if (params.get('view')) state.view = params.get('view');
+  if (params.get('date')) state.selectedDate = params.get('date');
+
+  return state;
+}
+
+export default function AIAssistant({ isOpen: externalOpen, onClose, pageContext: externalPageContext }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalOpen !== undefined ? externalOpen : internalOpen;
   const setIsOpen = externalOpen !== undefined ? (v) => { if (!v && onClose) onClose(); } : setInternalOpen;
@@ -119,14 +139,22 @@ export default function AIAssistant({ isOpen: externalOpen, onClose }) {
     setError('');
 
     try {
-      // Send full conversation history (last 20 messages to stay within limits)
-      const conversationHistory = [...messages, userMessage].slice(-20);
+      // Send full conversation history (last 20 messages, excluding error messages)
+      const conversationHistory = [...messages, userMessage]
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-20);
+
+      // Static page description for feature help
       const pageContext = getPageContext(location.pathname);
       const context = `${pageContext}\n\nCurrent route: ${location.pathname}\n${APP_STRUCTURE_CONTEXT}`;
+
+      // Rich page state for real data context
+      const pageState = buildPageState(location.pathname, location.search, externalPageContext || {});
 
       const res = await api.post('/ai/chat', {
         messages: conversationHistory,
         context,
+        pageState,
       });
 
       const reply = res.data?.data?.message || res.data?.message || 'No response received.';

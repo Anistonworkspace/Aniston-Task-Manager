@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import SOPViewer from '../components/common/SOPViewer';
+import { validateFile, getAcceptString } from '../utils/uploadConfig';
 
 const ROLE_STYLES = {
   admin: { bg: 'bg-danger/10', text: 'text-danger', border: 'border-danger/20', label: 'Administrator' },
@@ -69,12 +70,9 @@ export default function ProfilePage() {
   async function handleAvatarUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      showFlash('Please select an image file.', 'error');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      showFlash('Image must be less than 5MB.', 'error');
+    const validation = validateFile(file, 'avatar');
+    if (!validation.valid) {
+      showFlash(validation.message, 'error');
       return;
     }
     setUploadingAvatar(true);
@@ -198,7 +196,7 @@ export default function ProfilePage() {
   }
 
   const roleStyle = ROLE_STYLES[user?.role] || ROLE_STYLES.member;
-  const avatarUrl = user?.avatar ? `${window.location.protocol}//${window.location.hostname}:5000${user.avatar}` : null;
+  const avatarUrl = user?.avatar ? (user.avatar.startsWith('http') ? user.avatar : user.avatar) : null;
   const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 
   return (
@@ -244,7 +242,7 @@ export default function ProfilePage() {
                   )}
                 </div>
               </button>
-              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+              <input ref={fileInputRef} type="file" accept={getAcceptString('avatar')} onChange={handleAvatarUpload} className="hidden" />
               <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-success rounded-full border-2 border-white" title="Active" />
             </div>
 

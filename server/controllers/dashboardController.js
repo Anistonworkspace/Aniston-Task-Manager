@@ -1,6 +1,7 @@
 const { Task, Board, User, Activity, WorkLog, Subtask } = require('../models');
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
+const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 
 /**
  * GET /api/dashboard/stats?boardId=...
@@ -204,7 +205,7 @@ const getMemberTasks = async (req, res) => {
         { model: User, as: 'creator', attributes: ['id', 'name', 'avatar'] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'title', 'status'] },
       ],
-      order: [['updatedAt', 'DESC']],
+      order: buildPendingPriorityOrder(),
     });
 
     const today = new Date().toISOString().slice(0, 10);
@@ -554,7 +555,7 @@ const getSuperDashboard = async (req, res) => {
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'], where: { isArchived: false } },
         { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
       ],
-      order: [['updatedAt', 'DESC']],
+      order: buildPendingPriorityOrder(),
       limit: parseInt(limit),
       offset,
     });
@@ -703,7 +704,7 @@ const getRoleDashboard = async (req, res) => {
         { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
         { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
       ],
-      order: [['updatedAt', 'DESC']],
+      order: buildPendingPriorityOrder(),
       limit: parseInt(limit),
       offset,
     });

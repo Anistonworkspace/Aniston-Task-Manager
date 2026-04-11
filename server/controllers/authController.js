@@ -335,17 +335,28 @@ const uploadAvatar = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No image file provided.' });
     }
 
-    const avatarUrl = `/uploads/${req.file.filename}`;
-    await req.user.update({ avatar: avatarUrl });
+    const { storeFile, cleanupOnError } = require('../services/storageService');
+    const { url } = await storeFile({
+      filePath: req.file.path,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      category: 'avatar',
+    });
+
+    await req.user.update({ avatar: url });
     await req.user.reload();
 
     res.json({
       success: true,
       message: 'Avatar updated successfully.',
-      data: { user: req.user.toJSON(), avatarUrl },
+      data: { user: req.user.toJSON(), avatarUrl: url },
     });
   } catch (error) {
     console.error('[Auth] UploadAvatar error:', error);
+    const { cleanupOnError } = require('../services/storageService');
+    cleanupOnError(req.file);
     res.status(500).json({ success: false, message: 'Server error uploading avatar.' });
   }
 };

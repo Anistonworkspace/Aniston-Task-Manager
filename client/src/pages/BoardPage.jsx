@@ -26,6 +26,7 @@ import HelpRequestModal from '../components/board/HelpRequestModal';
 import TimelineView from '../components/board/TimelineView';
 import { SkeletonBoard } from '../components/common/Skeleton';
 import { useToast } from '../components/common/Toast';
+import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 import { canUser as canUserFn } from '../utils/permissions';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
@@ -562,24 +563,27 @@ export default function BoardPage() {
     }
   }
 
-  // Sort tasks
+  // Sort tasks: user-selected sort wins, otherwise default to pending priority
   const sortedTasks = useMemo(() => {
-    if (!sortConfig) return tasks;
-    return [...tasks].sort((a, b) => {
-      let aVal = a[sortConfig.key];
-      let bVal = b[sortConfig.key];
-      if (sortConfig.key === 'dueDate' || sortConfig.key === 'createdAt' || sortConfig.key === 'updatedAt') {
-        aVal = aVal ? new Date(aVal).getTime() : 0;
-        bVal = bVal ? new Date(bVal).getTime() : 0;
-      }
-      if (sortConfig.key === 'progress') {
-        aVal = aVal || 0;
-        bVal = bVal || 0;
-      }
-      if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-      if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-      return 0;
-    });
+    if (sortConfig) {
+      return [...tasks].sort((a, b) => {
+        let aVal = a[sortConfig.key];
+        let bVal = b[sortConfig.key];
+        if (sortConfig.key === 'dueDate' || sortConfig.key === 'createdAt' || sortConfig.key === 'updatedAt') {
+          aVal = aVal ? new Date(aVal).getTime() : 0;
+          bVal = bVal ? new Date(bVal).getTime() : 0;
+        }
+        if (sortConfig.key === 'progress') {
+          aVal = aVal || 0;
+          bVal = bVal || 0;
+        }
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    // Default: pending task prioritization (stuck/overdue first, done last)
+    return sortTasksByPendingPriority(tasks);
   }, [tasks, sortConfig]);
 
   async function handleDragEnd(result) {
@@ -590,12 +594,14 @@ export default function BoardPage() {
     if (type === 'TASK') {
       const sourceGroupId = source.droppableId;
       const destGroupId = destination.droppableId;
-      const newTasks = [...tasks];
+      const validGroupIds = groups.map(g => g.id);
 
-      const sourceTasks = newTasks
-        .filter(t => (t.groupId || groups[0]?.id) === sourceGroupId)
-        .sort((a, b) => (a.position || 0) - (b.position || 0));
+      // Use sortedTasks to match the rendered order (DnD indices match rendered children)
+      const getGroupTasks = (gId) => sortedTasks.filter(
+        t => t.groupId === gId || ((!t.groupId || !validGroupIds.includes(t.groupId)) && gId === groups[0]?.id)
+      );
 
+      const sourceTasks = [...getGroupTasks(sourceGroupId)];
       const [movedTask] = sourceTasks.splice(source.index, 1);
       if (!movedTask) return;
 
@@ -609,9 +615,7 @@ export default function BoardPage() {
         try { await api.put('/tasks/reorder', { boardId, items: reorderItems }); }
         catch { loadTasks(); }
       } else {
-        const destTasks = newTasks
-          .filter(t => (t.groupId || groups[0]?.id) === destGroupId)
-          .sort((a, b) => (a.position || 0) - (b.position || 0));
+        const destTasks = [...getGroupTasks(destGroupId)];
         movedTask.groupId = destGroupId;
         destTasks.splice(destination.index, 0, movedTask);
         const reorderItems = [
@@ -859,8 +863,7 @@ export default function BoardPage() {
             {groups.map((group, idx) => {
               const validGroupIds = groups.map(g => g.id);
               const groupTasks = sortedTasks
-                .filter(t => t.groupId === group.id || ((!t.groupId || !validGroupIds.includes(t.groupId)) && group.id === groups[0]?.id))
-                .sort((a, b) => sortConfig ? 0 : (a.position || 0) - (b.position || 0));
+                .filter(t => t.groupId === group.id || ((!t.groupId || !validGroupIds.includes(t.groupId)) && group.id === groups[0]?.id));
               return (
                 <TaskGroup
                   key={group.id}

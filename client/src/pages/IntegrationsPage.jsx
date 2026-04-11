@@ -450,15 +450,26 @@ export default function IntegrationsPage() {
     setSuccessMsg('');
     try {
       const res = await api.post(`/ai/providers/${id}/test`);
+      const diag = res.data?.data?.diagnostics;
       if (res.data?.success) {
         setSuccessMsg(res.data?.message || 'Connection successful!');
         loadAiProviders();
       } else {
-        setError(res.data?.message || 'Connection test failed.');
+        const mainMsg = res.data?.message || 'Connection test failed.';
+        const diagLine = diag
+          ? `\n[Diagnostics] Provider: ${diag.providerType || '?'} | Model: ${diag.model || '?'} | Key: ${diag.keySuffix || '?'} | HTTP: ${diag.httpStatus || 'N/A'} | Type: ${diag.failureType || '?'}`
+          : '';
+        setError(mainMsg + diagLine);
       }
       setTimeout(() => setSuccessMsg(''), 5000);
     } catch (err) {
-      setError(err.response?.data?.message || 'Connection test failed.');
+      const errData = err.response?.data;
+      const diag = errData?.data?.diagnostics;
+      const mainMsg = errData?.message || 'Connection test failed.';
+      const diagLine = diag
+        ? `\n[Diagnostics] Provider: ${diag.providerType || '?'} | Model: ${diag.model || '?'} | Key: ${diag.keySuffix || '?'} | HTTP: ${diag.httpStatus || 'N/A'} | Type: ${diag.failureType || '?'}`
+        : '';
+      setError(mainMsg + diagLine);
     } finally {
       setTestingProviderId(null);
     }
@@ -508,9 +519,10 @@ export default function IntegrationsPage() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-danger/10 text-danger text-sm mb-4 animate-fade-in">
-          <AlertCircle size={16} /> {error}
-          <button onClick={() => setError('')} className="ml-auto"><X size={14} /></button>
+        <div className="flex items-start gap-2 px-4 py-3 rounded-lg bg-danger/10 text-danger text-sm mb-4 animate-fade-in">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="flex-1 whitespace-pre-line">{error}</div>
+          <button onClick={() => setError('')} className="ml-auto shrink-0"><X size={14} /></button>
         </div>
       )}
 
@@ -1129,10 +1141,21 @@ export default function IntegrationsPage() {
                         setSuccessMsg('');
                         try {
                           const res = await api.post('/ai/test', { provider: aiForm.provider, apiKey: aiForm.apiKey, model: aiForm.model, baseUrl: aiForm.baseUrl });
+                          const diag = res.data?.data?.diagnostics;
                           if (res.data?.success) { setSuccessMsg(res.data?.message || 'Connection successful!'); }
-                          else { setError(res.data?.message || 'Connection test failed.'); }
+                          else {
+                            const mainMsg = res.data?.message || 'Connection test failed.';
+                            const diagLine = diag ? `\n[Diagnostics] Provider: ${diag.providerType || '?'} | Model: ${diag.model || '?'} | Key: ${diag.keySuffix || '?'} | HTTP: ${diag.httpStatus || 'N/A'} | Type: ${diag.failureType || '?'}` : '';
+                            setError(mainMsg + diagLine);
+                          }
                           setTimeout(() => setSuccessMsg(''), 5000);
-                        } catch (err) { setError(err.response?.data?.message || 'Connection test failed.'); }
+                        } catch (err) {
+                          const errData = err.response?.data;
+                          const diag = errData?.data?.diagnostics;
+                          const mainMsg = errData?.message || 'Connection test failed.';
+                          const diagLine = diag ? `\n[Diagnostics] Provider: ${diag.providerType || '?'} | Model: ${diag.model || '?'} | Key: ${diag.keySuffix || '?'} | HTTP: ${diag.httpStatus || 'N/A'} | Type: ${diag.failureType || '?'}` : '';
+                          setError(mainMsg + diagLine);
+                        }
                         finally { setTestingProviderId(null); }
                       }} disabled={testingProviderId === 'new'}
                         className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-violet-600 hover:bg-violet-50 rounded-lg border border-violet-200 transition-colors">

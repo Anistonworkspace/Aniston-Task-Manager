@@ -1,49 +1,42 @@
+/**
+ * Multer upload middleware — refactored to use centralized file-type
+ * config and storage-provider abstraction.
+ *
+ * Exports a factory function `createUpload(category)` that returns
+ * a middleware chain tailored to a specific upload category.
+ * Also exports the legacy `upload` instance for backward compatibility.
+ */
+
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const { getProvider } = require('../services/storage');
+const {
+  getAllowedMimesForCategory,
+  getMaxSizeForCategory,
+  BLOCKED_EXTENSIONS,
+} = require('../config/fileTypes');
+const {
+  validateFileType,
+  validateFileSize,
+  validateMagicBytes,
+  cleanupOnError,
+} = require('../services/storageService');
 
-// Ensure upload directory exists
-const uploadDir = path.join(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Resolve the upload directory from the active storage provider. */
+function getUploadDir() {
+  const provider = getProvider();
+  // LocalStorageProvider exposes uploadDir; remote providers still
+  // need a temp dir for multer — fall back to OS temp.
+  return provider.uploadDir || require('os').tmpdir();
 }
 
-// Allowed MIME types
-const ALLOWED_MIMETYPES = [
-  // Images
-  'image/jpeg',
-  'image/png',
-  'image/gif',
-  'image/webp',
-  'image/svg+xml',
-  // Documents
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  // Text
-  'text/plain',
-  'text/csv',
-  'text/markdown',
-  // Archives
-  'application/zip',
-  'application/x-rar-compressed',
-  'application/gzip',
-  // Code / data
-  'application/json',
-  'application/xml',
-  'text/xml',
-];
-
-// Max file size: 25 MB
-const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE, 10) || 25 * 1024 * 1024;
+// ── Multer disk storage (shared across all categories) ──────────────
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    cb(null, uploadDir);
+    cb(null, getUploadDir());
   },
   filename: (_req, file, cb) => {
     const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
@@ -52,45 +45,72 @@ const storage = multer.diskStorage({
   },
 });
 
-const fileFilter = (_req, file, cb) => {
-  if (ALLOWED_MIMETYPES.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(
-      new multer.MulterError(
-        'LIMIT_UNEXPECTED_FILE',
-        `File type ${file.mimetype} is not allowed. Allowed types: images, documents, text, archives.`
-      ),
-      false
-    );
-  }
-};
+// ── Category-aware file filter factory ──────────────────────────────
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: {
-    fileSize: MAX_FILE_SIZE,
-    files: 5, // Max 5 files per request
-  },
-});
+function createFileFilter(category) {
+  const allowedMimes = getAllowedMimesForCategory(category);
+  return (_req, file, cb) => {
+    // Quick block on dangerous extensions
+    const ext = path.extname(file.originalname || '').toLowerCase().replace(/^\./, '');
+    if (BLOCKED_EXTENSIONS.includes(ext)) {
+      return cb(
+        new multer.MulterError('LIMIT_UNEXPECTED_FILE', `File type .${ext} is blocked for security reasons.`),
+        false,
+      );
+    }
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(
+        new multer.MulterError(
+          'LIMIT_UNEXPECTED_FILE',
+          `File type ${file.mimetype} (.${ext}) is not allowed for this upload. Allowed formats depend on the upload category.`,
+        ),
+        false,
+      );
+    }
+  };
+}
+
+// ── Factory: create a multer instance for a specific category ───────
 
 /**
- * Multer error handling middleware.
- * Place this AFTER the upload middleware in the route chain.
+ * Returns a multer instance configured for the given upload category.
+ *
+ * @param {string} category - One of the keys from UPLOAD_CATEGORIES
+ * @returns {multer.Multer}
  */
+function createUpload(category = 'general') {
+  return multer({
+    storage,
+    fileFilter: createFileFilter(category),
+    limits: {
+      fileSize: getMaxSizeForCategory(category),
+      files: 5,
+    },
+  });
+}
+
+// ── Legacy default upload (uses 'general' category) ─────────────────
+const upload = createUpload('general');
+
+// ── Multer error handler ────────────────────────────────────────────
+
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     let message = 'File upload error.';
     switch (err.code) {
-      case 'LIMIT_FILE_SIZE':
-        message = `File too large. Maximum size is ${Math.round(MAX_FILE_SIZE / (1024 * 1024))}MB.`;
+      case 'LIMIT_FILE_SIZE': {
+        const category = req._uploadCategory || 'general';
+        const maxMB = Math.round(getMaxSizeForCategory(category) / (1024 * 1024));
+        message = `File too large. Maximum size is ${maxMB}MB.`;
         break;
+      }
       case 'LIMIT_FILE_COUNT':
         message = 'Too many files. Maximum 5 files per upload.';
         break;
       case 'LIMIT_UNEXPECTED_FILE':
-        message = err.field || 'Unexpected file type.';
+        message = err.field || 'Unexpected or unsupported file type.';
         break;
       default:
         message = err.message;
@@ -100,37 +120,83 @@ const handleMulterError = (err, req, res, next) => {
   next(err);
 };
 
-/**
- * Validate uploaded file's magic bytes match declared MIME type.
- * Middleware to use AFTER multer processes the upload.
- */
-const MAGIC_BYTES = {
-  'image/jpeg': [Buffer.from([0xFF, 0xD8, 0xFF])],
-  'image/png': [Buffer.from([0x89, 0x50, 0x4E, 0x47])],
-  'image/gif': [Buffer.from('GIF87a'), Buffer.from('GIF89a')],
-  'application/pdf': [Buffer.from('%PDF')],
-  'application/zip': [Buffer.from([0x50, 0x4B, 0x03, 0x04])],
-};
+// ── Post-upload validation middleware ────────────────────────────────
 
+/**
+ * Factory that returns a middleware to validate the uploaded file
+ * against the given category's policies (extension, MIME, size, magic bytes).
+ *
+ * Usage in routes:
+ *   router.post('/', setCat('task_attachment'), catUpload.single('file'),
+ *     handleMulterError, postUploadValidation('task_attachment'), controller);
+ */
+function postUploadValidation(category = 'general') {
+  return (req, res, next) => {
+    if (!req.file) return next();
+
+    // Tag category on request for downstream use
+    req._uploadCategory = category;
+
+    // 1. Extension + MIME check (redundant safety — multer filter may miss edge cases)
+    const typeResult = validateFileType(req.file, category);
+    if (!typeResult.valid) {
+      cleanupOnError(req.file);
+      return res.status(400).json({ success: false, message: typeResult.message });
+    }
+
+    // 2. Size check (multer already enforces, but double-check for category overrides)
+    const sizeResult = validateFileSize(req.file, category);
+    if (!sizeResult.valid) {
+      cleanupOnError(req.file);
+      return res.status(400).json({ success: false, message: sizeResult.message });
+    }
+
+    // 3. Magic-byte signature check
+    const magicResult = validateMagicBytes(req.file.path, req.file.originalname);
+    if (!magicResult.valid) {
+      cleanupOnError(req.file);
+      return res.status(400).json({ success: false, message: magicResult.message });
+    }
+
+    next();
+  };
+}
+
+/**
+ * Legacy validateFileSignature middleware — preserved for backward compat.
+ * Now delegates to the centralized magic-bytes check.
+ */
 function validateFileSignature(req, res, next) {
   if (!req.file) return next();
-  const filePath = path.join(uploadDir, req.file.filename);
-  try {
-    const buffer = fs.readFileSync(filePath, { length: 8 });
-    const signatures = MAGIC_BYTES[req.file.mimetype];
-    if (signatures) {
-      const valid = signatures.some(sig => buffer.slice(0, sig.length).equals(sig));
-      if (!valid) {
-        fs.unlinkSync(filePath);
-        return res.status(400).json({ success: false, message: 'File content does not match declared type. Upload rejected.' });
-      }
-    }
-  } catch (e) {
-    // File read failed — reject the upload
-    try { fs.unlinkSync(filePath); } catch {}
-    return res.status(400).json({ success: false, message: 'File validation failed' });
+  const result = validateMagicBytes(req.file.path, req.file.originalname);
+  if (!result.valid) {
+    cleanupOnError(req.file);
+    return res.status(400).json({ success: false, message: result.message });
   }
   next();
 }
 
-module.exports = { upload, handleMulterError, validateFileSignature, uploadDir };
+// ── Convenience: set category on req before multer runs ─────────────
+
+function setCategoryMiddleware(category) {
+  return (req, _res, next) => {
+    req._uploadCategory = category;
+    next();
+  };
+}
+
+// ── Exports ─────────────────────────────────────────────────────────
+
+// uploadDir exported for backward compat (server.js static serving, etc.)
+const uploadDir = getUploadDir();
+
+module.exports = {
+  upload,                   // legacy default multer instance
+  createUpload,             // factory for category-specific multer
+  handleMulterError,
+  validateFileSignature,    // legacy compat
+  postUploadValidation,     // new: full post-upload validation per category
+  setCategoryMiddleware,
+  uploadDir,
+  getUploadDir,
+};

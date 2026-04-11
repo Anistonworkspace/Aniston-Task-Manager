@@ -3,6 +3,7 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { MessageSquare, ListChecks, Clock, Plus, ChevronDown, ChevronRight, AlertTriangle, Zap, Link2, ChevronsDown } from 'lucide-react';
 import { format, parseISO, isPast } from 'date-fns';
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES } from '../../utils/constants';
+import { sortTasksByPendingPriority } from '../../utils/taskPrioritization';
 import Avatar from '../common/Avatar';
 
 const FALLBACK_KANBAN_COLUMNS = [
@@ -114,7 +115,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
       <DragDropContext onDragEnd={handleDragEnd}>
         <div className="flex gap-4 overflow-x-auto pb-4 min-h-[500px]">
           {KANBAN_COLUMNS.map(col => {
-            const colTasks = filteredTasks.filter(t => t.status === col.id);
+            const colTasks = sortTasksByPendingPriority(filteredTasks.filter(t => t.status === col.id));
             const isCollapsed = collapsedCols[col.id];
 
             return (

@@ -9,6 +9,7 @@ import useSocket from '../hooks/useSocket';
 import { format, addDays, subDays, isToday, isYesterday, isTomorrow, isFuture } from 'date-fns';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
+import { validateFile, getAcceptString } from '../utils/uploadConfig';
 
 const CATEGORY_ICONS = {
   briefcase: '\uD83D\uDCBC',
@@ -67,7 +68,7 @@ function getRelativeDayLabel(date) {
 }
 
 export default function AssistantManagerPlanPage() {
-  const { isAssistantManager, isSuperAdmin } = useAuth();
+  const { isAdmin, isAssistantManager, isSuperAdmin, canManage } = useAuth();
   const toast = useToast();
   const { pushAction } = useUndo();
 
@@ -166,13 +167,24 @@ export default function AssistantManagerPlanPage() {
       const cats = Array.isArray(plan.categories) ? plan.categories : [];
       setCategories(cats.map(cat => ({
         ...cat,
-        tasks: Array.isArray(cat.tasks) ? cat.tasks : [],
+        tasks: (Array.isArray(cat.tasks) ? cat.tasks : []).map(task => {
+          // Normalize: migrate old single `link` field to `links` array
+          const links = Array.isArray(task.links)
+            ? task.links
+            : task.link ? [task.link] : [];
+          return { ...task, links, link: undefined };
+        }),
       })));
       setNotes(plan.notes || '');
       setDirectorName(plan.directorName || 'Director');
       setViewMode(plan.viewMode || '');
       setDirty(false);
       setSaveStatus('');
+      // Reset transient UI state when plan data changes
+      setExpandedTasks({});
+      setNewTaskInputs({});
+      setNewSubtaskInputs({});
+      setViewingTask(null);
     } catch (err) {
       if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return; // Request was cancelled by newer navigation
       console.error('Failed to load director plan:', err);
@@ -273,13 +285,13 @@ export default function AssistantManagerPlanPage() {
     markDirty();
   }
 
-  // Auto-save after 2 seconds of inactivity
+  // Auto-save after 90 seconds of inactivity
   useEffect(() => {
     if (!dirty) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(() => {
       handleSave(true);
-    }, 2000);
+    }, 90000);
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
@@ -287,20 +299,20 @@ export default function AssistantManagerPlanPage() {
 
   // Real-time sync: reload when director toggles tasks
   useSocket('director-plan:updated', (data) => {
-    // Only reload if it's for the same date and we're not currently dirty (avoid overwriting PA's unsaved edits)
-    if (!dirty && data?.date === dateStr) {
+    // Only reload if it's for the same date AND same director, and we're not currently dirty
+    if (!dirty && data?.date === dateStr && (!data?.directorId || data.directorId === selectedDirectorIdRef.current)) {
       loadPlan();
     }
   });
 
-  // Access check
-  if (!isAssistantManager && !isSuperAdmin) {
+  // Access check — allow admin, manager, assistant_manager, and superAdmin
+  if (!canManage) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <Calendar size={48} className="text-gray-300 mx-auto mb-4" />
           <h2 className="text-lg font-bold text-gray-700">Access Denied</h2>
-          <p className="text-sm text-gray-500 mt-2">This page is only available for the Assistant Manager or Super Admin.</p>
+          <p className="text-sm text-gray-500 mt-2">This page is only available for managers and above.</p>
         </div>
       </div>
     );
@@ -509,14 +521,14 @@ export default function AssistantManagerPlanPage() {
     const ws = wb.addWorksheet('Director Plan');
 
     // Title
-    ws.mergeCells('A1', 'G1');
+    ws.mergeCells('A1', 'I1');
     const titleCell = ws.getCell('A1');
     titleCell.value = `Director's Daily Plan — ${directorName}`;
     titleCell.font = { bold: true, size: 16, color: { argb: 'FF1e1b4b' } };
     titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
     ws.getRow(1).height = 30;
 
-    ws.mergeCells('A2', 'G2');
+    ws.mergeCells('A2', 'I2');
     ws.getCell('A2').value = `Date: ${displayDate}`;
     ws.getCell('A2').font = { size: 11, color: { argb: 'FF6b7280' } };
 
@@ -528,6 +540,8 @@ export default function AssistantManagerPlanPage() {
     ws.getColumn(5).width = 18;  // Deadline
     ws.getColumn(6).width = 20;  // Assignee
     ws.getColumn(7).width = 10;  // Subtasks
+    ws.getColumn(8).width = 40;  // Subtask Details
+    ws.getColumn(9).width = 40;  // Links
 
     let row = 4;
     const catsToExport = singleCatIndex !== null
@@ -539,7 +553,7 @@ export default function AssistantManagerPlanPage() {
       const colorHex = (cat.color || '#6366F1').replace('#', '');
 
       // Category header
-      ws.mergeCells(row, 1, row, 7);
+      ws.mergeCells(row, 1, row, 9);
       const headerCell = ws.getCell(row, 1);
       headerCell.value = `${cat.label}  (${cat.startTime || ''} - ${cat.endTime || ''})`;
       headerCell.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
@@ -549,7 +563,7 @@ export default function AssistantManagerPlanPage() {
       row++;
 
       // Column headers
-      const headers = ['#', 'Task', 'Priority', 'Status', 'Deadline', 'Assignee', 'Subtasks'];
+      const headers = ['#', 'Task', 'Priority', 'Status', 'Deadline', 'Assignee', 'Subtasks', 'Subtask Details', 'Links'];
       const headerRow = ws.addRow(headers);
       headerRow.eachCell((cell) => {
         cell.font = { bold: true, size: 10, color: { argb: 'FF374151' } };
@@ -561,7 +575,7 @@ export default function AssistantManagerPlanPage() {
       // Task rows
       const tasks = cat.tasks || [];
       if (tasks.length === 0) {
-        ws.mergeCells(row, 1, row, 7);
+        ws.mergeCells(row, 1, row, 9);
         ws.getCell(row, 1).value = 'No tasks';
         ws.getCell(row, 1).font = { italic: true, color: { argb: 'FF9CA3AF' } };
         row++;
@@ -573,6 +587,10 @@ export default function AssistantManagerPlanPage() {
           const subCount = (task.subtasks || []).length;
           const subDone = (task.subtasks || []).filter(s => s.done).length;
 
+          const taskLinks = (task.links || []).filter(l => l).join('\n') || (task.link || '—');
+          const subtaskDetails = subCount > 0
+            ? (task.subtasks || []).map((s, i) => `${i + 1}. ${s.title || s.text || ''}${s.done ? ' ✓' : ''}`).join('\n')
+            : '—';
           const taskRow = ws.addRow([
             ti + 1,
             task.text || task.title || '',
@@ -581,7 +599,15 @@ export default function AssistantManagerPlanPage() {
             deadlineStr,
             task.assigneeName || 'Unassigned',
             subCount > 0 ? `${subDone}/${subCount}` : '—',
+            subtaskDetails,
+            taskLinks,
           ]);
+
+          // Enable text wrapping on Subtask Details cell and auto row height
+          taskRow.getCell(8).alignment = { wrapText: true, vertical: 'top' };
+          if (subCount > 1) {
+            ws.getRow(taskRow.number).height = Math.min(subCount * 15, 120);
+          }
 
           // Priority color
           taskRow.getCell(3).font = { bold: true, color: { argb: priorityColor } };
@@ -629,7 +655,7 @@ export default function AssistantManagerPlanPage() {
           tasks: [...(cat.tasks || []), {
             id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
             text, done: false, time: now,
-            description: '', link: '',
+            description: '', links: [],
             startTime: '', endTime: '',
             priority: 'medium',
             deadline: null,
@@ -761,14 +787,15 @@ export default function AssistantManagerPlanPage() {
   // Upload file attachment for a task
   async function handleFileUpload(catIndex, taskIndex, file) {
     if (!file) return;
-    if (file.size > 25 * 1024 * 1024) {
-      toast?.error?.('File too large (max 25 MB)');
+    const validation = validateFile(file, 'plan_attachment');
+    if (!validation.valid) {
+      toast?.error?.(validation.message);
       return;
     }
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await api.post('/files/upload-general', formData, {
+      const res = await api.post('/files/upload-plan', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       const fileUrl = res.data?.data?.url || res.data?.url;
@@ -872,15 +899,29 @@ export default function AssistantManagerPlanPage() {
           </h1>
           <div className="flex items-center gap-2 mt-1 ml-[52px]">
             <span className="text-sm text-gray-500">Managing schedule for</span>
-            {directors.length > 1 ? (
+            {directors.length > 0 ? (
               <select
                 value={selectedDirectorId || ''}
-                onChange={async e => { await saveCurrentPlan(); setSelectedDirectorId(e.target.value); setDirty(false); }}
+                onChange={async e => {
+                  const newId = e.target.value;
+                  if (newId === selectedDirectorId) return;
+                  await saveCurrentPlan();
+                  // Reset all transient state before switching
+                  setExpandedTasks({});
+                  setNewTaskInputs({});
+                  setNewSubtaskInputs({});
+                  setViewingTask(null);
+                  setCopiedLink(null);
+                  setDeleteConfirm(null);
+                  setExportConfirm(null);
+                  setSelectedDirectorId(newId);
+                  setDirty(false);
+                }}
                 className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-300"
               >
                 {(directors || []).map(d => (
                   <option key={d.id} value={d.id}>
-                    {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
+                    {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.role === 'admin' ? '(Admin)' : d.role === 'manager' ? '(Manager)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
                   </option>
                 ))}
               </select>
@@ -1332,21 +1373,45 @@ export default function AssistantManagerPlanPage() {
                                 className="w-full text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-300 resize-y placeholder-gray-400" />
                             </div>
 
-                            {/* Link */}
+                            {/* Important Links (multiple) */}
                             <div>
                               <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1 mb-1">
-                                <Link2 size={10} /> Important Link
+                                <Link2 size={10} /> Important Links {(task.links || []).length > 0 && `(${(task.links || []).length})`}
                               </label>
-                              <div className="flex items-center gap-1.5">
-                                <input type="url" value={task.link || ''} onChange={e => updateTaskField(catIndex, taskIndex, 'link', e.target.value)}
-                                  placeholder="https://..." className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 placeholder-gray-400" />
-                                {task.link && (
-                                  <button onClick={() => copyLink(task.link, `task-${catIndex}-${taskIndex}`)}
-                                    className="p-1.5 rounded-lg bg-gray-100 hover:bg-indigo-100 text-gray-500 hover:text-indigo-600 transition-colors" title="Copy link">
-                                    {copiedLink === `task-${catIndex}-${taskIndex}` ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-                                  </button>
-                                )}
+                              <div className="space-y-1.5">
+                                {(task.links || []).map((linkUrl, linkIdx) => (
+                                  <div key={linkIdx} className="flex items-center gap-1.5">
+                                    <input type="url" value={linkUrl}
+                                      onChange={e => {
+                                        const updated = [...(task.links || [])];
+                                        updated[linkIdx] = e.target.value;
+                                        updateTaskField(catIndex, taskIndex, 'links', updated);
+                                      }}
+                                      placeholder="https://..."
+                                      className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300 placeholder-gray-400" />
+                                    {linkUrl && (
+                                      <button onClick={() => copyLink(linkUrl, `task-${catIndex}-${taskIndex}-link-${linkIdx}`)}
+                                        className="p-1.5 rounded-lg bg-gray-100 hover:bg-indigo-100 text-gray-500 hover:text-indigo-600 transition-colors flex-shrink-0" title="Copy link">
+                                        {copiedLink === `task-${catIndex}-${taskIndex}-link-${linkIdx}` ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                                      </button>
+                                    )}
+                                    <button onClick={() => {
+                                        const updated = (task.links || []).filter((_, i) => i !== linkIdx);
+                                        updateTaskField(catIndex, taskIndex, 'links', updated);
+                                      }}
+                                      className="p-1.5 rounded-lg bg-gray-100 hover:bg-red-100 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0" title="Remove link">
+                                      <X size={13} />
+                                    </button>
+                                  </div>
+                                ))}
                               </div>
+                              <button onClick={() => {
+                                  const updated = [...(task.links || []), ''];
+                                  updateTaskField(catIndex, taskIndex, 'links', updated);
+                                }}
+                                className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 px-2 py-1 rounded-lg transition-colors">
+                                <Plus size={11} /> Add Link
+                              </button>
                             </div>
 
                             {/* File Attachments */}
@@ -1359,7 +1424,7 @@ export default function AssistantManagerPlanPage() {
                                   <div key={ai} className="flex items-center gap-2 bg-gray-50 rounded-lg px-2 py-1.5 group/att">
                                     <Paperclip size={11} className="text-gray-400 flex-shrink-0" />
                                     <span className="text-xs text-gray-700 flex-1 truncate">{att.name}</span>
-                                    <a href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`} target="_blank" rel="noopener noreferrer"
+                                    <a href={att.url} target="_blank" rel="noopener noreferrer"
                                       className="text-[10px] text-indigo-500 hover:underline flex-shrink-0">Download</a>
                                     <button onClick={() => removeAttachment(catIndex, taskIndex, ai)}
                                       className="opacity-0 group-hover/att:opacity-100 p-0.5 text-gray-400 hover:text-red-500 transition-all"><X size={11} /></button>
@@ -1369,7 +1434,7 @@ export default function AssistantManagerPlanPage() {
                               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg cursor-pointer transition-colors">
                                 <Paperclip size={12} /> Upload File
                                 <input type="file" className="hidden" onChange={e => { if (e.target.files[0]) handleFileUpload(catIndex, taskIndex, e.target.files[0]); e.target.value = ''; }}
-                                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg,.gif,.webp" />
+                                  accept={getAcceptString('plan_attachment')} />
                               </label>
                             </div>
 
@@ -1518,24 +1583,6 @@ export default function AssistantManagerPlanPage() {
         </Droppable>
       </DragDropContext>
 
-      {/* ═══ NOTES SECTION ═══ */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-8">
-        <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
-          <Calendar size={16} className="text-indigo-500" />
-          Notes & Reminders
-        </h3>
-        <textarea
-          value={notes}
-          onChange={e => {
-            setNotes(e.target.value);
-            markDirty();
-          }}
-          placeholder="Add notes, reminders, or special instructions for the day..."
-          rows={4}
-          className="w-full text-sm bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 placeholder-gray-400 resize-y"
-        />
-      </div>
-
       {/* ═══ TASK VIEW MODAL ═══ */}
       {viewingTask && (() => {
         const { task, catLabel } = viewingTask;
@@ -1585,10 +1632,14 @@ export default function AssistantManagerPlanPage() {
                     <p className="text-sm text-gray-700 whitespace-pre-wrap">{task.description}</p>
                   </div>
                 )}
-                {task.link && (
+                {(task.links || []).filter(l => l).length > 0 && (
                   <div>
-                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Link</p>
-                    <a href={task.link} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 hover:underline break-all">{task.link}</a>
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Links ({(task.links || []).filter(l => l).length})</p>
+                    <div className="space-y-1">
+                      {(task.links || []).filter(l => l).map((linkUrl, li) => (
+                        <a key={li} href={linkUrl} target="_blank" rel="noopener noreferrer" className="block text-sm text-indigo-600 hover:underline break-all">{linkUrl}</a>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {(task.attachments || []).length > 0 && (
@@ -1599,7 +1650,7 @@ export default function AssistantManagerPlanPage() {
                         <div key={ai} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
                           <Paperclip size={12} className="text-gray-400" />
                           <span className="text-xs text-gray-700 flex-1 truncate">{att.name}</span>
-                          <a href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`} target="_blank" rel="noopener noreferrer"
+                          <a href={att.url} target="_blank" rel="noopener noreferrer"
                             className="text-[10px] text-indigo-500 hover:underline">Download</a>
                         </div>
                       ))}
@@ -1622,7 +1673,7 @@ export default function AssistantManagerPlanPage() {
                     </div>
                   </div>
                 )}
-                {!task.description && !task.link && !task.deadline && !task.assigneeName && subTotal === 0 && (task.attachments || []).length === 0 && (
+                {!task.description && (task.links || []).filter(l => l).length === 0 && !task.deadline && !task.assigneeName && subTotal === 0 && (task.attachments || []).length === 0 && (
                   <p className="text-sm text-gray-400 text-center py-4">No additional details for this task.</p>
                 )}
               </div>

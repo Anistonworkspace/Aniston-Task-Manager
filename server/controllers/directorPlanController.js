@@ -5,26 +5,28 @@ const { emitToUser } = require('../services/socketService');
 const { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } = require('../services/teamsCalendarService');
 
 /**
- * Find a specific director by ID, or fallback to first available.
+ * Find a specific director by ID, or fallback to first available management-level user.
  */
 async function findDirector(directorId) {
   if (directorId) {
     const director = await User.findOne({
       where: { id: directorId, isActive: true },
-      attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
+      attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin', 'role'],
     });
     if (director) return director;
   }
-  // Fallback: first director/vp/ceo (non-superadmin preferred)
-  let director = await User.findOne({
-    where: { isActive: true, hierarchyLevel: 'director', isSuperAdmin: false },
-    attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
-  });
-  if (director) return director;
+  // Fallback: first superadmin, then admin/manager/assistant_manager, then director/vp/ceo
   return User.findOne({
-    where: { isActive: true, [Op.or]: [{ hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } }, { isSuperAdmin: true }] },
-    attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin'],
-    order: [['createdAt', 'ASC']],
+    where: {
+      isActive: true,
+      [Op.or]: [
+        { isSuperAdmin: true },
+        { role: { [Op.in]: ['admin', 'manager', 'assistant_manager'] } },
+        { hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } },
+      ],
+    },
+    attributes: ['id', 'name', 'hierarchyLevel', 'isSuperAdmin', 'role'],
+    order: [['isSuperAdmin', 'DESC'], ['createdAt', 'ASC']],
   });
 }
 
@@ -55,7 +57,9 @@ async function broadcastPlanUpdate(director, date, plan) {
 
 /**
  * GET /api/director-plan/directors
- * Returns list of selectable directors (superadmins + director/vp/ceo hierarchy users)
+ * Returns list of users whose Director Plan can be managed.
+ * Includes superadmins, admins, managers, assistant_managers, and users with
+ * director/vp/ceo hierarchy levels — i.e. all management-level users.
  */
 const getDirectors = async (req, res) => {
   try {
@@ -64,10 +68,11 @@ const getDirectors = async (req, res) => {
         isActive: true,
         [Op.or]: [
           { isSuperAdmin: true },
+          { role: { [Op.in]: ['admin', 'manager', 'assistant_manager'] } },
           { hierarchyLevel: { [Op.in]: ['director', 'vp', 'ceo'] } },
         ],
       },
-      attributes: ['id', 'name', 'email', 'hierarchyLevel', 'designation', 'avatar', 'isSuperAdmin'],
+      attributes: ['id', 'name', 'email', 'role', 'hierarchyLevel', 'designation', 'avatar', 'isSuperAdmin'],
       order: [['isSuperAdmin', 'DESC'], ['name', 'ASC']],
     });
     res.json({ success: true, data: directors });
@@ -169,6 +174,11 @@ function buildCumulativeView(allPlans) {
         if (!taskCopy.id) {
           taskCopy.id = mergeKey;
         }
+        // Normalize old single `link` field to `links` array
+        if (!Array.isArray(taskCopy.links)) {
+          taskCopy.links = taskCopy.link ? [taskCopy.link] : [];
+        }
+        delete taskCopy.link;
 
         // Latest plan version wins (oldest→newest processing)
         merged._taskMap.set(mergeKey, taskCopy);
@@ -224,10 +234,11 @@ const getDailyPlan = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No director found in the system.' });
     }
 
+    const isAdmin = user.role === 'admin';
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
     const isTargetDirector = user.id === director.id;
-    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -246,6 +257,17 @@ const getDailyPlan = async (req, res) => {
       });
 
       if (plan) {
+        // Normalize old link → links on snapshot responses
+        const normalizedCategories = (plan.categories || []).map(cat => ({
+          ...cat,
+          tasks: (cat.tasks || []).map(task => {
+            if (!Array.isArray(task.links)) {
+              task.links = task.link ? [task.link] : [];
+              delete task.link;
+            }
+            return task;
+          }),
+        }));
         return res.json({
           success: true,
           data: {
@@ -253,7 +275,7 @@ const getDailyPlan = async (req, res) => {
             date: plan.date,
             directorId: plan.directorId,
             directorName: director.name,
-            categories: plan.categories,
+            categories: normalizedCategories,
             notes: plan.notes,
             createdBy: plan.createdBy,
             isNew: false,
@@ -338,8 +360,8 @@ const saveDailyPlan = async (req, res) => {
     const { categories, notes, directorId: bodyDirectorId } = req.body;
     const user = req.user;
 
-    if (user.role !== 'assistant_manager' && !user.isSuperAdmin) {
-      return res.status(403).json({ success: false, message: 'Only assistant managers can edit the director plan.' });
+    if (user.role !== 'assistant_manager' && user.role !== 'admin' && !user.isSuperAdmin) {
+      return res.status(403).json({ success: false, message: 'Only admins, assistant managers, or super admins can edit the director plan.' });
     }
 
     const director = await findDirector(bodyDirectorId);
@@ -393,9 +415,10 @@ const updateTask = async (req, res) => {
     }
 
     const isTargetDirector = user.id === director.id;
+    const isAdmin = user.role === 'admin';
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -437,9 +460,10 @@ const updateNotes = async (req, res) => {
     if (!director) return res.status(404).json({ success: false, message: 'No director found.' });
 
     const isTargetDirector = user.id === director.id;
+    const isAdmin = user.role === 'admin';
     const isAssistantMgr = user.role === 'assistant_manager';
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isTargetDirector && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 

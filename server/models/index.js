@@ -35,6 +35,7 @@ const AIConfig = require('./AIConfig');
 const AIProvider = require('./AIProvider');
 const ApiKey = require('./ApiKey');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
+const ManagerRelation = require('./ManagerRelation');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -360,6 +361,7 @@ module.exports = {
   AIProvider,
   ApiKey,
   TeamsNotificationLog,
+  ManagerRelation,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────
@@ -378,9 +380,15 @@ Workspace.hasMany(Board, { foreignKey: 'workspaceId', as: 'boards' });
 User.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspaceRef', onDelete: 'SET NULL' });
 Workspace.hasMany(User, { foreignKey: 'workspaceId', as: 'workspaceMembers' });
 
-// ─── User <-> User (manager mapping) ─────────────────────────
+// ─── User <-> User (manager mapping — primary manager) ───────
 User.belongsTo(User, { foreignKey: 'managerId', as: 'manager', onDelete: 'SET NULL' });
 User.hasMany(User, { foreignKey: 'managerId', as: 'teamMembers' });
+
+// ─── ManagerRelation (multi-manager junction table) ──────────
+ManagerRelation.belongsTo(User, { foreignKey: 'employeeId', as: 'employee', onDelete: 'CASCADE' });
+ManagerRelation.belongsTo(User, { foreignKey: 'managerId', as: 'manager', onDelete: 'CASCADE' });
+User.hasMany(ManagerRelation, { foreignKey: 'employeeId', as: 'managerRelations' });
+User.hasMany(ManagerRelation, { foreignKey: 'managerId', as: 'subordinateRelations' });
 
 // ─── PermissionGrant <-> User ────────────────────────────────
 PermissionGrant.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });

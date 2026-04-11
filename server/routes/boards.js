@@ -19,8 +19,8 @@ const router = express.Router();
 // All board routes require authentication
 router.use(authenticate);
 
-// Board mutation guard: only manager and admin (NOT assistant_manager or member)
-const boardMutate = requireRole('manager', 'admin');
+// Board mutation guard: manager, assistant_manager, and admin
+const boardMutate = requireRole('assistant_manager', 'manager', 'admin');
 
 // ─── POST /api/boards (manager/admin only) ───────────────────
 router.post(

@@ -5,6 +5,7 @@ const { emitToBoard, emitToUser } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isValidStatus } = require('../utils/statusConfig');
+const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritization');
 
 /**
  * POST /api/boards
@@ -88,25 +89,14 @@ const getBoards = async (req, res) => {
       where.name = { [Op.iLike]: `%${search}%` };
     }
 
-    // Non-admin/manager users only see boards they have access to
+    // Non-admin/manager/assistant_manager users only see boards they have access to
     const role = req.user.role;
     const userId = req.user.id;
     const isSuperAdmin = !!req.user.isSuperAdmin;
 
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
-      // Build list of user IDs whose boards this user can see
-      let visibleUserIds = [userId];
-
-      // Assistant managers can also see boards of their team members
-      if (role === 'assistant_manager') {
-        const teamMembers = await User.findAll({
-          where: { managerId: userId },
-          attributes: ['id'],
-          raw: true,
-        });
-        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
-      }
-
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
+      // Members only see boards they are connected to
+      const visibleUserIds = [userId];
       const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
 
       where[Op.or] = [
@@ -202,7 +192,6 @@ const getBoard = async (req, res) => {
             { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
             { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
           ],
-          order: [['position', 'ASC']],
           limit: 500,
         },
       ],
@@ -212,10 +201,10 @@ const getBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Access control for non-admin/manager users
+    // Access control for non-admin/manager/assistant_manager users
     const role = req.user.role;
     const isSuperAdmin = !!req.user.isSuperAdmin;
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
       const userId = req.user.id;
 
       // Build the set of user IDs this person can "see through"
@@ -541,12 +530,13 @@ const exportBoard = async (req, res) => {
     const board = await Board.findByPk(req.params.id);
     if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
 
+    const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
     const tasks = await Task.findAll({
       where: { boardId: board.id, isArchived: false },
       include: [
         { model: User, as: 'assignee', attributes: ['name', 'email'] },
       ],
-      order: [['position', 'ASC']],
+      order: buildPendingPriorityOrder(),
     });
 
     const format = req.query.format || 'csv';

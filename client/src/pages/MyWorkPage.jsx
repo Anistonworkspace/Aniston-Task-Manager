@@ -16,6 +16,7 @@ import Avatar from '../components/common/Avatar';
 import DelegateTaskModal from '../components/task/DelegateTaskModal';
 import useSocket from '../hooks/useSocket';
 import { useToast } from '../components/common/Toast';
+import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 
 export default function MyWorkPage() {
   const { user } = useAuth();
@@ -66,10 +67,10 @@ export default function MyWorkPage() {
     });
 
     return [
-      { label: 'Overdue', tasks: overdue, color: '#e2445c', icon: AlertTriangle },
-      { label: 'Today', tasks: todayTasks, color: '#0073ea', icon: Clock },
-      { label: 'This Week', tasks: thisWeek, color: '#fdab3d', icon: CalIcon },
-      { label: 'Upcoming', tasks: later, color: '#c4c4c4', icon: CircleDot },
+      { label: 'Overdue', tasks: sortTasksByPendingPriority(overdue), color: '#e2445c', icon: AlertTriangle },
+      { label: 'Today', tasks: sortTasksByPendingPriority(todayTasks), color: '#0073ea', icon: Clock },
+      { label: 'This Week', tasks: sortTasksByPendingPriority(thisWeek), color: '#fdab3d', icon: CalIcon },
+      { label: 'Upcoming', tasks: sortTasksByPendingPriority(later), color: '#c4c4c4', icon: CircleDot },
       { label: 'Completed', tasks: done, color: '#00c875', icon: CheckCircle2 },
     ].filter(g => g.tasks.length > 0);
   }, [filtered]);

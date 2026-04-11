@@ -2,6 +2,7 @@ const { AIConfig, AIProvider, User } = require('../models');
 const { encrypt, decrypt, maskSecret } = require('../utils/encryption');
 const aiService = require('../services/aiService');
 const { logActivity } = require('../services/activityService');
+const { buildAIContext } = require('../services/aiContextService');
 
 // ────────────────────────────────────────────────────────────
 // Legacy single-config endpoints (kept for backward compat)
@@ -161,7 +162,15 @@ async function testConfig(req, res) {
       if (result.success && providerId) {
         await AIProvider.update({ lastTestedAt: new Date() }, { where: { id: providerId } });
       }
-      return res.json({ success: result.success, message: result.message, data: { responseTime: result.responseTime } });
+      const keySuffix = apiKey ? '...' + apiKey.slice(-4) : '(none)';
+      return res.json({
+        success: result.success,
+        message: result.message,
+        data: {
+          responseTime: result.responseTime,
+          diagnostics: { ...(result.diagnostics || {}), providerType: provider, model, baseUrl, keySuffix },
+        },
+      });
     }
 
     // If providerId given, test that saved provider
@@ -174,7 +183,15 @@ async function testConfig(req, res) {
       if (result.success) {
         await AIProvider.update({ lastTestedAt: new Date() }, { where: { id: providerId } });
       }
-      return res.json({ success: result.success, message: result.message, data: { responseTime: result.responseTime } });
+      const keySuffix = config.apiKey ? '...' + config.apiKey.slice(-4) : '(none)';
+      return res.json({
+        success: result.success,
+        message: result.message,
+        data: {
+          responseTime: result.responseTime,
+          diagnostics: { ...(result.diagnostics || {}), providerType: config.provider, model: config.model, baseUrl: config.baseUrl, keySuffix },
+        },
+      });
     }
 
     // Otherwise test the default active config
@@ -193,7 +210,15 @@ async function testConfig(req, res) {
       }
     }
 
-    res.json({ success: result.success, message: result.message, data: { responseTime: result.responseTime } });
+    const keySuffix = config.apiKey ? '...' + config.apiKey.slice(-4) : '(none)';
+    res.json({
+      success: result.success,
+      message: result.message,
+      data: {
+        responseTime: result.responseTime,
+        diagnostics: { ...(result.diagnostics || {}), providerType: config.provider, model: config.model, baseUrl: config.baseUrl, keySuffix },
+      },
+    });
   } catch (error) {
     console.error('[AIController] testConfig error:', error);
     res.status(500).json({ success: false, message: 'Failed to test AI connection.' });
@@ -202,21 +227,21 @@ async function testConfig(req, res) {
 
 /**
  * DELETE /api/ai/config
- * Remove all AI configurations (legacy + new).
+ * Remove legacy AI configurations only.
+ * Does NOT touch the active AIProvider table to prevent accidental data loss.
  */
 async function deleteConfig(req, res) {
   try {
-    await AIConfig.destroy({ where: {} });
-    await AIProvider.destroy({ where: {} });
+    const deleted = await AIConfig.destroy({ where: {} });
 
     logActivity({
       action: 'ai_config_deleted',
-      description: 'All AI configurations deleted',
+      description: `Legacy AI configurations removed (${deleted} record(s))`,
       entityType: 'ai_config',
       userId: req.user.id,
     });
 
-    res.json({ success: true, message: 'AI configuration removed.' });
+    res.json({ success: true, message: `Legacy AI configuration removed (${deleted} record(s)). Active providers are not affected.` });
   } catch (error) {
     console.error('[AIController] deleteConfig error:', error);
     res.status(500).json({ success: false, message: 'Failed to remove AI configuration.' });
@@ -519,11 +544,45 @@ async function testProvider(req, res) {
     }
 
     const result = await aiService.testConnection(provider.provider, apiKey, provider.model, provider.baseUrl);
+    let autoPromoted = false;
     if (result.success) {
       await provider.update({ lastTestedAt: new Date() });
+
+      // Auto-promote to default if the current default has never been tested successfully
+      // and THIS provider just proved it works. This prevents the common scenario where
+      // an admin adds and tests a new provider but forgets to set it as default,
+      // then the AI assistant silently uses the old broken default.
+      if (!provider.isDefault) {
+        const currentDefault = await AIProvider.findOne({ where: { isDefault: true, isActive: true } });
+        if (!currentDefault || !currentDefault.lastTestedAt) {
+          await AIProvider.update({ isDefault: false }, { where: {} });
+          await provider.update({ isDefault: true });
+          autoPromoted = true;
+          console.log(`[AIController] Auto-promoted provider "${provider.displayName || provider.provider}" to default (previous default was never tested).`);
+        }
+      }
     }
 
-    res.json({ success: result.success, message: result.message, data: { responseTime: result.responseTime } });
+    // Include diagnostic metadata so frontend can render detailed info for admins
+    const keySuffix = apiKey ? '...' + apiKey.slice(-4) : '(none)';
+    const message = autoPromoted
+      ? `${result.message} This provider has been automatically set as the default because the previous default was never tested.`
+      : result.message;
+    res.json({
+      success: result.success,
+      message,
+      data: {
+        responseTime: result.responseTime,
+        autoPromoted,
+        diagnostics: {
+          ...(result.diagnostics || {}),
+          providerType: provider.provider,
+          model: provider.model,
+          baseUrl: provider.baseUrl,
+          keySuffix,
+        },
+      },
+    });
   } catch (error) {
     console.error('[AIController] testProvider error:', error);
     res.status(500).json({ success: false, message: 'Failed to test provider connection.' });
@@ -536,73 +595,124 @@ async function testProvider(req, res) {
 
 /**
  * POST /api/ai/chat
- * Send messages to the AI assistant.
+ * Send messages to the AI assistant with real, role-scoped page context.
  */
 async function chatWithAI(req, res) {
   try {
-    const { messages, context, providerId } = req.body;
+    const { messages, context, providerId, pageState } = req.body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ success: false, message: 'Messages array is required.' });
     }
 
-    const systemPrompt = buildSystemPrompt(req.user, context);
-    const reply = await aiService.chat(messages, systemPrompt, providerId);
+    // Filter out error-role messages that the frontend may have included
+    const cleanMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+
+    // Build real, role-scoped data context from the database
+    const route = pageState?.route || '';
+    console.log('[AIChat] pageState received:', JSON.stringify(pageState));
+    console.log('[AIChat] Resolved route for context:', route);
+
+    const dataContext = await buildAIContext(req.user, route, pageState || {});
+    console.log('[AIChat] dataContext length:', dataContext?.length || 0);
+    console.log('[AIChat] dataContext preview:', (dataContext || '').slice(0, 300));
+
+    // Combine static page description (for feature help) with real data
+    const systemPrompt = buildSystemPrompt(req.user, context, dataContext);
+    const reply = await aiService.chat(cleanMessages, systemPrompt, providerId);
 
     res.json({
       success: true,
       data: { message: reply },
     });
   } catch (error) {
-    console.error('[AIController] chat error:', error);
+    console.error('[AIController] chat error:', error.message);
 
-    if (error.message?.includes('not configured')) {
+    // Configuration errors thrown by aiService.chat() directly
+    if (error.message?.includes('not configured') || error.message?.includes('not available')) {
       return res.status(400).json({ success: false, message: error.message });
     }
-    if (error.response?.status === 401) {
-      return res.status(400).json({ success: false, message: 'AI API key is invalid or expired. Ask an admin to update it.' });
-    }
-    if (error.response?.status === 429) {
-      return res.status(429).json({ success: false, message: 'AI rate limit reached. Please try again in a moment.' });
-    }
-    if (error.code === 'ECONNABORTED') {
-      return res.status(504).json({ success: false, message: 'AI request timed out. Please try again.' });
+
+    // Unknown provider type
+    if (error.message?.includes('Unknown AI provider type')) {
+      return res.status(400).json({ success: false, message: error.message });
     }
 
-    res.status(500).json({ success: false, message: 'Failed to get AI response. Please try again.' });
+    // Use shared classifyError for provider HTTP errors
+    const { classifyError } = require('../services/aiService');
+    const provInfo = error._providerInfo;
+    const classified = classifyError(error, 0, provInfo || {});
+
+    // Build a user-friendly message that identifies which provider failed
+    const providerHint = provInfo
+      ? ` (using ${provInfo.isDefault ? 'default ' : ''}provider "${provInfo.displayName}", model: ${provInfo.model || '(default)'}, key: ${provInfo.keySuffix})`
+      : '';
+
+    // Strip the "(0ms)" timing prefix from chat errors since it's meaningless here
+    let userMessage = classified.message.replace(/\s*\(\d+ms\)/g, '');
+
+    // For auth failures, add explicit guidance about checking the default provider
+    if (classified.diagnostics?.failureType === 'authentication' && provInfo) {
+      userMessage = `The API key for provider "${provInfo.displayName}" (key: ${provInfo.keySuffix}) is invalid or expired. `
+        + `This is the ${provInfo.isDefault ? 'default' : 'active'} provider. `
+        + `Go to Integrations → AI Provider and either update this provider's API key, or set a working provider as default.`;
+    }
+
+    const statusMap = {
+      authentication: 401,
+      billing: 402,
+      permission: 403,
+      rate_limit: 429,
+      timeout: 504,
+      network: 502,
+    };
+    const httpStatus = statusMap[classified.diagnostics?.failureType] || 500;
+    res.status(httpStatus).json({ success: false, message: userMessage });
   }
 }
 
 /**
- * Build a system prompt that gives the AI context about the user and their current page.
+ * Build a system prompt that gives the AI both feature knowledge AND real scoped data.
+ *
+ * @param {object} user - Authenticated user
+ * @param {string} staticContext - Static page description from the frontend (for feature help)
+ * @param {string} dataContext - Real role-scoped data from aiContextService
  */
-function buildSystemPrompt(user, context) {
-  return `You are an AI assistant for Aniston Project Hub, a Monday.com-style task management platform.
+function buildSystemPrompt(user, staticContext, dataContext) {
+  const roleName = user.role === 'assistant_manager' ? 'Assistant Manager' : user.role.charAt(0).toUpperCase() + user.role.slice(1);
+  const hasLiveData = dataContext && !dataContext.startsWith('(') && dataContext.length > 20;
 
-Your role:
-- Help users navigate and use the platform effectively
-- Answer questions about tasks, boards, meetings, time planning, and team management
-- Provide tips on productivity and task management best practices
-- Help with understanding features like RBAC, automations, dashboards, and integrations
-- Be concise, helpful, and friendly
-- When a user asks about a page, use the context below to give specific guidance about what they can do on that page
+  return `You are the AI assistant for Aniston Project Hub. You have DIRECT ACCESS to the application database. Real data from the database is included below.
 
-Current user: ${user.name} (${user.email}), Role: ${user.role}
-${context ? `\nCurrent page context:\n${context}` : ''}
+## YOUR #1 RULE
 
-Platform features include: Task boards with drag-drop, Kanban view, calendar view, timeline/Gantt charts, subtasks, work logs, comments, file attachments, notifications, team dashboards, time planning, weekly reviews, meeting scheduling, department management, automations, board templates, bulk actions, dark mode, keyboard shortcuts, Microsoft Teams integration, voice notes, AI assistant, and feedback system.
+${hasLiveData ? `The section labeled "LIVE DATA FROM DATABASE" below contains REAL numbers queried from the database right now. This is not placeholder data. It is live and accurate.
 
-Roles:
-- Admin: Full system access - manage users, departments, boards, tasks, meetings, reviews, time plans, settings, integrations
-- Manager: Team lead - manage boards, assign tasks, view dashboards, schedule meetings, view team time plans and reviews
-- Assistant Manager: Similar to manager with slightly limited permissions
-- Member/Employee: Individual contributor - work on assigned tasks, update status, subtasks, work logs, time plan, view own reviews
+**MANDATORY behavior when the user asks a data question (counts, metrics, task names, statuses, who is assigned, what is overdue, etc.):**
+- Read the LIVE DATA section below.
+- Find the answer in that data.
+- State the exact number or fact in your FIRST sentence.
+- Example: User asks "how many tasks are done?" → You see "Done tasks: 3" in the data → You answer: "There are 3 done tasks on this board."
+- Example: User asks "any overdue tasks?" → You see "Overdue tasks: 0" → You answer: "There are no overdue tasks on this board right now."
 
-How to assign tasks: Click Owner column on task row (searchable dropdown), or open TaskModal and set Owner field. Tasks can also be delegated between employees.
+**FORBIDDEN responses when live data exists:**
+- "I don't have live access to the board data" — WRONG, you do. The data is below.
+- "I can't query the board directly" — WRONG, the data was already queried for you.
+- "Check the board header" / "Look at the Done column" / "Switch to Table view" — WRONG, just give the number.
+- "I'm not able to pull the number" — WRONG, the number is right below in the data.
+- Any response that tells the user to look something up manually when the answer is in the data below.
 
-Key keyboard shortcuts: ? for help, Ctrl+K for global search, Ctrl+Z for undo, Ctrl+Y for redo.
+If the user asks about something NOT in the data, say you only have data for the current page and suggest they navigate there.` : `No live data is available for this page. Help with general feature questions and how-to guidance.`}
 
-Keep responses concise (1-3 paragraphs max unless the user asks for detailed help). Use markdown formatting when helpful.`;
+Current user: ${user.name}, Role: ${roleName}${user.isSuperAdmin ? ' (Super Admin)' : ''}
+
+########## LIVE DATA FROM DATABASE (queried just now, role-scoped) ##########
+${dataContext || '(No data for this page.)'}
+########## END LIVE DATA ##########
+
+${staticContext ? `\nPage guide: ${staticContext}` : ''}
+
+Be concise and data-driven. Lead with the answer, not the explanation.`;
 }
 
 /**

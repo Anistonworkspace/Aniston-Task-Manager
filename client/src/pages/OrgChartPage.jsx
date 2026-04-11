@@ -73,6 +73,16 @@ function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, onEdit, onPro
           <p className="text-[9px] text-gray-400 truncate mt-0.5">{node.designation || node.title || ''}</p>
           <span className="inline-block mt-1 text-[8px] font-medium px-1.5 py-0.5 rounded-full"
             style={{ backgroundColor: `${hlColor}15`, color: hlColor }}>{hlLabel}</span>
+          {node._isSecondaryRef && (
+            <span className="block mt-0.5 text-[7px] font-medium px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-500 border border-dashed border-purple-200">
+              {node._secondaryRelationType === 'dotted_line' ? '┈ Dotted Line' : node._secondaryRelationType === 'project' ? '◈ Project' : '◇ Functional'}
+            </span>
+          )}
+          {(node.managerRelations || []).length > 1 && !node._isSecondaryRef && (
+            <span className="block mt-0.5 text-[7px] text-gray-400">
+              +{node.managerRelations.length - 1} more manager{node.managerRelations.length > 2 ? 's' : ''}
+            </span>
+          )}
         </div>
       </div>
 
@@ -121,9 +131,9 @@ function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers 
             <div className="h-px bg-gray-200" style={{ width: `${(node.children.length - 1) * 166}px` }} />
           )}
           <div className="flex gap-4 items-start">
-            {node.children.map(child => (
-              <div key={child.id} className="flex flex-col items-center">
-                <div className="w-px h-2 bg-gray-200" />
+            {node.children.map((child, ci) => (
+              <div key={child._isSecondaryRef ? `${child.id}-sec-${ci}` : child.id} className="flex flex-col items-center">
+                <div className={`w-px h-2 ${child._isSecondaryRef ? 'border-l border-dashed border-purple-300' : 'bg-gray-200'}`} />
                 <TreeNode node={child} hierarchyLevels={hierarchyLevels} canDrag={canDrag} selectedId={selectedId} depth={depth + 1} handlers={handlers} />
               </div>
             ))}
@@ -313,7 +323,7 @@ function ViewProfileModal({ employee, allUsers, hierarchyLevels, onClose }) {
 }
 
 // ═══ EMPLOYEE DETAILS PANEL (side panel like reference) ═══
-function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, onClose, onEdit, onChangeManager, onViewProfile, onRemoveManager }) {
+function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, onClose, onEdit, onChangeManager, onViewProfile, onRemoveManager, onAddSecondaryManager, onRemoveRelation }) {
   if (!employee) return null;
 
   const hlInfo = hierarchyLevels.find(l => l.name === employee.hierarchyLevel);
@@ -322,6 +332,11 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
   const manager = employee.managerId ? allUsers.find(u => String(u.id) === String(employee.managerId)) : null;
   const directReports = allUsers.filter(u => String(u.managerId) === String(employee.id));
   const roleLabel = { admin: 'Admin', manager: 'Manager', assistant_manager: 'Assistant Manager', member: 'Employee' }[employee.role] || employee.role;
+
+  // Multi-manager: get all manager relations for this employee
+  const relations = employee.managerRelations || [];
+  const RELATION_LABELS = { primary: 'Primary', functional: 'Functional', project: 'Project', dotted_line: 'Dotted Line' };
+  const RELATION_COLORS = { primary: '#0073ea', functional: '#00c875', project: '#f59e0b', dotted_line: '#8b5cf6' };
 
   return (
     <motion.div
@@ -365,13 +380,47 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
             <span className="text-[11px] font-medium" style={{ color: hlColor }}>{hlInfo?.label || employee.hierarchyLevel || '—'}</span>
           </div>
           <div className="flex items-center justify-between py-2 border-b border-gray-100">
-            <span className="text-[11px] text-gray-500">Reports to</span>
-            <span className="text-[11px] font-medium text-gray-700">{manager ? manager.name : 'None (Root)'}</span>
-          </div>
-          <div className="flex items-center justify-between py-2 border-b border-gray-100">
             <span className="text-[11px] text-gray-500">Direct reports</span>
             <span className="text-[11px] font-bold text-gray-700">{directReports.length}</span>
           </div>
+        </div>
+
+        {/* Managers section (multi-manager) */}
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Reports to</p>
+            {canManage && (
+              <button onClick={() => onAddSecondaryManager(employee)} className="text-[9px] text-blue-500 hover:text-blue-700 font-medium">+ Add Manager</button>
+            )}
+          </div>
+          {relations.length > 0 ? (
+            <div className="space-y-1.5">
+              {relations.map(rel => {
+                const mgr = rel.manager || allUsers.find(u => String(u.id) === String(rel.managerId));
+                const relColor = RELATION_COLORS[rel.relationType] || '#6b7280';
+                return (
+                  <div key={rel.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 rounded-lg group">
+                    <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white" style={{ backgroundColor: relColor }}>
+                      {mgr?.name?.charAt(0)?.toUpperCase() || '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] font-medium text-gray-700 truncate">{mgr?.name || 'Unknown'}</p>
+                      <span className="text-[8px] font-medium px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${relColor}15`, color: relColor }}>
+                        {RELATION_LABELS[rel.relationType] || rel.relationType}{rel.isPrimary ? ' ★' : ''}
+                      </span>
+                    </div>
+                    {canManage && !rel.isPrimary && (
+                      <button onClick={() => onRemoveRelation(rel.id)} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity" title="Remove">
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-400 px-2">{manager ? manager.name : 'None (Root)'}</p>
+          )}
         </div>
 
         {/* Direct Reports list */}
@@ -407,12 +456,12 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
             </button>
             <button onClick={() => onChangeManager(employee)}
               className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-emerald-50 text-emerald-600 text-[12px] font-medium rounded-lg hover:bg-emerald-100 transition-colors border border-emerald-100">
-              <UserCog size={13} /> {employee.managerId ? 'Change Manager' : 'Assign Manager'}
+              <UserCog size={13} /> {employee.managerId ? 'Change Primary Manager' : 'Assign Manager'}
             </button>
             {employee.managerId && (
               <button onClick={() => onRemoveManager(employee)}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-red-50 text-red-500 text-[12px] font-medium rounded-lg hover:bg-red-100 transition-colors border border-red-100">
-                <X size={13} /> Remove Manager
+                <X size={13} /> Remove Primary Manager
               </button>
             )}
           </div>
@@ -441,6 +490,9 @@ export default function OrgChartPage() {
   const [showManageHierarchy, setShowManageHierarchy] = useState(false);
   const [showEditEmployee, setShowEditEmployee] = useState(null);
   const [showViewProfile, setShowViewProfile] = useState(null);
+  const [showAddManager, setShowAddManager] = useState(null); // employee to add secondary manager to
+  const [addManagerId, setAddManagerId] = useState('');
+  const [addManagerType, setAddManagerType] = useState('functional');
   const [promoteForm, setPromoteForm] = useState({ newRole: '', newTitle: '', newHierarchyLevel: '', notes: '' });
   const [selectedManager, setSelectedManager] = useState('');
   const [promoHistory, setPromoHistory] = useState([]);
@@ -503,29 +555,57 @@ export default function OrgChartPage() {
   async function onDropOnCard(targetNode) {
     if (!dragNode || dragNode.id === targetNode.id) { setDragNode(null); return; }
 
-    // Prevent circular
+    // Prevent circular (only relevant for primary manager)
     function isDescendant(parent, childId) {
       if (!parent.children) return false;
       return parent.children.some(c => c.id === childId || isDescendant(c, childId));
     }
-    if (isDescendant(dragNode, targetNode.id)) {
-      alert('Cannot move a parent under their own subordinate.');
+
+    const existingRelations = dragNode.managerRelations || [];
+    const alreadyLinked = existingRelations.some(r => String(r.managerId) === String(targetNode.id));
+
+    if (alreadyLinked) {
+      alert(`${dragNode.name} is already assigned to ${targetNode.name}.`);
       setDragNode(null); return;
     }
 
-    const confirmed = confirm(
-      `Move "${dragNode.name}" under "${targetNode.name}"?\n\n` +
-      `${dragNode.name} will now report to ${targetNode.name}.`
-    );
-    if (!confirmed) { setDragNode(null); return; }
+    const hasAnyManager = existingRelations.length > 0 || dragNode.managerId;
 
-    try {
-      const res = await api.put('/promotions/update-manager', { userId: dragNode.id, managerId: targetNode.id });
-      console.log('[OrgChart] Drag reassign success:', res.data);
-      await fetchData();
-    } catch (err) {
-      console.error('[OrgChart] Drag reassign failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to reassign');
+    // If employee has no manager yet, set as primary. Otherwise, add as additional.
+    if (!hasAnyManager) {
+      // First manager — set as primary
+      if (isDescendant(dragNode, targetNode.id)) {
+        alert('Cannot move a parent under their own subordinate.');
+        setDragNode(null); return;
+      }
+      const confirmed = confirm(
+        `Assign "${targetNode.name}" as primary manager for "${dragNode.name}"?`
+      );
+      if (!confirmed) { setDragNode(null); return; }
+      try {
+        await api.put('/promotions/update-manager', { userId: dragNode.id, managerId: targetNode.id });
+        await fetchData();
+      } catch (err) {
+        alert(err.response?.data?.message || 'Failed to assign manager');
+      }
+    } else {
+      // Already has manager(s) — add as additional manager via junction table
+      const confirmed = confirm(
+        `Add "${targetNode.name}" as an additional manager for "${dragNode.name}"?\n\n` +
+        `${dragNode.name} will report to both existing manager(s) and ${targetNode.name}.`
+      );
+      if (!confirmed) { setDragNode(null); return; }
+      try {
+        await api.post('/multi-manager', {
+          employeeId: dragNode.id,
+          managerId: targetNode.id,
+          relationType: 'functional',
+          isPrimary: false,
+        });
+        await fetchData();
+      } catch (err) {
+        alert(err.response?.data?.message || 'Failed to add manager relation');
+      }
     }
     setDragNode(null);
   }
@@ -559,6 +639,36 @@ export default function OrgChartPage() {
       alert(err.response?.data?.message || 'Failed to remove manager');
     }
     setDragNode(null);
+  }
+
+  // Add secondary manager relation
+  async function handleAddSecondaryManager() {
+    if (!showAddManager || !addManagerId) return;
+    try {
+      await api.post('/multi-manager', {
+        employeeId: showAddManager.id,
+        managerId: addManagerId,
+        relationType: addManagerType,
+        isPrimary: false,
+      });
+      setShowAddManager(null); setAddManagerId(''); setAddManagerType('functional');
+      await fetchData();
+    } catch (err) {
+      console.error('[OrgChart] Add secondary manager failed:', err.response?.data || err.message);
+      alert(err.response?.data?.message || 'Failed to add manager relation');
+    }
+  }
+
+  // Remove a specific manager relation by relation ID
+  async function handleRemoveRelation(relationId) {
+    if (!confirm('Remove this manager relation?')) return;
+    try {
+      await api.delete(`/multi-manager/${relationId}`);
+      await fetchData();
+    } catch (err) {
+      console.error('[OrgChart] Remove relation failed:', err.response?.data || err.message);
+      alert(err.response?.data?.message || 'Failed to remove relation');
+    }
   }
 
   // Canvas pan (middle mouse or background click)
@@ -895,6 +1005,8 @@ export default function OrgChartPage() {
               onEdit={n => setShowEditEmployee(n)}
               onChangeManager={n => { setShowChangeManager(n); setSelectedManager(n.managerId || ''); }}
               onRemoveManager={handleRemoveManager}
+              onAddSecondaryManager={n => { setShowAddManager(n); setAddManagerId(''); setAddManagerType('functional'); }}
+              onRemoveRelation={handleRemoveRelation}
               onViewProfile={n => setShowViewProfile(n)}
             />
           )}
@@ -960,6 +1072,41 @@ export default function OrgChartPage() {
       <AnimatePresence>{showManageHierarchy && <HierarchyManager levels={hierarchyLevels} onClose={() => setShowManageHierarchy(false)} onRefresh={fetchData} />}</AnimatePresence>
 
       <AnimatePresence>{showViewProfile && <ViewProfileModal employee={showViewProfile} allUsers={allUsers} hierarchyLevels={hierarchyLevels} onClose={() => setShowViewProfile(null)} />}</AnimatePresence>
+
+      {/* Add Secondary Manager Modal */}
+      <AnimatePresence>
+        {showAddManager && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={() => setShowAddManager(null)}>
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-xl p-5 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-bold text-gray-800 mb-3">Add Manager — {showAddManager.name}</h3>
+              <p className="text-[10px] text-gray-400 mb-3">Add a secondary/dotted-line manager relationship. The primary manager (tree parent) is managed separately.</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Manager</label>
+                  <select value={addManagerId} onChange={e => setAddManagerId(e.target.value)} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none">
+                    <option value="">Select manager...</option>
+                    {allUsers
+                      .filter(u => u.id !== showAddManager.id && !(showAddManager.managerRelations || []).some(r => String(r.managerId) === String(u.id)))
+                      .map(u => <option key={u.id} value={u.id}>{u.name} · {u.designation || u.role}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Relation Type</label>
+                  <select value={addManagerType} onChange={e => setAddManagerType(e.target.value)} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none">
+                    <option value="functional">Functional</option>
+                    <option value="project">Project-based</option>
+                    <option value="dotted_line">Dotted Line</option>
+                  </select>
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button onClick={handleAddSecondaryManager} disabled={!addManagerId} className="flex-1 py-2 bg-blue-500 text-white text-[12px] font-medium rounded-lg hover:bg-blue-600 disabled:opacity-50">Add Manager</button>
+                  <button onClick={() => setShowAddManager(null)} className="px-4 py-2 text-[12px] text-gray-500">Cancel</button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

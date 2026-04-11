@@ -1,6 +1,7 @@
 const http = require('http');
 const path = require('path');
 require('dotenv').config();
+// Multi-manager support: ManagerRelation model + routes added (nodemon restart trigger)
 
 const express = require('express');
 const cors = require('cors');
@@ -49,6 +50,7 @@ const extensionRoutes = require('./routes/extensions');
 const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
 const hierarchyRoutes = require('./routes/hierarchy');
+const managerRelationRoutes = require('./routes/managerRelations');
 const directorPlanRoutes = require('./routes/directorPlan');
 const archiveRoutes = require('./routes/archive');
 const pushRoutes = require('./routes/push');
@@ -97,7 +99,25 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ─── Static file serving (uploads) ──────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serves locally stored files.  In production, consider adding
+// authentication middleware here or switching to signed URLs.
+const { getUploadDir } = require('./middleware/upload');
+app.use('/uploads', express.static(getUploadDir()));
+
+// ─── Upload config endpoint (tells frontend what's allowed) ─
+const { UPLOAD_CATEGORIES } = require('./config/fileTypes');
+app.get('/api/upload-config', (req, res) => {
+  const configs = {};
+  for (const [key, cat] of Object.entries(UPLOAD_CATEGORIES)) {
+    configs[key] = {
+      label: cat.label,
+      extensions: cat.extensions,
+      accept: cat.extensions.map(e => `.${e}`).join(','),
+      maxSizeMB: cat.maxSizeMB || 25,
+    };
+  }
+  res.json({ success: true, data: configs });
+});
 
 // ─── Health check ────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
@@ -186,6 +206,7 @@ app.use('/api/extensions', extensionRoutes);
 app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/hierarchy-levels', hierarchyRoutes);
+app.use('/api/manager-relations', managerRelationRoutes);
 app.use('/api/director-plan', directorPlanRoutes);
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
@@ -194,6 +215,15 @@ app.use('/api/notes', noteRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
+
+// ─── Multi-manager relation routes (inline for reliable loading) ───
+const { authenticate: mrAuth, managerOrAdmin: mrMgr } = require('./middleware/auth');
+const mrCtrl = require('./controllers/managerRelationController');
+app.get('/api/multi-manager/:employeeId', mrAuth, mrCtrl.getRelationsForEmployee);
+app.post('/api/multi-manager', mrAuth, mrMgr, mrCtrl.addRelation);
+app.put('/api/multi-manager/:id', mrAuth, mrMgr, mrCtrl.updateRelation);
+app.delete('/api/multi-manager/:id', mrAuth, mrMgr, mrCtrl.removeRelation);
+app.post('/api/multi-manager/sync', mrAuth, mrMgr, mrCtrl.syncFromManagerId);
 
 // Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
 app.use('/api', dependencyRoutes);
@@ -361,6 +391,23 @@ const start = async () => {
     } catch (syncErr) {
       console.warn('[Server] DB sync warning (non-fatal):', syncErr.message?.slice(0, 100));
       console.log('[Server] Continuing with existing schema...');
+    }
+
+    // ── Auto-migration: Add lang column to notes table ──
+    // Must run AFTER sync so the table exists. Uses IF NOT EXISTS for idempotency.
+    try {
+      // Check if the notes table exists first
+      const [tables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'notes'`
+      );
+      if (tables.length > 0) {
+        await sequelize.query(`ALTER TABLE notes ADD COLUMN IF NOT EXISTS lang VARCHAR(10) DEFAULT 'en-US'`);
+        console.log('[Server] notes.lang column ensured.');
+      } else {
+        console.log('[Server] notes table does not exist yet — lang column will be created with table.');
+      }
+    } catch (e) {
+      console.warn('[Server] notes.lang migration warning:', e.message?.slice(0, 100));
     }
 
     // Create performance indices on frequently queried columns (safe to re-run)

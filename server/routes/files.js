@@ -1,8 +1,14 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
-const { upload, handleMulterError } = require('../middleware/upload');
+const {
+  createUpload,
+  handleMulterError,
+  postUploadValidation,
+  setCategoryMiddleware,
+} = require('../middleware/upload');
 const {
   uploadFile,
+  uploadGeneral,
   getFiles,
   deleteFile,
   downloadFile,
@@ -13,23 +19,48 @@ const router = express.Router();
 // All file routes require authentication
 router.use(authenticate);
 
-// ─── POST /api/files (multipart upload, field name: "file") ──
-router.post('/', upload.single('file'), handleMulterError, uploadFile);
+// Category-specific multer instances
+const taskUpload = createUpload('task_attachment');
+const generalUpload = createUpload('general');
+const planUpload = createUpload('plan_attachment');
 
-// ─── POST /api/files/upload-general (no taskId required) ─────
-router.post('/upload-general', upload.single('file'), handleMulterError, (req, res) => {
-  if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
-  const fileUrl = `/uploads/${req.file.filename}`;
-  res.json({ success: true, data: { url: fileUrl, filename: req.file.filename, originalName: req.file.originalname, size: req.file.size } });
-});
+// ─── POST /api/files (task attachment upload) ───────────────────────
+router.post(
+  '/',
+  setCategoryMiddleware('task_attachment'),
+  taskUpload.single('file'),
+  handleMulterError,
+  postUploadValidation('task_attachment'),
+  uploadFile,
+);
 
-// ─── GET /api/files?taskId=<uuid> ────────────────────────────
+// ─── POST /api/files/upload-general (no taskId required) ────────────
+router.post(
+  '/upload-general',
+  setCategoryMiddleware('general'),
+  generalUpload.single('file'),
+  handleMulterError,
+  postUploadValidation('general'),
+  uploadGeneral,
+);
+
+// ─── POST /api/files/upload-plan (director plan attachments) ────────
+router.post(
+  '/upload-plan',
+  setCategoryMiddleware('plan_attachment'),
+  planUpload.single('file'),
+  handleMulterError,
+  postUploadValidation('plan_attachment'),
+  uploadGeneral,
+);
+
+// ─── GET /api/files?taskId=<uuid> ──────────────────────────────────
 router.get('/', getFiles);
 
-// ─── DELETE /api/files/:id ───────────────────────────────────
+// ─── DELETE /api/files/:id ─────────────────────────────────────────
 router.delete('/:id', deleteFile);
 
-// ─── GET /api/files/:id/download ─────────────────────────────
+// ─── GET /api/files/:id/download ───────────────────────────────────
 router.get('/:id/download', downloadFile);
 
 module.exports = router;

@@ -240,13 +240,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   async function handleDeleteComment(id) { await api.delete(`/comments/${id}`); setComments(prev => prev.filter(c => c.id !== id)); }
 
   async function handleUploadFile(file) {
-    const formData = new FormData();
-    formData.append('file', file); formData.append('taskId', task.id);
-    const res = await api.post('/files', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
-    setFiles(prev => [...prev, res.data.file || res.data]);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('taskId', task.id);
+      const res = await api.post('/files', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setFiles(prev => [...prev, res.data.file || res.data.data?.file || res.data]);
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to upload file.';
+      alert(msg);
+    }
   }
 
-  async function handleDeleteFile(id) { await api.delete(`/files/${id}`); setFiles(prev => prev.filter(f => f.id !== id)); }
+  async function handleDeleteFile(id) {
+    try {
+      await api.delete(`/files/${id}`);
+      setFiles(prev => prev.filter(f => f.id !== id));
+    } catch (err) {
+      console.error('Failed to delete file:', err);
+    }
+  }
 
   async function handleDelete() {
     if (!confirm('Delete this task?')) return;

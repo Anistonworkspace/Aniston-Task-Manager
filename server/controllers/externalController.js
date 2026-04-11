@@ -1,5 +1,6 @@
 const { User, Department, Task, Board, Subtask, WorkLog } = require('../models');
 const { Op } = require('sequelize');
+const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 
 // Fields to NEVER expose to external consumers
 const EXCLUDED_FIELDS = ['password', 'teamsAccessToken', 'teamsRefreshToken', 'teamsTokenExpiry'];
@@ -135,7 +136,7 @@ const getAllEmployees = async (req, res) => {
           { model: Board, as: 'board', attributes: ['id', 'name'] },
           { model: Subtask, as: 'subtasks', attributes: ['id', 'title', 'status'], required: false },
         ],
-        order: [['dueDate', 'ASC NULLS LAST'], ['createdAt', 'DESC']],
+        order: buildPendingPriorityOrder(),
       });
 
       // Group tasks by assignedTo
@@ -252,7 +253,7 @@ const getEmployeeById = async (req, res) => {
         { model: Board, as: 'board', attributes: ['id', 'name'] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'title', 'status'], required: false },
       ],
-      order: [['dueDate', 'ASC NULLS LAST'], ['createdAt', 'DESC']],
+      order: buildPendingPriorityOrder(),
     });
 
     employee.taskStats = computeTaskStats(tasks);

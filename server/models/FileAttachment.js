@@ -12,7 +12,7 @@ const FileAttachment = sequelize.define(
     filename: {
       type: DataTypes.STRING(500),
       allowNull: false,
-      comment: 'Generated filename stored on disk / S3',
+      comment: 'Generated filename stored on disk / S3 / cloud',
     },
     originalName: {
       type: DataTypes.STRING(500),
@@ -34,6 +34,18 @@ const FileAttachment = sequelize.define(
       type: DataTypes.STRING(1000),
       allowNull: false,
       comment: 'Relative or absolute URL to access the file',
+    },
+    provider: {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+      defaultValue: 'local',
+      comment: 'Storage provider that holds this file (local, s3, cloudinary)',
+    },
+    category: {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+      defaultValue: 'task_attachment',
+      comment: 'Upload category / purpose (task_attachment, avatar, plan_attachment, etc.)',
     },
     taskId: {
       type: DataTypes.UUID,

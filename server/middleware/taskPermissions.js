@@ -30,16 +30,16 @@ function attachTaskPermissions(req, res, next) {
     isSuperAdmin,
     // Full access: admin (or super admin) sees everything
     hasFullAccess: isSuperAdmin || role === 'admin',
-    // Board-level access: manager sees all tasks in their boards
-    hasBoardAccess: role === 'manager',
-    // Partial access: assistant_manager sees their team's tasks
-    hasPartialAccess: role === 'assistant_manager',
+    // Board-level access: manager and assistant_manager see all tasks in their boards
+    hasBoardAccess: role === 'manager' || role === 'assistant_manager',
+    // Partial access: (reserved for future roles with team-scoped visibility)
+    hasPartialAccess: false,
     // Restricted: employee/member sees only their own tasks
     isRestricted: role === 'member',
     // Action permissions based on role
     canCreate: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
-    canEditOthers: isSuperAdmin || ['admin', 'manager'].includes(role),
-    canDelete: isSuperAdmin || ['admin', 'manager'].includes(role),
+    canEditOthers: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
+    canDelete: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
     canAssignMembers: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
     canManageBoardSettings: isSuperAdmin || role === 'admin',
   };
@@ -62,42 +62,9 @@ async function buildTaskVisibilityFilter(user, boardId) {
     return {};
   }
 
-  // Manager — full access to tasks within the board (no additional filter needed when boardId given)
-  if (role === 'manager') {
+  // Manager / Assistant Manager — full access to tasks within the board
+  if (role === 'manager' || role === 'assistant_manager') {
     return {};
-  }
-
-  // Assistant manager — can see tasks of team members they manage + their own tasks
-  if (role === 'assistant_manager') {
-    // Get IDs of users this assistant_manager manages
-    const teamMembers = await User.findAll({
-      where: { managerId: user.id },
-      attributes: ['id'],
-      raw: true,
-    });
-    const teamMemberIds = teamMembers.map(m => m.id);
-    teamMemberIds.push(user.id); // Include self
-
-    return {
-      [Op.or]: [
-        // Tasks the user created (so they can see tasks they just made)
-        { createdBy: user.id },
-        // User is directly linked via task_assignees
-        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = '${user.id}')`),
-        // User is linked via task_owners (multi-owner)
-        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = '${user.id}')`),
-        // Task has any assignee who is a team member (via task_assignees)
-        ...(teamMemberIds.length > 0
-          ? [sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" IN (${teamMemberIds.map(id => `'${id}'`).join(',')}))`)]
-          : []),
-        // Team member tasks via task_owners
-        ...(teamMemberIds.length > 0
-          ? [sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" IN (${teamMemberIds.map(id => `'${id}'`).join(',')}))`)]
-          : []),
-        // Backward compat: old assignedTo column
-        { assignedTo: { [Op.in]: teamMemberIds } },
-      ],
-    };
   }
 
   // Member/employee — ONLY see tasks they are personally linked to
@@ -200,8 +167,8 @@ function checkTaskAction(action, user, task, taskAssignees = []) {
     }
 
     case 'delete': {
-      // Only manager+ can delete
-      if (role === 'manager') return { allowed: true, reason: 'manager_access' };
+      // Manager and assistant_manager can delete
+      if (role === 'manager' || role === 'assistant_manager') return { allowed: true, reason: 'manager_access' };
       // Members can archive their own tasks
       if ((isAssignee || task.assignedTo === user.id) && role === 'member') {
         return { allowed: true, reason: 'member_archive_only' };
@@ -236,8 +203,8 @@ async function canViewTask(req, res, next) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
 
-  // Admin/super admin — always allowed
-  if (isSuperAdmin || role === 'admin' || role === 'manager') {
+  // Admin/super admin/manager/assistant_manager — always allowed
+  if (isSuperAdmin || role === 'admin' || role === 'manager' || role === 'assistant_manager') {
     return next();
   }
 

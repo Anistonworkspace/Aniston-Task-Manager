@@ -16,6 +16,7 @@ const { scheduleReminders, cancelReminders, rescheduleReminders } = require('../
 const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentNotificationService');
 const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
+const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 
 // Reusable include block for the two user associations that appear on every task query
 const TASK_INCLUDES = [
@@ -309,11 +310,15 @@ const getTasks = async (req, res) => {
     }
 
     const ALLOWED_SORT_FIELDS = ['title', 'status', 'priority', 'dueDate', 'position', 'createdAt', 'progress', 'startDate', 'updatedAt'];
-    const order = [];
+    let order;
     if (sortBy && ALLOWED_SORT_FIELDS.includes(sortBy)) {
-      order.push([sortBy, sortOrder === 'desc' ? 'DESC' : 'ASC']);
+      // User explicitly selected a sort — respect it
+      order = [[sortBy, sortOrder === 'desc' ? 'DESC' : 'ASC']];
     } else {
-      order.push(['position', 'ASC']);
+      // Default for ALL queries: pending task prioritization
+      // Board, My Work, Home, cross-board — all use urgency-based ordering
+      // DnD manual ordering is applied only when user explicitly selects sortBy=position
+      order = buildPendingPriorityOrder();
     }
 
     const queryOpts = {

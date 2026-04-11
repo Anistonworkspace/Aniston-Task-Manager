@@ -7,6 +7,7 @@ const Note = sequelize.define('Note', {
   content: { type: DataTypes.TEXT, allowNull: false, defaultValue: '' },
   duration: { type: DataTypes.INTEGER, defaultValue: 0 },
   type: { type: DataTypes.STRING(20), defaultValue: 'voice_note' },
+  lang: { type: DataTypes.STRING(10), defaultValue: 'en-US' },
   userId: { type: DataTypes.UUID, allowNull: false },
 }, { tableName: 'notes', timestamps: true });
 

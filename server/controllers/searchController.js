@@ -1,5 +1,6 @@
 const { Task, Board, User } = require('../models');
 const { Op } = require('sequelize');
+const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 
 /**
  * GET /api/search?q=...&limit=20
@@ -36,8 +37,8 @@ const globalSearch = async (req, res) => {
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
         { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
       ],
-      attributes: ['id', 'title', 'status', 'priority', 'groupId', 'boardId', 'updatedAt'],
-      order: [['updatedAt', 'DESC']],
+      attributes: ['id', 'title', 'status', 'priority', 'progress', 'dueDate', 'groupId', 'boardId', 'updatedAt', 'createdAt'],
+      order: buildPendingPriorityOrder(),
       limit: maxResults,
     });
 

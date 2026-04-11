@@ -20,7 +20,7 @@ const {
   getSsoStatus,
   getAssignableUsersList,
 } = require('../controllers/authController');
-const { upload, handleMulterError, validateFileSignature } = require('../middleware/upload');
+const { createUpload, handleMulterError, postUploadValidation, setCategoryMiddleware } = require('../middleware/upload');
 
 const router = express.Router();
 
@@ -195,7 +195,8 @@ router.put(
 );
 
 // ─── POST /api/auth/avatar ────────────────────────────────────
-router.post('/avatar', authenticate, upload.single('avatar'), handleMulterError, validateFileSignature, uploadAvatar);
+const avatarUpload = createUpload('avatar');
+router.post('/avatar', authenticate, setCategoryMiddleware('avatar'), avatarUpload.single('avatar'), handleMulterError, postUploadValidation('avatar'), uploadAvatar);
 
 // ─── GET /api/auth/users ─────────────────────────────────────
 router.get('/users', authenticate, getAllUsers);

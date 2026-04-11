@@ -517,7 +517,7 @@ export default function DirectorDashboardPage() {
                             {(t.attachments || []).length > 0 && (
                               <div className="px-3 pb-2 ml-8 space-y-1">
                                 {(t.attachments || []).map((att, ai) => (
-                                  <a key={ai} href={`${window.location.protocol}//${window.location.hostname}:5000${att.url}`}
+                                  <a key={ai} href={att.url}
                                     target="_blank" rel="noopener noreferrer"
                                     className="flex items-center gap-2 text-[11px] text-indigo-500 hover:text-indigo-700 hover:underline py-0.5">
                                     <FileText size={11} className="flex-shrink-0" />

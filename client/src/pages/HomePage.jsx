@@ -12,6 +12,7 @@ import api from '../services/api';
 import useSocket from '../hooks/useSocket';
 import { staggerContainer, staggerItem, fadeInUp, hoverLift, pressable } from '../utils/animations';
 import { useToast } from '../components/common/Toast';
+import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 
 // Animated number that counts up from 0
 function AnimatedNumber({ value }) {
@@ -91,13 +92,7 @@ export default function HomePage() {
     try {
       const res = await api.get('/tasks?assignedTo=me&limit=20');
       let tasks = res.data.tasks || res.data || [];
-      tasks.sort((a, b) => {
-        if (a.status === 'done' && b.status !== 'done') return 1;
-        if (a.status !== 'done' && b.status === 'done') return -1;
-        if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
-        if (a.dueDate) return -1;
-        return 1;
-      });
+      tasks = sortTasksByPendingPriority(tasks);
       setMyTasks(tasks.slice(0, 10));
     } catch (err) { toastError('Failed to load tasks'); }
   }
