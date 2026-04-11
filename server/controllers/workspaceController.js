@@ -1,6 +1,7 @@
 const { Workspace, Board, User } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
+const { safeUUIDList } = require('../utils/safeSql');
 
 // GET /api/workspaces/mine — workspaces visible to current user
 // Admins/Managers: see all workspaces
@@ -39,7 +40,7 @@ exports.getMyWorkspaces = async (req, res) => {
       visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
     }
 
-    const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+    const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
 
     // Find ALL accessible board IDs for this user (or team) — used to filter both workspaces AND boards within them
     const accessibleBoardCondition = `
@@ -167,7 +168,7 @@ exports.getWorkspace = async (req, res) => {
       let hasAccessibleBoard = false;
       if (!isCreator && !isAssignedWorkspace && !isWsMember) {
         const { sequelize } = require('../config/db');
-        const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+        const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
         const [rows] = await sequelize.query(
           `SELECT 1 FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
             b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
@@ -186,7 +187,7 @@ exports.getWorkspace = async (req, res) => {
 
       // Filter boards within the workspace to only show accessible ones
       const { sequelize } = require('../config/db');
-      const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+      const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
       const [accessibleBoardRows] = await sequelize.query(
         `SELECT DISTINCT b.id FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
           b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))

@@ -21,6 +21,7 @@ import HelpRequestModal from './HelpRequestModal';
 import ConflictWarning from './ConflictWarning';
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
+import useSocket from '../../hooks/useSocket';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin } = useAuth();
@@ -92,6 +93,24 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
+
+  // Realtime: listen for new comments on this task
+  useSocket('comment:created', (data) => {
+    if (data?.taskId === task?.id) {
+      setComments(prev => {
+        // Prevent duplicates (from optimistic local add + server broadcast)
+        if (prev.some(c => c.id === data.comment?.id)) return prev;
+        return [data.comment, ...prev];
+      });
+    }
+  });
+
+  // Realtime: listen for deleted comments on this task
+  useSocket('comment:deleted', (data) => {
+    if (data?.taskId === task?.id) {
+      setComments(prev => prev.filter(c => c.id !== data.commentId));
+    }
+  });
 
   async function loadComments() {
     try {
@@ -787,7 +806,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 <GrammarSuggestion
                   suggestion={descGrammarSuggestion}
                   isChecking={isCheckingDescGrammar}
-                  onApply={() => { const corrected = applyDescGrammar(); setDescription(corrected); save({ description: corrected }); }}
+                  onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
                   onDismiss={dismissDescGrammar}
                 />
               </>

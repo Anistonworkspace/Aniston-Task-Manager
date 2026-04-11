@@ -32,25 +32,35 @@ export function AuthProvider({ children }) {
   }, []);
 
   const [effectivePermissions, setEffectivePermissions] = useState({});
+  const [granularPermissions, setGranularPermissions] = useState({});
+  const [permissionOverrides, setPermissionOverrides] = useState([]);
 
   // Load effective permissions (role + grants merged) from the server
   const loadPermissions = useCallback(async () => {
     try {
       const res = await api.get('/auth/me/permissions');
       const data = res.data;
-      // Server returns { permissions: {...}, grants: [...], role, isSuperAdmin }
+      // Server returns { permissions (legacy), granularPermissions (new), grants, overrides, role, isSuperAdmin }
       const perms = data?.permissions || data?.data?.permissions || {};
+      const granular = data?.granularPermissions || data?.data?.granularPermissions || {};
       const rawGrants = data?.grants || data?.data?.grants || [];
+      const overrides = data?.overrides || data?.data?.overrides || [];
       setEffectivePermissions(perms);
+      setGranularPermissions(granular);
+      setPermissionOverrides(overrides);
       setPermissionGrants((Array.isArray(rawGrants) ? rawGrants : []).map(g => ({
         resourceType: g.resourceType,
         permissionLevel: g.permissionLevel,
+        action: g.action,
         resourceId: g.resourceId || null,
+        scope: g.scope,
       })));
     } catch (err) {
       console.warn('Failed to load permissions:', err.message);
       setEffectivePermissions({});
+      setGranularPermissions({});
       setPermissionGrants([]);
+      setPermissionOverrides([]);
     }
   }, []);
 
@@ -204,7 +214,7 @@ export function AuthProvider({ children }) {
       user, token, loading, login, loginWithToken, logout, updateProfile,
       isAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
       isSuperAdmin, viewAsRole, switchViewAs, effectiveRole,
-      permissionGrants, effectivePermissions, loadPermissions,
+      permissionGrants, effectivePermissions, granularPermissions, permissionOverrides, loadPermissions,
     }}>
       {children}
     </AuthContext.Provider>

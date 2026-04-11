@@ -104,11 +104,12 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Emit global error event for toast notifications (skip 401 auth errors and 404 not-found)
-    if (error.response && error.response.status !== 401 && error.response.status !== 404 && !axios.isCancel(error)) {
+    // Emit global error event for toast notifications (skip 401 auth errors, 404 not-found, and silent requests)
+    const isSilent = originalRequest?._silent;
+    if (!isSilent && error.response && error.response.status !== 401 && error.response.status !== 404 && !axios.isCancel(error)) {
       const message = error.response?.data?.message || error.message || 'Something went wrong';
       window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: error.response?.status } }));
-    } else if (!error.response && error.message && !axios.isCancel(error)) {
+    } else if (!isSilent && !error.response && error.message && !axios.isCancel(error)) {
       window.dispatchEvent(new CustomEvent('api-error', { detail: { message: 'Network error. Please check your connection.', status: 0 } }));
     }
 

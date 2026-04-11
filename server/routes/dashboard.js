@@ -11,6 +11,7 @@ router.get('/stats', getDashboardStats);
 router.get('/role', getRoleDashboard);
 router.get('/enterprise', managerOrAdmin, getEnterpriseDashboard);
 router.get('/member/:userId/tasks', managerOrAdmin, getMemberTasks);
-router.get('/director', getDirectorDashboard);
+// Director dashboard restricted to management roles
+router.get('/director', managerOrAdmin, getDirectorDashboard);
 
 module.exports = router;

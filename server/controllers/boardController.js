@@ -6,6 +6,7 @@ const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isValidStatus } = require('../utils/statusConfig');
 const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritization');
+const { safeUUIDList } = require('../utils/safeSql');
 
 /**
  * POST /api/boards
@@ -97,7 +98,7 @@ const getBoards = async (req, res) => {
     if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
       // Members only see boards they are connected to
       const visibleUserIds = [userId];
-      const userIdList = visibleUserIds.map(id => `'${id}'`).join(',');
+      const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
 
       where[Op.or] = [
         // Board created by user (or team member for assistant_manager)
@@ -523,12 +524,37 @@ const reorderGroups = async (req, res) => {
 
 /**
  * GET /api/boards/:id/export?format=csv
- * Export board tasks as CSV
+ * Export board tasks as CSV.
+ * Requires authentication (applied at router level) + board-level access.
  */
 const exportBoard = async (req, res) => {
   try {
-    const board = await Board.findByPk(req.params.id);
+    const board = await Board.findByPk(req.params.id, {
+      include: [
+        { model: User, as: 'members', attributes: ['id'], through: { attributes: [] } },
+      ],
+    });
     if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
+
+    // Board-level access check: admin/manager/assistant_manager can export any board;
+    // members can only export boards they belong to (as member, assignee, or creator).
+    const role = req.user.role;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
+      const userId = req.user.id;
+      const isMember = board.members && board.members.some(m => m.id === userId);
+      const isCreator = board.createdBy === userId;
+      if (!isMember && !isCreator) {
+        // Also check if user has tasks in this board via task_assignees
+        const assigneeCount = await TaskAssignee.count({
+          include: [{ model: Task, as: 'task', attributes: [], where: { boardId: board.id, isArchived: false }, required: true }],
+          where: { userId },
+        });
+        if (assigneeCount === 0) {
+          return res.status(403).json({ success: false, message: 'Access denied. You are not authorized to export this board.' });
+        }
+      }
+    }
 
     const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
     const tasks = await Task.findAll({

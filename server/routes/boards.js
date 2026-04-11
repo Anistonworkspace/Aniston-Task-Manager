@@ -84,7 +84,7 @@ router.post(
 // ─── DELETE /api/boards/:id/members/:userId (manager/admin) ──
 router.delete('/:id/members/:userId', boardMutate, removeMember);
 
-// Export/Import
+// Export/Import — export requires board-level access (checked in controller); import requires manager+
 router.get('/:id/export', exportBoard);
 router.post('/:id/import', boardMutate, importTasks);
 

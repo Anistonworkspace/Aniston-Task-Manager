@@ -1,77 +1,47 @@
 'use strict';
 
-const { Op, literal, fn, col, cast } = require('sequelize');
+const { literal } = require('sequelize');
 
 /**
- * Pending Task Prioritization System
+ * Task Prioritization & Auto-Group Assignment System
  *
- * Priority order:
- *   1. Pending/unfinished tasks before completed tasks
- *   2. Among pending: stuck/blocked → overdue → in progress → review → not started
- *   3. Progress-based tie-breaking (lower progress = more attention needed)
- *   4. Due date tie-breaking (overdue first, then earliest due)
- *   5. updatedAt DESC, then createdAt DESC for stable ordering
+ * Sorting order (within each board group):
+ *   1. Completed tasks sink to bottom
+ *   2. Priority field: critical (0) > high (1) > medium (2) > low (3)
+ *   3. Due date: earliest first, null/missing at bottom
+ *   4. CreatedAt DESC for stable ordering
  *
- * Completed statuses sink to bottom.
+ * Auto-group assignment:
+ *   When a task's status changes, it is automatically moved to the
+ *   board group that matches the new status (e.g., done → "Done" group).
  */
+
+// ─── Priority field mapping ────────────────────────────────────────────────
+
+const PRIORITY_RANK = {
+  critical: 0,
+  high:     1,
+  medium:   2,
+  low:      3,
+};
+
+function getPriorityRank(priority) {
+  if (!priority) return 3; // no priority = treat as low
+  const key = String(priority).toLowerCase().trim();
+  return PRIORITY_RANK[key] !== undefined ? PRIORITY_RANK[key] : 3;
+}
 
 // ─── Status classification ──────────────────────────────────────────────────
 
 const COMPLETED_STATUSES = new Set(['done', 'completed', 'closed', 'finished']);
 
-/**
- * Returns true if the status key represents a completed/done state.
- */
 function isCompletedStatus(status) {
   if (!status) return false;
-  const key = String(status).toLowerCase().trim();
-  return COMPLETED_STATUSES.has(key);
-}
-
-/**
- * Status urgency score — lower number = higher urgency (appears first).
- * Stuck/blocked are most urgent, done is least.
- */
-const STATUS_URGENCY = {
-  stuck:               10,
-  blocked:             10,
-  escalated:           10,
-  // in-progress statuses
-  working_on_it:       30,
-  in_progress:         30,
-  // review / waiting statuses
-  review:              40,
-  in_review:           40,
-  waiting_for_review:  40,
-  pending_deploy:      40,
-  approval_pending:    40,
-  qa:                  40,
-  // not started / ready
-  ready_to_start:      50,
-  not_started:         50,
-  pending:             50,
-  // completed — always last
-  done:                90,
-  completed:           90,
-  closed:              90,
-  finished:            90,
-};
-
-const DEFAULT_URGENCY_PENDING  = 50;  // unknown pending status
-const DEFAULT_URGENCY_DONE     = 90;  // unknown completed status
-
-function getStatusUrgency(status) {
-  if (!status) return DEFAULT_URGENCY_PENDING;
-  const key = String(status).toLowerCase().trim();
-  if (STATUS_URGENCY[key] !== undefined) return STATUS_URGENCY[key];
-  return isCompletedStatus(key) ? DEFAULT_URGENCY_DONE : DEFAULT_URGENCY_PENDING;
+  return COMPLETED_STATUSES.has(String(status).toLowerCase().trim());
 }
 
 // ─── Progress normalization ─────────────────────────────────────────────────
 
-/**
- * Normalize progress to 0..100 integer, handling null/undefined/strings.
- */
 function normalizeProgress(progress) {
   if (progress == null) return 0;
   let val = progress;
@@ -87,9 +57,6 @@ function normalizeProgress(progress) {
 
 // ─── Overdue detection ──────────────────────────────────────────────────────
 
-/**
- * Returns true if the task is overdue (dueDate in the past and not completed).
- */
 function isOverdue(task) {
   if (!task || !task.dueDate) return false;
   if (isCompletedStatus(task.status)) return false;
@@ -100,165 +67,112 @@ function isOverdue(task) {
   return due < today;
 }
 
-// ─── In-memory sort comparator ──────────────────────────────────────────────
+// ─── In-memory sort ─────────────────────────────────────────────────────────
 
 /**
- * Compute a numeric priority score for a task. Lower = higher priority.
+ * Compute a numeric score for a task. Lower = higher priority (appears first).
  *
- * Score breakdown (additive):
- *   completedBucket:  0 (pending) or 10000 (completed)
- *   overdueBoost:     -500 if overdue and pending
- *   statusUrgency:    10..90 (×10 for spread)
- *   progressPenalty:  for pending tasks, lower progress = lower score (higher priority)
- *                     inverted: (100 - progress) so 0% progress → +100, 100% → +0
- *   dueDateFactor:    days until due × 0.1 (earlier = lower score)
+ * Score:
+ *   +10000  if completed (sinks to bottom)
+ *   priority rank × 1000 (critical=0, high=1000, medium=2000, low=3000)
+ *   due date factor: days until due (earlier = lower). No due date = +9999
+ *   createdAt tiebreaker
  */
 function getTaskPriorityScore(task) {
   if (!task) return 99999;
 
-  const status = task.status || 'not_started';
-  const completed = isCompletedStatus(status);
-  const progress = normalizeProgress(task.progress);
-
+  const completed = isCompletedStatus(task.status);
   let score = 0;
 
-  // 1. Completed tasks get a massive penalty to push them to bottom
-  if (completed) {
-    score += 10000;
-  }
+  // 1. Completed tasks → bottom
+  if (completed) score += 10000;
 
-  // 2. Overdue boost for pending tasks
-  if (!completed && isOverdue(task)) {
-    score -= 500;
-  }
+  // 2. Priority rank (critical=0, high=1000, medium=2000, low=3000)
+  score += getPriorityRank(task.priority) * 1000;
 
-  // 3. Status urgency (10..90 range, multiply by 10 for spacing)
-  score += getStatusUrgency(status) * 10;
-
-  // 4. Progress factor for pending tasks
-  //    Lower progress = needs more attention = should appear higher
-  if (!completed) {
-    score += progress;  // 0% → +0 (highest priority), 100% → +100 (lower priority)
-  }
-
-  // 5. Due date factor
+  // 3. Due date: earlier = lower score. No due date = large penalty
   if (task.dueDate && !completed) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const due = new Date(task.dueDate);
     due.setHours(0, 0, 0, 0);
     const daysUntil = (due - today) / (1000 * 60 * 60 * 24);
-    score += daysUntil * 0.1;  // earlier due = lower score
+    score += daysUntil; // overdue → negative → rises to top
+  } else if (!completed) {
+    score += 9999; // no due date → bottom of its priority tier
   }
 
   return score;
 }
 
 /**
- * Sort an array of task objects by pending priority.
+ * Sort tasks by: completed last → priority (critical>high>medium>low) → due date → createdAt.
  * Returns a new sorted array (does not mutate input).
- *
- * Deterministic tie-breaking: updatedAt DESC → createdAt DESC → id ASC.
  */
 function sortTasksByPendingPriority(tasks) {
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks || [];
 
   return [...tasks].sort((a, b) => {
-    const scoreA = getTaskPriorityScore(a);
-    const scoreB = getTaskPriorityScore(b);
+    // 1. Completed tasks always at bottom
+    const aDone = isCompletedStatus(a.status) ? 1 : 0;
+    const bDone = isCompletedStatus(b.status) ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
 
-    if (scoreA !== scoreB) return scoreA - scoreB;
+    // 2. Priority rank (critical=0, high=1, medium=2, low=3)
+    const aPri = getPriorityRank(a.priority);
+    const bPri = getPriorityRank(b.priority);
+    if (aPri !== bPri) return aPri - bPri;
 
-    // Tie-breaker 1: more recently updated first
-    const updA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-    const updB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-    if (updA !== updB) return updB - updA;
+    // 3. Due date (earliest first, null at bottom)
+    const aDate = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+    const bDate = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+    if (aDate !== bDate) return aDate - bDate;
 
-    // Tie-breaker 2: more recently created first
-    const creA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const creB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-    if (creA !== creB) return creB - creA;
+    // 4. CreatedAt DESC (newest first as tiebreaker)
+    const aCre = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bCre = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    if (aCre !== bCre) return bCre - aCre;
 
-    // Tie-breaker 3: stable ID ordering
-    const idA = String(a.id || '');
-    const idB = String(b.id || '');
-    return idA.localeCompare(idB);
+    // 5. Stable ID tiebreaker
+    return String(a.id || '').localeCompare(String(b.id || ''));
   });
 }
 
 // ─── Sequelize ORDER clause ─────────────────────────────────────────────────
 
 /**
- * Build a Sequelize-compatible ORDER array that implements pending-task
- * prioritization at the database level.
- *
- * Uses CASE expressions for status bucketing and overdue detection.
- * Falls back to progress, dueDate, updatedAt for tie-breaking.
- *
- * @returns {Array} Sequelize order array
+ * Build a Sequelize ORDER array:
+ *   1. Completed tasks last
+ *   2. Priority: critical(0) > high(1) > medium(2) > low(3)
+ *   3. Due date ASC NULLS LAST
+ *   4. createdAt DESC
  */
 function buildPendingPriorityOrder() {
-  // 1. Completed tasks last (CASE: done/completed/closed/finished → 1, else 0)
   const completedBucket = literal(`
     CASE WHEN LOWER("Task"."status") IN ('done','completed','closed','finished')
          THEN 1 ELSE 0 END
   `);
 
-  // 2. Overdue pending tasks first
-  //    (status not done AND dueDate < today → 0, else 1)
-  const overdueBucket = literal(`
-    CASE WHEN LOWER("Task"."status") NOT IN ('done','completed','closed','finished')
-              AND "Task"."dueDate" IS NOT NULL
-              AND "Task"."dueDate" < CURRENT_DATE
-         THEN 0 ELSE 1 END
-  `);
-
-  // 3. Status urgency ordering
-  const statusUrgency = literal(`
-    CASE LOWER("Task"."status")
-      WHEN 'stuck'              THEN 1
-      WHEN 'blocked'            THEN 1
-      WHEN 'escalated'          THEN 1
-      WHEN 'working_on_it'      THEN 3
-      WHEN 'in_progress'        THEN 3
-      WHEN 'review'             THEN 4
-      WHEN 'waiting_for_review' THEN 4
-      WHEN 'pending_deploy'     THEN 4
-      WHEN 'ready_to_start'     THEN 5
-      WHEN 'not_started'        THEN 5
-      WHEN 'done'               THEN 9
-      WHEN 'completed'          THEN 9
-      WHEN 'closed'             THEN 9
-      WHEN 'finished'           THEN 9
-      ELSE 5
-    END
-  `);
-
-  // 4. Progress: for pending tasks, lower progress first (needs more attention)
-  //    For completed tasks, progress doesn't matter — push to end
-  const progressOrder = literal(`
-    CASE WHEN LOWER("Task"."status") IN ('done','completed','closed','finished')
-         THEN 100
-         ELSE COALESCE("Task"."progress", 0)
+  const priorityRank = literal(`
+    CASE LOWER("Task"."priority")
+      WHEN 'critical' THEN 0
+      WHEN 'high'     THEN 1
+      WHEN 'medium'   THEN 2
+      WHEN 'low'      THEN 3
+      ELSE 3
     END
   `);
 
   return [
-    [completedBucket, 'ASC'],    // pending first
-    [overdueBucket, 'ASC'],      // overdue pending first
-    [statusUrgency, 'ASC'],      // stuck > in-progress > review > not-started > done
-    [progressOrder, 'ASC'],      // lower progress first (among pending)
-    ['dueDate', 'ASC NULLS LAST'], // earlier due date first, no-date last
-    ['updatedAt', 'DESC'],       // recently updated first
+    [completedBucket, 'ASC'],          // pending first, done last
+    [priorityRank, 'ASC'],             // critical > high > medium > low
+    ['dueDate', 'ASC NULLS LAST'],     // earliest due first, no-date last
+    ['createdAt', 'DESC'],             // newest first as tiebreaker
   ];
 }
 
 /**
- * Same as buildPendingPriorityOrder but with a custom table alias for use
- * in nested includes (e.g., when Task is included inside Board).
- *
- * @param {string} alias - The SQL alias for the tasks table (e.g., 'tasks')
- * @returns {Array} Sequelize order array
+ * Same as buildPendingPriorityOrder but with a custom table alias.
  */
 function buildPendingPriorityOrderAliased(alias) {
   const q = alias;
@@ -268,60 +182,96 @@ function buildPendingPriorityOrderAliased(alias) {
          THEN 1 ELSE 0 END
   `);
 
-  const overdueBucket = literal(`
-    CASE WHEN LOWER("${q}"."status") NOT IN ('done','completed','closed','finished')
-              AND "${q}"."dueDate" IS NOT NULL
-              AND "${q}"."dueDate" < CURRENT_DATE
-         THEN 0 ELSE 1 END
-  `);
-
-  const statusUrgency = literal(`
-    CASE LOWER("${q}"."status")
-      WHEN 'stuck'              THEN 1
-      WHEN 'blocked'            THEN 1
-      WHEN 'escalated'          THEN 1
-      WHEN 'working_on_it'      THEN 3
-      WHEN 'in_progress'        THEN 3
-      WHEN 'review'             THEN 4
-      WHEN 'waiting_for_review' THEN 4
-      WHEN 'pending_deploy'     THEN 4
-      WHEN 'ready_to_start'     THEN 5
-      WHEN 'not_started'        THEN 5
-      WHEN 'done'               THEN 9
-      WHEN 'completed'          THEN 9
-      WHEN 'closed'             THEN 9
-      WHEN 'finished'           THEN 9
-      ELSE 5
-    END
-  `);
-
-  const progressOrder = literal(`
-    CASE WHEN LOWER("${q}"."status") IN ('done','completed','closed','finished')
-         THEN 100
-         ELSE COALESCE("${q}"."progress", 0)
+  const priorityRank = literal(`
+    CASE LOWER("${q}"."priority")
+      WHEN 'critical' THEN 0
+      WHEN 'high'     THEN 1
+      WHEN 'medium'   THEN 2
+      WHEN 'low'      THEN 3
+      ELSE 3
     END
   `);
 
   return [
     [completedBucket, 'ASC'],
-    [overdueBucket, 'ASC'],
-    [statusUrgency, 'ASC'],
-    [progressOrder, 'ASC'],
+    [priorityRank, 'ASC'],
     [literal(`"${q}"."dueDate"`), 'ASC NULLS LAST'],
-    [literal(`"${q}"."updatedAt"`), 'DESC'],
+    [literal(`"${q}"."createdAt"`), 'DESC'],
   ];
+}
+
+// ─── Auto-group assignment ──────────────────────────────────────────────────
+
+/**
+ * Status-to-group keyword mapping.
+ * Keys are status values, values are regex patterns to match group titles.
+ */
+const STATUS_GROUP_MAP = {
+  // Completed statuses → "Done" / "Completed" / "Finished" / "Closed" group
+  done:       /done|complet|finish|closed/i,
+  completed:  /done|complet|finish|closed/i,
+  closed:     /done|complet|finish|closed/i,
+  finished:   /done|complet|finish|closed/i,
+
+  // Active/working statuses → "In Progress" / "Working" / "Active" group
+  working_on_it:      /progress|working|active|doing|started/i,
+  in_progress:        /progress|working|active|doing|started/i,
+
+  // Stuck / blocked → "Stuck" / "Blocked" group (if exists)
+  stuck:    /stuck|block/i,
+  blocked:  /stuck|block/i,
+
+  // Review statuses → "Review" / "QA" group (if exists)
+  review:             /review|qa|test|verify/i,
+  waiting_for_review: /review|qa|test|verify/i,
+  pending_deploy:     /deploy|release|staging/i,
+
+  // Not started → "To Do" / "New" / "Not Started" / "Backlog" or first group
+  not_started:    /to.?do|not.?started|new|backlog|pending|todo/i,
+  ready_to_start: /to.?do|not.?started|new|backlog|pending|todo|ready/i,
+};
+
+/**
+ * Find the best matching board group for a given task status.
+ *
+ * @param {string} status - The task status value (e.g., 'done', 'working_on_it')
+ * @param {Array} groups  - Board groups array: [{ id, title, color, position }]
+ * @returns {string|null} The matching group id, or null if no match found
+ */
+function findGroupForStatus(status, groups) {
+  if (!status || !Array.isArray(groups) || groups.length === 0) return null;
+
+  const key = String(status).toLowerCase().trim();
+
+  // 1. Exact match: group id matches the status key directly
+  const exactMatch = groups.find(g => g.id === key);
+  if (exactMatch) return exactMatch.id;
+
+  // 2. Pattern match: use the status-to-group regex map
+  const pattern = STATUS_GROUP_MAP[key];
+  if (pattern) {
+    const match = groups.find(g => pattern.test(g.title || g.name || ''));
+    if (match) return match.id;
+  }
+
+  // 3. For not-started/unknown statuses, fall back to the first group
+  if (key === 'not_started' || key === 'pending' || key === 'ready_to_start') {
+    return groups[0]?.id || null;
+  }
+
+  return null; // no match → don't move the task
 }
 
 module.exports = {
   isCompletedStatus,
-  getStatusUrgency,
+  getPriorityRank,
   normalizeProgress,
   isOverdue,
   getTaskPriorityScore,
   sortTasksByPendingPriority,
   buildPendingPriorityOrder,
   buildPendingPriorityOrderAliased,
-  // Exported for testing
+  findGroupForStatus,
   COMPLETED_STATUSES,
-  STATUS_URGENCY,
+  PRIORITY_RANK,
 };

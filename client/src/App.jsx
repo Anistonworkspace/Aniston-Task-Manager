@@ -69,8 +69,8 @@ function PublicRoute({ children }) {
   return children;
 }
 
-function ManagerRoute({ children }) {
-  const { user, loading, canManage, isSuperAdmin } = useAuth();
+function ManagerRoute({ children, requiredPermission }) {
+  const { user, loading, canManage, isSuperAdmin, granularPermissions } = useAuth();
   if (loading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-surface">
@@ -79,12 +79,14 @@ function ManagerRoute({ children }) {
     );
   }
   if (!user) return <Navigate to="/login" replace />;
-  if (!canManage && !isSuperAdmin) return <Navigate to="/" replace />;
+  // Allow if user has manager+ role OR has a specific granular permission override
+  const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
+  if (!canManage && !isSuperAdmin && !hasOverride) return <Navigate to="/" replace />;
   return children;
 }
 
-function AdminRoute({ children }) {
-  const { user, loading, isAdmin } = useAuth();
+function AdminRoute({ children, requiredPermission }) {
+  const { user, loading, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
   if (loading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-surface">
@@ -93,7 +95,9 @@ function AdminRoute({ children }) {
     );
   }
   if (!user) return <Navigate to="/login" replace />;
-  if (!isAdmin) return <Navigate to="/" replace />;
+  // Allow if user is admin OR has a specific granular permission override
+  const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
+  if (!isAdmin && !isSuperAdmin && !hasOverride) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -109,28 +113,28 @@ export default function App() {
           <Route path="my-work" element={<Suspense fallback={<PageLoader />}><MyWorkPage /></Suspense>} />
           <Route path="boards" element={<Suspense fallback={<PageLoader />}><BoardsPage /></Suspense>} />
           <Route path="boards/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><BoardPage /></Suspense></ErrorBoundary>} />
-          <Route path="boards/:id/dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
-          <Route path="dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
+          <Route path="boards/:id/dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
+          <Route path="dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
-          <Route path="manager-dashboard" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
-          <Route path="admin-dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="director-dashboard" element={<ManagerRoute><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></ManagerRoute>} />
-          <Route path="director-plan" element={<ManagerRoute><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></ManagerRoute>} />
+          <Route path="manager-dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
+          <Route path="admin-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
+          <Route path="director-dashboard" element={<ManagerRoute requiredPermission="director_plan.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></ManagerRoute>} />
+          <Route path="director-plan" element={<ManagerRoute requiredPermission="director_plan.view"><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></ManagerRoute>} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
           <Route path="reviews" element={<Suspense fallback={<PageLoader />}><ReviewPage /></Suspense>} />
           <Route path="profile" element={<Suspense fallback={<PageLoader />}><ProfilePage /></Suspense>} />
           <Route path="meetings" element={<Suspense fallback={<PageLoader />}><MeetingsPage /></Suspense>} />
-          <Route path="integrations" element={<ManagerRoute><Suspense fallback={<PageLoader />}><IntegrationsPage /></Suspense></ManagerRoute>} />
-          <Route path="archive" element={<ManagerRoute><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></ManagerRoute>} />
-          <Route path="users" element={<ManagerRoute><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></ManagerRoute>} />
-          <Route path="admin-settings" element={<AdminRoute><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></AdminRoute>} />
-          <Route path="access-requests" element={<ManagerRoute><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></ManagerRoute>} />
+          <Route path="integrations" element={<ManagerRoute requiredPermission="integrations.view"><Suspense fallback={<PageLoader />}><IntegrationsPage /></Suspense></ManagerRoute>} />
+          <Route path="archive" element={<ManagerRoute requiredPermission="archive.view"><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></ManagerRoute>} />
+          <Route path="users" element={<ManagerRoute requiredPermission="users.view"><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></ManagerRoute>} />
+          <Route path="admin-settings" element={<AdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></AdminRoute>} />
+          <Route path="access-requests" element={<ManagerRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></ManagerRoute>} />
           <Route path="org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
-          <Route path="feedback" element={<AdminRoute><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></AdminRoute>} />
+          <Route path="feedback" element={<AdminRoute requiredPermission="feedback.manage"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></AdminRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -4,23 +4,35 @@ const {
   getPermissions,
   grantPermission,
   bulkGrantPermissions,
+  multiGrant,
   revokePermission,
   getEffective,
   getMyGrants,
   getTemplates,
   applyTemplate,
+  getMetadata,
+  getBasePermissionsForRole,
+  getPermissionHistory,
 } = require('../controllers/permissionController');
 
 const router = express.Router();
 
-// Must be before /:id routes
+// Static routes must be before /:id patterns
 router.get('/my-grants', authenticate, getMyGrants);
+router.get('/metadata', authenticate, getMetadata);
+router.get('/base-permissions/:role', authenticate, getBasePermissionsForRole);
+router.get('/templates', authenticate, getTemplates);
+
 router.get('/', authenticate, managerOrAdmin, getPermissions);
 router.post('/', authenticate, managerOrAdmin, grantPermission);
 router.post('/bulk', authenticate, adminOnly, bulkGrantPermissions);
-router.delete('/:id', authenticate, managerOrAdmin, revokePermission);
+router.post('/multi', authenticate, managerOrAdmin, multiGrant);
+
 router.get('/effective/:userId', authenticate, getEffective);
-router.get('/templates', authenticate, getTemplates);
+router.get('/history/:userId', authenticate, managerOrAdmin, getPermissionHistory);
+
+router.delete('/:id', authenticate, managerOrAdmin, revokePermission);
+
 router.post('/apply-template', authenticate, adminOnly, applyTemplate);
 
 module.exports = router;

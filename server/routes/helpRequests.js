@@ -6,6 +6,7 @@ const router = express.Router();
 router.post('/', authenticate, createHelpRequest);
 router.get('/', authenticate, getHelpRequests);
 router.get('/my-pending', authenticate, getMyPendingHelp);
+// Status update — controller enforces: only helper (requestedTo) or manager+ can update
 router.put('/:id/status', authenticate, updateStatus);
 router.put('/:id/archive', authenticate, archiveHelpRequest);
 

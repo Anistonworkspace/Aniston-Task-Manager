@@ -1,65 +1,34 @@
 /**
- * Pending Task Prioritization System (Frontend)
+ * Task Prioritization System (Frontend)
  *
- * Shared sorting logic that prioritizes unfinished tasks over completed ones,
- * with urgency-based status ordering, progress weighting, and due-date tie-breaking.
- *
- * Usage:
- *   import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
- *   const sorted = sortTasksByPendingPriority(tasks);
+ * Sorting order (within each board group):
+ *   1. Completed tasks sink to bottom
+ *   2. Priority field: critical (0) > high (1) > medium (2) > low (3)
+ *   3. Due date: earliest first, null/missing at bottom
+ *   4. CreatedAt DESC for stable ordering
  */
+
+// ─── Priority field mapping ────────────────────────────────────────────────
+
+const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+export function getPriorityRank(priority) {
+  if (!priority) return 3;
+  const key = String(priority).toLowerCase().trim();
+  return PRIORITY_RANK[key] !== undefined ? PRIORITY_RANK[key] : 3;
+}
 
 // ─── Status classification ──────────────────────────────────────────────────
 
 const COMPLETED_STATUSES = new Set(['done', 'completed', 'closed', 'finished']);
 
-/**
- * Returns true if the status key represents a completed/done state.
- */
 export function isCompletedStatus(status) {
   if (!status) return false;
   return COMPLETED_STATUSES.has(String(status).toLowerCase().trim());
 }
 
-/**
- * Status urgency score — lower number = higher urgency (appears first).
- */
-const STATUS_URGENCY = {
-  stuck:               10,
-  blocked:             10,
-  escalated:           10,
-  working_on_it:       30,
-  in_progress:         30,
-  review:              40,
-  in_review:           40,
-  waiting_for_review:  40,
-  pending_deploy:      40,
-  approval_pending:    40,
-  qa:                  40,
-  ready_to_start:      50,
-  not_started:         50,
-  pending:             50,
-  done:                90,
-  completed:           90,
-  closed:              90,
-  finished:            90,
-};
-
-const DEFAULT_URGENCY_PENDING = 50;
-const DEFAULT_URGENCY_DONE    = 90;
-
-export function getStatusUrgency(status) {
-  if (!status) return DEFAULT_URGENCY_PENDING;
-  const key = String(status).toLowerCase().trim();
-  if (STATUS_URGENCY[key] !== undefined) return STATUS_URGENCY[key];
-  return isCompletedStatus(key) ? DEFAULT_URGENCY_DONE : DEFAULT_URGENCY_PENDING;
-}
-
 // ─── Progress normalization ─────────────────────────────────────────────────
 
-/**
- * Normalize progress to 0..100 integer, handling null/undefined/strings/"45%".
- */
 export function normalizeProgress(progress) {
   if (progress == null) return 0;
   let val = progress;
@@ -75,9 +44,6 @@ export function normalizeProgress(progress) {
 
 // ─── Overdue detection ──────────────────────────────────────────────────────
 
-/**
- * Returns true if the task is overdue (dueDate in the past and not completed).
- */
 export function isOverdue(task) {
   if (!task || !task.dueDate) return false;
   if (isCompletedStatus(task.status)) return false;
@@ -90,46 +56,24 @@ export function isOverdue(task) {
 
 // ─── Priority score ─────────────────────────────────────────────────────────
 
-/**
- * Compute a numeric priority score for a task. Lower = higher priority.
- *
- * Score components:
- *   completedBucket:  +10000 if completed
- *   overdueBoost:     -500 if overdue and pending
- *   statusUrgency:    10..90 × 10
- *   progressFactor:   (100 - progress) for pending tasks
- *   dueDateFactor:    daysUntilDue × 0.1
- */
 export function getTaskPriorityScore(task) {
   if (!task) return 99999;
 
-  const status = task.status || 'not_started';
-  const completed = isCompletedStatus(status);
-  const progress = normalizeProgress(task.progress);
-
+  const completed = isCompletedStatus(task.status);
   let score = 0;
 
-  // 1. Completed → bottom
   if (completed) score += 10000;
 
-  // 2. Overdue boost
-  if (!completed && isOverdue(task)) score -= 500;
+  score += getPriorityRank(task.priority) * 1000;
 
-  // 3. Status urgency
-  score += getStatusUrgency(status) * 10;
-
-  // 4. Progress (pending only): lower progress → higher priority
-  // 4. Progress (pending only): lower progress → higher priority (needs more attention)
-  if (!completed) score += progress;  // 0% → +0 (highest priority), 100% → +100
-
-  // 5. Due date proximity
   if (task.dueDate && !completed) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const due = new Date(task.dueDate);
     due.setHours(0, 0, 0, 0);
-    const daysUntil = (due - today) / (1000 * 60 * 60 * 24);
-    score += daysUntil * 0.1;
+    score += (due - today) / (1000 * 60 * 60 * 24);
+  } else if (!completed) {
+    score += 9999;
   }
 
   return score;
@@ -138,31 +82,83 @@ export function getTaskPriorityScore(task) {
 // ─── Sort comparator ────────────────────────────────────────────────────────
 
 /**
- * Sort an array of task objects by pending priority.
+ * Sort tasks by: completed last → priority (critical>high>medium>low) →
+ * due date (earliest first, null last) → createdAt DESC.
  * Returns a new sorted array (does not mutate input).
- *
- * Deterministic tie-breaking: updatedAt DESC → createdAt DESC → id ASC.
  */
 export function sortTasksByPendingPriority(tasks) {
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks || [];
 
   return [...tasks].sort((a, b) => {
-    const scoreA = getTaskPriorityScore(a);
-    const scoreB = getTaskPriorityScore(b);
+    // 1. Completed tasks always at bottom
+    const aDone = isCompletedStatus(a.status) ? 1 : 0;
+    const bDone = isCompletedStatus(b.status) ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
 
-    if (scoreA !== scoreB) return scoreA - scoreB;
+    // 2. Priority rank (critical=0, high=1, medium=2, low=3)
+    const aPri = getPriorityRank(a.priority);
+    const bPri = getPriorityRank(b.priority);
+    if (aPri !== bPri) return aPri - bPri;
 
-    // Tie-breaker 1: more recently updated first
-    const updA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-    const updB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-    if (updA !== updB) return updB - updA;
+    // 3. Due date (earliest first, null at bottom)
+    const aDate = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+    const bDate = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+    if (aDate !== bDate) return aDate - bDate;
 
-    // Tie-breaker 2: more recently created first
-    const creA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const creB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-    if (creA !== creB) return creB - creA;
+    // 4. CreatedAt DESC (newest first as tiebreaker)
+    const aCre = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bCre = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    if (aCre !== bCre) return bCre - aCre;
 
-    // Tie-breaker 3: stable ID ordering
+    // 5. Stable ID tiebreaker
     return String(a.id || '').localeCompare(String(b.id || ''));
   });
+}
+
+// ─── Auto-group assignment (frontend mirror) ────────────────────────────────
+
+const STATUS_GROUP_MAP = {
+  done:               /done|complet|finish|closed/i,
+  completed:          /done|complet|finish|closed/i,
+  closed:             /done|complet|finish|closed/i,
+  finished:           /done|complet|finish|closed/i,
+  working_on_it:      /progress|working|active|doing|started/i,
+  in_progress:        /progress|working|active|doing|started/i,
+  stuck:              /stuck|block/i,
+  blocked:            /stuck|block/i,
+  review:             /review|qa|test|verify/i,
+  waiting_for_review: /review|qa|test|verify/i,
+  pending_deploy:     /deploy|release|staging/i,
+  not_started:        /to.?do|not.?started|new|backlog|pending|todo/i,
+  ready_to_start:     /to.?do|not.?started|new|backlog|pending|todo|ready/i,
+};
+
+/**
+ * Find the best matching board group for a given task status.
+ * @param {string} status - Task status value
+ * @param {Array} groups  - Board groups array: [{ id, title, color }]
+ * @returns {string|null} The matching group id, or null
+ */
+export function findGroupForStatus(status, groups) {
+  if (!status || !Array.isArray(groups) || groups.length === 0) return null;
+
+  const key = String(status).toLowerCase().trim();
+
+  // Exact match on group id
+  const exactMatch = groups.find(g => g.id === key);
+  if (exactMatch) return exactMatch.id;
+
+  // Pattern match on group title
+  const pattern = STATUS_GROUP_MAP[key];
+  if (pattern) {
+    const match = groups.find(g => pattern.test(g.title || g.name || ''));
+    if (match) return match.id;
+  }
+
+  // Not-started fallback to first group
+  if (key === 'not_started' || key === 'pending' || key === 'ready_to_start') {
+    return groups[0]?.id || null;
+  }
+
+  return null;
 }

@@ -1,6 +1,7 @@
 const { TaskAssignee, User } = require('../models');
 const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
+const { safeUUID } = require('../utils/safeSql');
 
 /**
  * Permission matrix constants
@@ -68,12 +69,13 @@ async function buildTaskVisibilityFilter(user, boardId) {
   }
 
   // Member/employee — ONLY see tasks they are personally linked to
+  const uid = safeUUID(user.id, 'user.id');
   return {
     [Op.or]: [
       // Linked via task_assignees (new system)
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = '${user.id}')`),
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`),
       // Linked via task_owners (multi-owner system)
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = '${user.id}')`),
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
       // Backward compat: old assignedTo column
       { assignedTo: user.id },
       // Tasks they created (so they can track what they made)

@@ -54,74 +54,60 @@ router.get('/me', authenticate, getProfile);
 // ─── GET /api/auth/me/permissions — effective permissions (role + grants merged) ──
 router.get('/me/permissions', authenticate, async (req, res) => {
   try {
-    const { PermissionGrant } = require('../models');
-    const { Op } = require('sequelize');
+    const { computeEffectivePermissions } = require('../services/permissionEngine');
 
-    const role = req.user.role;
-    const isSuperAdmin = !!req.user.isSuperAdmin;
+    const result = await computeEffectivePermissions(req.user);
 
-    // Role-based default permissions
-    const ROLE_PERMISSIONS = {
-      admin:             { create_workspace: true, edit_workspace: true, delete_workspace: true, create_board: true, edit_board: true, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: true, manage_settings: true, manage_board_settings: true, view_dashboard: true, manage_users: true },
-      manager:           { create_workspace: true, edit_workspace: true, delete_workspace: false, create_board: true, edit_board: true, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: true, manage_settings: false, manage_board_settings: false, view_dashboard: true, manage_users: true },
-      assistant_manager: { create_workspace: true, edit_workspace: true, delete_workspace: false, create_board: false, edit_board: false, delete_board: true, create_task: true, assign_members: true, edit_others_tasks: false, manage_settings: false, manage_board_settings: false, view_dashboard: true, manage_users: false },
-      member:            { create_workspace: false, edit_workspace: false, delete_workspace: false, create_board: false, edit_board: false, delete_board: false, create_task: false, assign_members: false, edit_others_tasks: false, manage_settings: false, manage_board_settings: false, view_dashboard: false, manage_users: false },
+    // Build legacy-compatible flat permissions for backward compat with existing frontend
+    const legacyPerms = {};
+    const LEGACY_KEYS = [
+      'create_workspace', 'edit_workspace', 'delete_workspace',
+      'create_board', 'edit_board', 'delete_board',
+      'create_task', 'assign_members', 'edit_others_tasks',
+      'manage_settings', 'manage_board_settings',
+      'view_dashboard', 'manage_users',
+    ];
+    // Map new resource.action format to legacy keys
+    const NEW_TO_LEGACY = {
+      'workspaces.create': 'create_workspace',
+      'workspaces.edit': 'edit_workspace',
+      'workspaces.delete': 'delete_workspace',
+      'workspaces.manage_members': 'assign_members',
+      'boards.create': 'create_board',
+      'boards.edit': 'edit_board',
+      'boards.delete': 'delete_board',
+      'boards.manage_settings': 'manage_board_settings',
+      'tasks.create': 'create_task',
+      'tasks.assign': 'assign_members',
+      'tasks.edit': 'edit_others_tasks',
+      'admin_settings.view': 'manage_settings',
+      'admin_settings.manage': 'manage_settings',
+      'dashboard.view': 'view_dashboard',
+      'users.manage': 'manage_users',
+      'users.create': 'manage_users',
     };
 
-    // Start with role defaults (super admin gets everything)
-    const effective = isSuperAdmin
-      ? Object.fromEntries(Object.keys(ROLE_PERMISSIONS.admin).map(k => [k, true]))
-      : { ...(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.member) };
+    // Start with legacy keys all false
+    for (const key of LEGACY_KEYS) legacyPerms[key] = false;
 
-    // Fetch active, non-expired grants from the permission_grants table
-    const grants = await PermissionGrant.findAll({
-      where: {
-        userId: req.user.id,
-        isActive: true,
-        [Op.or]: [
-          { expiresAt: null },
-          { expiresAt: { [Op.gt]: new Date() } },
-        ],
-      },
-      attributes: ['resourceType', 'permissionLevel', 'resourceId'],
-      raw: true,
-    });
-
-    // Map grant → which actions it unlocks
-    const LEVEL_HIERARCHY = ['view', 'edit', 'assign', 'manage', 'admin'];
-    const GRANT_TO_ACTIONS = {
-      workspace: { manage: ['create_workspace', 'edit_workspace', 'delete_workspace'], edit: ['edit_workspace'], admin: ['create_workspace', 'edit_workspace', 'delete_workspace', 'manage_settings'] },
-      board:     { manage: ['create_board', 'edit_board', 'delete_board', 'create_task', 'assign_members', 'edit_others_tasks'], edit: ['edit_board', 'create_task'], assign: ['create_task', 'assign_members'], admin: ['create_board', 'edit_board', 'delete_board', 'create_task', 'assign_members', 'edit_others_tasks', 'manage_board_settings'] },
-      task:      { manage: ['create_task', 'assign_members', 'edit_others_tasks'], assign: ['create_task', 'assign_members'] },
-      dashboard: { view: ['view_dashboard'] },
-      team:      { manage: ['manage_users'] },
-    };
-
-    // Apply grants: for each grant, unlock the actions at that level and below
-    for (const grant of grants) {
-      const resourceActions = GRANT_TO_ACTIONS[grant.resourceType];
-      if (!resourceActions) continue;
-
-      const grantIdx = LEVEL_HIERARCHY.indexOf(grant.permissionLevel);
-
-      // Unlock actions for this level and all lower levels
-      for (const [level, actions] of Object.entries(resourceActions)) {
-        const levelIdx = LEVEL_HIERARCHY.indexOf(level);
-        if (grantIdx >= levelIdx) {
-          for (const action of actions) {
-            effective[action] = true;
-          }
-        }
+    // Map from new permissions
+    for (const [newKey, allowed] of Object.entries(result.permissions)) {
+      if (allowed) {
+        const legacyKey = NEW_TO_LEGACY[newKey];
+        if (legacyKey) legacyPerms[legacyKey] = true;
       }
     }
 
     res.json({
       success: true,
       data: {
-        permissions: effective,
-        grants: grants,
-        role: role,
-        isSuperAdmin: isSuperAdmin,
+        permissions: legacyPerms,
+        // New granular permissions (resource.action format)
+        granularPermissions: result.permissions,
+        overrides: result.overrides,
+        grants: result.grants,
+        role: result.role,
+        isSuperAdmin: result.isSuperAdmin,
       },
     });
   } catch (err) {

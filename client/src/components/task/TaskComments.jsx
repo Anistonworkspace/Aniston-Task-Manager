@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Send, Trash2 } from 'lucide-react';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
@@ -10,12 +10,34 @@ export default function TaskComments({ comments, onAdd, onDelete }) {
   const { user } = useAuth();
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { checkGrammar, suggestion: grammarSuggestion, isChecking: isCheckingGrammar, applySuggestion: applyGrammar, dismissSuggestion: dismissGrammar } = useGrammarCorrection();
+  const textRef = useRef('');
+  const { checkGrammar, suggestion: grammarSuggestion, isChecking: isCheckingGrammar, applySuggestion: applyGrammar, dismissSuggestion: dismissGrammar, reset: resetGrammar } = useGrammarCorrection();
 
-  async function handleSubmit() {
-    if (!text.trim()) return;
+  // Keep ref in sync so handleSubmit always reads the latest value
+  textRef.current = text;
+
+  const handleSubmit = useCallback(async () => {
+    const currentText = textRef.current.trim();
+    if (!currentText) return;
     setSubmitting(true);
-    try { await onAdd(text.trim()); setText(''); } catch {} finally { setSubmitting(false); }
+    try {
+      await onAdd(currentText);
+      setText('');
+      textRef.current = '';
+      resetGrammar();
+    } catch (err) {
+      console.error('Failed to add comment:', err);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [onAdd, resetGrammar]);
+
+  function handleApply() {
+    const corrected = applyGrammar();
+    if (corrected) {
+      setText(corrected);
+      textRef.current = corrected;
+    }
   }
 
   return (
@@ -27,14 +49,14 @@ export default function TaskComments({ comments, onAdd, onDelete }) {
           <div className="flex items-end gap-2 border border-border rounded-lg px-3 py-2 focus-within:border-primary transition-colors">
             <textarea value={text} onChange={(e) => { setText(e.target.value); checkGrammar(e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
               placeholder="Write a comment..." className="flex-1 text-sm border-none outline-none resize-none min-h-[36px] max-h-[120px]" rows={1} />
-            <button onClick={handleSubmit} disabled={!text.trim() || submitting} className="p-1.5 rounded-md bg-primary text-white hover:bg-primary-hover disabled:opacity-40 transition-colors flex-shrink-0">
+            <button type="button" onClick={handleSubmit} disabled={!text.trim() || submitting} className="p-1.5 rounded-md bg-primary text-white hover:bg-primary-hover disabled:opacity-40 transition-colors flex-shrink-0">
               <Send size={14} />
             </button>
           </div>
           <GrammarSuggestion
             suggestion={grammarSuggestion}
             isChecking={isCheckingGrammar}
-            onApply={() => { const corrected = applyGrammar(); setText(corrected); }}
+            onApply={handleApply}
             onDismiss={dismissGrammar}
           />
         </div>

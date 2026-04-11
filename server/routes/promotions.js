@@ -5,7 +5,8 @@ const mrCtrl = require('../controllers/managerRelationController');
 const router = express.Router();
 
 router.post('/', authenticate, managerOrAdmin, promoteUser);
-router.get('/org-chart', authenticate, getOrgChart);
+// Org chart exposes full hierarchy — restrict to management roles
+router.get('/org-chart', authenticate, managerOrAdmin, getOrgChart);
 router.put('/update-manager', authenticate, managerOrAdmin, updateManager);
 
 // Multi-manager relation endpoints (under /api/promotions/relations/*)

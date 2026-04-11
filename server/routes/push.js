@@ -4,7 +4,10 @@ const { saveSubscription, removeSubscription, vapidPublicKey, pushConfigured } =
 
 const router = express.Router();
 
-// GET /api/push/vapid-key — return public VAPID key for client subscription
+// GET /api/push/vapid-key — INTENTIONALLY PUBLIC
+// The VAPID public key must be available without auth so the browser can register
+// a push subscription before/during login. It is a public key by design and
+// exposes no secrets.
 router.get('/vapid-key', (req, res) => {
   res.json({ success: true, data: { publicKey: vapidPublicKey, configured: pushConfigured } });
 });

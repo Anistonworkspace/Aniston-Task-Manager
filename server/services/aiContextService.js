@@ -19,6 +19,7 @@ const {
 } = require('../models');
 const { getDescendantIds } = require('./hierarchyService');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
+const { safeUUID, safeUUIDList } = require('../utils/safeSql');
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -58,8 +59,8 @@ async function getVisibleBoardIds(user) {
       isArchived: false,
       [Op.or]: [
         { createdBy: { [Op.in]: visibleUserIds } },
-        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${visibleUserIds.map(id => `'${id}'`).join(',')}))`),
-        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${visibleUserIds.map(id => `'${id}'`).join(',')}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
+        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${safeUUIDList(visibleUserIds, 'visibleUserIds')}))`),
+        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${safeUUIDList(visibleUserIds, 'visibleUserIds')}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
       ],
     },
     raw: true,
@@ -568,7 +569,8 @@ async function resolveMeetings(user, _params) {
       date: { [Op.gte]: todayStr },
       [Op.or]: [
         { createdBy: user.id },
-        sequelize.literal(`"Meeting"."participants" @> '[{"id": "${user.id}"}]'::jsonb`),
+        // UUID validated via assertUUID — safe to embed in JSONB literal
+        sequelize.literal(`"Meeting"."participants" @> '[{"id": "${require('../utils/safeSql').assertUUID(user.id, 'user.id')}"}]'::jsonb`),
       ],
     },
     attributes: ['id', 'title', 'date', 'startTime', 'endTime', 'type', 'createdBy'],

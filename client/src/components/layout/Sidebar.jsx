@@ -70,7 +70,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, c
 }
 
 export default function Sidebar({ collapsed, onToggle }) {
-  const { user, canManage, isAdmin, isManager, isAssistantManager, isDirector, isSuperAdmin, permissionGrants, effectivePermissions } = useAuth();
+  const { user, canManage, isAdmin, isManager, isAssistantManager, isDirector, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [boards, setBoards] = useState([]);
@@ -316,8 +316,8 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Home} label="Home" path="/" tourId="nav-home" />
             {!isSuperAdmin && <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />}
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
-            {(isSuperAdmin || isAssistantManager) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
-            {(isSuperAdmin || isAssistantManager) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
+            {(isSuperAdmin || isAssistantManager || canManage || !!granularPermissions['director_plan.view']) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
+            {(isSuperAdmin || isAssistantManager || canManage || !!granularPermissions['director_plan.view']) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
@@ -328,28 +328,38 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />
           </nav>
 
-          {canManage && (
+          {(canManage || !!granularPermissions['dashboard.view'] || !!granularPermissions['users.view']) && (
             <>
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
-                <NavItem icon={BarChart3} label="Dashboard" path="/dashboard" tourId="nav-dashboard" />
-                <NavItem icon={Users} label="Team" path="/users" />
+                {(canManage || !!granularPermissions['dashboard.view']) && (
+                  <NavItem icon={BarChart3} label="Dashboard" path="/dashboard" tourId="nav-dashboard" />
+                )}
+                {(canManage || !!granularPermissions['users.view']) && (
+                  <NavItem icon={Users} label="Team" path="/users" />
+                )}
               </nav>
             </>
           )}
 
-          {isAdmin && (
+          {(isAdmin || !!granularPermissions['admin_settings.view'] || !!granularPermissions['integrations.view'] || !!granularPermissions['feedback.manage']) && (
             <>
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
-                <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
-                <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
-                <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
+                {(isAdmin || !!granularPermissions['admin_settings.view']) && (
+                  <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
+                )}
+                {(isAdmin || !!granularPermissions['integrations.view']) && (
+                  <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
+                )}
+                {(isAdmin || !!granularPermissions['feedback.manage']) && (
+                  <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
+                )}
               </nav>
             </>
           )}
 
-          {(canManage || isSuperAdmin) && (
+          {(canManage || isSuperAdmin || !!granularPermissions['archive.view']) && (
             <>
               {!isAdmin && <div className="border-t border-sidebar-border mx-3 my-1" />}
               <nav className="py-1 flex flex-col gap-0.5">

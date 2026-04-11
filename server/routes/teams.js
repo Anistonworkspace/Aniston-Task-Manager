@@ -1,10 +1,32 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { authenticate } = require('../middleware/auth');
 const { User } = require('../models');
 const { getTeamsConfig } = require('../config/teams');
 
 const router = express.Router();
+
+// ── OAuth state CSRF protection ─────────────────────────────
+// Uses HMAC to sign the state parameter so the callback can verify it wasn't tampered with.
+const STATE_SECRET = process.env.JWT_SECRET || 'teams-oauth-state-fallback';
+function signState(payload) {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64');
+  const hmac = crypto.createHmac('sha256', STATE_SECRET).update(data).digest('hex');
+  return `${data}.${hmac}`;
+}
+function verifyState(state) {
+  const parts = state.split('.');
+  if (parts.length !== 2) return null;
+  const [data, hmac] = parts;
+  const expected = crypto.createHmac('sha256', STATE_SECRET).update(data).digest('hex');
+  if (!crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(expected, 'hex'))) return null;
+  try {
+    return JSON.parse(Buffer.from(data, 'base64').toString());
+  } catch {
+    return null;
+  }
+}
 
 /**
  * GET /api/teams/auth
@@ -16,7 +38,7 @@ router.get('/auth', authenticate, async (req, res) => {
     return res.status(503).json({ success: false, message: 'Teams integration is not configured. Set it up in Integrations page.' });
   }
 
-  const state = Buffer.from(JSON.stringify({ userId: req.user.id })).toString('base64');
+  const state = signState({ userId: req.user.id, ts: Date.now() });
   const authUrl = `${teamsConfig.authUrl}/authorize?` + new URLSearchParams({
     client_id: teamsConfig.clientId,
     response_type: 'code',
@@ -32,6 +54,7 @@ router.get('/auth', authenticate, async (req, res) => {
 /**
  * GET /api/teams/callback
  * OAuth callback — exchange code for tokens.
+ * SECURITY: State parameter is HMAC-signed to prevent CSRF/token-swap attacks.
  */
 router.get('/callback', async (req, res) => {
   const { code, state, error: authError } = req.query;
@@ -46,8 +69,20 @@ router.get('/callback', async (req, res) => {
     return res.redirect(`${clientUrl}/integrations?teams=error&msg=missing_params`);
   }
 
+  // Verify HMAC-signed state to prevent CSRF
+  const stateData = verifyState(state);
+  if (!stateData || !stateData.userId) {
+    console.warn(`[Teams] OAuth callback rejected: invalid or tampered state from ${req.ip}`);
+    return res.redirect(`${clientUrl}/integrations?teams=error&msg=invalid_state`);
+  }
+
+  // Reject state tokens older than 10 minutes
+  if (stateData.ts && Date.now() - stateData.ts > 10 * 60 * 1000) {
+    console.warn(`[Teams] OAuth callback rejected: expired state (age=${Date.now() - stateData.ts}ms)`);
+    return res.redirect(`${clientUrl}/integrations?teams=error&msg=state_expired`);
+  }
+
   try {
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
     const { userId } = stateData;
 
     const teamsConfig = await getTeamsConfig();

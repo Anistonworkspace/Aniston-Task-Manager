@@ -105,6 +105,8 @@ const { getUploadDir } = require('./middleware/upload');
 app.use('/uploads', express.static(getUploadDir()));
 
 // ─── Upload config endpoint (tells frontend what's allowed) ─
+// INTENTIONALLY PUBLIC — returns only file extension/size limits (no secrets).
+// Frontend needs this before uploads to show allowed formats, even on login page.
 const { UPLOAD_CATEGORIES } = require('./config/fileTypes');
 app.get('/api/upload-config', (req, res) => {
   const configs = {};

@@ -8,6 +8,7 @@ const teamsWebhook = require('../services/teamsWebhook');
 const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { processAutomations } = require('../services/automationService');
+const { safeUUID } = require('../utils/safeSql');
 const { sanitizeInput } = require('../utils/sanitize');
 const calendarService = require('../services/calendarService');
 const { checkConflicts: detectConflicts, autoReschedule: rescheduleTask, getScheduleSummary } = require('../services/conflictDetectionService');
@@ -16,7 +17,7 @@ const { scheduleReminders, cancelReminders, rescheduleReminders } = require('../
 const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentNotificationService');
 const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
-const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
+const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 
 // Reusable include block for the two user associations that appear on every task query
 const TASK_INCLUDES = [
@@ -99,13 +100,20 @@ const createTask = async (req, res) => {
       where: { boardId, groupId: groupId || 'new' },
     });
 
+    // Auto-assign group based on status if no explicit groupId provided
+    let effectiveGroupId = groupId || 'new';
+    if (!groupId && status) {
+      const targetGroup = findGroupForStatus(status, board.groups);
+      if (targetGroup) effectiveGroupId = targetGroup;
+    }
+
     const task = await Task.create({
       title: sanitizeInput(title),
       description: sanitizeInput(description) || '',
       status: status || 'not_started',
       statusConfig: safeStatusConfig,
       priority: isMemberRole ? 'medium' : (priority || 'medium'),
-      groupId: groupId || 'new',
+      groupId: effectiveGroupId,
       dueDate: dueDate || null,
       startDate: startDate || null,
       position: (maxPosition || 0) + 1,
@@ -253,14 +261,15 @@ const getTasks = async (req, res) => {
     if (boardId) where.boardId = boardId;
 
     // Ownership filter — checks all three sources where a user can be linked to a task
+    const uid = safeUUID(req.user.id, 'req.user.id');
     const ownershipFilter = [
       { assignedTo: req.user.id },
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = '${req.user.id}')`),
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
     ];
     // Only include task_assignees subquery if the table exists (graceful fallback)
     try {
       ownershipFilter.push(
-        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = '${req.user.id}')`)
+        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
       );
     } catch (e) { /* task_assignees table may not exist yet */ }
 
@@ -269,13 +278,14 @@ const getTasks = async (req, res) => {
       if (!where[Op.and]) where[Op.and] = [];
       where[Op.and].push({ [Op.or]: ownershipFilter });
     } else if (assignedTo) {
-      // Filter by specific assignee — check assignedTo column, task_owners, and task_assignees
+      // Filter by specific assignee — validate UUID before embedding in SQL
+      const assigneeUid = safeUUID(assignedTo, 'assignedTo');
       if (!where[Op.and]) where[Op.and] = [];
       where[Op.and].push({
         [Op.or]: [
           { assignedTo: assignedTo },
-          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = '${assignedTo}')`),
-          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = '${assignedTo}' AND role = 'assignee')`),
+          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${assigneeUid})`),
+          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${assigneeUid} AND role = 'assignee')`),
         ],
       });
     } else if (boardId) {
@@ -519,6 +529,21 @@ const updateTask = async (req, res) => {
     }
 
     await task.update(updates);
+
+    // ── Auto-group assignment: move task to matching group when status changes ──
+    if (updates.status && updates.status !== previousStatus) {
+      try {
+        const board = task.board || await Board.findByPk(task.boardId, { attributes: ['id', 'groups'] });
+        if (board && Array.isArray(board.groups) && board.groups.length > 0) {
+          const targetGroupId = findGroupForStatus(updates.status, board.groups);
+          if (targetGroupId && targetGroupId !== task.groupId) {
+            await task.update({ groupId: targetGroupId });
+          }
+        }
+      } catch (e) {
+        logger.warn('[Task] Auto-group assignment failed:', e.message);
+      }
+    }
 
     // Sync task_assignees if assignedTo (array) or supervisors provided
     const canManageMembers = isAdmin || isManager || isAssistantManager || !!req.user.isSuperAdmin;
@@ -1004,6 +1029,27 @@ const bulkUpdateTasks = async (req, res) => {
     await Task.update(safeUpdates, {
       where: { id: { [Op.in]: taskIds } },
     });
+
+    // Auto-group assignment for bulk status changes
+    if (safeUpdates.status) {
+      try {
+        const tasksForGroup = await Task.findAll({
+          where: { id: { [Op.in]: taskIds } },
+          attributes: ['id', 'boardId', 'groupId'],
+          include: [{ model: Board, as: 'board', attributes: ['id', 'groups'] }],
+        });
+        for (const t of tasksForGroup) {
+          if (t.board && Array.isArray(t.board.groups)) {
+            const targetGroupId = findGroupForStatus(safeUpdates.status, t.board.groups);
+            if (targetGroupId && targetGroupId !== t.groupId) {
+              await t.update({ groupId: targetGroupId });
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn('[Task] Bulk auto-group assignment failed:', e.message);
+      }
+    }
 
     const updatedTasks = await Task.findAll({
       where: { id: { [Op.in]: taskIds } },

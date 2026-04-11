@@ -521,14 +521,14 @@ export default function AssistantManagerPlanPage() {
     const ws = wb.addWorksheet('Director Plan');
 
     // Title
-    ws.mergeCells('A1', 'I1');
+    ws.mergeCells('A1', 'J1');
     const titleCell = ws.getCell('A1');
     titleCell.value = `Director's Daily Plan — ${directorName}`;
     titleCell.font = { bold: true, size: 16, color: { argb: 'FF1e1b4b' } };
     titleCell.alignment = { horizontal: 'left', vertical: 'middle' };
     ws.getRow(1).height = 30;
 
-    ws.mergeCells('A2', 'I2');
+    ws.mergeCells('A2', 'J2');
     ws.getCell('A2').value = `Date: ${displayDate}`;
     ws.getCell('A2').font = { size: 11, color: { argb: 'FF6b7280' } };
 
@@ -539,9 +539,10 @@ export default function AssistantManagerPlanPage() {
     ws.getColumn(4).width = 14;  // Status
     ws.getColumn(5).width = 18;  // Deadline
     ws.getColumn(6).width = 20;  // Assignee
-    ws.getColumn(7).width = 10;  // Subtasks
-    ws.getColumn(8).width = 40;  // Subtask Details
-    ws.getColumn(9).width = 40;  // Links
+    ws.getColumn(7).width = 40;  // Description
+    ws.getColumn(8).width = 10;  // Subtasks
+    ws.getColumn(9).width = 40;  // Subtask Details
+    ws.getColumn(10).width = 40; // Links
 
     let row = 4;
     const catsToExport = singleCatIndex !== null
@@ -553,7 +554,7 @@ export default function AssistantManagerPlanPage() {
       const colorHex = (cat.color || '#6366F1').replace('#', '');
 
       // Category header
-      ws.mergeCells(row, 1, row, 9);
+      ws.mergeCells(row, 1, row, 10);
       const headerCell = ws.getCell(row, 1);
       headerCell.value = `${cat.label}  (${cat.startTime || ''} - ${cat.endTime || ''})`;
       headerCell.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
@@ -563,7 +564,7 @@ export default function AssistantManagerPlanPage() {
       row++;
 
       // Column headers
-      const headers = ['#', 'Task', 'Priority', 'Status', 'Deadline', 'Assignee', 'Subtasks', 'Subtask Details', 'Links'];
+      const headers = ['#', 'Task', 'Priority', 'Status', 'Deadline', 'Assignee', 'Description', 'Subtasks', 'Subtask Details', 'Links'];
       const headerRow = ws.addRow(headers);
       headerRow.eachCell((cell) => {
         cell.font = { bold: true, size: 10, color: { argb: 'FF374151' } };
@@ -575,7 +576,7 @@ export default function AssistantManagerPlanPage() {
       // Task rows
       const tasks = cat.tasks || [];
       if (tasks.length === 0) {
-        ws.mergeCells(row, 1, row, 9);
+        ws.mergeCells(row, 1, row, 10);
         ws.getCell(row, 1).value = 'No tasks';
         ws.getCell(row, 1).font = { italic: true, color: { argb: 'FF9CA3AF' } };
         row++;
@@ -598,15 +599,19 @@ export default function AssistantManagerPlanPage() {
             task.done ? 'Done' : 'Pending',
             deadlineStr,
             task.assigneeName || 'Unassigned',
+            task.description || '',
             subCount > 0 ? `${subDone}/${subCount}` : '—',
             subtaskDetails,
             taskLinks,
           ]);
 
-          // Enable text wrapping on Subtask Details cell and auto row height
-          taskRow.getCell(8).alignment = { wrapText: true, vertical: 'top' };
-          if (subCount > 1) {
-            ws.getRow(taskRow.number).height = Math.min(subCount * 15, 120);
+          // Enable text wrapping on Description and Subtask Details cells
+          taskRow.getCell(7).alignment = { wrapText: true, vertical: 'top' };
+          taskRow.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+          const descLines = (task.description || '').split('\n').length;
+          const maxLines = Math.max(descLines, subCount > 1 ? subCount : 0);
+          if (maxLines > 1) {
+            ws.getRow(taskRow.number).height = Math.min(maxLines * 15, 120);
           }
 
           // Priority color

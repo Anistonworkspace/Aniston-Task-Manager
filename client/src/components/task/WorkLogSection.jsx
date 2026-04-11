@@ -127,7 +127,7 @@ export default function WorkLogSection({ taskId }) {
           <GrammarSuggestion
             suggestion={grammarSuggestion}
             isChecking={isCheckingGrammar}
-            onApply={() => { const corrected = applyGrammar(); setContent(corrected); }}
+            onApply={() => { const corrected = applyGrammar(); if (corrected) setContent(corrected); }}
             onDismiss={dismissGrammar}
           />
           <div className="flex items-center gap-2">

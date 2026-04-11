@@ -6,20 +6,21 @@ const { getIO } = require('../services/socketService');
 
 // ── Webhook API key authentication ──────────────────────────
 // Set WEBHOOK_API_KEY in .env. Requests must send header: x-webhook-key: <key>
+// SECURITY: Fail closed — if no key is configured, ALL webhook requests are rejected.
 const webhookAuth = (req, res, next) => {
   const apiKey = process.env.WEBHOOK_API_KEY;
   if (!apiKey) {
-    // If no key configured, reject all webhook requests in production
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ message: 'Webhooks not configured. Set WEBHOOK_API_KEY in .env' });
-    }
-    // In development, allow without key but log warning
-    console.warn('[Webhook] WARNING: WEBHOOK_API_KEY not set — webhooks are unprotected');
-    return next();
+    // Fail closed: reject all requests when webhook key is not configured
+    console.error('[Webhook] REJECTED: WEBHOOK_API_KEY is not configured. All webhook requests are denied.');
+    return res.status(503).json({
+      success: false,
+      message: 'Webhooks are not configured. Set WEBHOOK_API_KEY in environment.',
+    });
   }
   const providedKey = req.headers['x-webhook-key'];
   if (!providedKey || providedKey !== apiKey) {
-    return res.status(401).json({ message: 'Invalid or missing webhook API key' });
+    console.warn(`[Webhook] REJECTED: Invalid or missing API key from ${req.ip} — ${req.method} ${req.originalUrl}`);
+    return res.status(401).json({ success: false, message: 'Invalid or missing webhook API key.' });
   }
   next();
 };

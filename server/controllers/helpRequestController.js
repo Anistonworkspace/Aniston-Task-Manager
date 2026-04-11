@@ -71,10 +71,18 @@ exports.getHelpRequests = async (req, res) => {
 };
 
 // PUT /api/help-requests/:id/status
+// Authorization: only the helper (requestedTo), the requester, or manager+ can update status
 exports.updateStatus = async (req, res) => {
   try {
     const hr = await HelpRequest.findByPk(req.params.id);
     if (!hr) return res.status(404).json({ success: false, message: 'Not found.' });
+
+    const isHelper = hr.requestedTo === req.user.id;
+    const isRequester = hr.requestedBy === req.user.id;
+    const isManagerPlus = ['admin', 'manager', 'assistant_manager'].includes(req.user.role) || !!req.user.isSuperAdmin;
+    if (!isHelper && !isRequester && !isManagerPlus) {
+      return res.status(403).json({ success: false, message: 'Not authorized to update this help request.' });
+    }
 
     const { status, meetingLink, meetingScheduledAt } = req.body;
     const updates = { status };
