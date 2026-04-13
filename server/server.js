@@ -459,6 +459,17 @@ const start = async () => {
       console.warn('[Server] file_attachments migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: add provider & category columns to file_attachments ──
+    // Required by the storage-provider abstraction (007_add_file_attachment_columns.sql).
+    // Existing tables created before this migration will be missing these columns.
+    try {
+      await sequelize.query(`ALTER TABLE file_attachments ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'local'`);
+      await sequelize.query(`ALTER TABLE file_attachments ADD COLUMN IF NOT EXISTS category VARCHAR(50) NOT NULL DEFAULT 'task_attachment'`);
+      console.log('[Server] file_attachments provider/category columns ensured.');
+    } catch (e) {
+      console.warn('[Server] file_attachments column migration warning:', e.message?.slice(0, 100));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
