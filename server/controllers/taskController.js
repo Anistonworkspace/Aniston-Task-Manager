@@ -19,13 +19,35 @@ const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 
-// Reusable include block for the two user associations that appear on every task query
-const TASK_INCLUDES = [
+// Reusable include block for the two user associations that appear on every task query.
+// TaskAssignee include is built dynamically to handle missing table gracefully.
+const TASK_INCLUDES_BASE = [
   { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
   { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
   { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
-  { model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role'] }] },
 ];
+
+// Cache whether task_assignees table exists (checked once on first query)
+let _taskAssigneesVerified = null;
+async function hasTaskAssigneesTable() {
+  if (_taskAssigneesVerified !== null) return _taskAssigneesVerified;
+  try {
+    await sequelize.query(`SELECT 1 FROM task_assignees LIMIT 0`);
+    _taskAssigneesVerified = true;
+  } catch (e) {
+    logger.warn('[Task] task_assignees table not available — queries will skip it');
+    _taskAssigneesVerified = false;
+  }
+  return _taskAssigneesVerified;
+}
+
+async function getTaskIncludes() {
+  const includes = [...TASK_INCLUDES_BASE];
+  if (await hasTaskAssigneesTable()) {
+    includes.push({ model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role'] }] });
+  }
+  return includes;
+}
 
 /**
  * POST /api/tasks
@@ -161,7 +183,7 @@ const createTask = async (req, res) => {
 
     const fullTask = await Task.findByPk(task.id, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });
@@ -266,12 +288,12 @@ const getTasks = async (req, res) => {
       { assignedTo: req.user.id },
       sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
     ];
-    // Only include task_assignees subquery if the table exists (graceful fallback)
-    try {
+    // Only include task_assignees subquery if the table exists
+    if (await hasTaskAssigneesTable()) {
       ownershipFilter.push(
         sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
       );
-    } catch (e) { /* task_assignees table may not exist yet */ }
+    }
 
     // Support "me" shorthand for current user's tasks across all boards
     if (assignedTo === 'me') {
@@ -281,13 +303,16 @@ const getTasks = async (req, res) => {
       // Filter by specific assignee — validate UUID before embedding in SQL
       const assigneeUid = safeUUID(assignedTo, 'assignedTo');
       if (!where[Op.and]) where[Op.and] = [];
-      where[Op.and].push({
-        [Op.or]: [
-          { assignedTo: assignedTo },
-          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${assigneeUid})`),
-          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${assigneeUid} AND role = 'assignee')`),
-        ],
-      });
+      const assigneeOrFilter = [
+        { assignedTo: assignedTo },
+        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${assigneeUid})`),
+      ];
+      if (await hasTaskAssigneesTable()) {
+        assigneeOrFilter.push(
+          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${assigneeUid} AND role = 'assignee')`)
+        );
+      }
+      where[Op.and].push({ [Op.or]: assigneeOrFilter });
     } else if (boardId) {
       // ── Layer 2: Apply role-based visibility filter only for board-level queries ──
       // When fetching by board, restrict visibility based on role.
@@ -331,10 +356,11 @@ const getTasks = async (req, res) => {
       order = buildPendingPriorityOrder();
     }
 
+    const taskIncludes = await getTaskIncludes();
     const queryOpts = {
       where,
       include: [
-        ...TASK_INCLUDES,
+        ...taskIncludes,
         { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
         { model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] },
@@ -371,7 +397,7 @@ const getTask = async (req, res) => {
   try {
     const task = await Task.findByPk(req.params.id, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
       ],
     });
@@ -669,7 +695,7 @@ const updateTask = async (req, res) => {
 
     const fullTask = await Task.findByPk(task.id, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });
@@ -968,7 +994,7 @@ const moveTask = async (req, res) => {
     await task.update({ groupId: targetGroupId, position: targetPosition });
 
     const fullTask = await Task.findByPk(task.id, {
-      include: [...TASK_INCLUDES],
+      include: [...(await getTaskIncludes())],
     });
 
     emitToBoard(task.boardId, 'task:moved', { task: fullTask });
@@ -1053,7 +1079,7 @@ const bulkUpdateTasks = async (req, res) => {
 
     const updatedTasks = await Task.findAll({
       where: { id: { [Op.in]: taskIds } },
-      include: [...TASK_INCLUDES],
+      include: [...(await getTaskIncludes())],
     });
 
     // Emit to all affected boards
@@ -1186,7 +1212,7 @@ const duplicateTask = async (req, res) => {
 
     const fullTask = await Task.findByPk(newTask.id, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name'] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
       ],
@@ -1279,7 +1305,7 @@ const autoReschedule = async (req, res) => {
     // Refresh the full task for socket emit
     const fullTask = await Task.findByPk(taskId, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });
@@ -1470,7 +1496,7 @@ const manageTaskMembers = async (req, res) => {
     // Re-fetch with full includes
     const fullTask = await Task.findByPk(task.id, {
       include: [
-        ...TASK_INCLUDES,
+        ...(await getTaskIncludes()),
         { model: Board, as: 'board', attributes: ['id', 'name'] },
       ],
     });

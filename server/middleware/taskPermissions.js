@@ -3,6 +3,19 @@ const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
 const { safeUUID } = require('../utils/safeSql');
 
+// Cache whether task_assignees table exists (checked once on first query)
+let _taskAssigneesExists = null;
+async function taskAssigneesTableExists() {
+  if (_taskAssigneesExists !== null) return _taskAssigneesExists;
+  try {
+    await sequelize.query(`SELECT 1 FROM task_assignees LIMIT 0`);
+    _taskAssigneesExists = true;
+  } catch (e) {
+    _taskAssigneesExists = false;
+  }
+  return _taskAssigneesExists;
+}
+
 /**
  * Permission matrix constants
  */
@@ -70,18 +83,21 @@ async function buildTaskVisibilityFilter(user, boardId) {
 
   // Member/employee — ONLY see tasks they are personally linked to
   const uid = safeUUID(user.id, 'user.id');
-  return {
-    [Op.or]: [
-      // Linked via task_assignees (new system)
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`),
-      // Linked via task_owners (multi-owner system)
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
-      // Backward compat: old assignedTo column
-      { assignedTo: user.id },
-      // Tasks they created (so they can track what they made)
-      { createdBy: user.id },
-    ],
-  };
+  const orConditions = [
+    // Linked via task_owners (multi-owner system)
+    sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
+    // Backward compat: old assignedTo column
+    { assignedTo: user.id },
+    // Tasks they created (so they can track what they made)
+    { createdBy: user.id },
+  ];
+  // Only include task_assignees subquery if the table exists
+  if (await taskAssigneesTableExists()) {
+    orConditions.unshift(
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
+    );
+  }
+  return { [Op.or]: orConditions };
 }
 
 /**
@@ -211,10 +227,12 @@ async function canViewTask(req, res, next) {
   }
 
   // Check if user is linked to this task via task_assignees (new system)
-  const assignment = await TaskAssignee.findOne({
-    where: { taskId, userId: user.id },
-  });
-  if (assignment) return next();
+  if (await taskAssigneesTableExists()) {
+    const assignment = await TaskAssignee.findOne({
+      where: { taskId, userId: user.id },
+    });
+    if (assignment) return next();
+  }
 
   // Check if user is linked via task_owners (multi-owner system)
   const { Task, TaskOwner } = require('../models');
@@ -243,10 +261,12 @@ async function canViewTask(req, res, next) {
     const teamIds = teamMembers.map(m => m.id);
     teamIds.push(user.id);
 
-    const teamAssignment = await TaskAssignee.findOne({
-      where: { taskId, userId: { [Op.in]: teamIds } },
-    });
-    if (teamAssignment) return next();
+    if (await taskAssigneesTableExists()) {
+      const teamAssignment = await TaskAssignee.findOne({
+        where: { taskId, userId: { [Op.in]: teamIds } },
+      });
+      if (teamAssignment) return next();
+    }
 
     // Check task_owners for team members
     const teamOwner = await TaskOwner.findOne({

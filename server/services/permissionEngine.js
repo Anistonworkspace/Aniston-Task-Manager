@@ -20,20 +20,26 @@ const {
 
 /**
  * Fetch all active, non-expired permission grants for a user.
+ * Returns empty array if the table schema is out of sync (graceful degradation).
  */
 async function fetchActiveGrants(userId) {
-  const { PermissionGrant } = require('../models');
-  return PermissionGrant.findAll({
-    where: {
-      userId,
-      isActive: true,
-      [Op.or]: [
-        { expiresAt: null },
-        { expiresAt: { [Op.gt]: new Date() } },
-      ],
-    },
-    raw: true,
-  });
+  try {
+    const { PermissionGrant } = require('../models');
+    return await PermissionGrant.findAll({
+      where: {
+        userId,
+        isActive: true,
+        [Op.or]: [
+          { expiresAt: null },
+          { expiresAt: { [Op.gt]: new Date() } },
+        ],
+      },
+      raw: true,
+    });
+  } catch (err) {
+    console.error('[PermissionEngine] fetchActiveGrants error (returning empty):', err.message);
+    return [];
+  }
 }
 
 /**

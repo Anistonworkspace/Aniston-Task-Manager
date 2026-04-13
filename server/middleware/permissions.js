@@ -92,18 +92,23 @@ async function getEffectivePermissions(userId, resourceType, resourceId) {
   else effectiveLevel = 'view';
 
   // Check if any grants elevate the level
-  const { PermissionGrant } = require('../models');
-  const grants = await PermissionGrant.findAll({
-    where: {
-      userId,
-      isActive: true,
-      [Op.or]: [
-        { expiresAt: null },
-        { expiresAt: { [Op.gt]: new Date() } },
-      ],
-      ...(resourceType ? { resourceType } : {}),
-    },
-  });
+  let grants = [];
+  try {
+    const { PermissionGrant } = require('../models');
+    grants = await PermissionGrant.findAll({
+      where: {
+        userId,
+        isActive: true,
+        [Op.or]: [
+          { expiresAt: null },
+          { expiresAt: { [Op.gt]: new Date() } },
+        ],
+        ...(resourceType ? { resourceType } : {}),
+      },
+    });
+  } catch (err) {
+    console.error('[Permission] PermissionGrant query error (continuing with role defaults):', err.message);
+  }
 
   for (const g of grants) {
     if (g.permissionLevel) {

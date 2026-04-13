@@ -386,6 +386,31 @@ const start = async () => {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: permission_grants schema upgrades (008) ──
+    // Adds action-based permission columns required by permissionEngine.js
+    try {
+      const [pgTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'permission_grants'`
+      );
+      if (pgTables.length > 0) {
+        await sequelize.query(`ALTER TABLE permission_grants ALTER COLUMN "permissionLevel" DROP NOT NULL`);
+        await sequelize.query(`ALTER TABLE permission_grants ALTER COLUMN "permissionLevel" SET DEFAULT NULL`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS action VARCHAR(50)`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "revokedAt" TIMESTAMP WITH TIME ZONE`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "revokedBy" UUID REFERENCES users(id)`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS reason TEXT`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS scope VARCHAR(20) DEFAULT 'global'`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "isOverride" BOOLEAN DEFAULT true`);
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS notes TEXT`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_action ON permission_grants(action)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_resource_action ON permission_grants("resourceType", action)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_user_resource_action ON permission_grants("userId", "resourceType", action)`);
+        console.log('[Server] permission_grants schema upgrades ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] permission_grants migration warning:', e.message?.slice(0, 100));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
