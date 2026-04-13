@@ -148,13 +148,14 @@ function sortTasksByPendingPriority(tasks) {
  *   4. createdAt DESC
  */
 function buildPendingPriorityOrder() {
+  // Cast to TEXT before LOWER() — priority/status may be ENUM or VARCHAR depending on migration state
   const completedBucket = literal(`
-    CASE WHEN LOWER("Task"."status") IN ('done','completed','closed','finished')
+    CASE WHEN LOWER("Task"."status"::text) IN ('done','completed','closed','finished')
          THEN 1 ELSE 0 END
   `);
 
   const priorityRank = literal(`
-    CASE LOWER("Task"."priority")
+    CASE LOWER("Task"."priority"::text)
       WHEN 'critical' THEN 0
       WHEN 'high'     THEN 1
       WHEN 'medium'   THEN 2
@@ -178,12 +179,12 @@ function buildPendingPriorityOrderAliased(alias) {
   const q = alias;
 
   const completedBucket = literal(`
-    CASE WHEN LOWER("${q}"."status") IN ('done','completed','closed','finished')
+    CASE WHEN LOWER("${q}"."status"::text) IN ('done','completed','closed','finished')
          THEN 1 ELSE 0 END
   `);
 
   const priorityRank = literal(`
-    CASE LOWER("${q}"."priority")
+    CASE LOWER("${q}"."priority"::text)
       WHEN 'critical' THEN 0
       WHEN 'high'     THEN 1
       WHEN 'medium'   THEN 2
