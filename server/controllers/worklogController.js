@@ -3,6 +3,8 @@ const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
+const { isHierarchyManager } = require('../middleware/taskPermissions');
+const { getDescendantIds } = require('../services/hierarchyService');
 
 /**
  * POST /api/worklogs
@@ -23,12 +25,23 @@ const createWorkLog = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
-    // Members can only add logs to tasks assigned to them
+    // Members can only add logs to tasks assigned to them (unless hierarchy manager for subtree tasks)
     if (req.user.role === 'member' && task.assignedTo !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only add work logs to tasks assigned to you.',
-      });
+      const isHierMgr = await isHierarchyManager(req.user, req);
+      if (isHierMgr) {
+        const descendantIds = await getDescendantIds(req.user.id);
+        if (!descendantIds.includes(task.assignedTo)) {
+          return res.status(403).json({
+            success: false,
+            message: 'You can only add work logs to tasks assigned to you or your subtree members.',
+          });
+        }
+      } else {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only add work logs to tasks assigned to you.',
+        });
+      }
     }
 
     const worklog = await WorkLog.create({
@@ -78,9 +91,16 @@ const getWorkLogs = async (req, res) => {
     if (taskId) where.taskId = taskId;
     if (date) where.date = date;
 
-    // Members can only see their own logs
+    // Members can only see their own logs (unless hierarchy manager — can see subtree logs)
     if (req.user.role === 'member') {
-      where.userId = req.user.id;
+      const isHierMgr = await isHierarchyManager(req.user, req);
+      if (isHierMgr) {
+        const descendantIds = await getDescendantIds(req.user.id);
+        // Hierarchy manager can see own logs + descendant logs
+        where.userId = { [Op.in]: [req.user.id, ...descendantIds] };
+      } else {
+        where.userId = req.user.id;
+      }
     } else if (userId) {
       where.userId = userId;
     }
@@ -126,9 +146,16 @@ const updateWorkLog = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Work log not found.' });
     }
 
-    // Members can only edit their own logs
+    // Members can only edit their own logs (unless hierarchy manager for subtree member logs)
     if (req.user.role === 'member' && worklog.userId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'You can only edit your own work logs.' });
+      const isHierMgr = await isHierarchyManager(req.user, req);
+      if (!isHierMgr) {
+        return res.status(403).json({ success: false, message: 'You can only edit your own work logs.' });
+      }
+      const descendantIds = await getDescendantIds(req.user.id);
+      if (!descendantIds.includes(worklog.userId)) {
+        return res.status(403).json({ success: false, message: 'You can only edit your own or subtree member work logs.' });
+      }
     }
 
     const { content } = req.body;

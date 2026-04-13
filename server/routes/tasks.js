@@ -2,6 +2,7 @@ const express = require('express');
 const { body } = require('express-validator');
 const { authenticate, managerOrAdmin, requireRole } = require('../middleware/auth');
 const { attachTaskPermissions, canViewTask } = require('../middleware/taskPermissions');
+const { requirePermission } = require('../middleware/permissions');
 const {
   createTask,
   getTasks,
@@ -53,7 +54,7 @@ router.put(
   bulkUpdateTasks
 );
 
-// ─── POST /api/tasks (assistant_manager, manager, admin only — employees cannot create) ──
+// ─── POST /api/tasks (admin, manager, assistant_manager only) ──
 router.post(
   '/',
   requireRole('assistant_manager', 'manager', 'admin'),
@@ -97,10 +98,10 @@ router.get('/', getTasks);
 // ─── GET /api/tasks/:id (with visibility check) ─────────────
 router.get('/:id', canViewTask, getTask);
 
-// ─── PUT /api/tasks/:id/members (assistant_manager+) ────────
+// ─── PUT /api/tasks/:id/members (requires tasks.assign permission) ────────
 router.put(
   '/:id/members',
-  managerOrAdmin,
+  requirePermission('tasks', 'assign'),
   [
     body('assignees').optional().isArray().withMessage('assignees must be an array'),
     body('supervisors').optional().isArray().withMessage('supervisors must be an array'),

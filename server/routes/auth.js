@@ -102,12 +102,12 @@ router.get('/me/permissions', authenticate, async (req, res) => {
       success: true,
       data: {
         permissions: legacyPerms,
-        // New granular permissions (resource.action format)
         granularPermissions: result.permissions,
         overrides: result.overrides,
         grants: result.grants,
         role: result.role,
         isSuperAdmin: result.isSuperAdmin,
+        isHierarchyManager: false,
       },
     });
   } catch (err) {

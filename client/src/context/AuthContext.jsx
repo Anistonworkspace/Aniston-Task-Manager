@@ -28,12 +28,14 @@ export function AuthProvider({ children }) {
     setViewAsRole(null);
     setPermissionGrants([]);
     setEffectivePermissions({});
+    setIsHierarchyManager(false);
     disconnect();
   }, []);
 
   const [effectivePermissions, setEffectivePermissions] = useState({});
   const [granularPermissions, setGranularPermissions] = useState({});
   const [permissionOverrides, setPermissionOverrides] = useState([]);
+  const [isHierarchyManager, setIsHierarchyManager] = useState(false);
 
   // Load effective permissions (role + grants merged) from the server
   const loadPermissions = useCallback(async () => {
@@ -48,6 +50,7 @@ export function AuthProvider({ children }) {
       setEffectivePermissions(perms);
       setGranularPermissions(granular);
       setPermissionOverrides(overrides);
+      setIsHierarchyManager(!!(data?.isHierarchyManager || data?.data?.isHierarchyManager));
       setPermissionGrants((Array.isArray(rawGrants) ? rawGrants : []).map(g => ({
         resourceType: g.resourceType,
         permissionLevel: g.permissionLevel,
@@ -213,7 +216,7 @@ export function AuthProvider({ children }) {
     <AuthContext.Provider value={{
       user, token, loading, login, loginWithToken, logout, updateProfile,
       isAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
-      isSuperAdmin, viewAsRole, switchViewAs, effectiveRole,
+      isSuperAdmin, isHierarchyManager, viewAsRole, switchViewAs, effectiveRole,
       permissionGrants, effectivePermissions, granularPermissions, permissionOverrides, loadPermissions,
     }}>
       {children}

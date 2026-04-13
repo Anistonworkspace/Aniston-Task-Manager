@@ -222,7 +222,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
           startTime: startTime.toISOString(),
           endTime: endTime.toISOString(),
           excludeTaskId: task?.id,
-        }).then(res => {
+        }, { _silent: true }).then(res => {
           const data = res.data || res;
           if (data.hasConflicts) {
             setConflicts(data.conflicts);
@@ -253,7 +253,12 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   async function handleAddComment(text) {
     const res = await api.post('/comments', { taskId: task.id, content: text });
-    setComments(prev => [res.data.comment || res.data, ...prev]);
+    const newComment = res.data.comment || res.data;
+    setComments(prev => {
+      // Prevent duplicate if socket already added this comment
+      if (newComment?.id && prev.some(c => c.id === newComment.id)) return prev;
+      return [newComment, ...prev];
+    });
   }
 
   async function handleDeleteComment(id) { await api.delete(`/comments/${id}`); setComments(prev => prev.filter(c => c.id !== id)); }
@@ -263,7 +268,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       const formData = new FormData();
       formData.append('file', file);
       formData.append('taskId', task.id);
-      const res = await api.post('/files', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await api.post('/files', formData);
       setFiles(prev => [...prev, res.data.file || res.data.data?.file || res.data]);
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to upload file.';

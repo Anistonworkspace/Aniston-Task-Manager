@@ -1,6 +1,7 @@
 const { DueDateExtension, Task, User, Notification } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
+const { getDescendantIds } = require('../services/hierarchyService');
 
 // POST /api/extensions — request due date extension
 exports.requestExtension = async (req, res) => {
@@ -16,14 +17,38 @@ exports.requestExtension = async (req, res) => {
       taskId, requestedBy: req.user.id, currentDueDate: task.dueDate, proposedDueDate, reason,
     });
 
-    // Notify managers
-    const managers = await User.findAll({ where: { role: ['admin', 'manager'], isActive: true } });
-    for (const mgr of managers) {
+    // Notify managers + hierarchy managers responsible for this task
+    const recipientIds = new Set();
+
+    // Walk up the requester's management chain
+    let currentUser = await User.findByPk(req.user.id, { attributes: ['id', 'managerId'] });
+    while (currentUser?.managerId) {
+      recipientIds.add(currentUser.managerId);
+      currentUser = await User.findByPk(currentUser.managerId, { attributes: ['id', 'managerId'] });
+    }
+
+    // Also include all admin/manager role users (existing behavior)
+    const managers = await User.findAll({ where: { role: ['admin', 'manager'], isActive: true }, attributes: ['id'] });
+    for (const mgr of managers) recipientIds.add(mgr.id);
+
+    // Include hierarchy managers by walking up from the task assignee's management chain
+    if (task.assignedTo) {
+      let assigneeUser = await User.findByPk(task.assignedTo, { attributes: ['id', 'managerId'] });
+      while (assigneeUser?.managerId) {
+        recipientIds.add(assigneeUser.managerId);
+        assigneeUser = await User.findByPk(assigneeUser.managerId, { attributes: ['id', 'managerId'] });
+      }
+    }
+
+    // Remove the requester themselves
+    recipientIds.delete(req.user.id);
+
+    for (const recipientId of recipientIds) {
       await Notification.create({
         type: 'task_updated', message: `${req.user.name} requested due date extension for "${task.title}"`,
-        entityType: 'task', entityId: taskId, userId: mgr.id,
+        entityType: 'task', entityId: taskId, userId: recipientId,
       });
-      emitToUser(mgr.id, 'notification:new', { message: `Due date extension requested for "${task.title}"` });
+      emitToUser(recipientId, 'notification:new', { message: `Due date extension requested for "${task.title}"` });
     }
 
     logActivity({ action: 'extension_requested', description: `${req.user.name} requested due date extension for "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id });
@@ -41,10 +66,21 @@ exports.requestExtension = async (req, res) => {
 // GET /api/extensions?status=pending
 exports.getExtensions = async (req, res) => {
   try {
+    const { Op } = require('sequelize');
+    const { isHierarchyManager } = require('../middleware/taskPermissions');
     const where = {};
     if (req.query.status) where.status = req.query.status;
     if (req.query.taskId) where.taskId = req.query.taskId;
-    if (req.user.role === 'member') where.requestedBy = req.user.id;
+    if (req.user.role === 'member') {
+      const isHierMgr = await isHierarchyManager(req.user, req);
+      if (isHierMgr) {
+        // Hierarchy manager can see own requests + requests from subtree members
+        const descendantIds = await getDescendantIds(req.user.id);
+        where.requestedBy = { [Op.in]: [req.user.id, ...descendantIds] };
+      } else {
+        where.requestedBy = req.user.id;
+      }
+    }
 
     const extensions = await DueDateExtension.findAll({
       where,

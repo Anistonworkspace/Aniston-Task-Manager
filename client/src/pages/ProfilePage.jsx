@@ -79,9 +79,7 @@ export default function ProfilePage() {
     try {
       const formData = new FormData();
       formData.append('avatar', file);
-      const res = await api.post('/auth/avatar', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      const res = await api.post('/auth/avatar', formData);
       const updatedUser = res.data?.data?.user || res.data?.user;
       if (updatedUser) {
         await updateProfile({ avatar: updatedUser.avatar });

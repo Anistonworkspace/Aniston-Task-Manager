@@ -2,8 +2,19 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' },
   timeout: 30000,
+});
+
+// Set Content-Type to application/json by default, but let axios auto-set it
+// for FormData (multipart/form-data) — this is critical for file uploads.
+api.interceptors.request.use((config) => {
+  if (config.data instanceof FormData) {
+    // Remove Content-Type so browser sets multipart/form-data with correct boundary
+    delete config.headers['Content-Type'];
+  } else if (!config.headers['Content-Type']) {
+    config.headers['Content-Type'] = 'application/json';
+  }
+  return config;
 });
 
 let isRefreshing = false;
@@ -97,10 +108,12 @@ api.interceptors.response.use(
       }
     }
 
-    // Handle 403 Forbidden — permission denied
+    // Handle 403 Forbidden — permission denied (skip silent requests)
     if (error.response?.status === 403) {
-      const message = error.response?.data?.message || "You don't have permission to perform this action.";
-      window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 403 } }));
+      if (!originalRequest?._silent) {
+        const message = error.response?.data?.message || "You don't have permission to perform this action.";
+        window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 403 } }));
+      }
       return Promise.reject(error);
     }
 

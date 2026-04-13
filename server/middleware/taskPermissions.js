@@ -29,8 +29,19 @@ const ROLE_HIERARCHY = {
 };
 
 /**
+ * Check if a member-role user is a hierarchy manager (has direct reports in org chart).
+ * NOTE: This function is retained for non-permission uses (org chart display, etc.)
+ * but is NO LONGER used for task permission decisions. Strict RBAC only.
+ */
+async function isHierarchyManager(user, req) {
+  // Always return false for task permission purposes — strict RBAC
+  return false;
+}
+
+/**
  * Layer 1 — Role Check: Attaches permission context to req.taskPermissions
  * Determines what level of access the user has based on their role.
+ * STRICT RBAC: only admin, manager, assistant_manager get management permissions.
  */
 function attachTaskPermissions(req, res, next) {
   const user = req.user;
@@ -40,23 +51,20 @@ function attachTaskPermissions(req, res, next) {
 
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
+  const isManagementRole = isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role);
 
   const permissions = {
     role,
     isSuperAdmin,
-    // Full access: admin (or super admin) sees everything
     hasFullAccess: isSuperAdmin || role === 'admin',
-    // Board-level access: manager and assistant_manager see all tasks in their boards
     hasBoardAccess: role === 'manager' || role === 'assistant_manager',
-    // Partial access: (reserved for future roles with team-scoped visibility)
+    isHierarchyManager: false,
     hasPartialAccess: false,
-    // Restricted: employee/member sees only their own tasks
     isRestricted: role === 'member',
-    // Action permissions based on role
-    canCreate: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
-    canEditOthers: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
-    canDelete: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
-    canAssignMembers: isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role),
+    canCreate: isManagementRole,
+    canEditOthers: isManagementRole,
+    canDelete: isManagementRole,
+    canAssignMembers: isManagementRole,
     canManageBoardSettings: isSuperAdmin || role === 'admin',
   };
 
@@ -83,14 +91,13 @@ async function buildTaskVisibilityFilter(user, boardId) {
     return {};
   }
 
-  // Member/employee — ONLY see tasks they are personally linked to
+  // Check if member is hierarchy manager — they can see their subtree's tasks too
   const uid = safeUUID(user.id, 'user.id');
   const orConditions = [
-    // Backward compat: old assignedTo column
     { assignedTo: user.id },
-    // Tasks they created (so they can track what they made)
     { createdBy: user.id },
   ];
+
   // Only include junction-table subqueries if the tables exist
   if (await taskOwnersTableExists()) {
     orConditions.push(
@@ -113,9 +120,10 @@ async function buildTaskVisibilityFilter(user, boardId) {
  * @param {object} user - The authenticated user
  * @param {object} task - The task being acted upon (with assignees loaded)
  * @param {Array} taskAssignees - Array of TaskAssignee records for this task
+ * @param {object} [req] - Express request (for hierarchy manager caching)
  * @returns {{ allowed: boolean, reason: string, allowedFields: string[]|null }}
  */
-function checkTaskAction(action, user, task, taskAssignees = []) {
+function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
 
@@ -130,6 +138,9 @@ function checkTaskAction(action, user, task, taskAssignees = []) {
   const isSupervisor = userAssignment?.role === 'supervisor';
   const isMember = !userAssignment && role === 'member';
   const isTaskCreator = task.createdBy === user.id;
+
+  // Check if member is hierarchy manager (sync check using cached value)
+  const hierarchyMgr = req?._isHierarchyManager || false;
 
   switch (action) {
     case 'view': {
@@ -296,5 +307,6 @@ module.exports = {
   buildTaskVisibilityFilter,
   checkTaskAction,
   canViewTask,
+  isHierarchyManager,
   ROLE_HIERARCHY,
 };

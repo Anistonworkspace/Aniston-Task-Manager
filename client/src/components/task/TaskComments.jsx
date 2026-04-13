@@ -11,6 +11,7 @@ export default function TaskComments({ comments, onAdd, onDelete }) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const textRef = useRef('');
+  const submittingRef = useRef(false);
   const { checkGrammar, suggestion: grammarSuggestion, isChecking: isCheckingGrammar, applySuggestion: applyGrammar, dismissSuggestion: dismissGrammar, reset: resetGrammar } = useGrammarCorrection();
 
   // Keep ref in sync so handleSubmit always reads the latest value
@@ -19,6 +20,9 @@ export default function TaskComments({ comments, onAdd, onDelete }) {
   const handleSubmit = useCallback(async () => {
     const currentText = textRef.current.trim();
     if (!currentText) return;
+    // Synchronous guard against rapid double-submissions (Enter key repeat / button double-click)
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       await onAdd(currentText);
@@ -28,6 +32,7 @@ export default function TaskComments({ comments, onAdd, onDelete }) {
     } catch (err) {
       console.error('Failed to add comment:', err);
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }, [onAdd, resetGrammar]);

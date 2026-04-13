@@ -80,7 +80,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
           <div className="flex items-center -space-x-1.5">
             {displayPeople.map((person, idx) => (
               <div key={person.id} className="relative" style={{ zIndex: displayPeople.length - idx }}>
-                <Avatar name={person.name} image={person.avatar ? `/uploads/avatars/${person.avatar}` : undefined} size="xs" />
+                <Avatar name={person.name} image={person.avatar || undefined} size="xs" />
                 {!hasTaskAssignees && primaryOwner && primaryOwner.id === person.id && (
                   <Star size={8} className="absolute -top-0.5 -right-0.5 text-amber-400 fill-amber-400" />
                 )}

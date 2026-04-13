@@ -87,8 +87,10 @@ const createTask = async (req, res) => {
       }
     }
 
-    // Only authorized users (non-members) can set statusConfig
-    const canAssignOthers = ['admin', 'manager', 'assistant_manager'].includes(req.user.role);
+    // Authorized users who can assign tasks to others:
+    // Strict RBAC: only management roles can assign others
+    const isManagementRole = ['admin', 'manager', 'assistant_manager'].includes(req.user.role);
+    const canAssignOthers = isManagementRole;
     const isMemberRole = !canAssignOthers;
 
     // Members cannot configure task-level statuses
@@ -433,10 +435,10 @@ const getTask = async (req, res) => {
 
     // Attach permission info for frontend to know what the user can do
     const taskAssignees = task.taskAssignees || [];
-    const viewCheck = checkTaskAction('view', req.user, task, taskAssignees);
-    const editCheck = checkTaskAction('edit', req.user, task, taskAssignees);
-    const reassignCheck = checkTaskAction('reassign', req.user, task, taskAssignees);
-    const deleteCheck = checkTaskAction('delete', req.user, task, taskAssignees);
+    const viewCheck = checkTaskAction('view', req.user, task, taskAssignees, req);
+    const editCheck = checkTaskAction('edit', req.user, task, taskAssignees, req);
+    const reassignCheck = checkTaskAction('reassign', req.user, task, taskAssignees, req);
+    const deleteCheck = checkTaskAction('delete', req.user, task, taskAssignees, req);
 
     const taskJSON = task.toJSON();
     taskJSON._permissions = {
@@ -480,11 +482,11 @@ const updateTask = async (req, res) => {
 
     // Layer 3: Check action permission using the new system
     const taskAssignees = task.taskAssignees || [];
-    const editPermission = checkTaskAction('edit', req.user, task, taskAssignees);
+    const editPermission = checkTaskAction('edit', req.user, task, taskAssignees, req);
 
     // If user can't edit at all, check if they can at least update status
     if (!editPermission.allowed) {
-      const statusPermission = checkTaskAction('edit_status', req.user, task, taskAssignees);
+      const statusPermission = checkTaskAction('edit_status', req.user, task, taskAssignees, req);
       if (!statusPermission.allowed) {
         return res.status(403).json({
           success: false,
@@ -579,6 +581,22 @@ const updateTask = async (req, res) => {
       changes.startDate = today;
     }
 
+    // Hierarchy validation: ensure assignment targets are in the actor's subtree (BEFORE save)
+    const allAssignmentTargets = [
+      ...(Array.isArray(req.body.assignedTo) ? req.body.assignedTo : (updates.assignedTo && typeof updates.assignedTo === 'string' ? [updates.assignedTo] : [])),
+      ...(Array.isArray(req.body.ownerIds) ? req.body.ownerIds : []),
+      ...(Array.isArray(req.body.supervisors) ? req.body.supervisors : []),
+    ];
+    if (allAssignmentTargets.length > 0) {
+      const { canAssignTo } = require('../services/hierarchyService');
+      for (const targetId of allAssignmentTargets) {
+        const allowed = await canAssignTo(req.user, targetId);
+        if (!allowed) {
+          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
+        }
+      }
+    }
+
     await task.update(updates);
 
     // ── Auto-group assignment: move task to matching group when status changes ──
@@ -596,9 +614,10 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // Sync task_assignees if assignedTo (array) or supervisors provided
+    // Sync task_assignees if assignedTo (array) or supervisors or ownerIds provided
     const canManageMembers = isAdmin || isManager || isAssistantManager || !!req.user.isSuperAdmin;
     const membersChanged = canManageMembers && (Array.isArray(req.body.assignedTo) || Array.isArray(req.body.supervisors));
+    const ownerIdsChanged = canManageMembers && Array.isArray(req.body.ownerIds);
 
     // Capture old members BEFORE syncing so we can diff later
     let oldAssigneeIds = [];
@@ -679,6 +698,15 @@ const updateTask = async (req, res) => {
       }
     }
 
+    // Capture old owner IDs before sync (for notification diffing)
+    let previousOwnerUserIds = [];
+    if (ownerIdsChanged) {
+      try {
+        const prevOwners = await TaskOwner.findAll({ where: { taskId: task.id }, attributes: ['userId'], raw: true });
+        previousOwnerUserIds = prevOwners.map(o => o.userId);
+      } catch (e) { /* ignore */ }
+    }
+
     // Sync multi-owner records if ownerIds provided (backward compat)
     if (Array.isArray(req.body.ownerIds) && canManageMembers) {
       const newOwnerIds = req.body.ownerIds;
@@ -715,6 +743,16 @@ const updateTask = async (req, res) => {
         for (const uid of newOwnerIds) {
           try { await boardForOwners.addMember(uid); } catch (e) { /* already a member */ }
         }
+      }
+
+      // Notify newly added owners (skip self-assignment and already-assigned)
+      const prevAssigneeIds = (taskAssignees || []).filter(ta => ta.role === 'assignee').map(ta => ta.userId);
+      const alreadyKnown = new Set([...previousOwnerUserIds, ...prevAssigneeIds]);
+      const newlyAdded = newOwnerIds.filter(uid => !alreadyKnown.has(uid) && uid !== req.user.id);
+      if (newlyAdded.length > 0) {
+        notifyNewAssignments(task.id, newlyAdded, 'assignee', req.user.id).catch(err =>
+          logger.warn('[Task] Owner-assignment notification failed:', err.message)
+        );
       }
     }
 
@@ -1287,7 +1325,7 @@ const checkConflicts = async (req, res) => {
       return res.status(400).json({ success: false, message: 'userId, startTime, and endTime are required.' });
     }
 
-    // Members can only check their own schedule
+    // Members can only check their own schedule — strict RBAC
     if (req.user.role === 'member' && userId !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
@@ -1367,7 +1405,7 @@ const scheduleSummary = async (req, res) => {
       return res.status(400).json({ success: false, message: 'userId and date are required.' });
     }
 
-    // Members can only check their own schedule
+    // Members can only check their own schedule — strict RBAC
     if (req.user.role === 'member' && userId !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }

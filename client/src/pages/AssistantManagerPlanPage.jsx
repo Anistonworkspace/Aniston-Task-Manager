@@ -800,9 +800,7 @@ export default function AssistantManagerPlanPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await api.post('/files/upload-plan', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      const res = await api.post('/files/upload-plan', formData);
       const fileUrl = res.data?.data?.url || res.data?.url;
       const fileName = file.name;
       if (fileUrl) {

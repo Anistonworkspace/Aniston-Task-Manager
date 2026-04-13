@@ -436,6 +436,29 @@ const start = async () => {
       console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: file_attachments table ──
+    // Required by the file upload/fetch endpoints.
+    // Without it, every file operation crashes with "relation does not exist".
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS file_attachments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        filename VARCHAR(500) NOT NULL,
+        "originalName" VARCHAR(500) NOT NULL,
+        mimetype VARCHAR(100) NOT NULL,
+        size INTEGER NOT NULL,
+        url VARCHAR(1000) NOT NULL,
+        provider VARCHAR(50) NOT NULL DEFAULT 'local',
+        category VARCHAR(50) NOT NULL DEFAULT 'task_attachment',
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        "uploadedBy" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      console.log('[Server] file_attachments table ensured.');
+    } catch (e) {
+      console.warn('[Server] file_attachments migration warning:', e.message?.slice(0, 100));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
@@ -475,6 +498,8 @@ const start = async () => {
       'CREATE INDEX IF NOT EXISTS idx_activities_board_id ON activities("boardId")',
       'CREATE INDEX IF NOT EXISTS idx_task_owners_task_id ON task_owners("taskId")',
       'CREATE INDEX IF NOT EXISTS idx_task_owners_user_id ON task_owners("userId")',
+      'CREATE INDEX IF NOT EXISTS idx_file_attachments_task_id ON file_attachments("taskId")',
+      'CREATE INDEX IF NOT EXISTS idx_file_attachments_uploaded_by ON file_attachments("uploadedBy")',
     ];
     for (const sql of indices) {
       try { await sequelize.query(sql); } catch (e) { /* table may not exist yet */ }

@@ -26,7 +26,7 @@ const TaskRow = React.memo(function TaskRow({
 
   const { isMember, isManager, isAdmin, isAssistantManager } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
-  // Approved tasks are fully read-only. Otherwise: Admin edit all, Manager/AssistantManager edit unless admin-created, Member restricted.
+  // Strict RBAC: Only Admin/Manager/AssistantManager can edit all fields. Members restricted.
   const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
   const isBlockedByDependency = !!task.customFields?.blockedByDependency;
   const canEditStatus = !isApproved && !isBlockedByDependency;

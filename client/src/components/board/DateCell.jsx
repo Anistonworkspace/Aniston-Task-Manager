@@ -5,6 +5,7 @@ import api from '../../services/api';
 
 export default function DateCell({ value, onChange, taskId, assignedTo, estimatedHours }) {
   const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || '');
   const [hasConflict, setHasConflict] = useState(false);
   const [conflictTooltip, setConflictTooltip] = useState('');
 
@@ -35,24 +36,35 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
     }
   }, [assignedTo, taskId, estimatedHours]);
 
+  function startEditing() {
+    setDraft(value || '');
+    setEditing(true);
+  }
+
   function handleChange(e) {
     e.stopPropagation();
-    const newVal = e.target.value || null;
-    onChange(newVal);
+    setDraft(e.target.value);
+  }
+
+  function handleBlur() {
+    const newVal = draft || null;
+    if (newVal !== (value || null)) {
+      onChange(newVal);
+      checkConflictsForDate(newVal);
+    }
     setEditing(false);
-    checkConflictsForDate(newVal);
   }
 
   if (editing) {
     return (
-      <input type="date" value={value || ''} onChange={handleChange} onBlur={() => setEditing(false)} autoFocus
+      <input type="date" value={draft} onChange={handleChange} onBlur={handleBlur} autoFocus
         className="w-full h-full text-xs text-center bg-transparent border-none outline-none cursor-pointer" onClick={(e) => e.stopPropagation()} />
     );
   }
 
   if (!value) {
     return (
-      <button onClick={(e) => { e.stopPropagation(); setEditing(true); }} className="w-full h-full flex items-center justify-center text-text-tertiary hover:text-text-secondary text-xs">
+      <button onClick={(e) => { e.stopPropagation(); startEditing(); }} className="w-full h-full flex items-center justify-center text-text-tertiary hover:text-text-secondary text-xs">
         —
       </button>
     );
@@ -65,7 +77,7 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
   const today = isToday(date);
 
   return (
-    <button onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+    <button onClick={(e) => { e.stopPropagation(); startEditing(); }}
       className={`text-xs font-medium inline-flex items-center gap-0.5 ${overdue ? 'text-danger' : today ? 'text-primary' : 'text-text-primary'} hover:underline`}
       title={hasConflict ? conflictTooltip : undefined}
     >
