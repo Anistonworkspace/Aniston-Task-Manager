@@ -3,18 +3,20 @@ const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
 const { safeUUID } = require('../utils/safeSql');
 
-// Cache whether task_assignees table exists (checked once on first query)
-let _taskAssigneesExists = null;
-async function taskAssigneesTableExists() {
-  if (_taskAssigneesExists !== null) return _taskAssigneesExists;
+// ── Table existence cache (shared across all middleware calls) ───────────
+const _tableCache = {};
+async function _tableExists(name) {
+  if (_tableCache[name] !== undefined) return _tableCache[name];
   try {
-    await sequelize.query(`SELECT 1 FROM task_assignees LIMIT 0`);
-    _taskAssigneesExists = true;
+    await sequelize.query(`SELECT 1 FROM "${name}" LIMIT 0`);
+    _tableCache[name] = true;
   } catch (e) {
-    _taskAssigneesExists = false;
+    _tableCache[name] = false;
   }
-  return _taskAssigneesExists;
+  return _tableCache[name];
 }
+const taskAssigneesTableExists = () => _tableExists('task_assignees');
+const taskOwnersTableExists = () => _tableExists('task_owners');
 
 /**
  * Permission matrix constants
@@ -84,16 +86,19 @@ async function buildTaskVisibilityFilter(user, boardId) {
   // Member/employee — ONLY see tasks they are personally linked to
   const uid = safeUUID(user.id, 'user.id');
   const orConditions = [
-    // Linked via task_owners (multi-owner system)
-    sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
     // Backward compat: old assignedTo column
     { assignedTo: user.id },
     // Tasks they created (so they can track what they made)
     { createdBy: user.id },
   ];
-  // Only include task_assignees subquery if the table exists
+  // Only include junction-table subqueries if the tables exist
+  if (await taskOwnersTableExists()) {
+    orConditions.push(
+      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`)
+    );
+  }
   if (await taskAssigneesTableExists()) {
-    orConditions.unshift(
+    orConditions.push(
       sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
     );
   }
@@ -236,10 +241,12 @@ async function canViewTask(req, res, next) {
 
   // Check if user is linked via task_owners (multi-owner system)
   const { Task, TaskOwner } = require('../models');
-  const ownerRecord = await TaskOwner.findOne({
-    where: { taskId, userId: user.id },
-  });
-  if (ownerRecord) return next();
+  if (await taskOwnersTableExists()) {
+    const ownerRecord = await TaskOwner.findOne({
+      where: { taskId, userId: user.id },
+    });
+    if (ownerRecord) return next();
+  }
 
   // Backward compat: check old assignedTo column and createdBy
   const task = await Task.findByPk(taskId, { attributes: ['id', 'assignedTo', 'createdBy'] });
@@ -269,9 +276,9 @@ async function canViewTask(req, res, next) {
     }
 
     // Check task_owners for team members
-    const teamOwner = await TaskOwner.findOne({
+    const teamOwner = await taskOwnersTableExists() ? await TaskOwner.findOne({
       where: { taskId, userId: { [Op.in]: teamIds } },
-    });
+    }) : null;
     if (teamOwner) return next();
 
     // Check old assignedTo

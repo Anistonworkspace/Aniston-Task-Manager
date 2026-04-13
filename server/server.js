@@ -411,6 +411,31 @@ const start = async () => {
       console.warn('[Server] permission_grants migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: labels and task_labels tables ──
+    // These are required by the Label include in task queries.
+    // Without them, every task fetch crashes with "relation does not exist".
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS labels (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(255) NOT NULL,
+        color VARCHAR(50) DEFAULT '#6366f1',
+        "boardId" UUID REFERENCES boards(id) ON DELETE CASCADE,
+        "createdBy" UUID REFERENCES users(id) ON DELETE CASCADE,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS task_labels (
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        "labelId" UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        PRIMARY KEY ("taskId", "labelId")
+      )`);
+      console.log('[Server] labels and task_labels tables ensured.');
+    } catch (e) {
+      console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });

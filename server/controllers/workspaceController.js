@@ -3,6 +3,34 @@ const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { safeUUIDList } = require('../utils/safeSql');
 
+// ── Table existence cache ──
+const _tblCache = {};
+async function _tblExists(name) {
+  if (_tblCache[name] !== undefined) return _tblCache[name];
+  const { sequelize } = require('../config/db');
+  try { await sequelize.query(`SELECT 1 FROM "${name}" LIMIT 0`); _tblCache[name] = true; }
+  catch (e) { _tblCache[name] = false; }
+  return _tblCache[name];
+}
+
+/**
+ * Build a SQL condition for boards accessible to a set of users.
+ * Dynamically includes junction-table subqueries only if the tables exist.
+ */
+async function buildBoardAccessCondition(userIdList) {
+  const parts = [
+    `b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`,
+    `b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`,
+  ];
+  if (await _tblExists('task_assignees')) {
+    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
+  }
+  if (await _tblExists('task_owners')) {
+    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
+  }
+  return parts.join('\n        OR ');
+}
+
 // GET /api/workspaces/mine — workspaces visible to current user
 // Admins/Managers: see all workspaces
 // Members: see only (1) workspaces they created, (2) workspaces assigned to them via workspaceId,
@@ -43,12 +71,10 @@ exports.getMyWorkspaces = async (req, res) => {
     const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
 
     // Find ALL accessible board IDs for this user (or team) — used to filter both workspaces AND boards within them
+    const boardAccessParts = await buildBoardAccessCondition(userIdList);
     const accessibleBoardCondition = `
       b."isArchived" = false AND (
-        b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
-        OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-        OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-        OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+        ${boardAccessParts}
         OR b."createdBy" IN (${userIdList})
       )`;
 
@@ -169,12 +195,10 @@ exports.getWorkspace = async (req, res) => {
       if (!isCreator && !isAssignedWorkspace && !isWsMember) {
         const { sequelize } = require('../config/db');
         const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
+        const boardAccParts = await buildBoardAccessCondition(userIdList);
         const [rows] = await sequelize.query(
           `SELECT 1 FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
-            b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
-            OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-            OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-            OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+            ${boardAccParts}
           ) LIMIT 1`,
           { replacements: { wsId: workspace.id } }
         );
@@ -188,12 +212,10 @@ exports.getWorkspace = async (req, res) => {
       // Filter boards within the workspace to only show accessible ones
       const { sequelize } = require('../config/db');
       const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
+      const boardAccParts2 = await buildBoardAccessCondition(userIdList);
       const [accessibleBoardRows] = await sequelize.query(
         `SELECT DISTINCT b.id FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
-          b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))
-          OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-          OR b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))
-          OR b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))
+          ${boardAccParts2}
           OR b."createdBy" IN (${userIdList})
         )`,
         { replacements: { wsId: workspace.id } }

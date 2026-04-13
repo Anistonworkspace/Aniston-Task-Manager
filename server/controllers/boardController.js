@@ -8,6 +8,15 @@ const { isValidStatus } = require('../utils/statusConfig');
 const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritization');
 const { safeUUIDList } = require('../utils/safeSql');
 
+// ── Table existence cache ──
+const _tblCache = {};
+async function _tblExists(name) {
+  if (_tblCache[name] !== undefined) return _tblCache[name];
+  try { await sequelize.query(`SELECT 1 FROM "${name}" LIMIT 0`); _tblCache[name] = true; }
+  catch (e) { _tblCache[name] = false; }
+  return _tblCache[name];
+}
+
 /**
  * POST /api/boards
  */
@@ -100,18 +109,22 @@ const getBoards = async (req, res) => {
       const visibleUserIds = [userId];
       const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
 
-      where[Op.or] = [
+      const boardOrFilters = [
         // Board created by user (or team member for assistant_manager)
         { createdBy: { [Op.in]: visibleUserIds } },
         // User (or team) is a board member
         sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`),
-        // User (or team) is assigned to a task in the board (via task_assignees)
-        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`),
-        // User (or team) is a task owner in the board (via task_owners)
-        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`),
         // Legacy: user (or team) is in assignedTo column
         sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
       ];
+      // Only add junction-table subqueries if the tables exist
+      if (await _tblExists('task_assignees')) {
+        boardOrFilters.push(sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`));
+      }
+      if (await _tblExists('task_owners')) {
+        boardOrFilters.push(sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`));
+      }
+      where[Op.or] = boardOrFilters;
     }
 
     const { count, rows: boards } = await Board.findAndCountAll({

@@ -19,30 +19,38 @@ const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 
-// Reusable include block for the two user associations that appear on every task query.
-// TaskAssignee include is built dynamically to handle missing table gracefully.
-const TASK_INCLUDES_BASE = [
-  { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-  { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-  { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
-];
-
-// Cache whether task_assignees table exists (checked once on first query)
-let _taskAssigneesVerified = null;
-async function hasTaskAssigneesTable() {
-  if (_taskAssigneesVerified !== null) return _taskAssigneesVerified;
+// ── Table existence cache ────────────────────────────────────────────────
+// Checks once per process lifetime whether a table exists. Prevents every
+// query from crashing when a migration hasn't run on production yet.
+const _tableCache = {};
+async function tableExists(tableName) {
+  if (_tableCache[tableName] !== undefined) return _tableCache[tableName];
   try {
-    await sequelize.query(`SELECT 1 FROM task_assignees LIMIT 0`);
-    _taskAssigneesVerified = true;
+    await sequelize.query(`SELECT 1 FROM "${tableName}" LIMIT 0`);
+    _tableCache[tableName] = true;
   } catch (e) {
-    logger.warn('[Task] task_assignees table not available — queries will skip it');
-    _taskAssigneesVerified = false;
+    logger.warn(`[Task] Table "${tableName}" not available — queries will skip it`);
+    _tableCache[tableName] = false;
   }
-  return _taskAssigneesVerified;
+  return _tableCache[tableName];
 }
 
+// Convenience aliases
+const hasTaskAssigneesTable = () => tableExists('task_assignees');
+const hasTaskOwnersTable = () => tableExists('task_owners');
+const hasTaskLabelsTable = () => tableExists('task_labels');
+
+// Reusable include block — built dynamically to handle missing tables gracefully.
+const TASK_INCLUDES_CORE = [
+  { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
+  { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+];
+
 async function getTaskIncludes() {
-  const includes = [...TASK_INCLUDES_BASE];
+  const includes = [...TASK_INCLUDES_CORE];
+  if (await hasTaskOwnersTable()) {
+    includes.push({ model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } });
+  }
   if (await hasTaskAssigneesTable()) {
     includes.push({ model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role'] }] });
   }
@@ -282,13 +290,17 @@ const getTasks = async (req, res) => {
 
     if (boardId) where.boardId = boardId;
 
-    // Ownership filter — checks all three sources where a user can be linked to a task
+    // Ownership filter — checks all sources where a user can be linked to a task.
+    // Each subquery is guarded: if the table doesn't exist yet, it's simply skipped.
     const uid = safeUUID(req.user.id, 'req.user.id');
     const ownershipFilter = [
       { assignedTo: req.user.id },
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`),
     ];
-    // Only include task_assignees subquery if the table exists
+    if (await hasTaskOwnersTable()) {
+      ownershipFilter.push(
+        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`)
+      );
+    }
     if (await hasTaskAssigneesTable()) {
       ownershipFilter.push(
         sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
@@ -305,8 +317,12 @@ const getTasks = async (req, res) => {
       if (!where[Op.and]) where[Op.and] = [];
       const assigneeOrFilter = [
         { assignedTo: assignedTo },
-        sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${assigneeUid})`),
       ];
+      if (await hasTaskOwnersTable()) {
+        assigneeOrFilter.push(
+          sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${assigneeUid})`)
+        );
+      }
       if (await hasTaskAssigneesTable()) {
         assigneeOrFilter.push(
           sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${assigneeUid} AND role = 'assignee')`)
@@ -357,14 +373,16 @@ const getTasks = async (req, res) => {
     }
 
     const taskIncludes = await getTaskIncludes();
+    const extraIncludes = [
+      { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
+      { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
+    ];
+    if (await hasTaskLabelsTable()) {
+      extraIncludes.push({ model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] });
+    }
     const queryOpts = {
       where,
-      include: [
-        ...taskIncludes,
-        { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
-        { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-        { model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] },
-      ],
+      include: [...taskIncludes, ...extraIncludes],
       order,
     };
     if (limit) queryOpts.limit = Math.min(parseInt(limit, 10) || 50, 100);
@@ -384,7 +402,14 @@ const getTasks = async (req, res) => {
 
     res.json({ success: true, data: { tasks: tasksWithCounts } });
   } catch (error) {
-    logger.error('[Task] GetTasks error:', error);
+    // Log full error chain for production debugging
+    logger.error('[Task] GetTasks error:', {
+      message: error.message,
+      name: error.name,
+      sql: error.sql || error.parent?.sql || undefined,
+      original: error.original?.message || error.parent?.message || undefined,
+      stack: error.stack?.split('\n').slice(0, 5).join('\n'),
+    });
     res.status(500).json({ success: false, message: 'Server error fetching tasks.' });
   }
 };
