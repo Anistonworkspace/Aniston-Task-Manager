@@ -8,6 +8,8 @@
     "dev": "nodemon server.js",
     "db:sync": "node config/sync.js",
     "db:sync:force": "node config/sync.js --force",
+    "cleanup:plan:dry": "node cleanup-plan-data.js --dry-run",
+    "cleanup:plan:execute": "node cleanup-plan-data.js --execute",
     "test": "jest --forceExit --detectOpenHandles",
     "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
     "test:watch": "jest --watch"

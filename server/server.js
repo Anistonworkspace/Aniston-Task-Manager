@@ -525,6 +525,19 @@ const start = async () => {
       console.warn('[Server] AI migration skipped:', migErr.message?.slice(0, 80));
     }
 
+    // ── One-time data cleanup: Director Plan & Time Plan ──
+    // Runs ONLY when both env vars are set:
+    //   RUN_PLAN_DATA_CLEANUP=true
+    //   PLAN_DATA_CLEANUP_CONFIRM=YES_DELETE_PLAN_DATA
+    // Safe to leave in code — silently skips when env vars are absent.
+    // Remove the env vars after successful cleanup to prevent re-runs.
+    try {
+      const { runStartupCleanup } = require('./cleanup-plan-data');
+      await runStartupCleanup(sequelize);
+    } catch (cleanupErr) {
+      console.warn('[Server] Plan data cleanup skipped:', cleanupErr.message?.slice(0, 100));
+    }
+
     server.listen(PORT, () => {
       const logger = require('./utils/logger');
       logger.info(`Monday Aniston API running on port ${PORT}`, { env: process.env.NODE_ENV || 'development' });
