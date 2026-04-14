@@ -2,6 +2,7 @@ const { Workspace, Board, User } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { safeUUIDList } = require('../utils/safeSql');
+const boardMembershipService = require('../services/boardMembershipService');
 
 // ── Table existence cache ──
 const _tblCache = {};
@@ -403,8 +404,8 @@ exports.createFromTemplate = async (req, res) => {
           workspaceId: workspace.id,
           createdBy: req.user.id,
         });
-        // Add creator as board member
-        await board.addMember(req.user);
+        // Add creator as board member (explicit — creator should always stay)
+        await boardMembershipService.explicitAddMember(board.id, req.user.id);
         createdBoards.push(board);
       }
     }
@@ -454,7 +455,7 @@ exports.applyTemplate = async (req, res) => {
         workspaceId: workspace.id,
         createdBy: req.user.id,
       });
-      await board.addMember(req.user);
+      await boardMembershipService.explicitAddMember(board.id, req.user.id);
       createdBoards.push(board);
     }
 

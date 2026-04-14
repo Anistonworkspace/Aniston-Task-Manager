@@ -81,6 +81,8 @@ export default function HomePage() {
   useSocket('notification:new', () => loadNotifications());
   useSocket('board:created', () => loadBoards());
   useSocket('board:updated', () => loadBoards());
+  useSocket('board:memberRemoved', () => loadBoards());
+  useSocket('board:memberAdded', () => loadBoards());
 
   async function loadBoards() {
     try { const res = await api.get('/boards'); setBoards((res.data.boards || res.data || []).slice(0, 6)); } catch (err) { toastError('Failed to load boards'); }

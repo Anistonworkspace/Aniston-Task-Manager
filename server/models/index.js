@@ -36,6 +36,7 @@ const AIProvider = require('./AIProvider');
 const ApiKey = require('./ApiKey');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
 const ManagerRelation = require('./ManagerRelation');
+const BoardMember = require('./BoardMember');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -50,14 +51,14 @@ User.hasMany(Board, {
 
 // ─── Board <-> User (many-to-many members via BoardMember) ──
 Board.belongsToMany(User, {
-  through: 'BoardMembers',
+  through: BoardMember,
   foreignKey: 'boardId',
   otherKey: 'userId',
   as: 'members',
   timestamps: true,
 });
 User.belongsToMany(Board, {
-  through: 'BoardMembers',
+  through: BoardMember,
   foreignKey: 'userId',
   otherKey: 'boardId',
   as: 'memberBoards',
@@ -362,6 +363,7 @@ module.exports = {
   ApiKey,
   TeamsNotificationLog,
   ManagerRelation,
+  BoardMember,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────

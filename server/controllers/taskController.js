@@ -18,6 +18,7 @@ const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentN
 const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
+const boardMembershipService = require('../services/boardMembershipService');
 
 // ── Table existence cache ────────────────────────────────────────────────
 // Checks once per process lifetime whether a table exists. Prevents every
@@ -187,7 +188,7 @@ const createTask = async (req, res) => {
       }));
       await TaskOwner.bulkCreate(ownerRecords, { ignoreDuplicates: true });
       for (const uid of ownerIds) {
-        try { await board.addMember(uid); } catch (e) { /* already a member */ }
+        await boardMembershipService.autoAddMember(board.id, uid);
       }
     }
 
@@ -201,7 +202,7 @@ const createTask = async (req, res) => {
     // Auto-add all assignees and supervisors as board members
     const allUserIds = [...new Set([...assigneeIds, ...supervisorIds])];
     for (const uid of allUserIds) {
-      try { await board.addMember(uid); } catch (e) { /* already a member */ }
+      await boardMembershipService.autoAddMember(board.id, uid);
     }
 
     // Notify assignees and supervisors (exclude the creator — they already know)
@@ -632,6 +633,8 @@ const updateTask = async (req, res) => {
       // Handle assignedTo as array → sync assignee rows in task_assignees
       if (Array.isArray(req.body.assignedTo)) {
         const newAssigneeIds = req.body.assignedTo;
+        // Capture removed assignees BEFORE destroying rows (for board membership cleanup)
+        const removedAssigneeIds = oldAssigneeIds.filter(uid => !newAssigneeIds.includes(uid));
         // Remove assignees not in the new list
         await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee', userId: { [Op.notIn]: newAssigneeIds } } });
         // Upsert new assignees
@@ -645,15 +648,18 @@ const updateTask = async (req, res) => {
         if (newAssigneeIds.length > 0) {
           await task.update({ assignedTo: newAssigneeIds[0] });
         }
-        // Auto-add as board members
-        const boardForMembers = await Board.findByPk(task.boardId);
-        if (boardForMembers) {
-          for (const uid of newAssigneeIds) {
-            try { await boardForMembers.addMember(uid); } catch (e) { /* already a member */ }
-          }
+        // Auto-add new assignees as board members
+        for (const uid of newAssigneeIds) {
+          await boardMembershipService.autoAddMember(task.boardId, uid);
+        }
+        // Cleanup board membership for removed assignees (awaited to avoid race with response)
+        if (removedAssigneeIds.length > 0) {
+          try { await boardMembershipService.cleanupMultiple(removedAssigneeIds, task.boardId); }
+          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
         }
       } else if (updates.assignedTo && typeof updates.assignedTo === 'string') {
         // Single assignedTo string — sync into task_assignees (remove old assignees, add new one)
+        const removedSingleAssignees = oldAssigneeIds.filter(uid => uid !== updates.assignedTo);
         try {
           await TaskAssignee.destroy({
             where: { taskId: task.id, role: 'assignee', userId: { [Op.ne]: updates.assignedTo } },
@@ -663,16 +669,33 @@ const updateTask = async (req, res) => {
             defaults: { assignedAt: new Date() },
           });
         } catch (e) { /* task_assignees table may not exist yet */ }
+        await boardMembershipService.autoAddMember(task.boardId, updates.assignedTo);
+        // Cleanup board membership for previously assigned users
+        if (removedSingleAssignees.length > 0) {
+          try { await boardMembershipService.cleanupMultiple(removedSingleAssignees, task.boardId); }
+          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+        }
       } else if (updates.assignedTo === null) {
         // Explicitly unassigned — remove all assignee entries from task_assignees
         try {
           await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee' } });
         } catch (e) { /* task_assignees table may not exist yet */ }
+        // Cleanup board membership for all previously assigned users
+        if (oldAssigneeIds.length > 0) {
+          try { await boardMembershipService.cleanupMultiple(oldAssigneeIds, task.boardId); }
+          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+        }
+        // Also cleanup for the legacy assignedTo user (previousAssignee)
+        if (previousAssignee && !oldAssigneeIds.includes(previousAssignee)) {
+          try { await boardMembershipService.cleanupIfNoTasksRemain(previousAssignee, task.boardId); }
+          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+        }
       }
 
       // Handle supervisors array → sync supervisor rows in task_assignees
       if (Array.isArray(req.body.supervisors)) {
         const newSupervisorIds = req.body.supervisors;
+        const removedSupervisorIds = oldSupervisorIds.filter(uid => !newSupervisorIds.includes(uid));
         await TaskAssignee.destroy({ where: { taskId: task.id, role: 'supervisor', userId: { [Op.notIn]: newSupervisorIds } } });
         for (const uid of newSupervisorIds) {
           await TaskAssignee.findOrCreate({
@@ -680,11 +703,14 @@ const updateTask = async (req, res) => {
             defaults: { assignedAt: new Date() },
           });
         }
-        const boardForMembers = await Board.findByPk(task.boardId);
-        if (boardForMembers) {
-          for (const uid of newSupervisorIds) {
-            try { await boardForMembers.addMember(uid); } catch (e) { /* already a member */ }
-          }
+        // Auto-add new supervisors as board members
+        for (const uid of newSupervisorIds) {
+          await boardMembershipService.autoAddMember(task.boardId, uid);
+        }
+        // Cleanup board membership for removed supervisors
+        if (removedSupervisorIds.length > 0) {
+          try { await boardMembershipService.cleanupMultiple(removedSupervisorIds, task.boardId); }
+          catch (err) { logger.warn('[Task] Board membership cleanup (supervisors) failed:', err.message); }
         }
       }
 
@@ -710,6 +736,7 @@ const updateTask = async (req, res) => {
     // Sync multi-owner records if ownerIds provided (backward compat)
     if (Array.isArray(req.body.ownerIds) && canManageMembers) {
       const newOwnerIds = req.body.ownerIds;
+      const removedOwnerIds = previousOwnerUserIds.filter(uid => !newOwnerIds.includes(uid));
       await TaskOwner.destroy({ where: { taskId: task.id, userId: { [Op.notIn]: newOwnerIds } } });
       for (let i = 0; i < newOwnerIds.length; i++) {
         const [record] = await TaskOwner.findOrCreate({
@@ -738,11 +765,14 @@ const updateTask = async (req, res) => {
       } catch (e) { /* task_assignees table may not exist yet */ }
       // Update legacy assignedTo to first owner (or null if empty)
       await task.update({ assignedTo: newOwnerIds.length > 0 ? newOwnerIds[0] : null });
-      const boardForOwners = await Board.findByPk(task.boardId);
-      if (boardForOwners) {
-        for (const uid of newOwnerIds) {
-          try { await boardForOwners.addMember(uid); } catch (e) { /* already a member */ }
-        }
+      // Auto-add new owners as board members
+      for (const uid of newOwnerIds) {
+        await boardMembershipService.autoAddMember(task.boardId, uid);
+      }
+      // Cleanup board membership for removed owners (awaited to avoid race)
+      if (removedOwnerIds.length > 0) {
+        try { await boardMembershipService.cleanupMultiple(removedOwnerIds, task.boardId); }
+        catch (err) { logger.warn('[Task] Board membership cleanup (owners) failed:', err.message); }
       }
 
       // Notify newly added owners (skip self-assignment and already-assigned)
@@ -765,10 +795,7 @@ const updateTask = async (req, res) => {
 
     // Auto-add new assignee as board member
     if (updates.assignedTo && task.boardId) {
-      try {
-        const board = await Board.findByPk(task.boardId);
-        if (board) await board.addMember(updates.assignedTo);
-      } catch (e) { /* already a member */ }
+      await boardMembershipService.autoAddMember(task.boardId, updates.assignedTo);
     }
 
     // Notification: new assignee (only for single-string assignedTo, not array — array is handled by diffAndNotify above)
@@ -967,6 +994,11 @@ const deleteTask = async (req, res) => {
       teamsNotif.notifyTaskArchived(task.id).catch(err =>
         logger.warn('[Task] Teams archive cancel failed:', err.message)
       );
+      // Cleanup board membership — archived tasks don't count for visibility
+      if (task.assignedTo) {
+        try { await boardMembershipService.cleanupIfNoTasksRemain(task.assignedTo, task.boardId); }
+        catch (err) { logger.warn('[Task] Board membership cleanup (archive) failed:', err.message); }
+      }
       logActivity({
         action: 'task_archived',
         description: `${req.user.name} archived task "${task.title}"`,
@@ -1006,6 +1038,13 @@ const deleteTask = async (req, res) => {
     }
 
     await task.destroy();
+
+    // Cleanup board membership for users who were assigned to this now-deleted task
+    const allAffected = [...new Set([...assignedUserIds, ...(task.assignedTo ? [task.assignedTo] : [])])];
+    if (allAffected.length > 0) {
+      try { await boardMembershipService.cleanupMultiple(allAffected, boardId); }
+      catch (err) { logger.warn('[Task] Board membership cleanup (delete) failed:', err.message); }
+    }
 
     logActivity({
       action: 'task_deleted',
@@ -1115,9 +1154,49 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
+    // Capture old assignees before updating (for board membership cleanup)
+    let oldAssigneeMap = {};
+    if (safeUpdates.assignedTo !== undefined) {
+      const tasksBeforeUpdate = await Task.findAll({
+        where: { id: { [Op.in]: taskIds } },
+        attributes: ['id', 'boardId', 'assignedTo'],
+        raw: true,
+      });
+      for (const t of tasksBeforeUpdate) {
+        if (t.assignedTo) {
+          const key = t.boardId;
+          if (!oldAssigneeMap[key]) oldAssigneeMap[key] = new Set();
+          oldAssigneeMap[key].add(t.assignedTo);
+        }
+      }
+    }
+
     await Task.update(safeUpdates, {
       where: { id: { [Op.in]: taskIds } },
     });
+
+    // Board membership cleanup for bulk assignment changes
+    if (safeUpdates.assignedTo !== undefined) {
+      const newAssignee = safeUpdates.assignedTo; // could be a userId or null
+      // Auto-add new assignee as board member
+      if (newAssignee) {
+        const boardIds = [...new Set(Object.keys(oldAssigneeMap))];
+        // Also get boardIds from tasks that had no previous assignee
+        const allTasks = await Task.findAll({ where: { id: { [Op.in]: taskIds } }, attributes: ['boardId'], raw: true });
+        const allBoardIds = [...new Set(allTasks.map(t => t.boardId))];
+        for (const bid of allBoardIds) {
+          await boardMembershipService.autoAddMember(bid, newAssignee);
+        }
+      }
+      // Cleanup removed assignees per board
+      for (const [boardId, oldUsers] of Object.entries(oldAssigneeMap)) {
+        const removedUsers = [...oldUsers].filter(uid => uid !== newAssignee);
+        if (removedUsers.length > 0) {
+          try { await boardMembershipService.cleanupMultiple(removedUsers, boardId); }
+          catch (err) { logger.warn('[Task] Bulk update board membership cleanup failed:', err.message); }
+        }
+      }
+    }
 
     // Auto-group assignment for bulk status changes
     if (safeUpdates.status) {
@@ -1470,7 +1549,7 @@ const manageTaskMembers = async (req, res) => {
       // Auto-add as board members
       if (board) {
         for (const uid of assignees) {
-          try { await board.addMember(uid); } catch (e) { /* already a member */ }
+          await boardMembershipService.autoAddMember(board.id, uid);
         }
       }
 
@@ -1480,6 +1559,12 @@ const manageTaskMembers = async (req, res) => {
         .map(ta => ta.userId);
       const newAssigneeIds = assignees.filter(uid => !existingAssigneeIds.includes(uid) && uid !== req.user.id);
       const removedAssigneeIds = existingAssigneeIds.filter(uid => !assignees.includes(uid));
+
+      // Cleanup board membership for removed assignees (awaited to avoid race)
+      if (removedAssigneeIds.length > 0 && board) {
+        try { await boardMembershipService.cleanupMultiple(removedAssigneeIds, board.id); }
+        catch (err) { logger.warn('[Task] Board membership cleanup (updateTaskMembers) failed:', err.message); }
+      }
       for (const uid of newAssigneeIds) {
         const notification = await Notification.create({
           type: 'task_assigned',
@@ -1520,7 +1605,7 @@ const manageTaskMembers = async (req, res) => {
 
       if (board) {
         for (const uid of supervisors) {
-          try { await board.addMember(uid); } catch (e) { /* already a member */ }
+          await boardMembershipService.autoAddMember(board.id, uid);
         }
       }
 
@@ -1530,6 +1615,12 @@ const manageTaskMembers = async (req, res) => {
         .map(ta => ta.userId);
       const newSupervisorIds = supervisors.filter(uid => !existingSupervisorIds.includes(uid) && uid !== req.user.id);
       const removedSupervisorIds = existingSupervisorIds.filter(uid => !supervisors.includes(uid));
+
+      // Cleanup board membership for removed supervisors (awaited to avoid race)
+      if (removedSupervisorIds.length > 0 && board) {
+        try { await boardMembershipService.cleanupMultiple(removedSupervisorIds, board.id); }
+        catch (err) { logger.warn('[Task] Board membership cleanup (supervisors/updateTaskMembers) failed:', err.message); }
+      }
       for (const uid of newSupervisorIds) {
         const notification = await Notification.create({
           type: 'task_assigned',

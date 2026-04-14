@@ -7,14 +7,28 @@ const { sanitizeInput } = require('../utils/sanitize');
 const { isValidStatus } = require('../utils/statusConfig');
 const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritization');
 const { safeUUIDList } = require('../utils/safeSql');
+const boardMembershipService = require('../services/boardMembershipService');
 
-// ── Table existence cache ──
+// ── Table / column existence cache ──
 const _tblCache = {};
 async function _tblExists(name) {
   if (_tblCache[name] !== undefined) return _tblCache[name];
   try { await sequelize.query(`SELECT 1 FROM "${name}" LIMIT 0`); _tblCache[name] = true; }
   catch (e) { _tblCache[name] = false; }
   return _tblCache[name];
+}
+
+const _colCache = {};
+async function _colExists(table, column) {
+  const key = `${table}.${column}`;
+  if (_colCache[key] !== undefined) return _colCache[key];
+  try {
+    // Use a direct SELECT to detect the column — avoids case-sensitivity issues
+    // with information_schema on quoted table names like "BoardMembers".
+    await sequelize.query(`SELECT "${column}" FROM "${table}" LIMIT 0`);
+    _colCache[key] = true;
+  } catch (e) { _colCache[key] = false; }
+  return _colCache[key];
 }
 
 /**
@@ -38,8 +52,8 @@ const createBoard = async (req, res) => {
       createdBy: req.user.id,
     });
 
-    // Auto-add creator as a board member
-    await board.addMember(req.user.id);
+    // Auto-add creator as a board member (explicit — creator should always stay)
+    await boardMembershipService.explicitAddMember(board.id, req.user.id);
 
     // Reload with associations
     const fullBoard = await Board.findByPk(board.id, {
@@ -109,15 +123,27 @@ const getBoards = async (req, res) => {
       const visibleUserIds = [userId];
       const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
 
+      // ── Build visibility filters ──
+      // For members, board visibility comes from two independent sources:
+      //  A) Explicit membership (autoAdded=false) — survives task unassignment
+      //  B) Current task assignments — always reflects live state
+      // We must NOT use raw BoardMembers (autoAdded=true rows) for visibility
+      // because those are stale after unassignment until async cleanup runs.
+      const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
+
       const boardOrFilters = [
-        // Board created by user (or team member for assistant_manager)
+        // Board created by user
         { createdBy: { [Op.in]: visibleUserIds } },
-        // User (or team) is a board member
-        sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`),
-        // Legacy: user (or team) is in assignedTo column
+        // Explicitly-added board member (NOT auto-added via task assignment).
+        // If autoAdded column exists, only include explicit members.
+        // If column doesn't exist (pre-migration), fall back to all BoardMembers.
+        hasAutoAddedCol
+          ? sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}) AND "autoAdded" = false)`)
+          : sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`),
+        // Task-based visibility: user has active tasks on the board (always current)
         sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
       ];
-      // Only add junction-table subqueries if the tables exist
+      // Junction-table task visibility (always current)
       if (await _tblExists('task_assignees')) {
         boardOrFilters.push(sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`));
       }
@@ -232,13 +258,28 @@ const getBoard = async (req, res) => {
         visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
       }
 
-      const isMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
+      // Check explicit (non-auto-added) board membership.
+      // We don't use the eager-loaded board.members here because it includes
+      // stale auto-added rows that should not grant access after unassignment.
+      let isExplicitMember = false;
+      const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
+      if (hasAutoAddedCol) {
+        const [explicitRows] = await sequelize.query(
+          `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId AND "autoAdded" = false LIMIT 1`,
+          { replacements: { boardId: board.id, userId } }
+        );
+        isExplicitMember = explicitRows.length > 0;
+      } else {
+        // Fallback: if autoAdded column doesn't exist, trust all BoardMembers rows
+        isExplicitMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
+      }
+
       const hasAssignedTasks = board.tasks && board.tasks.some((t) => visibleUserIds.includes(t.assignedTo));
       const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => visibleUserIds.includes(o.id)));
 
       // Also check task_assignees table (not loaded via eager-load above)
       let isTaskAssignee = false;
-      if (!isMember && !hasAssignedTasks && !isTaskOwner) {
+      if (!isExplicitMember && !hasAssignedTasks && !isTaskOwner) {
         const assigneeCount = await TaskAssignee.count({
           where: { userId: { [Op.in]: visibleUserIds } },
           include: [{ model: Task, as: 'task', attributes: [], where: { boardId: board.id, isArchived: false }, required: true }],
@@ -246,12 +287,13 @@ const getBoard = async (req, res) => {
         isTaskAssignee = assigneeCount > 0;
       }
 
-      if (!isMember && !hasAssignedTasks && !isTaskOwner && !isTaskAssignee) {
+      if (!isExplicitMember && !hasAssignedTasks && !isTaskOwner && !isTaskAssignee) {
         return res.status(403).json({ success: false, message: 'Access denied. You are not a member of this board.' });
       }
       // Auto-add as member if they have tasks/ownership but aren't a member yet
+      const isMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
       if (!isMember && (hasAssignedTasks || isTaskOwner || isTaskAssignee)) {
-        try { await board.addMember(req.user.id); } catch (e) { /* ignore */ }
+        await boardMembershipService.autoAddMember(board.id, req.user.id);
       }
     }
 
@@ -408,10 +450,12 @@ const addMember = async (req, res) => {
 
     const alreadyMember = board.members.some((m) => m.id === userId);
     if (alreadyMember) {
+      // Even if already a member, upgrade to explicit (non-auto) so cleanup doesn't remove them
+      await boardMembershipService.explicitAddMember(board.id, userId);
       return res.status(409).json({ success: false, message: 'User is already a board member.' });
     }
 
-    await board.addMember(userId);
+    await boardMembershipService.explicitAddMember(board.id, userId);
 
     // Notify the added user
     emitToUser(userId, 'board:memberAdded', {

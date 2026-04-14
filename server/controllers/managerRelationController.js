@@ -28,6 +28,8 @@ exports.addRelation = async (req, res) => {
   try {
     const { employeeId, managerId, relationType = 'functional', isPrimary = false } = req.body;
 
+    console.log('[ManagerRelation] addRelation payload:', { employeeId, managerId, relationType, isPrimary });
+
     if (!employeeId || !managerId) {
       return res.status(400).json({ success: false, message: 'employeeId and managerId are required.' });
     }
@@ -38,6 +40,7 @@ exports.addRelation = async (req, res) => {
     // Check for duplicate
     const existing = await ManagerRelation.findOne({ where: { employeeId, managerId } });
     if (existing) {
+      console.log('[ManagerRelation] addRelation duplicate blocked:', { employeeId, managerId, existingId: existing.id });
       return res.status(409).json({ success: false, message: 'This manager relation already exists.' });
     }
 
@@ -48,6 +51,7 @@ exports.addRelation = async (req, res) => {
     }
 
     const relation = await ManagerRelation.create({ employeeId, managerId, relationType, isPrimary });
+    console.log('[ManagerRelation] addRelation created:', { relationId: relation.id, employeeId, managerId, relationType, isPrimary });
 
     // Include manager data in response
     const full = await ManagerRelation.findByPk(relation.id, {
@@ -97,12 +101,19 @@ exports.updateRelation = async (req, res) => {
  */
 exports.removeRelation = async (req, res) => {
   try {
+    console.log('[ManagerRelation] removeRelation requested:', { relationId: req.params.id });
+
     const relation = await ManagerRelation.findByPk(req.params.id);
-    if (!relation) return res.status(404).json({ success: false, message: 'Relation not found.' });
+    if (!relation) {
+      console.log('[ManagerRelation] removeRelation not found:', req.params.id);
+      return res.status(404).json({ success: false, message: 'Relation not found.' });
+    }
 
     const wasPrimary = relation.isPrimary;
     const employeeId = relation.employeeId;
+    const managerId = relation.managerId;
     await relation.destroy();
+    console.log('[ManagerRelation] removeRelation destroyed:', { relationId: req.params.id, employeeId, managerId, wasPrimary });
 
     // If we removed the primary, pick the next relation as primary or clear managerId
     if (wasPrimary) {
@@ -110,8 +121,10 @@ exports.removeRelation = async (req, res) => {
       if (nextPrimary) {
         await nextPrimary.update({ isPrimary: true });
         await User.update({ managerId: nextPrimary.managerId }, { where: { id: employeeId } });
+        console.log('[ManagerRelation] removeRelation promoted next:', { newPrimaryId: nextPrimary.id, newManagerId: nextPrimary.managerId });
       } else {
         await User.update({ managerId: null }, { where: { id: employeeId } });
+        console.log('[ManagerRelation] removeRelation cleared managerId for employee:', employeeId);
       }
     }
 

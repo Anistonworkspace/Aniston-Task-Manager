@@ -479,6 +479,46 @@ const start = async () => {
       console.log('[Server] Continuing with existing schema...');
     }
 
+    // ── Auto-migration: Add autoAdded column to BoardMembers ──
+    // Tracks whether a membership was auto-added (via task assignment) or
+    // explicitly added (via Board Settings). Only auto-added rows are cleaned
+    // up when the user's last task on the board is unassigned.
+    try {
+      const [bmTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'BoardMembers'`
+      );
+      if (bmTables.length > 0) {
+        // 1. Add column if missing
+        await sequelize.query(`ALTER TABLE "BoardMembers" ADD COLUMN IF NOT EXISTS "autoAdded" BOOLEAN NOT NULL DEFAULT true`);
+        console.log('[Server] BoardMembers.autoAdded column ensured.');
+
+        // 2. Mark board creators as explicit members (autoAdded=false)
+        await sequelize.query(`
+          UPDATE "BoardMembers" bm SET "autoAdded" = false, "updatedAt" = NOW()
+          FROM boards b WHERE bm."boardId" = b.id AND bm."userId" = b."createdBy" AND bm."autoAdded" = true
+        `);
+
+        // 3. Mark admin/manager/assistant_manager members as explicit
+        await sequelize.query(`
+          UPDATE "BoardMembers" bm SET "autoAdded" = false, "updatedAt" = NOW()
+          FROM users u WHERE bm."userId" = u.id AND u.role IN ('admin', 'manager', 'assistant_manager') AND bm."autoAdded" = true
+        `);
+
+        // 4. Remove stale auto-added rows where member has no active tasks
+        const [, cleanMeta] = await sequelize.query(`
+          DELETE FROM "BoardMembers" bm
+          WHERE bm."autoAdded" = true
+            AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t."boardId" = bm."boardId" AND t."assignedTo" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+            AND NOT EXISTS (SELECT 1 FROM task_assignees ta JOIN tasks t ON t.id = ta."taskId" WHERE t."boardId" = bm."boardId" AND ta."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+            AND NOT EXISTS (SELECT 1 FROM task_owners to2 JOIN tasks t ON t.id = to2."taskId" WHERE t."boardId" = bm."boardId" AND to2."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+        `);
+        const cleaned = cleanMeta?.rowCount ?? 0;
+        if (cleaned > 0) console.log(`[Server] Cleaned ${cleaned} stale auto-added BoardMembers rows.`);
+      }
+    } catch (e) {
+      console.warn('[Server] BoardMembers autoAdded migration warning:', e.message?.slice(0, 100));
+    }
+
     // ── Auto-migration: Add lang column to notes table ──
     // Must run AFTER sync so the table exists. Uses IF NOT EXISTS for idempotency.
     try {

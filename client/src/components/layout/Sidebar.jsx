@@ -100,6 +100,8 @@ export default function Sidebar({ collapsed, onToggle }) {
   useSocket('board:created', () => loadData());
   useSocket('board:updated', () => loadData());
   useSocket('board:deleted', () => loadData());
+  useSocket('board:memberRemoved', () => loadData());
+  useSocket('board:memberAdded', () => loadData());
 
   // Drag-and-drop: move board to a different workspace
   async function handleBoardDrop(boardId, targetWsId) {

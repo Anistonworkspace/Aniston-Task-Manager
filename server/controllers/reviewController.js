@@ -16,7 +16,7 @@ function getWeekRange(dateStr) {
   return {
     start: mon.toISOString().slice(0, 10),
     end: sun.toISOString().slice(0, 10),
-    label: `${mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+    label: `${mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
   };
 }
 
@@ -135,59 +135,121 @@ const downloadPDF = async (req, res) => {
     doc.text(`Completion Rate: ${completionRate}%`);
     doc.moveDown(1);
 
+    // ── Helper: draw a positioned table row without corrupting PDFKit state ──
+    // PDFKit's doc.text(str, x, y, opts) updates internal cursor (doc.x, doc.y,
+    // and _wrapper width) after every call.  For multi-column rows we must use
+    // lineBreak:false on all but the last column so that internal state stays sane.
+    const PAGE_BOTTOM = 740;
+    const LEFT = 50;
+    const RIGHT = 560;
+    const USABLE_W = RIGHT - LEFT; // 510
+
     // Tasks table
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#333333').text('Tasks');
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#333333').text('Tasks', LEFT, doc.y, { width: USABLE_W });
     doc.moveDown(0.3);
 
     if (tasks.length === 0) {
-      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No tasks updated this week.');
+      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No tasks updated this week.', LEFT, doc.y, { width: USABLE_W });
     } else {
-      // Table header
       const tableTop = doc.y;
-      const col = { title: 50, board: 280, status: 370, priority: 440, due: 510 };
+      const col  = { title: 50, board: 280, status: 370, priority: 440, due: 510 };
+      const colW = { title: 220, board: 80, status: 60, priority: 60, due: 50 };
+
+      // Header row
       doc.fontSize(8).font('Helvetica-Bold').fillColor('#666666');
-      doc.text('Task', col.title, tableTop);
-      doc.text('Board', col.board, tableTop);
-      doc.text('Status', col.status, tableTop);
-      doc.text('Priority', col.priority, tableTop);
-      doc.text('Due', col.due, tableTop);
-      doc.moveTo(50, tableTop + 12).lineTo(560, tableTop + 12).strokeColor('#dddddd').lineWidth(0.5).stroke();
+      doc.text('Task',     col.title,    tableTop, { width: colW.title,    lineBreak: false });
+      doc.text('Board',    col.board,    tableTop, { width: colW.board,    lineBreak: false });
+      doc.text('Status',   col.status,   tableTop, { width: colW.status,   lineBreak: false });
+      doc.text('Priority', col.priority, tableTop, { width: colW.priority, lineBreak: false });
+      doc.text('Due',      col.due,      tableTop, { width: colW.due }); // last col: allow lineBreak to advance y
+      doc.moveTo(LEFT, tableTop + 12).lineTo(RIGHT, tableTop + 12).strokeColor('#dddddd').lineWidth(0.5).stroke();
 
       let y = tableTop + 18;
       tasks.forEach(t => {
-        if (y > 750) { doc.addPage(); y = 50; }
+        if (y > PAGE_BOTTOM) { doc.addPage(); y = 50; }
         doc.fontSize(9).font('Helvetica').fillColor('#333333');
-        doc.text(t.title.substring(0, 35), col.title, y, { width: 220 });
+        doc.text(t.title.substring(0, 35), col.title, y, { width: colW.title, lineBreak: false });
         doc.fontSize(8).fillColor('#888888');
-        doc.text(t.board?.name || '—', col.board, y, { width: 80 });
-        doc.text(STATUS_LABELS[t.status] || t.status, col.status, y, { width: 60 });
-        doc.text(PRIORITY_LABELS[t.priority] || t.priority, col.priority, y, { width: 60 });
-        doc.text(t.dueDate ? t.dueDate.toString().slice(0, 10) : '—', col.due, y, { width: 50 });
+        doc.text(t.board?.name || '—',                  col.board,    y, { width: colW.board,    lineBreak: false });
+        doc.text(STATUS_LABELS[t.status] || t.status,   col.status,   y, { width: colW.status,   lineBreak: false });
+        doc.text(PRIORITY_LABELS[t.priority] || t.priority, col.priority, y, { width: colW.priority, lineBreak: false });
+        doc.text(t.dueDate ? t.dueDate.toString().slice(0, 10) : '—', col.due, y, { width: colW.due });
         y += 16;
       });
+
+      // ── Reset PDFKit internal cursor after absolute-positioned table ──
+      // Render a full-width space to flush the internal _wrapper width back to
+      // 510px.  A truly empty string '' is a no-op in PDFKit and does NOT reset.
+      doc.x = LEFT;
       doc.y = y;
+      doc.fontSize(1).fillColor('#ffffff').text(' ', LEFT, y, { width: USABLE_W });
+      doc.fillColor('#333333');
     }
 
-    doc.moveDown(1);
+    // ── Daily Updates section ─────────────────────────────────────────────
+    // Ensure we have room; if close to bottom, start a new page.
+    if (doc.y > PAGE_BOTTOM - 60) { doc.addPage(); doc.x = LEFT; doc.y = 50; }
 
-    // Work logs
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#333333').text('Daily Updates');
-    doc.moveDown(0.3);
+    doc.y += 14; // spacing after tasks
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#333333').text('Daily Updates', LEFT, doc.y, { width: USABLE_W });
+    doc.y += 18;
 
     if (worklogs.length === 0) {
-      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No daily updates this week.');
+      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No daily updates this week.', LEFT, doc.y, { width: USABLE_W });
     } else {
+      // Column layout — full page width
+      const logCol  = { date: 50, task: 150, content: 310 };
+      const logColW = { date: 90, task: 150, content: 250 };
+
+      // Table header
+      const logTop = doc.y;
+      doc.fontSize(8).font('Helvetica-Bold').fillColor('#666666');
+      doc.text('Date',   logCol.date,    logTop, { width: logColW.date,    lineBreak: false });
+      doc.text('Task',   logCol.task,    logTop, { width: logColW.task,    lineBreak: false });
+      doc.text('Update', logCol.content, logTop, { width: logColW.content });
+      doc.moveTo(LEFT, logTop + 12).lineTo(RIGHT, logTop + 12).strokeColor('#dddddd').lineWidth(0.5).stroke();
+
+      let logY = logTop + 18;
       worklogs.forEach(log => {
-        if (doc.y > 720) doc.addPage();
-        doc.fontSize(9).font('Helvetica-Bold').fillColor('#555555').text(`${log.date} — ${log.task?.title || 'General'}`);
-        doc.fontSize(9).font('Helvetica').fillColor('#666666').text(log.content, { indent: 10 });
-        doc.moveDown(0.4);
+        const cleanContent = (log.content || '').replace(/[\r\n]+/g, ' ').trim() || '—';
+        const contentH = doc.fontSize(8).font('Helvetica').heightOfString(cleanContent, { width: logColW.content });
+        const rowH = Math.max(contentH, 14) + 6;
+
+        if (logY + rowH > PAGE_BOTTOM) {
+          doc.addPage();
+          logY = 50;
+          // Re-draw header on new page
+          doc.fontSize(8).font('Helvetica-Bold').fillColor('#666666');
+          doc.text('Date',   logCol.date,    logY, { width: logColW.date,    lineBreak: false });
+          doc.text('Task',   logCol.task,    logY, { width: logColW.task,    lineBreak: false });
+          doc.text('Update', logCol.content, logY, { width: logColW.content });
+          doc.moveTo(LEFT, logY + 12).lineTo(RIGHT, logY + 12).strokeColor('#dddddd').lineWidth(0.5).stroke();
+          logY += 18;
+        }
+
+        doc.fontSize(9).font('Helvetica').fillColor('#333333');
+        doc.text(log.date || '',                                logCol.date,    logY, { width: logColW.date,    lineBreak: false });
+        doc.text((log.task?.title || 'General').substring(0, 30), logCol.task,  logY, { width: logColW.task,    lineBreak: false });
+        doc.fontSize(8).fillColor('#555555');
+        doc.text(cleanContent,                                  logCol.content, logY, { width: logColW.content });
+
+        // Light row separator
+        doc.moveTo(LEFT, logY + rowH - 2).lineTo(RIGHT, logY + rowH - 2).strokeColor('#eeeeee').lineWidth(0.3).stroke();
+        logY += rowH;
       });
+
+      // Reset cursor after table
+      doc.x = LEFT;
+      doc.y = logY;
     }
 
     // Footer
-    doc.moveDown(1);
-    doc.fontSize(8).font('Helvetica').fillColor('#aaaaaa').text(`Generated on ${new Date().toLocaleString()} — Monday Aniston`, { align: 'center' });
+    doc.y += 14;
+    if (doc.y > PAGE_BOTTOM) { doc.addPage(); doc.y = 50; }
+    doc.fontSize(8).font('Helvetica').fillColor('#aaaaaa').text(
+      `Generated on ${new Date().toLocaleString()} — Monday Aniston`,
+      LEFT, doc.y, { width: USABLE_W, align: 'center' }
+    );
 
     doc.end();
   } catch (error) {
@@ -205,46 +267,75 @@ const downloadCSV = async (req, res) => {
   try {
     const { date } = req.query;
     const userId = (req.user.role === 'member') ? req.user.id : (req.query.userId || req.user.id);
-    const { user, tasks, worklogs, weekRange } = await fetchReviewData(userId, date);
+    const { user, tasks, worklogs, summary, weekRange } = await fetchReviewData(userId, date);
 
-    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="review-${user.name.replace(/\s+/g, '_')}-${weekRange.start}.csv"`);
 
-    const escape = (str) => `"${(str || '').replace(/"/g, '""')}"`;
+    // Sanitize a value for CSV: escape quotes, strip line breaks, replace unicode dashes
+    const sanitize = (val) => {
+      let str = (val == null ? '' : String(val));
+      str = str.replace(/[\u2013\u2014]/g, '-');  // en-dash/em-dash → plain dash
+      str = str.replace(/[\r\n]+/g, ' ').trim();  // collapse line breaks
+      return str;
+    };
+    // CSV-escape: only quote if the value contains comma, quote, or whitespace
+    const csvField = (val) => {
+      const str = sanitize(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\r') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+    const completionRate = summary.total > 0 ? Math.round((summary.done / summary.total) * 100) : 0;
+
     const lines = [];
 
+    // Header
     lines.push('Weekly Review Report');
-    lines.push(`Employee,${escape(user.name)}`);
-    lines.push(`Week,${escape(weekRange.label)}`);
+    lines.push(`Employee,${csvField(user.name)}`);
+    lines.push(`Week,${csvField(sanitize(weekRange.label))}`);
+    lines.push('');
+
+    // Summary
+    lines.push('Summary');
+    lines.push(`Total Tasks,${summary.total}`);
+    lines.push(`Done,${summary.done}`);
+    lines.push(`Working,${summary.working}`);
+    lines.push(`Stuck,${summary.stuck}`);
+    lines.push(`Not Started,${summary.notStarted}`);
+    lines.push(`Completion Rate,${completionRate}%`);
     lines.push('');
 
     // Tasks
-    lines.push('TASKS');
+    lines.push('Tasks');
     lines.push('Title,Board,Status,Priority,Due Date');
     tasks.forEach(t => {
       lines.push([
-        escape(t.title),
-        escape(t.board?.name || ''),
-        escape(STATUS_LABELS[t.status] || t.status),
-        escape(PRIORITY_LABELS[t.priority] || t.priority),
-        escape(t.dueDate ? t.dueDate.toString().slice(0, 10) : ''),
+        csvField(t.title),
+        csvField(t.board?.name || ''),
+        csvField(STATUS_LABELS[t.status] || t.status),
+        csvField(PRIORITY_LABELS[t.priority] || t.priority),
+        csvField(t.dueDate ? t.dueDate.toString().slice(0, 10) : ''),
       ].join(','));
     });
-
     lines.push('');
 
     // Work logs
-    lines.push('DAILY UPDATES');
+    lines.push('Daily Updates');
     lines.push('Date,Task,Content');
     worklogs.forEach(log => {
       lines.push([
-        escape(log.date),
-        escape(log.task?.title || ''),
-        escape(log.content),
+        csvField(log.date),
+        csvField(log.task?.title || ''),
+        csvField(log.content),
       ].join(','));
     });
 
-    res.send(lines.join('\r\n'));
+    // UTF-8 BOM + content as Buffer — ensures Excel recognizes encoding and column separation
+    const csvContent = '\uFEFF' + lines.join('\r\n');
+    const buffer = Buffer.from(csvContent, 'utf-8');
+    res.end(buffer);
   } catch (error) {
     console.error('[Review] downloadCSV error:', error);
     if (!res.headersSent) {

@@ -95,53 +95,50 @@ exports.getOrgChart = async (req, res) => {
     });
 
     const roots = [];
-    const placedUnderManager = new Set(); // track which users got placed via relations
+    const placedUnderManager = new Set(); // track which users got placed via relations (canonical node)
 
-    // Place employees under ALL their managers from the junction table
+    // Place employees under their managers from the junction table
     Object.entries(relationsByEmployee).forEach(([employeeId, rels]) => {
       if (!userMap[employeeId]) return;
-      rels.forEach(rel => {
+
+      // Sort: primary first, then by createdAt — the first valid relation gets canonical placement
+      const sorted = [...rels].sort((a, b) => {
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return new Date(a.createdAt) - new Date(b.createdAt);
+      });
+
+      let canonicalPlaced = false;
+
+      sorted.forEach(rel => {
         if (!userMap[rel.managerId]) return;
-        if (rel.isPrimary) {
-          // Primary: use the canonical node
+        if (!canonicalPlaced) {
+          // First valid relation (primary, or first secondary if no primary): canonical placement
           userMap[rel.managerId].children.push(userMap[employeeId]);
           placedUnderManager.add(employeeId);
+          canonicalPlaced = true;
         } else {
-          // Secondary: create a duplicate reference node
+          // Additional relations: create a reference node (no children to avoid duplication)
           const refNode = {
             ...userMap[employeeId],
-            children: [], // secondary refs don't show their own subtree to avoid duplication
+            children: [],
             _isSecondaryRef: true,
             _secondaryRelationType: rel.relationType,
             _secondaryManagerId: rel.managerId,
           };
           userMap[rel.managerId].children.push(refNode);
-          placedUnderManager.add(employeeId);
         }
       });
     });
 
     // Fallback: users with managerId but no junction table record (legacy data)
     users.forEach(u => {
-      if (placedUnderManager.has(u.id)) return; // already handled
+      if (placedUnderManager.has(u.id)) return; // already handled via relations
       if (u.managerId && userMap[u.managerId]) {
         userMap[u.managerId].children.push(userMap[u.id]);
-      } else {
+        placedUnderManager.add(u.id);
+      } else if (!placedUnderManager.has(u.id)) {
         roots.push(userMap[u.id]);
-      }
-    });
-
-    // Add root nodes: users not placed under any manager
-    users.forEach(u => {
-      if (!placedUnderManager.has(u.id) && !(u.managerId && userMap[u.managerId])) {
-        // already added in fallback above
-      } else if (placedUnderManager.has(u.id)) {
-        // Check if user has no primary relation (all secondary) — still needs to be a root
-        const rels = relationsByEmployee[u.id] || [];
-        const hasPrimary = rels.some(r => r.isPrimary);
-        if (!hasPrimary && !roots.some(r => r.id === u.id)) {
-          roots.push(userMap[u.id]);
-        }
       }
     });
 
@@ -164,7 +161,13 @@ exports.getOrgChart = async (req, res) => {
       console.error('[OrgChart] HierarchyLevel lookup error:', hlErr.message);
     }
 
-    res.json({ success: true, data: { orgChart: roots, allUsers: users, usersByLevel, hierarchyLevels } });
+    // Enrich allUsers with managerRelations so the frontend side panel always has relation data
+    const enrichedUsers = users.map(u => ({
+      ...u.toJSON(),
+      managerRelations: relationsByEmployee[u.id] || [],
+    }));
+
+    res.json({ success: true, data: { orgChart: roots, allUsers: enrichedUsers, usersByLevel, hierarchyLevels } });
   } catch (err) {
     console.error('[OrgChart] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to build org chart.' });

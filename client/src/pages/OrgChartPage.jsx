@@ -745,14 +745,18 @@ export default function OrgChartPage() {
     return Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
   }
 
-  // Handle card click — select employee for side panel, always use fresh allUsers data
+  // Handle card click — select employee for side panel, merge allUsers + tree node data
   function onCardClick(node) {
     const nodeId = node.id;
     setSelectedEmployee(prev => {
       if (prev && String(prev.id) === String(nodeId)) return null; // toggle off
-      // Find fresh data from allUsers (already normalized plain objects)
       const fresh = allUsers.find(u => String(u.id) === String(nodeId));
-      return fresh ? { ...fresh } : { ...node };
+      // Merge: prefer fresh allUsers data but fall back to tree node for managerRelations
+      const base = fresh ? { ...fresh } : { ...node };
+      if ((!base.managerRelations || base.managerRelations.length === 0) && node.managerRelations?.length > 0) {
+        base.managerRelations = node.managerRelations;
+      }
+      return base;
     });
   }
 

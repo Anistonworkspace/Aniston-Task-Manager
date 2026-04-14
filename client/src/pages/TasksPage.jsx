@@ -7,6 +7,8 @@ import { formatDistanceToNow, format } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
+import TaskModal from '../components/task/TaskModal';
+import { getBoardStatuses } from '../utils/constants';
 
 const TABS = [
   { id: 'approvals', label: 'Approvals', icon: ClipboardCheck, color: '#8b5cf6' },
@@ -39,6 +41,38 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
   const [actionLoading, setActionLoading] = useState(null);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [selectedBoardId, setSelectedBoardId] = useState(null);
+  const [boardMembers, setBoardMembers] = useState([]);
+  const [boardStatuses, setBoardStatuses] = useState(null);
+
+  const openTask = useCallback(async (taskId, boardId) => {
+    try {
+      const [taskRes, boardRes] = await Promise.all([
+        api.get(`/tasks/${taskId}`),
+        boardId ? api.get(`/boards/${boardId}`) : Promise.resolve(null),
+      ]);
+      // Task API returns { success, data: { task: {...} } }
+      const taskPayload = taskRes.data.data || taskRes.data;
+      const fullTask = taskPayload.task || taskPayload;
+      // Board API returns { success, data: { board: {...} } }
+      const boardPayload = boardRes?.data?.data || boardRes?.data;
+      const board = boardPayload?.board || boardPayload;
+      setSelectedTask(fullTask);
+      setSelectedBoardId(boardId);
+      setBoardMembers(board?.members || []);
+      setBoardStatuses(board ? getBoardStatuses(board) : null);
+    } catch (err) {
+      console.error('Failed to open task:', err);
+    }
+  }, []);
+
+  const closeTaskModal = useCallback(() => {
+    setSelectedTask(null);
+    setSelectedBoardId(null);
+    setBoardMembers([]);
+    setBoardStatuses(null);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -175,7 +209,14 @@ export default function TasksPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-sm font-semibold text-text-primary">{task.title}</h3>
+                      <h3 className="text-sm font-semibold text-text-primary">
+                        <button
+                          onClick={() => openTask(task.id, task.board?.id || task.boardId)}
+                          className="hover:text-primary hover:underline transition-colors cursor-pointer text-left"
+                        >
+                          {task.title}
+                        </button>
+                      </h3>
                       <StatusBadge status={task.approvalStatus} />
                     </div>
                     <div className="flex items-center gap-3 text-xs text-text-tertiary">
@@ -239,7 +280,16 @@ export default function TasksPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-sm font-semibold text-text-primary">{ext.task?.title || 'Task'}</h3>
+                      <h3 className="text-sm font-semibold text-text-primary">
+                        {ext.task ? (
+                          <button
+                            onClick={() => openTask(ext.task.id, ext.task.boardId || ext.task.board?.id)}
+                            className="hover:text-primary hover:underline transition-colors cursor-pointer text-left"
+                          >
+                            {ext.task.title}
+                          </button>
+                        ) : 'Task'}
+                      </h3>
                       <StatusBadge status={ext.status} />
                     </div>
                     <div className="flex items-center gap-3 text-xs text-text-tertiary mb-2">
@@ -297,7 +347,16 @@ export default function TasksPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <h3 className="text-sm font-semibold text-text-primary">{hr.task?.title || 'Task'}</h3>
+                      <h3 className="text-sm font-semibold text-text-primary">
+                        {hr.task ? (
+                          <button
+                            onClick={() => openTask(hr.task.id, hr.task.boardId || hr.task.board?.id)}
+                            className="hover:text-primary hover:underline transition-colors cursor-pointer text-left"
+                          >
+                            {hr.task.title}
+                          </button>
+                        ) : 'Task'}
+                      </h3>
                       <StatusBadge status={hr.status} />
                       {hr.urgency && (
                         <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${URGENCY_COLORS[hr.urgency] || ''}`}>
@@ -333,6 +392,25 @@ export default function TasksPage() {
             ))
           )}
         </div>
+      )}
+
+      {/* Task Modal */}
+      {selectedTask && (
+        <TaskModal
+          task={selectedTask}
+          boardId={selectedBoardId}
+          members={boardMembers}
+          boardStatuses={boardStatuses}
+          onClose={closeTaskModal}
+          onUpdate={(updated) => {
+            setSelectedTask(updated);
+            fetchData();
+          }}
+          onDelete={() => {
+            closeTaskModal();
+            fetchData();
+          }}
+        />
       )}
     </div>
   );

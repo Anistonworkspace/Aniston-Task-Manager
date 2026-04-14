@@ -64,7 +64,8 @@ export default function ReviewPage() {
       const params = new URLSearchParams({ date: selectedDate });
       if (selectedUserId) params.append('userId', selectedUserId);
       const res = await api.get(`/reviews/weekly/${type}?${params}`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const mimeType = type === 'pdf' ? 'application/pdf' : 'text/csv;charset=utf-8';
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: mimeType }));
       const link = document.createElement('a');
       link.href = url;
       link.download = `review-${selectedDate}.${type === 'pdf' ? 'pdf' : 'csv'}`;
