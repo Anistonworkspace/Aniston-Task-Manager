@@ -1,38 +1,36 @@
 /**
- * Director Plan & Time Plan Data Cleanup Script
+ * Director Plan & Time Plan Data Cleanup — One-Time Auto-Cleanup Module
  *
  * Safely deletes all records from:
- *   - director_plans  (Director's Daily Plan feature)
- *   - time_blocks     (Dashboard Time Plan / Time Planner feature)
+ *   - director_plans  (Director's Daily Plan / Director Dashboard schedule data)
+ *   - time_blocks     (Dashboard Time Plan scheduling blocks)
  *
  * These tables are self-contained — no other tables reference them via FK.
  * Deleting their rows does NOT affect tasks, boards, users, dashboards, or any other module.
  *
- * ── STANDALONE CLI USAGE ──
- *   node cleanup-plan-data.js --dry-run       Preview what will be deleted (safe, no changes)
- *   node cleanup-plan-data.js --execute       Actually delete the data
+ * ── AUTOMATIC STARTUP MODE (primary) ──
+ * Called from server.js during startup. Uses a DB-based run-once guard:
+ *   1. Creates system_flags table if not exists
+ *   2. Checks if flag 'cleanup_plan_data_v1' is already completed
+ *   3. If completed → silent skip (single SELECT, ~2ms)
+ *   4. If not completed → delete data, mark completed
+ *   5. If tables already empty → mark completed, skip future checks
+ *
+ * No env vars required. Fully automatic. Safe on every restart.
+ *
+ * ── STANDALONE CLI MODE (manual fallback) ──
+ *   node cleanup-plan-data.js --dry-run       Preview (safe, no changes)
+ *   node cleanup-plan-data.js --execute       Actually delete
  *
  * Production (Docker):
  *   docker exec aph-backend node cleanup-plan-data.js --dry-run
  *   docker exec aph-backend node cleanup-plan-data.js --execute
- *
- * ── AUTOMATIC STARTUP MODE ──
- * When imported by server.js, the exported runCleanup(sequelize) function is called.
- * It runs automatically during startup ONLY when BOTH env vars are set:
- *   RUN_PLAN_DATA_CLEANUP=true
- *   PLAN_DATA_CLEANUP_CONFIRM=YES_DELETE_PLAN_DATA
- *
- * Safety:
- *   - Default mode is dry-run (no flag = dry-run)
- *   - Requires explicit --execute flag (CLI) or two env vars (startup mode)
- *   - Shows environment and DB target before any action
- *   - Logs record counts before and after deletion
- *   - Wraps everything in a transaction (auto-rollback on error)
- *   - Auto-skips if tables are already empty (safe on every restart)
- *   - Non-blocking in startup mode — server starts even if cleanup fails
  */
 
 const { Sequelize } = require('sequelize');
+
+// ── Flag name — bump the version suffix to re-trigger a future cleanup ──
+const FLAG_NAME = 'cleanup_plan_data_v1';
 
 // ── Tables to clean ──
 const TABLES = ['director_plans', 'time_blocks'];
@@ -69,13 +67,40 @@ async function tableExists(seq, table, transaction) {
   return row.exists;
 }
 
+async function ensureSystemFlagsTable(seq) {
+  await seq.query(`
+    CREATE TABLE IF NOT EXISTS system_flags (
+      flag VARCHAR(100) PRIMARY KEY,
+      completed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      details JSONB DEFAULT '{}'
+    )
+  `);
+}
+
+async function isFlagCompleted(seq, flag) {
+  const [[row]] = await seq.query(
+    `SELECT flag, completed_at FROM system_flags WHERE flag = $1`,
+    { bind: [flag] }
+  );
+  return row || null;
+}
+
+async function markFlagCompleted(seq, flag, details = {}) {
+  await seq.query(
+    `INSERT INTO system_flags (flag, completed_at, details)
+     VALUES ($1, NOW(), $2)
+     ON CONFLICT (flag) DO UPDATE SET completed_at = NOW(), details = $2`,
+    { bind: [flag, JSON.stringify(details)] }
+  );
+}
+
 /**
- * Core cleanup logic — used by both CLI and startup modes.
+ * Core cleanup logic — used by both startup and CLI modes.
  *
  * @param {Sequelize} seq  — Sequelize instance (already authenticated)
  * @param {object} opts
  * @param {boolean} opts.execute  — true = delete, false = dry-run
- * @param {string}  opts.mode     — 'cli' or 'startup' (for log labeling)
+ * @param {string}  opts.mode     — 'cli' or 'startup'
  * @returns {object} { skipped, deleted, error }
  */
 async function runCleanup(seq, opts = {}) {
@@ -89,15 +114,14 @@ async function runCleanup(seq, opts = {}) {
   divider();
   console.log();
   console.log(`${prefix} Mode        : ${execute ? 'EXECUTE (will delete data)' : 'DRY RUN (no changes)'}`);
-  console.log(`${prefix} Trigger     : ${mode === 'startup' ? 'Automatic (env-var gated)' : 'Manual CLI'}`);
+  console.log(`${prefix} Trigger     : ${mode === 'startup' ? 'Automatic (DB flag guarded)' : 'Manual CLI'}`);
   console.log(`${prefix} Environment : ${NODE_ENV}`);
   console.log(`${prefix} DB Host     : ${process.env.DB_HOST || 'localhost'}`);
   console.log(`${prefix} DB Name     : ${process.env.DB_NAME || 'aniston_project_hub'}`);
   console.log();
 
   if (execute && (NODE_ENV === 'production' || (process.env.DB_HOST && process.env.DB_HOST !== 'localhost'))) {
-    console.log(`${prefix} *** WARNING: EXECUTING AGAINST PRODUCTION DATABASE ***`);
-    console.log(`${prefix} *** Data will be permanently deleted.              ***`);
+    console.log(`${prefix} *** EXECUTING AGAINST PRODUCTION DATABASE ***`);
     console.log();
   }
 
@@ -136,7 +160,7 @@ async function runCleanup(seq, opts = {}) {
     if (totalBefore === 0) {
       console.log(`${prefix} Both tables are already empty. Nothing to delete.`);
       await transaction.rollback();
-      return { skipped: true, reason: 'Tables already empty' };
+      return { skipped: true, reason: 'Tables already empty', beforeCounts };
     }
 
     // ── Step 3: Show sample data ──
@@ -213,49 +237,42 @@ async function runCleanup(seq, opts = {}) {
 }
 
 /**
- * Check env vars and run cleanup during server startup.
- * Called from server.js — non-blocking, never crashes the server.
- *
- * Required env vars (BOTH must be set):
- *   RUN_PLAN_DATA_CLEANUP=true
- *   PLAN_DATA_CLEANUP_CONFIRM=YES_DELETE_PLAN_DATA
+ * Automatic one-time cleanup on server startup.
+ * Uses system_flags DB table as a persistent run-once guard.
+ * No env vars required.
  *
  * @param {Sequelize} seq — Sequelize instance (already connected)
  */
 async function runStartupCleanup(seq) {
-  const enabled = process.env.RUN_PLAN_DATA_CLEANUP;
-  const confirm = process.env.PLAN_DATA_CLEANUP_CONFIRM;
-
-  // Gate 1: Must be explicitly enabled
-  if (enabled !== 'true') {
-    return; // Silent skip — normal deploy, no cleanup requested
-  }
-
-  console.log('\n[Cleanup/Startup] RUN_PLAN_DATA_CLEANUP=true detected.');
-
-  // Gate 2: Must have correct confirmation value
-  if (confirm !== 'YES_DELETE_PLAN_DATA') {
-    console.warn('[Cleanup/Startup] Missing or incorrect PLAN_DATA_CLEANUP_CONFIRM value.');
-    console.warn('[Cleanup/Startup] Expected: PLAN_DATA_CLEANUP_CONFIRM=YES_DELETE_PLAN_DATA');
-    console.warn('[Cleanup/Startup] Cleanup SKIPPED. Server will start normally.\n');
-    return;
-  }
-
-  console.log('[Cleanup/Startup] Confirmation verified. Running cleanup...\n');
-
   try {
+    // Ensure the guard table exists
+    await ensureSystemFlagsTable(seq);
+
+    // Check if this cleanup has already been completed
+    const existing = await isFlagCompleted(seq, FLAG_NAME);
+    if (existing) {
+      // Already ran — silent skip, no log noise on normal restarts
+      return;
+    }
+
+    console.log(`\n[Cleanup/Startup] One-time cleanup "${FLAG_NAME}" has not run yet. Starting...`);
+
     const result = await runCleanup(seq, { execute: true, mode: 'startup' });
 
-    if (result.skipped) {
-      console.log(`[Cleanup/Startup] Skipped: ${result.reason}\n`);
-    } else if (result.deleted) {
-      console.log('[Cleanup/Startup] Cleanup completed successfully.');
-      console.log('[Cleanup/Startup] IMPORTANT: Remove RUN_PLAN_DATA_CLEANUP and PLAN_DATA_CLEANUP_CONFIRM');
-      console.log('[Cleanup/Startup]   from your environment variables to prevent re-runs.\n');
-    } else if (result.error) {
+    if (result.error) {
       console.error(`[Cleanup/Startup] Cleanup failed: ${result.error}`);
-      console.error('[Cleanup/Startup] Server will continue starting normally.\n');
+      console.error('[Cleanup/Startup] Will retry on next restart.\n');
+      return;
     }
+
+    // Mark completed — whether data was deleted or tables were already empty
+    const details = result.skipped
+      ? { status: 'skipped', reason: result.reason }
+      : { status: 'deleted', counts: result.deletedCounts };
+
+    await markFlagCompleted(seq, FLAG_NAME, details);
+    console.log(`[Cleanup/Startup] Marked "${FLAG_NAME}" as completed. Will not run again.\n`);
+
   } catch (err) {
     console.error('[Cleanup/Startup] Fatal cleanup error:', err.message);
     console.error('[Cleanup/Startup] Server will continue starting normally.\n');

@@ -526,11 +526,9 @@ const start = async () => {
     }
 
     // ── One-time data cleanup: Director Plan & Time Plan ──
-    // Runs ONLY when both env vars are set:
-    //   RUN_PLAN_DATA_CLEANUP=true
-    //   PLAN_DATA_CLEANUP_CONFIRM=YES_DELETE_PLAN_DATA
-    // Safe to leave in code — silently skips when env vars are absent.
-    // Remove the env vars after successful cleanup to prevent re-runs.
+    // Uses system_flags DB table as a run-once guard.
+    // First deploy: cleans director_plans + time_blocks, marks flag as completed.
+    // All future restarts: single SELECT check (~2ms), silent skip.
     try {
       const { runStartupCleanup } = require('./cleanup-plan-data');
       await runStartupCleanup(sequelize);
