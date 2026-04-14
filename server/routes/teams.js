@@ -120,7 +120,7 @@ router.get('/callback', async (req, res) => {
 
     // Auto-sync M365 users on first connect (fire-and-forget)
     const connectingUser = await User.findByPk(userId, { attributes: ['role'] });
-    if (connectingUser?.role === 'admin') {
+    if (['admin', 'manager'].includes(connectingUser?.role)) {
       const { syncUsersFromM365 } = require('../services/teamsUserSync');
       syncUsersFromM365().then(r => {
         console.log(`[Teams] Auto-sync on connect: ${r.created.length} created, ${r.existing.length} existing`);
@@ -209,7 +209,7 @@ router.post('/sync-task/:taskId', authenticate, async (req, res) => {
  * Sync all M365 tenant users into local database (admin only).
  */
 router.post('/sync-users', authenticate, async (req, res) => {
-  if (req.user.role !== 'admin') {
+  if (!['admin', 'manager'].includes(req.user.role)) {
     return res.status(403).json({ success: false, message: 'Admin access required.' });
   }
 
@@ -233,7 +233,7 @@ router.post('/sync-users', authenticate, async (req, res) => {
  * Preview M365 users without creating them (admin only).
  */
 router.get('/preview-users', authenticate, async (req, res) => {
-  if (req.user.role !== 'admin') {
+  if (!['admin', 'manager'].includes(req.user.role)) {
     return res.status(403).json({ success: false, message: 'Admin access required.' });
   }
 
@@ -265,7 +265,7 @@ router.get('/preview-users', authenticate, async (req, res) => {
  * Sync active/disabled status from M365 for all Microsoft-linked users (admin only).
  */
 router.post('/sync-status', authenticate, async (req, res) => {
-  if (req.user.role !== 'admin') {
+  if (!['admin', 'manager'].includes(req.user.role)) {
     return res.status(403).json({ success: false, message: 'Admin access required.' });
   }
 
@@ -289,7 +289,7 @@ router.post('/sync-status', authenticate, async (req, res) => {
  * Get Teams notification delivery stats for admin dashboard.
  */
 router.get('/notification-stats', authenticate, async (req, res) => {
-  if (req.user.role !== 'admin') {
+  if (!['admin', 'manager'].includes(req.user.role)) {
     return res.status(403).json({ success: false, message: 'Admin access required.' });
   }
 

@@ -6,7 +6,7 @@ const router = express.Router();
 
 // Allow managers/admins OR hierarchy managers to approve/reject extensions
 const managerOrAdminOrHierarchy = async (req, res, next) => {
-  if (req.user && (['admin', 'manager', 'assistant_manager'].includes(req.user.role) || req.user.isSuperAdmin)) {
+  if (req.user && (['admin', 'manager'].includes(req.user.role) || req.user.isSuperAdmin)) {
     return next();
   }
   // Check if member is a hierarchy manager

@@ -47,7 +47,7 @@ export default function DirectorDashboardPage() {
   const loadTimerRef = useRef(null);
 
   const today = format(new Date(), 'yyyy-MM-dd');
-  const canAccess = isSuperAdmin || isAssistantManager;
+  const canAccess = isSuperAdmin || isAdmin;
   const [directors, setDirectors] = useState([]);
   const [selectedDirectorId, setSelectedDirectorId] = useState(null);
 
@@ -192,7 +192,7 @@ export default function DirectorDashboardPage() {
         <div className="text-center">
           <Crown size={48} className="text-gray-300 mx-auto mb-4" />
           <h2 className="text-lg font-bold text-gray-700">Access Required</h2>
-          <p className="text-sm text-gray-500 mt-2">This dashboard is only available for Super Admin and Assistant Manager.</p>
+          <p className="text-sm text-gray-500 mt-2">This dashboard is only available for Admin, Manager, and Super Admin.</p>
         </div>
       </div>
     );
@@ -263,8 +263,8 @@ export default function DirectorDashboardPage() {
         </div>
       </div>
 
-      {/* Director selector (only for assistant managers with multiple directors) */}
-      {isAssistantManager && directors.length > 1 && (
+      {/* Director selector (for admin/manager/superadmin with multiple directors) */}
+      {canAccess && directors.length > 1 && (
         <div className="mb-6 bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3 shadow-sm">
           <span className="text-xs font-semibold text-gray-500">Viewing plan for:</span>
           <select

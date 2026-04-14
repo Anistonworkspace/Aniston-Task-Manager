@@ -140,7 +140,7 @@ const deleteFileHandler = async (req, res) => {
     }
 
     // Only the uploader or an admin may delete
-    if (attachment.uploadedBy !== req.user.id && req.user.role !== 'admin') {
+    if (attachment.uploadedBy !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: 'You can only delete files you uploaded.',

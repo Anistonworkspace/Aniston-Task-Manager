@@ -179,7 +179,7 @@ const updateTimeBlock = async (req, res) => {
     if (!block) {
       return res.status(404).json({ success: false, message: 'Time block not found.' });
     }
-    if (block.userId !== req.user.id && req.user.role === 'member') {
+    if (block.userId !== req.user.id && !['admin', 'manager'].includes(req.user.role) && !req.user.isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Not authorized.' });
     }
 
@@ -240,7 +240,7 @@ const deleteTimeBlock = async (req, res) => {
     if (!block) {
       return res.status(404).json({ success: false, message: 'Time block not found.' });
     }
-    if (block.userId !== req.user.id && req.user.role === 'member') {
+    if (block.userId !== req.user.id && !['admin', 'manager'].includes(req.user.role) && !req.user.isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Not authorized.' });
     }
     await block.destroy();

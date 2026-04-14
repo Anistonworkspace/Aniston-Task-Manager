@@ -95,17 +95,17 @@ export const RESOURCE_ACTIONS = {
 // ── Legacy flat permissions (backward compatibility) ────────────────────
 
 const PERMISSIONS = {
-  create_workspace:    ['assistant_manager', 'manager', 'admin'],
-  edit_workspace:      ['assistant_manager', 'manager', 'admin'],
-  delete_workspace:    ['admin'],
+  create_workspace:    ['manager', 'admin'],
+  edit_workspace:      ['manager', 'admin'],
+  delete_workspace:    ['manager', 'admin'],
   create_board:        ['manager', 'admin'],
   edit_board:          ['manager', 'admin'],
-  delete_board:        ['assistant_manager', 'manager', 'admin'],
+  delete_board:        ['manager', 'admin'],
   create_task:         ['assistant_manager', 'manager', 'admin'],
   assign_members:      ['assistant_manager', 'manager', 'admin'],
   edit_others_tasks:   ['manager', 'admin'],
-  manage_settings:     ['admin'],
-  manage_board_settings: ['admin'],
+  manage_settings:     ['manager', 'admin'],
+  manage_board_settings: ['manager', 'admin'],
   view_dashboard:      ['assistant_manager', 'manager', 'admin'],
   manage_users:        ['manager', 'admin'],
 };

@@ -380,12 +380,12 @@ const deleteBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Only the creator, an admin, or an assistant_manager may delete
-    const canDelete = req.user.role === 'admin' || board.createdBy === req.user.id || req.user.role === 'assistant_manager';
+    // Only the creator, an admin, or a manager may delete (assistant_manager cannot)
+    const canDelete = ['admin', 'manager'].includes(req.user.role) || board.createdBy === req.user.id;
     if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Only the board creator, an admin, or an assistant manager can delete this board.',
+        message: 'Only the board creator, an admin, or a manager can delete this board.',
       });
     }
 

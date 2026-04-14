@@ -56,8 +56,8 @@ function attachTaskPermissions(req, res, next) {
   const permissions = {
     role,
     isSuperAdmin,
-    hasFullAccess: isSuperAdmin || role === 'admin',
-    hasBoardAccess: role === 'manager' || role === 'assistant_manager',
+    hasFullAccess: isSuperAdmin || role === 'admin' || role === 'manager',
+    hasBoardAccess: role === 'assistant_manager',
     isHierarchyManager: false,
     hasPartialAccess: false,
     isRestricted: role === 'member',
@@ -65,7 +65,7 @@ function attachTaskPermissions(req, res, next) {
     canEditOthers: isManagementRole,
     canDelete: isManagementRole,
     canAssignMembers: isManagementRole,
-    canManageBoardSettings: isSuperAdmin || role === 'admin',
+    canManageBoardSettings: isSuperAdmin || role === 'admin' || role === 'manager',
   };
 
   req.taskPermissions = permissions;
@@ -127,8 +127,8 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
 
-  // Super admin / admin — full access always
-  if (isSuperAdmin || role === 'admin') {
+  // Super admin / admin / manager — full access always (manager = admin)
+  if (isSuperAdmin || role === 'admin' || role === 'manager') {
     return { allowed: true, reason: 'admin_access', allowedFields: null };
   }
 
@@ -144,8 +144,6 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
   switch (action) {
     case 'view': {
-      // Manager — always allowed within their boards
-      if (role === 'manager') return { allowed: true, reason: 'manager_access' };
       // Assistant manager — allowed for team members' tasks
       if (role === 'assistant_manager') return { allowed: true, reason: 'assistant_manager_access' };
       // Member — only if linked via task_assignees or creator
@@ -156,8 +154,6 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'edit_status': {
-      // Anyone linked to the task can update status
-      if (role === 'manager') return { allowed: true, reason: 'manager_access' };
       if (role === 'assistant_manager') return { allowed: true, reason: 'assistant_manager_access' };
       if (isAssignee || isTaskCreator || task.assignedTo === user.id) {
         return { allowed: true, reason: 'assignee_status', allowedFields: ['status', 'progress'] };
@@ -166,20 +162,8 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'edit': {
-      // Manager — can edit all fields (unless admin-created task)
-      if (role === 'manager') {
-        const restrictedFields = ['title', 'status', 'progress', 'groupId', 'position'];
-        // Check if task was created by admin
-        if (task.creator?.role === 'admin') {
-          return { allowed: true, reason: 'manager_restricted', allowedFields: restrictedFields };
-        }
-        return { allowed: true, reason: 'manager_access', allowedFields: null };
-      }
-      // Assistant manager — can edit tasks within their team
+      // Assistant manager — full task edit access
       if (role === 'assistant_manager') {
-        if (task.creator?.role === 'admin') {
-          return { allowed: true, reason: 'assistant_manager_restricted', allowedFields: ['title', 'status', 'progress', 'groupId', 'position'] };
-        }
         return { allowed: true, reason: 'assistant_manager_access', allowedFields: null };
       }
       // Assignee employee — can only update status/progress on own tasks

@@ -15,7 +15,8 @@ router.use(authenticate);
 
 router.get('/my', getMyMeetings);
 router.get('/team', managerOrAdmin, getTeamMeetings);
-router.post('/', managerOrAdmin, createMeeting);
+// assistant_manager can create own meetings, ownership enforced in controller
+router.post('/', createMeeting);
 router.put('/:id', updateMeeting);
 router.put('/:id/respond', respondToMeeting);
 router.delete('/:id', deleteMeeting);

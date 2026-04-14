@@ -166,7 +166,7 @@ const deleteComment = async (req, res) => {
     }
 
     // Only the comment author or an admin may delete
-    if (comment.userId !== req.user.id && req.user.role !== 'admin') {
+    if (comment.userId !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
         message: 'You can only delete your own comments.',

@@ -101,6 +101,22 @@ function AdminRoute({ children, requiredPermission }) {
   return children;
 }
 
+function StrictAdminRoute({ children, requiredPermission }) {
+  const { user, loading, isStrictAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  if (loading) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-surface">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  // Strict admin only (not manager) — for Admin Settings, Integrations, Feedback
+  const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
+  if (!isStrictAdmin && !isSuperAdmin && !hasOverride) return <Navigate to="/" replace />;
+  return children;
+}
+
 export default function App() {
   return (
     <Suspense fallback={<PageLoader />}>
@@ -113,28 +129,28 @@ export default function App() {
           <Route path="my-work" element={<Suspense fallback={<PageLoader />}><MyWorkPage /></Suspense>} />
           <Route path="boards" element={<Suspense fallback={<PageLoader />}><BoardsPage /></Suspense>} />
           <Route path="boards/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><BoardPage /></Suspense></ErrorBoundary>} />
-          <Route path="boards/:id/dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
+          <Route path="boards/:id/dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></AdminRoute>} />
           <Route path="dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
-          <Route path="manager-dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></ManagerRoute>} />
+          <Route path="manager-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></AdminRoute>} />
           <Route path="admin-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="director-dashboard" element={<ManagerRoute requiredPermission="director_plan.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></ManagerRoute>} />
-          <Route path="director-plan" element={<ManagerRoute requiredPermission="director_plan.view"><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></ManagerRoute>} />
+          <Route path="director-dashboard" element={<AdminRoute requiredPermission="director_plan.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></AdminRoute>} />
+          <Route path="director-plan" element={<AdminRoute requiredPermission="director_plan.view"><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></AdminRoute>} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
           <Route path="reviews" element={<Suspense fallback={<PageLoader />}><ReviewPage /></Suspense>} />
           <Route path="profile" element={<Suspense fallback={<PageLoader />}><ProfilePage /></Suspense>} />
           <Route path="meetings" element={<Suspense fallback={<PageLoader />}><MeetingsPage /></Suspense>} />
-          <Route path="integrations" element={<ManagerRoute requiredPermission="integrations.view"><Suspense fallback={<PageLoader />}><IntegrationsPage /></Suspense></ManagerRoute>} />
-          <Route path="archive" element={<ManagerRoute requiredPermission="archive.view"><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></ManagerRoute>} />
-          <Route path="users" element={<ManagerRoute requiredPermission="users.view"><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></ManagerRoute>} />
-          <Route path="admin-settings" element={<AdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></AdminRoute>} />
-          <Route path="access-requests" element={<ManagerRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></ManagerRoute>} />
+          <Route path="integrations" element={<StrictAdminRoute requiredPermission="integrations.view"><Suspense fallback={<PageLoader />}><IntegrationsPage /></Suspense></StrictAdminRoute>} />
+          <Route path="archive" element={<AdminRoute requiredPermission="archive.view"><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></AdminRoute>} />
+          <Route path="users" element={<AdminRoute requiredPermission="users.view"><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></AdminRoute>} />
+          <Route path="admin-settings" element={<StrictAdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></StrictAdminRoute>} />
+          <Route path="access-requests" element={<AdminRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></AdminRoute>} />
           <Route path="org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
-          <Route path="feedback" element={<AdminRoute requiredPermission="feedback.manage"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></AdminRoute>} />
+          <Route path="feedback" element={<StrictAdminRoute requiredPermission="feedback.manage"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></StrictAdminRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

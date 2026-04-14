@@ -16,6 +16,11 @@ const MEETING_INCLUDES = [
  */
 const createMeeting = async (req, res) => {
   try {
+    // Members cannot create meetings; assistant_manager, manager, admin can
+    if (req.user.role === 'member') {
+      return res.status(403).json({ success: false, message: 'Members cannot create meetings.' });
+    }
+
     const { title, description, date, startTime, endTime, location, type, participants, boardId, taskId } = req.body;
 
     if (!title || !date || !startTime || !endTime) {
@@ -146,7 +151,7 @@ const updateMeeting = async (req, res) => {
   try {
     const meeting = await Meeting.findByPk(req.params.id);
     if (!meeting) return res.status(404).json({ success: false, message: 'Meeting not found.' });
-    if (meeting.createdBy !== req.user.id && req.user.role !== 'admin') {
+    if (meeting.createdBy !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only the organizer or admin can update this meeting.' });
     }
 
@@ -215,7 +220,7 @@ const deleteMeeting = async (req, res) => {
   try {
     const meeting = await Meeting.findByPk(req.params.id);
     if (!meeting) return res.status(404).json({ success: false, message: 'Meeting not found.' });
-    if (meeting.createdBy !== req.user.id && req.user.role !== 'admin') {
+    if (meeting.createdBy !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only the organizer or admin can delete this meeting.' });
     }
 

@@ -19,8 +19,8 @@ const router = express.Router();
 // All board routes require authentication
 router.use(authenticate);
 
-// Board mutation guard: manager, assistant_manager, and admin
-const boardMutate = requireRole('assistant_manager', 'manager', 'admin');
+// Board mutation guard: manager and admin only (assistant_manager cannot manage boards)
+const boardMutate = requireRole('manager', 'admin');
 
 // ─── POST /api/boards (manager/admin only) ───────────────────
 router.post(
@@ -63,8 +63,8 @@ router.put(
   updateBoard
 );
 
-// ─── DELETE /api/boards/:id (assistant_manager/manager/admin) ─
-router.delete('/:id', requireRole('assistant_manager', 'manager', 'admin'), deleteBoard);
+// ─── DELETE /api/boards/:id (manager/admin only) ─
+router.delete('/:id', requireRole('manager', 'admin'), deleteBoard);
 
 // ─── PUT /api/boards/:id/groups/reorder (manager/admin only) ─
 router.put('/:id/groups/reorder', boardMutate, reorderGroups);

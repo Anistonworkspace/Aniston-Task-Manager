@@ -234,11 +234,10 @@ const getDailyPlan = async (req, res) => {
       return res.status(404).json({ success: false, message: 'No director found in the system.' });
     }
 
-    const isAdmin = user.role === 'admin';
-    const isAssistantMgr = user.role === 'assistant_manager';
+    const isAdminOrManager = ['admin', 'manager'].includes(user.role);
     const isSuperAdmin = !!user.isSuperAdmin;
     const isTargetDirector = user.id === director.id;
-    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdminOrManager && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -360,8 +359,8 @@ const saveDailyPlan = async (req, res) => {
     const { categories, notes, directorId: bodyDirectorId } = req.body;
     const user = req.user;
 
-    if (user.role !== 'assistant_manager' && user.role !== 'admin' && !user.isSuperAdmin) {
-      return res.status(403).json({ success: false, message: 'Only admins, assistant managers, or super admins can edit the director plan.' });
+    if (!['admin', 'manager'].includes(user.role) && !user.isSuperAdmin) {
+      return res.status(403).json({ success: false, message: 'Only admins, managers, or super admins can edit the director plan.' });
     }
 
     const director = await findDirector(bodyDirectorId);
@@ -415,10 +414,9 @@ const updateTask = async (req, res) => {
     }
 
     const isTargetDirector = user.id === director.id;
-    const isAdmin = user.role === 'admin';
-    const isAssistantMgr = user.role === 'assistant_manager';
+    const isAdminOrManager = ['admin', 'manager'].includes(user.role);
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdminOrManager && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
@@ -460,10 +458,9 @@ const updateNotes = async (req, res) => {
     if (!director) return res.status(404).json({ success: false, message: 'No director found.' });
 
     const isTargetDirector = user.id === director.id;
-    const isAdmin = user.role === 'admin';
-    const isAssistantMgr = user.role === 'assistant_manager';
+    const isAdminOrManager = ['admin', 'manager'].includes(user.role);
     const isSuperAdmin = !!user.isSuperAdmin;
-    if (!isTargetDirector && !isAdmin && !isAssistantMgr && !isSuperAdmin) {
+    if (!isTargetDirector && !isAdminOrManager && !isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 

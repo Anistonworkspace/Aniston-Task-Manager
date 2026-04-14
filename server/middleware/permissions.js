@@ -87,8 +87,7 @@ async function getEffectivePermissions(userId, resourceType, resourceId) {
   const levelHierarchy = ['view', 'edit', 'assign', 'manage', 'admin'];
   let effectiveLevel = null;
 
-  if (user.role === 'admin') effectiveLevel = 'admin';
-  else if (user.role === 'manager') effectiveLevel = 'manage';
+  if (user.role === 'admin' || user.role === 'manager') effectiveLevel = 'admin';
   else effectiveLevel = 'view';
 
   // Check if any grants elevate the level
@@ -130,7 +129,7 @@ async function getEffectivePermissions(userId, resourceType, resourceId) {
       expiresAt: g.expiresAt,
       isTemporary: !!g.expiresAt,
     })),
-    roleDefault: user.role === 'admin' ? 'admin' : user.role === 'manager' ? 'manage' : 'view',
+    roleDefault: (user.role === 'admin' || user.role === 'manager') ? 'admin' : 'view',
   };
 }
 

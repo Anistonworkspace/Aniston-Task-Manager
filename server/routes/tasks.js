@@ -41,10 +41,10 @@ router.get('/schedule-summary', scheduleSummary);
 // ─── PUT /api/tasks/reorder (all authenticated users) ────────
 router.put('/reorder', reorderTasks);
 
-// ─── PUT /api/tasks/bulk (manager/admin only) ────────────────
+// ─── PUT /api/tasks/bulk (assistant_manager/manager/admin) ───
 router.put(
   '/bulk',
-  managerOrAdmin,
+  requireRole('assistant_manager', 'manager', 'admin'),
   [
     body('taskIds')
       .isArray({ min: 1 }).withMessage('taskIds must be a non-empty array'),
@@ -142,16 +142,16 @@ router.put(
   updateTask
 );
 
-// ─── DELETE /api/tasks/:id (manager/admin only) ──────────────
-router.delete('/:id', managerOrAdmin, deleteTask);
+// ─── DELETE /api/tasks/:id (assistant_manager/manager/admin) ──
+router.delete('/:id', requireRole('assistant_manager', 'manager', 'admin'), deleteTask);
 
 // ─── POST /api/tasks/:id/duplicate (assistant_manager+ only) ──
 router.post('/:id/duplicate', requireRole('assistant_manager', 'manager', 'admin'), duplicateTask);
 
-// ─── PUT /api/tasks/:id/move (manager/admin only) ────────────
+// ─── PUT /api/tasks/:id/move (assistant_manager/manager/admin) ──
 router.put(
   '/:id/move',
-  managerOrAdmin,
+  requireRole('assistant_manager', 'manager', 'admin'),
   [
     body('groupId')
       .optional()

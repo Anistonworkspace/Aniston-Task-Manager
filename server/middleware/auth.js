@@ -74,11 +74,11 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Restrict access to admin users only.
+ * Restrict access to admin and manager users (manager has same access as admin).
  * Must be used AFTER the authenticate middleware.
  */
 const adminOnly = (req, res, next) => {
-  if (!req.user || req.user.role !== 'admin') {
+  if (!req.user || !['admin', 'manager'].includes(req.user.role)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Admin privileges required.',
@@ -88,11 +88,12 @@ const adminOnly = (req, res, next) => {
 };
 
 /**
- * Restrict access to managers and admins.
+ * Restrict access to managers and admins only (NOT assistant_manager).
+ * Manager has same access as admin. Assistant manager is excluded.
  * Must be used AFTER the authenticate middleware.
  */
 const managerOrAdmin = (req, res, next) => {
-  if (!req.user || (!['admin', 'manager', 'assistant_manager'].includes(req.user.role) && !req.user.isSuperAdmin)) {
+  if (!req.user || (!['admin', 'manager'].includes(req.user.role) && !req.user.isSuperAdmin)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Manager or admin privileges required.',
@@ -269,4 +270,19 @@ const requireRole = (...allowedRoles) => {
   };
 };
 
-module.exports = { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly, requireRole };
+/**
+ * Restrict access to actual admin role only (NOT manager).
+ * Used for admin-only modules: Admin Settings, Integrations config, Feedback management.
+ * Must be used AFTER the authenticate middleware.
+ */
+const strictAdminOnly = (req, res, next) => {
+  if (!req.user || (req.user.role !== 'admin' && !req.user.isSuperAdmin)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Admin privileges required.',
+    });
+  }
+  next();
+};
+
+module.exports = { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly, strictAdminOnly, requireRole };

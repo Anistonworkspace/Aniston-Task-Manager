@@ -303,7 +303,7 @@ exports.updateWorkspace = async (req, res) => {
 // DELETE /api/workspaces/:id — admin only, workspaces cannot be deleted by managers or members
 exports.deleteWorkspace = async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
+    if (!['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only administrators can delete workspaces. Workspaces are permanent.' });
     }
     const workspace = await Workspace.findByPk(req.params.id);

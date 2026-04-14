@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate, adminOnly } = require('../middleware/auth');
+const { authenticate, strictAdminOnly } = require('../middleware/auth');
 const {
   getConfig, saveConfig, testConfig, deleteConfig,
   getProviders, createProvider, updateProvider, deleteProvider,
@@ -13,18 +13,18 @@ router.use(authenticate);
 
 // ─── Legacy single-config endpoints (backward compat) ───────
 router.get('/config', getConfig);
-router.post('/config', adminOnly, saveConfig);
-router.post('/test', adminOnly, testConfig);
-router.delete('/config', adminOnly, deleteConfig);
+router.post('/config', strictAdminOnly, saveConfig);
+router.post('/test', strictAdminOnly, testConfig);
+router.delete('/config', strictAdminOnly, deleteConfig);
 
 // ─── Multi-provider CRUD endpoints ──────────────────────────
 router.get('/providers', getProviders);
-router.post('/providers', adminOnly, createProvider);
-router.put('/providers/:id', adminOnly, updateProvider);
-router.delete('/providers/:id', adminOnly, deleteProvider);
-router.post('/providers/:id/set-default', adminOnly, setDefaultProvider);
-router.post('/providers/:id/toggle', adminOnly, toggleProvider);
-router.post('/providers/:id/test', adminOnly, testProvider);
+router.post('/providers', strictAdminOnly, createProvider);
+router.put('/providers/:id', strictAdminOnly, updateProvider);
+router.delete('/providers/:id', strictAdminOnly, deleteProvider);
+router.post('/providers/:id/set-default', strictAdminOnly, setDefaultProvider);
+router.post('/providers/:id/toggle', strictAdminOnly, toggleProvider);
+router.post('/providers/:id/test', strictAdminOnly, testProvider);
 
 // ─── Chat & Grammar (all authenticated users) ──────────────
 router.post('/chat', chatWithAI);

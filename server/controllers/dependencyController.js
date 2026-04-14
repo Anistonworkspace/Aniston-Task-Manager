@@ -190,7 +190,7 @@ const delegateTask = async (req, res) => {
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
 
     // Only current assignee or admin can delegate
-    if (task.assignedTo !== req.user.id && req.user.role !== 'admin') {
+    if (task.assignedTo !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only the assigned user or admin can delegate this task.' });
     }
 
@@ -244,7 +244,7 @@ const delegateTask = async (req, res) => {
 const getCrossTeamDependencies = async (req, res) => {
   try {
     const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin = ['admin', 'manager'].includes(req.user.role);
 
     // Get all non-archived dependencies
     const deps = await TaskDependency.findAll({

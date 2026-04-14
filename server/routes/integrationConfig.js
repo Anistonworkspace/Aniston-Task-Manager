@@ -1,5 +1,5 @@
 const express = require('express');
-const { authenticate, adminOnly } = require('../middleware/auth');
+const { authenticate, strictAdminOnly } = require('../middleware/auth');
 const {
   getConfig,
   saveConfig,
@@ -10,9 +10,9 @@ const {
 const router = express.Router();
 
 // All routes require admin authentication
-router.get('/config/:provider', authenticate, adminOnly, getConfig);
-router.post('/config/:provider', authenticate, adminOnly, saveConfig);
-router.delete('/config/:provider', authenticate, adminOnly, deleteConfig);
-router.get('/config/:provider/test', authenticate, adminOnly, testConnection);
+router.get('/config/:provider', authenticate, strictAdminOnly, getConfig);
+router.post('/config/:provider', authenticate, strictAdminOnly, saveConfig);
+router.delete('/config/:provider', authenticate, strictAdminOnly, deleteConfig);
+router.get('/config/:provider/test', authenticate, strictAdminOnly, testConnection);
 
 module.exports = router;

@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { authenticate, managerOrAdmin } = require('../middleware/auth');
+const { authenticate, requireRole } = require('../middleware/auth');
 const { createSubtask, getSubtasks, updateSubtask, deleteSubtask } = require('../controllers/subtaskController');
 
 const router = express.Router();
@@ -33,7 +33,7 @@ router.put(
   updateSubtask
 );
 
-// DELETE /api/subtasks/:id — manager/admin only
-router.delete('/:id', managerOrAdmin, deleteSubtask);
+// DELETE /api/subtasks/:id — assistant_manager/manager/admin (part of full task CRUD)
+router.delete('/:id', requireRole('assistant_manager', 'manager', 'admin'), deleteSubtask);
 
 module.exports = router;

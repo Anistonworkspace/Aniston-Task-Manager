@@ -102,9 +102,10 @@ async function hasDirectReports(userId) {
  * - member → self only (no task assignment capability)
  */
 async function getAssignableUsers(actor) {
-  const isAdmin = actor.role === 'admin' || actor.isSuperAdmin;
+  // Admin and manager have full access to all users (manager = admin)
+  const isAdminOrManager = ['admin', 'manager'].includes(actor.role) || actor.isSuperAdmin;
 
-  if (isAdmin) {
+  if (isAdminOrManager) {
     return User.findAll({
       where: { isActive: true },
       attributes: ['id', 'name', 'email', 'avatar', 'role', 'department', 'designation'],
@@ -112,7 +113,8 @@ async function getAssignableUsers(actor) {
     });
   }
 
-  if (['manager', 'assistant_manager'].includes(actor.role)) {
+  // Assistant manager → self + descendants in org tree only
+  if (actor.role === 'assistant_manager') {
     const descendantIds = await getDescendantIds(actor.id);
     const allowedIds = [actor.id, ...descendantIds];
     return User.findAll({
@@ -134,10 +136,12 @@ async function getAssignableUsers(actor) {
  * Strict RBAC: only admin/manager/assistant_manager can assign to others.
  */
 async function canAssignTo(actor, targetUserId) {
-  if (actor.role === 'admin' || actor.isSuperAdmin) return true;
+  // Admin and manager can assign to anyone (manager = admin)
+  if (['admin', 'manager'].includes(actor.role) || actor.isSuperAdmin) return true;
   if (String(actor.id) === String(targetUserId)) return true;
 
-  if (['manager', 'assistant_manager'].includes(actor.role)) {
+  // Assistant manager can only assign within their subtree
+  if (actor.role === 'assistant_manager') {
     const descendantIds = await getDescendantIds(actor.id);
     return descendantIds.some(id => String(id) === String(targetUserId));
   }

@@ -18,8 +18,8 @@ const {
 
 const router = express.Router();
 
-// Workspace mutation guard: manager, assistant_manager, and admin can create/edit
-const workspaceMutate = requireRole('assistant_manager', 'manager', 'admin');
+// Workspace mutation guard: manager and admin only (assistant_manager cannot manage workspaces)
+const workspaceMutate = requireRole('manager', 'admin');
 
 router.get('/', authenticate, getWorkspaces);
 router.get('/mine', authenticate, getMyWorkspaces);   // must be before /:id

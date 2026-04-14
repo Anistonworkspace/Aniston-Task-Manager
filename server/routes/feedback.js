@@ -1,5 +1,5 @@
 const express = require('express');
-const { authenticate, adminOnly } = require('../middleware/auth');
+const { authenticate, strictAdminOnly } = require('../middleware/auth');
 const {
   submitFeedback,
   getAllFeedback,
@@ -11,9 +11,9 @@ const {
 const router = express.Router();
 
 router.post('/', authenticate, submitFeedback);
-router.get('/stats', authenticate, adminOnly, getFeedbackStats);
-router.get('/', authenticate, adminOnly, getAllFeedback);
-router.put('/:id', authenticate, adminOnly, updateFeedback);
-router.delete('/:id', authenticate, adminOnly, deleteFeedback);
+router.get('/stats', authenticate, strictAdminOnly, getFeedbackStats);
+router.get('/', authenticate, strictAdminOnly, getAllFeedback);
+router.put('/:id', authenticate, strictAdminOnly, updateFeedback);
+router.delete('/:id', authenticate, strictAdminOnly, deleteFeedback);
 
 module.exports = router;

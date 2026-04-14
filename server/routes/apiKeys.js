@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate, adminOnly } = require('../middleware/auth');
+const { authenticate, strictAdminOnly } = require('../middleware/auth');
 const { generateKey, listKeys, revokeKey, toggleKey } = require('../controllers/apiKeyController');
 
 // All routes require admin authentication
-router.use(authenticate, adminOnly);
+router.use(authenticate, strictAdminOnly);
 
 // POST   /api/api-keys          — Generate new key
 router.post('/', generateKey);

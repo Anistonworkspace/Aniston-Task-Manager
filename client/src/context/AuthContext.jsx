@@ -200,11 +200,15 @@ export function AuthProvider({ children }) {
   // Super admin check
   const isSuperAdmin = !!user?.isSuperAdmin;
   const effectiveRole = (isSuperAdmin && viewAsRole) ? viewAsRole : user?.role;
-  const isAdmin = effectiveRole === 'admin';
+  // Manager has all access same as admin (for most features)
+  const isAdmin = effectiveRole === 'admin' || effectiveRole === 'manager';
+  // Strict admin: actual admin role only (for Admin Settings, Integrations, Feedback)
+  const isStrictAdmin = effectiveRole === 'admin';
   const isManager = effectiveRole === 'manager';
   const isAssistantManager = effectiveRole === 'assistant_manager';
   const isMember = effectiveRole === 'member';
-  const canManage = isAdmin || isManager || isAssistantManager || user?.isSuperAdmin;
+  // canManage = admin + manager only (NOT assistant_manager)
+  const canManage = isAdmin || isManager || user?.isSuperAdmin;
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
   const switchViewAs = (role) => {
@@ -215,7 +219,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, token, loading, login, loginWithToken, logout, updateProfile,
-      isAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
+      isAdmin, isStrictAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
       isSuperAdmin, isHierarchyManager, viewAsRole, switchViewAs, effectiveRole,
       permissionGrants, effectivePermissions, granularPermissions, permissionOverrides, loadPermissions,
     }}>
