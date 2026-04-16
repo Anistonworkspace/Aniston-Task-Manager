@@ -78,7 +78,7 @@ export default function NotificationsPanel({ onClose }) {
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
-      <div className="absolute right-0 top-0 h-full w-[380px] max-w-full bg-white dark:bg-dark-surface shadow-xl border-l border-border animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute right-0 top-0 h-full w-[380px] max-w-full bg-white dark:bg-[#1E1F23] shadow-xl border-l border-border animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <h2 className="text-lg font-bold text-text-primary">Notifications</h2>
           <button onClick={onClose} className="p-1 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>

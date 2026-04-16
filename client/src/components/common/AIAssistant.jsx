@@ -280,7 +280,7 @@ export default function AIAssistant({ isOpen: externalOpen, onClose, pageContext
             animation: 'aiPanelSlideIn 250ms cubic-bezier(0.16, 1, 0.3, 1) both',
           }}
         >
-          <div className={`bg-white dark:bg-[#1a1a2e] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden h-full transition-all duration-300`}>
+          <div className={`bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden h-full transition-all duration-300`}>
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-violet-600 to-indigo-600 text-white flex-shrink-0">
               <div className="flex items-center gap-2">

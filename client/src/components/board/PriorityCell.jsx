@@ -17,7 +17,7 @@ export default function PriorityCell({ value, onChange }) {
       </button>
 
       <PortalDropdown anchorRef={btnRef} open={open} onClose={() => setOpen(false)} width={160} align="center">
-        <div className="bg-white dark:bg-[#1a1830] rounded-xl shadow-dropdown border border-border dark:border-[#2d2b45] p-1.5">
+        <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] p-1.5">
           {Object.entries(PRIORITY_CONFIG).map(([key, cfg]) => (
             <button key={key} onClick={(e) => { e.stopPropagation(); onChange(key); setOpen(false); }}
               className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 ${value === key ? 'bg-surface-100' : 'hover:bg-surface-50'}`}>

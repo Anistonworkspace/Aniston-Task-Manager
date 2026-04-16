@@ -79,9 +79,9 @@ export default function AddColumnModal({ onAdd, onClose, anchorRef }) {
     : COLUMN_OPTIONS;
 
   return createPortal(
-    <div ref={menuRef} className="fixed w-72 bg-white dark:bg-[#1a1830] rounded-xl shadow-dropdown border border-border dark:border-[#2d2b45] dropdown-enter overflow-hidden"
+    <div ref={menuRef} className="fixed w-72 bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] dropdown-enter overflow-hidden"
       style={{ top: pos.top, left: pos.left, zIndex: 9999 }}>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border dark:border-[#2d2b45]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border dark:border-[#222327]">
         <h4 className="text-sm font-semibold text-text-primary dark:text-white">
           {step === 1 ? 'Add Column' : 'Column Name'}
         </h4>

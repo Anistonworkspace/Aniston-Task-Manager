@@ -82,7 +82,7 @@ export default function Login() {
 
   if (ssoLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
+      <div className="min-h-screen flex items-center justify-center bg-surface">
         <div className="text-center">
           <div className="animate-spin rounded-full h-10 w-10 border-2 border-primary/20 border-t-primary mx-auto mb-4" />
           <p className="text-sm text-text-secondary">Signing in with Microsoft...</p>
@@ -94,7 +94,7 @@ export default function Login() {
   return (
     <div className="min-h-screen flex">
       {/* Left - Form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-white">
+      <div className="flex-1 flex items-center justify-center p-8 bg-surface">
         <div className="w-full max-w-[380px]">
           <div className="flex items-center gap-2.5 mb-8">
             <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-10 h-10 rounded-xl object-contain" />
@@ -149,7 +149,7 @@ export default function Login() {
               <button
                 onClick={handleMicrosoftSSO}
                 disabled={ssoLoading}
-                className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 transition-all disabled:opacity-60 shadow-sm"
+                className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-surface border border-border rounded-lg text-sm font-medium text-text-primary hover:bg-surface-100 hover:border-border-dark transition-all disabled:opacity-60 shadow-sm"
               >
                 {ssoLoading ? (
                   <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-gray-600" />

@@ -104,7 +104,7 @@ export default function StatusCell({
       </button>
 
       <PortalDropdown anchorRef={btnRef} open={open} onClose={() => { setOpen(false); setEditMode(false); setEditingKey(null); }} width={220} align="center">
-        <div className="bg-white dark:bg-[#1a1830] rounded-xl shadow-dropdown border border-border dark:border-[#2d2b45] overflow-hidden">
+        <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
           {/* Status list */}
           <div className="p-1.5 max-h-[280px] overflow-y-auto">
             {statuses.map(s => {
@@ -125,7 +125,7 @@ export default function StatusCell({
               }
 
               return (
-                <div key={s.key} className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 group/item ${value === s.key ? 'bg-surface-100 dark:bg-[#2d2b45]' : 'hover:bg-surface-50 dark:hover:bg-[#211f3a]'}`}>
+                <div key={s.key} className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 group/item ${value === s.key ? 'bg-surface-100 dark:bg-[#222327]' : 'hover:bg-surface-50 dark:hover:bg-[#252629]'}`}>
                   <button className="flex items-center gap-2 flex-1 min-w-0" onClick={(e) => { e.stopPropagation(); if (onChange) onChange(s.key); setOpen(false); setEditMode(false); }}>
                     <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cfg.bgColor || cfg.color }} />
                     <span className="text-text-primary dark:text-white font-medium flex-1 text-left truncate">{cfg.label}</span>
@@ -146,7 +146,7 @@ export default function StatusCell({
 
           {/* Edit Labels footer — only for authorized users */}
           {canConfigureStatuses && onSaveTaskStatuses && (
-            <div className="border-t border-border dark:border-[#2d2b45] p-2">
+            <div className="border-t border-border dark:border-[#222327] p-2">
               {editMode ? (
                 <div className="space-y-2" onClick={e => e.stopPropagation()}>
                   {/* Add from palette */}
@@ -196,7 +196,7 @@ export default function StatusCell({
                 </div>
               ) : (
                 <button onClick={(e) => { e.stopPropagation(); setEditMode(true); }}
-                  className="flex items-center gap-1.5 w-full text-xs text-text-tertiary hover:text-primary-500 px-1 py-1.5 rounded-md hover:bg-surface-50 dark:hover:bg-[#211f3a] transition-colors">
+                  className="flex items-center gap-1.5 w-full text-xs text-text-tertiary hover:text-primary-500 px-1 py-1.5 rounded-md hover:bg-surface-50 dark:hover:bg-[#252629] transition-colors">
                   <Edit2 size={11} /> Edit Labels
                 </button>
               )}

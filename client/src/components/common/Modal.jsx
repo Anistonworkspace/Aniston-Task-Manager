@@ -75,15 +75,15 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
             role="dialog"
             aria-modal="true"
             aria-label={title || 'Modal'}
-            className={`relative bg-white rounded-xl shadow-2xl w-full ${sizes[size] || sizes.md} max-h-[90vh] flex flex-col border border-gray-100 ${className}`}
+            className={`relative bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-full ${sizes[size] || sizes.md} max-h-[90vh] flex flex-col border border-border ${className}`}
             {...modalContent}
           >
             {title && (
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                <h2 className="text-[15px] font-semibold text-gray-800">{title}</h2>
+              <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+                <h2 className="text-[15px] font-semibold text-text-primary">{title}</h2>
                 <motion.button
                   onClick={onClose}
-                  className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+                  className="p-1.5 rounded-lg hover:bg-surface-100 transition-colors text-text-tertiary hover:text-text-secondary"
                   whileHover={{ rotate: 90 }}
                   whileTap={{ scale: 0.9 }}
                   transition={{ duration: 0.2 }}
@@ -93,7 +93,7 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
               </div>
             )}
             <div className="flex-1 overflow-auto px-6 py-4">{children}</div>
-            {footer && <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-gray-100">{footer}</div>}
+            {footer && <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-border">{footer}</div>}
           </motion.div>
         </motion.div>
       )}

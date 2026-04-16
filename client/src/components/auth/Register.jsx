@@ -39,7 +39,7 @@ export default function Register() {
           <p className="text-white/80 text-base leading-relaxed">Create your account and start managing your team's projects with powerful tools and real-time collaboration.</p>
         </div>
       </div>
-      <div className="flex-1 flex items-center justify-center p-8 bg-white">
+      <div className="flex-1 flex items-center justify-center p-8 bg-surface">
         <div className="w-full max-w-[380px]">
           <div className="flex items-center gap-2.5 mb-8">
             <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-10 h-10 rounded-xl object-contain" />

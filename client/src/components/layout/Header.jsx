@@ -107,7 +107,7 @@ export default function Header({ onToggleSidebar }) {
 
   return (
     <>
-      <header className="h-[52px] bg-white dark:bg-[#1a1830] border-b border-border dark:border-[#2d2b45] flex items-center justify-between px-5 flex-shrink-0 z-20">
+      <header className="h-[52px] bg-white dark:bg-[#1E1F23] border-b border-border dark:border-[#222327] flex items-center justify-between px-5 flex-shrink-0 z-20">
         {/* Left: Hamburger (mobile) + Breadcrumb + Search */}
         <div className="flex items-center gap-4">
           {/* Mobile hamburger */}
@@ -128,7 +128,7 @@ export default function Header({ onToggleSidebar }) {
             className="flex items-center gap-2 text-text-tertiary hover:text-text-secondary px-3 py-1.5 rounded-lg border border-border hover:border-border-dark bg-surface-50 transition-all duration-150 group">
             <Search size={14} />
             <span className="text-xs hidden sm:inline">Search...</span>
-            <kbd className="hidden lg:inline-flex items-center text-[10px] text-text-muted bg-white px-1.5 py-0.5 rounded border border-border font-mono ml-3 group-hover:border-border-dark">
+            <kbd className="hidden lg:inline-flex items-center text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded border border-border font-mono ml-3 group-hover:border-border-dark">
               ⌘K
             </kbd>
           </button>
@@ -141,7 +141,7 @@ export default function Header({ onToggleSidebar }) {
             className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
             <Bell size={17} strokeWidth={1.8} />
             {unreadCount > 0 && (
-              <span className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1a1830]">
+              <span className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]">
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
@@ -175,8 +175,8 @@ export default function Header({ onToggleSidebar }) {
             </button>
 
             {showUserMenu && (
-              <div className="absolute right-0 top-full mt-1.5 w-60 bg-white dark:bg-[#1a1830] rounded-xl shadow-dropdown border border-border dark:border-[#2d2b45] py-1 z-50 dropdown-enter overflow-hidden">
-                <div className="px-4 py-3 border-b border-border dark:border-[#2d2b45]">
+              <div className="absolute right-0 top-full mt-1.5 w-60 bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] py-1 z-50 dropdown-enter overflow-hidden">
+                <div className="px-4 py-3 border-b border-border dark:border-[#222327]">
                   <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
                   <p className="text-xs text-text-tertiary mt-0.5">{user?.email}</p>
                   <div className="flex items-center gap-1.5 mt-2">
@@ -198,7 +198,7 @@ export default function Header({ onToggleSidebar }) {
                     </button>
                   )}
                 </div>
-                <div className="border-t border-border dark:border-[#2d2b45]" />
+                <div className="border-t border-border dark:border-[#222327]" />
                 <button onClick={() => { logout(); navigate('/login'); }}
                   className="flex items-center gap-3 px-4 py-2 text-sm text-danger hover:bg-danger/5 w-full transition-colors">
                   <LogOut size={15} strokeWidth={1.8} /> Sign out

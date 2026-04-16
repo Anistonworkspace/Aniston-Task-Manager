@@ -108,10 +108,10 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
 
   function renderDropdownContent() {
     return (
-      <div className="bg-white dark:bg-[#1a1830] rounded-xl shadow-dropdown border border-border dark:border-[#2d2b45] overflow-hidden">
+      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
         {/* Header with mode toggle */}
         {onOwnersChange && (
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border dark:border-[#2d2b45] bg-surface-50 dark:bg-[#151327]">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border dark:border-[#222327] bg-surface-50 dark:bg-[#17181C]">
             <button
               onClick={(e) => { e.stopPropagation(); setMultiMode(false); }}
               className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${!multiMode ? 'bg-primary-500 text-white' : 'text-text-tertiary hover:text-text-secondary'}`}
@@ -123,7 +123,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
           </div>
         )}
         {/* Search */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border dark:border-[#2d2b45]">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border dark:border-[#222327]">
           <Search size={13} className="text-text-tertiary flex-shrink-0" />
           <input ref={inputRef} type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full placeholder:text-text-tertiary shadow-none ring-0 focus:ring-0"
@@ -149,6 +149,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
             const mName = m.name || m.user?.name || 'Unknown';
             const mId = m.id || m.user?.id;
             const mRole = m.role || m.user?.role;
+            const mAvatar = m.avatar || m.user?.avatar || undefined;
 
             if (multiMode) {
               const isChecked = selectedOwnerIds.includes(mId);
@@ -158,7 +159,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
                   className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isChecked ? 'bg-primary-50' : ''}`}>
                   <input type="checkbox" checked={isChecked} readOnly
                     className="w-3.5 h-3.5 rounded border-[#c4c4c4] text-[#0073ea] focus:ring-0 pointer-events-none" />
-                  <Avatar name={mName} size="xs" />
+                  <Avatar name={mName} image={mAvatar} size="xs" />
                   <div className="flex-1 min-w-0 text-left">
                     <span className="truncate block text-text-primary">{mName}</span>
                     {mRole && <span className="text-[10px] text-text-tertiary capitalize">{mRole}</span>}
@@ -172,7 +173,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
             return (
               <button key={mId} onClick={(e) => { e.stopPropagation(); onChange?.(mId); setOpen(false); setSearch(''); }}
                 className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isSelected ? 'bg-primary-50' : ''}`}>
-                <Avatar name={mName} size="xs" />
+                <Avatar name={mName} image={mAvatar} size="xs" />
                 <div className="flex-1 min-w-0 text-left">
                   <span className="truncate block text-text-primary">{mName}</span>
                   {mRole && <span className="text-[10px] text-text-tertiary capitalize">{mRole}</span>}
@@ -187,7 +188,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
         </div>
         {/* Multi-mode save button */}
         {multiMode && (
-          <div className="px-3 py-2 border-t border-border dark:border-[#2d2b45]">
+          <div className="px-3 py-2 border-t border-border dark:border-[#222327]">
             <button onClick={(e) => { e.stopPropagation(); handleMultiSave(); }}
               className="w-full py-1.5 bg-primary-500 text-white text-xs rounded-lg hover:bg-primary-600 transition-colors font-medium">
               Save {selectedOwnerIds.length > 0 ? `(${selectedOwnerIds.length})` : ''}
@@ -203,7 +204,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
       <button ref={btnRef} onClick={(e) => { e.stopPropagation(); if (!onChange && !onOwnersChange) return; setOpen(!open); setSearch(''); }}
         className="flex items-center justify-center w-full h-full hover:bg-surface-50 rounded transition-colors">
         {assigneeName ? (
-          <Avatar name={assigneeName} size="xs" />
+          <Avatar name={assigneeName} image={assignee?.avatar || undefined} size="xs" />
         ) : (
           <div className="w-6 h-6 rounded-full border-2 border-dashed border-text-tertiary flex items-center justify-center">
             <span className="text-[10px] text-text-tertiary">+</span>

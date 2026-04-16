@@ -108,7 +108,7 @@ export default function GlobalSearch({ onClose }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-start justify-center pt-[15vh] z-50 animate-fade-in" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1a1830] rounded-xl shadow-2xl w-full max-w-[580px] mx-4 max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-full max-w-[580px] mx-4 max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Search Input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
           <Search size={18} className="text-text-tertiary flex-shrink-0" />
@@ -258,9 +258,9 @@ export default function GlobalSearch({ onClose }) {
           <div className="px-4 py-2 border-t border-border bg-surface/30 flex items-center gap-4 text-[10px] text-text-tertiary">
             <span className="font-medium">{totalCount} result{totalCount !== 1 ? 's' : ''}{hasMore ? '+' : ''}</span>
             <span className="flex-1" />
-            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">↑↓</kbd> Navigate</span>
-            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">↵</kbd> Open</span>
-            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#211f3a] px-1 py-0.5 rounded border border-border">Esc</kbd> Close</span>
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#252629] px-1 py-0.5 rounded border border-border">↑↓</kbd> Navigate</span>
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#252629] px-1 py-0.5 rounded border border-border">↵</kbd> Open</span>
+            <span className="flex items-center gap-1"><kbd className="bg-white dark:bg-[#252629] px-1 py-0.5 rounded border border-border">Esc</kbd> Close</span>
           </div>
         )}
       </div>

@@ -26,38 +26,38 @@ export default {
         // Teal accent
         teal: { DEFAULT: '#14b8a6', light: '#ccfbf1', dark: '#0d9488' },
 
-        // Sidebar — exact Monday.com colors
+        // Sidebar — uses CSS variables so light/dark mode auto-adapts
         sidebar: {
-          bg: '#f6f7fb',
-          hover: '#dcdfec',
-          active: '#cce5ff',
-          text: '#676879',
-          'text-active': '#323338',
-          border: '#e6e9ef',
-          accent: '#0073ea',
+          bg: 'var(--sidebar-bg)',
+          hover: 'var(--sidebar-hover)',
+          active: 'var(--sidebar-active)',
+          text: 'rgb(var(--sidebar-text) / <alpha-value>)',
+          'text-active': 'var(--sidebar-text-active)',
+          border: 'var(--sidebar-border)',
+          accent: 'rgb(var(--sidebar-accent) / <alpha-value>)',
         },
 
-        // Surfaces — warm neutrals, not cold gray
+        // Surfaces — uses CSS variables for theme adaptation
         surface: {
-          DEFAULT: '#f8fafc',
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
+          DEFAULT: 'var(--surface)',
+          50: 'var(--surface-50)',
+          100: 'var(--surface-100)',
+          200: 'var(--surface-200)',
+          300: 'var(--surface-300)',
         },
 
-        // Borders
+        // Borders — uses CSS variables for theme adaptation
         border: {
-          DEFAULT: '#e2e8f0',
-          light: '#f1f5f9',
-          dark: '#cbd5e1',
+          DEFAULT: 'var(--border-color)',
+          light: 'var(--border-light)',
+          dark: 'var(--border-dark)',
         },
 
-        // Text — Monday.com exact colors
-        'text-primary': '#323338',
-        'text-secondary': '#676879',
-        'text-tertiary': '#c5c7d0',
-        'text-muted': '#c4c4c4',
+        // Text — uses CSS variables for theme adaptation
+        'text-primary': 'var(--text-primary)',
+        'text-secondary': 'var(--text-secondary)',
+        'text-tertiary': 'var(--text-tertiary)',
+        'text-muted': 'var(--text-muted)',
 
         // Status colors — richer
         'status-not-started': '#94a3b8',

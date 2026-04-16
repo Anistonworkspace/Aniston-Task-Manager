@@ -40,7 +40,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, c
   if (!open) return null;
 
   return createPortal(
-    <div ref={menuRef} className="fixed w-56 bg-white rounded-xl shadow-dropdown border border-border z-[100] dropdown-enter overflow-hidden py-1"
+    <div ref={menuRef} className="fixed w-56 bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border z-[100] dropdown-enter overflow-hidden py-1"
       style={{ top: pos.top, left: pos.left }}>
       {canCreateWorkspace && (
         <button onClick={() => { onClose(); onAddWorkspace(); }}
@@ -220,7 +220,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <input ref={renameInputRef} type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)}
               onBlur={() => saveRename(board.id)}
               onKeyDown={e => { if (e.key === 'Enter') saveRename(board.id); if (e.key === 'Escape') setRenamingBoard(null); }}
-              className="w-full text-[13px] px-2 py-1 border border-sidebar-accent rounded-md outline-none bg-white text-sidebar-text-active" />
+              className="w-full text-[13px] px-2 py-1 border border-sidebar-accent rounded-md outline-none bg-sidebar-bg text-sidebar-text-active" />
           </div>
         ) : (
           <>
@@ -247,7 +247,7 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   if (collapsed) {
     return (
-      <div className="w-[52px] bg-sidebar-bg flex flex-col items-center py-3 gap-1 flex-shrink-0 border-r border-sidebar-border max-md:hidden" style={{ transition: 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}>
+      <div className="w-[52px] bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col items-center py-3 gap-1 flex-shrink-0 border-r border-sidebar-border max-md:hidden" style={{ transition: 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}>
         <button onClick={onToggle} className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center mb-2 shadow-sm">
           <FolderKanban size={15} className="text-white" />
         </button>
@@ -294,7 +294,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         onClick={onToggle}
       />
       <div data-tour="sidebar" style={{ width: sidebarWidth, transition: resizing.current ? 'none' : 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}
-        className={`bg-sidebar-bg flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none
+        className={`bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none
           max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:shadow-2xl
           ${collapsed ? 'max-md:-translate-x-full' : 'max-md:translate-x-0'}
           max-md:transition-transform max-md:duration-200`}>
@@ -471,14 +471,14 @@ export default function Sidebar({ collapsed, onToggle }) {
                           <MoreHorizontal size={13} />
                         </button>
                         {wsActionMenu === ws.id && (
-                          <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+                          <div className="absolute right-0 top-full mt-1 w-44 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
                             onMouseLeave={() => setWsActionMenu(null)}>
                             <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-gray-600 hover:bg-gray-50">
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
                               <Edit3 size={12} /> Rename
                             </button>
                             <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50">
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
                               <Archive size={12} /> Archive Workspace
                             </button>
                           </div>

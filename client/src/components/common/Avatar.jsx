@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const GRADIENTS = [
   ['#4f46e5', '#818cf8'],
@@ -37,14 +37,16 @@ const SIZES = {
 };
 
 export default function Avatar({ name, image, size = 'md', className = '' }) {
+  const [imgError, setImgError] = useState(false);
   const [from, to] = hashGradient(name);
+  const showImage = image && !imgError;
   return (
     <div
       className={`rounded-lg flex items-center justify-center font-semibold text-white flex-shrink-0 shadow-sm ${SIZES[size] || SIZES.md} ${className}`}
-      style={{ background: image ? 'transparent' : `linear-gradient(135deg, ${from}, ${to})` }}
+      style={{ background: showImage ? 'transparent' : `linear-gradient(135deg, ${from}, ${to})` }}
       title={name}
     >
-      {image ? <img src={image} alt={name} className="w-full h-full rounded-lg object-cover" /> : initials(name)}
+      {showImage ? <img src={image} alt={name} className="w-full h-full rounded-lg object-cover" onError={() => setImgError(true)} /> : initials(name)}
     </div>
   );
 }

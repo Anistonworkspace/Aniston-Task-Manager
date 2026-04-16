@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Camera, Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase, User as UserIcon, Check, AlertCircle, Bell } from 'lucide-react';
+import { Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase, User as UserIcon, Check, AlertCircle, Bell } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import SOPViewer from '../components/common/SOPViewer';
-import { validateFile, getAcceptString } from '../utils/uploadConfig';
 
 const ROLE_STYLES = {
   admin: { bg: 'bg-danger/10', text: 'text-danger', border: 'border-danger/20', label: 'Administrator' },
@@ -15,7 +14,6 @@ const ROLE_STYLES = {
 
 export default function ProfilePage() {
   const { user, updateProfile } = useAuth();
-  const fileInputRef = useRef(null);
   const sopRef = useRef(null);
   const location = useLocation();
 
@@ -37,7 +35,6 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [creatingPassword, setCreatingPassword] = useState(false);
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [flash, setFlash] = useState(null);
   const [passwordFlash, setPasswordFlash] = useState(null);
   const [teamsNotifEnabled, setTeamsNotifEnabled] = useState(user?.teamsNotificationsEnabled !== false);
@@ -64,32 +61,6 @@ export default function ProfilePage() {
       showFlash(err.response?.data?.message || 'Failed to update Teams notification preference.', 'error');
     } finally {
       setTogglingTeamsNotif(false);
-    }
-  }
-
-  async function handleAvatarUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const validation = validateFile(file, 'avatar');
-    if (!validation.valid) {
-      showFlash(validation.message, 'error');
-      return;
-    }
-    setUploadingAvatar(true);
-    try {
-      const formData = new FormData();
-      formData.append('avatar', file);
-      const res = await api.post('/auth/avatar', formData);
-      const updatedUser = res.data?.data?.user || res.data?.user;
-      if (updatedUser) {
-        await updateProfile({ avatar: updatedUser.avatar });
-      }
-      showFlash('Avatar updated successfully.');
-    } catch (err) {
-      showFlash(err.response?.data?.message || 'Failed to upload avatar.', 'error');
-    } finally {
-      setUploadingAvatar(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
@@ -198,7 +169,7 @@ export default function ProfilePage() {
   const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-surface p-6 md:p-8">
+    <div className="flex-1 overflow-y-auto p-6 md:p-8">
       <div className="max-w-2xl mx-auto space-y-6">
 
         {/* Page Header */}
@@ -218,8 +189,8 @@ export default function ProfilePage() {
         {/* Avatar + Role Card */}
         <div className="widget-card">
           <div className="flex items-start gap-6">
-            {/* Avatar */}
-            <div className="relative group flex-shrink-0">
+            {/* Avatar (display only) */}
+            <div className="relative flex-shrink-0">
               <div className="w-24 h-24 rounded-2xl overflow-hidden bg-gradient-to-br from-primary to-blue-400 flex items-center justify-center shadow-lg">
                 {avatarUrl ? (
                   <img src={avatarUrl} alt={user?.name} className="w-full h-full object-cover" />
@@ -227,21 +198,7 @@ export default function ProfilePage() {
                   <span className="text-white text-2xl font-bold">{initials}</span>
                 )}
               </div>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploadingAvatar}
-                className="absolute inset-0 rounded-2xl bg-black/0 group-hover:bg-black/40 flex items-center justify-center transition-all cursor-pointer"
-              >
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center">
-                  {uploadingAvatar ? (
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <Camera size={20} className="text-white" />
-                  )}
-                </div>
-              </button>
-              <input ref={fileInputRef} type="file" accept={getAcceptString('avatar')} onChange={handleAvatarUpload} className="hidden" />
-              <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-success rounded-full border-2 border-white" title="Active" />
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-success rounded-full border-2 border-white dark:border-[#1E1F23]" title="Active" />
             </div>
 
             {/* User Info */}

@@ -40,6 +40,11 @@ const User = sequelize.define(
       type: DataTypes.STRING(500),
       allowNull: true,
       defaultValue: null,
+      get() {
+        const val = this.getDataValue('avatar');
+        if (!val || !val.trim() || val === 'null' || val === 'undefined') return null;
+        return val;
+      },
     },
     role: {
       type: DataTypes.ENUM('admin', 'manager', 'assistant_manager', 'member'),

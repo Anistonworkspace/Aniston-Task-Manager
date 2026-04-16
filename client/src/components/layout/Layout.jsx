@@ -102,12 +102,12 @@ function RoleSwitcher() {
     >
       {/* Menu */}
       {open && (
-        <div className="absolute bottom-12 right-0 bg-white rounded-xl shadow-2xl border border-gray-200 w-52 py-1.5 mb-1 animate-in fade-in slide-in-from-bottom-2">
-          <p className="px-3 py-1 text-[9px] uppercase tracking-wider text-gray-400 font-semibold">Switch View</p>
+        <div className="absolute bottom-12 right-0 bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl border border-border w-52 py-1.5 mb-1 animate-in fade-in slide-in-from-bottom-2">
+          <p className="px-3 py-1 text-[9px] uppercase tracking-wider text-text-tertiary font-semibold">Switch View</p>
           {roles.map(r => (
             <button key={r.key || 'default'} onClick={() => { switchViewAs(r.key); setOpen(false); }}
               className={`flex items-center gap-2 w-full px-3 py-2 text-[12px] transition-colors
-                ${(viewAsRole === r.key || (!viewAsRole && r.key === null)) ? 'bg-blue-50 text-blue-600 font-medium' : 'text-gray-600 hover:bg-gray-50'}`}>
+                ${(viewAsRole === r.key || (!viewAsRole && r.key === null)) ? 'bg-primary/10 text-primary font-medium' : 'text-text-secondary hover:bg-surface-100'}`}>
               <r.icon size={13} style={{ color: r.color }} />
               {r.label}
             </button>
@@ -139,7 +139,7 @@ export default function Layout() {
   const location = useLocation();
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-[#0c0a1d]">
+    <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-[#0F1112]">
       {/* Skip to main content link for accessibility */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:bg-primary focus:text-white focus:rounded-lg focus:text-sm focus:font-semibold">
         Skip to main content
