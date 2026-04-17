@@ -26,7 +26,7 @@ const STATUS_CONFIG = {
 
 export default function MeetingsPage() {
   const { user, canManage } = useAuth();
-  const { error: toastError } = useToast();
+  const { error: toastError, success: toastSuccess } = useToast();
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('upcoming');
@@ -64,14 +64,15 @@ export default function MeetingsPage() {
 
   async function handleDelete(meetingId) {
     if (!confirm('Delete this meeting? Participants will be notified.')) return;
+    setActionMenu(null);
     try {
       await api.delete(`/meetings/${meetingId}`);
+      toastSuccess('Meeting deleted');
       loadMeetings();
     } catch (err) {
       console.error('Failed to delete:', err);
       toastError('Failed to delete meeting');
     }
-    setActionMenu(null);
   }
 
   async function handleMarkComplete(meetingId) {
@@ -172,14 +173,14 @@ export default function MeetingsPage() {
                     const statusCfg = STATUS_CONFIG[meeting.status] || STATUS_CONFIG.scheduled;
                     const TypeIcon = typeCfg.icon;
                     const isOrganizer = meeting.createdBy === user?.id;
-                    const myParticipant = meeting.participants?.find(p => p.userId === user?.id);
+                    const myParticipant = meeting.participants?.filter(Boolean)?.find(p => p.userId === user?.id);
                     const isPastMeeting = meeting.date < today;
 
                     return (
-                      <div key={meeting.id} className="bg-white rounded-xl border border-border shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+                      <div key={meeting.id} className="bg-white rounded-xl border border-border shadow-sm hover:shadow-md transition-shadow">
                         <div className="flex">
                           {/* Color bar */}
-                          <div className="w-1 flex-shrink-0" style={{ backgroundColor: typeCfg.color }} />
+                          <div className="w-1 flex-shrink-0 rounded-l-xl" style={{ backgroundColor: typeCfg.color }} />
 
                           <div className="flex-1 p-4">
                             <div className="flex items-start justify-between gap-3">
@@ -240,15 +241,15 @@ export default function MeetingsPage() {
                                 </div>
 
                                 {/* Participants */}
-                                {meeting.participants?.length > 0 && (
+                                {meeting.participants?.filter(Boolean)?.length > 0 && (
                                   <div className="flex -space-x-1.5">
-                                    {meeting.participants.slice(0, 4).map((p, i) => (
-                                      <div key={i} title={`${p.name} (${p.status})`}
+                                    {meeting.participants.filter(Boolean).slice(0, 4).map((p, i) => (
+                                      <div key={i} title={`${p.name || 'Unknown'} (${p.status || 'pending'})`}
                                         className={`rounded-full ring-2 ring-white ${p.status === 'declined' ? 'opacity-40' : ''}`}>
-                                        <Avatar name={p.name} size="xs" />
+                                        <Avatar name={p.name || 'Unknown'} size="xs" />
                                       </div>
                                     ))}
-                                    {meeting.participants.length > 4 && (
+                                    {meeting.participants.filter(Boolean).length > 4 && (
                                       <div className="w-6 h-6 rounded-full bg-surface border-2 border-white flex items-center justify-center text-[9px] font-medium text-text-secondary">
                                         +{meeting.participants.length - 4}
                                       </div>

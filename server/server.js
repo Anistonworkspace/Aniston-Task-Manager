@@ -536,6 +536,19 @@ const start = async () => {
       console.warn('[Server] notes.lang migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: Add archivedGroups column to boards table ──
+    try {
+      const [boardTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'boards'`
+      );
+      if (boardTables.length > 0) {
+        await sequelize.query(`ALTER TABLE boards ADD COLUMN IF NOT EXISTS "archivedGroups" JSONB NOT NULL DEFAULT '[]'`);
+        console.log('[Server] boards.archivedGroups column ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] boards.archivedGroups migration warning:', e.message?.slice(0, 100));
+    }
+
     // Create performance indices on frequently queried columns (safe to re-run)
     const indices = [
       'CREATE INDEX IF NOT EXISTS idx_tasks_board_id ON tasks("boardId")',

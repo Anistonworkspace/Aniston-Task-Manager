@@ -4,6 +4,7 @@ import { formatDistanceToNow, parseISO, differenceInDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
+import { useToast } from '../components/common/Toast';
 
 const PROTECTION_DAYS = 90;
 
@@ -66,8 +67,10 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
 
 export default function ArchivedPage() {
   const { canManage, isAdmin, user } = useAuth();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [boards, setBoards] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [archivedGroups, setArchivedGroups] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
   const [dependencies, setDependencies] = useState([]);
   const [helpRequests, setHelpRequests] = useState([]);
@@ -85,8 +88,9 @@ export default function ArchivedPage() {
   async function loadArchived() {
     setLoading(true);
     try {
-      const [boardsRes, tasksRes, wsRes, depsRes, helpRes] = await Promise.all([
+      const [boardsRes, allBoardsRes, tasksRes, wsRes, depsRes, helpRes] = await Promise.all([
         api.get('/boards?archived=true'),
+        api.get('/boards'),
         api.get('/tasks?archived=true&limit=200'),
         canManage ? api.get('/workspaces/archived').catch(() => ({ data: { data: { workspaces: [] } } })) : Promise.resolve({ data: { data: { workspaces: [] } } }),
         api.get(`/archive/dependencies${buildFilterQuery()}`).catch(() => ({ data: { data: { dependencies: [] } } })),
@@ -98,6 +102,18 @@ export default function ArchivedPage() {
       setWorkspaces(wsData?.workspaces || []);
       setDependencies((depsRes.data?.data || depsRes.data)?.dependencies || []);
       setHelpRequests((helpRes.data?.data || helpRes.data)?.helpRequests || []);
+
+      // Collect archived groups from all non-archived boards
+      const allBoards = allBoardsRes.data.boards || allBoardsRes.data || [];
+      const groups = [];
+      allBoards.forEach(b => {
+        if (b.archivedGroups && b.archivedGroups.length > 0) {
+          b.archivedGroups.forEach(g => {
+            groups.push({ ...g, boardId: b.id, boardName: b.name, boardColor: b.color });
+          });
+        }
+      });
+      setArchivedGroups(groups);
     } catch (err) {
       console.error('Failed to load archived items:', err);
     }
@@ -115,19 +131,49 @@ export default function ArchivedPage() {
   function clearFilters() { setDateFrom(''); setDateTo(''); setSearch(''); }
 
   async function restoreTask(id) {
-    try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); } catch (e) { console.error('Restore task failed:', e); }
+    try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); toastSuccess('Task restored'); } catch (e) { console.error('Restore task failed:', e); toastError('Failed to restore task'); }
   }
   async function restoreBoard(id) {
-    try { await api.put(`/boards/${id}`, { isArchived: false }); setBoards(prev => prev.filter(b => b.id !== id)); } catch (e) { console.error('Restore board failed:', e); }
+    try { await api.put(`/boards/${id}`, { isArchived: false }); setBoards(prev => prev.filter(b => b.id !== id)); toastSuccess('Board restored'); } catch (e) { console.error('Restore board failed:', e); toastError('Failed to restore board'); }
   }
   async function restoreWorkspace(id) {
-    try { await api.put(`/workspaces/${id}/restore`); setWorkspaces(prev => prev.filter(w => w.id !== id)); loadArchived(); } catch (e) { console.error('Restore workspace failed:', e); }
+    try { await api.put(`/workspaces/${id}/restore`); setWorkspaces(prev => prev.filter(w => w.id !== id)); loadArchived(); toastSuccess('Workspace restored'); } catch (e) { console.error('Restore workspace failed:', e); toastError('Failed to restore workspace'); }
   }
   async function restoreDep(id) {
-    try { await api.put(`/archive/dependencies/${id}/restore`); setDependencies(prev => prev.filter(d => d.id !== id)); } catch (e) { console.error('Restore dependency failed:', e); }
+    try { await api.put(`/archive/dependencies/${id}/restore`); setDependencies(prev => prev.filter(d => d.id !== id)); toastSuccess('Dependency restored'); } catch (e) { console.error('Restore dependency failed:', e); toastError('Failed to restore dependency'); }
   }
   async function restoreHelp(id) {
-    try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); } catch (e) { console.error('Restore help request failed:', e); }
+    try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); toastSuccess('Help request restored'); } catch (e) { console.error('Restore help request failed:', e); toastError('Failed to restore help request'); }
+  }
+  async function restoreGroup(group) {
+    try {
+      // Fetch the current board to get its groups and archivedGroups
+      const boardRes = await api.get(`/boards/${group.boardId}`);
+      const boardData = boardRes.data.board || boardRes.data.data?.board || boardRes.data;
+      const currentGroups = boardData.groups || [];
+      const currentArchivedGroups = boardData.archivedGroups || [];
+
+      // Remove the group from archivedGroups and add it back to groups
+      const { archivedAt, taskCount, boardId: _bid, boardName: _bn, boardColor: _bc, ...groupData } = group;
+      const updatedGroups = [...currentGroups, groupData];
+      const updatedArchivedGroups = currentArchivedGroups.filter(g => g.id !== group.id);
+
+      await api.put(`/boards/${group.boardId}`, { groups: updatedGroups, archivedGroups: updatedArchivedGroups });
+
+      // Un-archive tasks that belonged to this group
+      const archivedTasksRes = await api.get(`/tasks?archived=true&limit=200`);
+      const archivedTasks = archivedTasksRes.data.tasks || archivedTasksRes.data || [];
+      const groupTasks = archivedTasks.filter(t => t.groupId === group.id && t.boardId === group.boardId);
+      await Promise.all(groupTasks.map(t => api.put(`/tasks/${t.id}`, { isArchived: false })));
+
+      // Update local state
+      setArchivedGroups(prev => prev.filter(g => !(g.id === group.id && g.boardId === group.boardId)));
+      setTasks(prev => prev.filter(t => !(t.groupId === group.id && t.boardId === group.boardId)));
+      toastSuccess('Group restored successfully');
+    } catch (e) {
+      console.error('Restore group failed:', e);
+      toastError('Failed to restore group');
+    }
   }
 
   async function handleDelete() {
@@ -239,10 +285,40 @@ export default function ArchivedPage() {
 
       {/* ═══ TASKS TAB ═══ */}
       {tab === 'tasks' && (
-        tasks.length === 0 ? (
+        tasks.length === 0 && archivedGroups.length === 0 ? (
           <EmptyState icon={ListTodo} title="No archived tasks" subtitle="Tasks you archive will appear here." />
         ) : (
           <div className="space-y-4">
+            {/* Archived Groups */}
+            {archivedGroups.length > 0 && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2 px-1">
+                  <Layers size={13} className="text-gray-400" />
+                  <span className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide">Archived Groups</span>
+                  <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{archivedGroups.length}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {archivedGroups.map(group => (
+                    <div key={`${group.boardId}-${group.id}`} className="bg-white rounded-lg border border-gray-100 p-3 hover:shadow-sm transition-shadow flex items-center gap-3">
+                      <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ backgroundColor: group.color || '#579bfc' }} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[13px] font-medium text-gray-800 truncate">{group.title || group.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-gray-400">Board: {group.boardName}</span>
+                          {group.taskCount != null && <span className="text-[10px] text-gray-400">{group.taskCount} task{group.taskCount !== 1 ? 's' : ''}</span>}
+                          {group.archivedAt && <span className="text-[10px] text-gray-400">Archived {formatDistanceToNow(parseISO(group.archivedAt), { addSuffix: true })}</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button onClick={() => restoreGroup(group)} className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 rounded-md border border-blue-200 transition-colors">
+                          <RotateCcw size={11} /> Restore
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {Object.entries(tasksByBoard).map(([boardName, boardTasks]) => {
               const filtered = search ? boardTasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase())) : boardTasks;
               if (filtered.length === 0) return null;

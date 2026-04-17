@@ -287,9 +287,9 @@ export default function BoardPage() {
       const updatedArchivedGroups = [...currentArchivedGroups, { ...archivedGroup, archivedAt: new Date().toISOString(), taskCount: groupTasks.length }];
 
       await api.put(`/boards/${boardId}`, { groups: updatedGroups, archivedGroups: updatedArchivedGroups });
-      setGroups(updatedGroups);
-      setBoard(prev => ({ ...prev, archivedGroups: updatedArchivedGroups }));
+      setBoard(prev => ({ ...prev, groups: updatedGroups, archivedGroups: updatedArchivedGroups }));
       setTasks(prev => prev.filter(t => t.groupId !== groupId));
+      toastSuccess('Group archived');
     } catch (err) {
       console.error('[BoardPage] handleArchiveGroup error:', err);
       toastError('Failed to archive group. Please try again.');
@@ -300,7 +300,8 @@ export default function BoardPage() {
     try {
       const updatedGroups = groups.map(g => g.id === groupId ? { ...g, title: newName, name: newName } : g);
       await api.put(`/boards/${boardId}`, { groups: updatedGroups });
-      setGroups(updatedGroups);
+      setBoard(prev => ({ ...prev, groups: updatedGroups }));
+      toastSuccess('Group renamed');
     } catch (err) {
       console.error('[BoardPage] handleRenameGroup error:', err);
       toastError('Failed to rename group. Please try again.');
@@ -433,6 +434,7 @@ export default function BoardPage() {
     setBoard(prev => ({ ...prev, groups: updatedGroups }));
     try {
       await api.put(`/boards/${boardId}`, { groups: updatedGroups });
+      toastSuccess('New group created');
     } catch (err) {
       console.error('[BoardPage] handleAddGroup error:', err);
       toastError('Failed to add group. Please try again.');

@@ -204,9 +204,7 @@ export default function TaskGroup({
               {/* Sticky left: color bar + checkbox + task name */}
               <div className="flex items-center sticky left-0 z-[6] bg-white">
                 <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color }} />
-                <div className="w-10 flex-shrink-0 flex items-center justify-center py-2.5">
-                  <input type="checkbox" className="w-4 h-4 rounded border-[#c4c4c4] text-[#0073ea] focus:ring-[#0073ea]/20 cursor-pointer" onClick={e => e.stopPropagation()} />
-                </div>
+                <div className="w-10 flex-shrink-0 py-2.5" />
                 <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#e6e9ef] relative">
                   Task
                   {/* Task column resize handle (mouse + touch) */}

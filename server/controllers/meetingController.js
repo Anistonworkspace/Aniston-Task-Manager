@@ -55,8 +55,8 @@ const createMeeting = async (req, res) => {
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
 
     // Notify participants
-    for (const p of participantList) {
-      if (p.userId !== req.user.id) {
+    for (const p of (participantList || []).filter(Boolean)) {
+      if (p.userId && p.userId !== req.user.id) {
         const typeLabel = type === 'reminder' ? 'reminder' : type === 'follow_up' ? 'follow-up' : 'meeting';
         const notification = await Notification.create({
           type: 'task_updated',
@@ -186,7 +186,7 @@ const respondToMeeting = async (req, res) => {
     const meeting = await Meeting.findByPk(req.params.id);
     if (!meeting) return res.status(404).json({ success: false, message: 'Meeting not found.' });
 
-    const participants = [...(meeting.participants || [])];
+    const participants = [...(meeting.participants || [])].filter(Boolean);
     const idx = participants.findIndex(p => p.userId === req.user.id);
     if (idx === -1) return res.status(403).json({ success: false, message: 'You are not a participant of this meeting.' });
 
@@ -225,8 +225,8 @@ const deleteMeeting = async (req, res) => {
     }
 
     // Notify participants of cancellation
-    for (const p of meeting.participants || []) {
-      if (p.userId !== req.user.id) {
+    for (const p of (meeting.participants || []).filter(Boolean)) {
+      if (p.userId && p.userId !== req.user.id) {
         const notification = await Notification.create({
           type: 'task_updated',
           message: `${req.user.name} cancelled the meeting "${meeting.title}"`,

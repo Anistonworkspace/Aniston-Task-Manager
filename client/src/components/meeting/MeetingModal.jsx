@@ -22,7 +22,7 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
     taskId: meeting?.taskId || '',
   });
   const [selectedParticipants, setSelectedParticipants] = useState(
-    meeting?.participants?.map(p => p.userId) || []
+    meeting?.participants?.filter(Boolean)?.map(p => p.userId) || []
   );
   const [users, setUsers] = useState([]);
   const [boards, setBoards] = useState([]);

@@ -59,6 +59,12 @@ const Board = sequelize.define(
         key: 'id',
       },
     },
+    archivedGroups: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+      comment: 'Groups that have been archived from this board',
+    },
     customColumns: {
       type: DataTypes.JSONB,
       allowNull: false,
