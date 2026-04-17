@@ -2,9 +2,17 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mic, MicOff, FileText, Search, Trash2, Edit3, Clock, Save, X,
   ChevronDown, Plus, AlertTriangle, Globe, ArrowLeft,
+  Sparkles, List, CheckSquare, RotateCcw, Copy, Check,
 } from 'lucide-react';
 import api from '../services/api';
 import useSpeechToText from '../hooks/useSpeechToText';
+
+const AI_PROCESS_TYPES = [
+  { id: 'clean', label: 'Clean', icon: Sparkles, color: 'emerald' },
+  { id: 'summarize', label: 'Summarize', icon: List, color: 'blue' },
+  { id: 'action_items', label: 'Actions', icon: CheckSquare, color: 'violet' },
+  { id: 'meeting_notes', label: 'Meeting Notes', icon: FileText, color: 'amber' },
+];
 
 const LANGUAGES = [
   { value: 'en-US', label: 'English (US)' },
@@ -33,12 +41,19 @@ function NoteEditor({ note, onSaved, onCancel }) {
   const [titleError, setTitleError] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  // AI processing state
+  const [aiProcessing, setAiProcessing] = useState(false);
+  const [aiProcessType, setAiProcessType] = useState(null);
+  const [aiResult, setAiResult] = useState('');
+  const [aiError, setAiError] = useState(null);
+  const [aiCopied, setAiCopied] = useState(false);
+
   const textareaRef = useRef(null);
   const titleRef = useRef(null);
 
   const speechSupported = isSpeechSupported();
 
-  const { isListening, interim, error: speechError, startListening, stopListening } =
+  const { isListening, transcript: hookTranscript, interim, error: speechError, startListening, stopListening } =
     useSpeechToText({ lang, continuous: true, interimResults: true });
 
   // Mark dirty on any change
@@ -72,27 +87,49 @@ function NoteEditor({ note, onSaved, onCancel }) {
     if (title.trim()) setTitleError(false);
   }, [title]);
 
-  // Called by the speech hook each time a final transcript segment is confirmed
-  const handleFinalTranscript = useCallback((finalText) => {
-    if (window.__SPEECH_DEBUG__) {
-      console.log('[NoteEditor] handleFinalTranscript received:', JSON.stringify(finalText));
+  // Sync hook's transcript into content field while recording
+  useEffect(() => {
+    if (isListening && hookTranscript) {
+      setContent(hookTranscript);
     }
-    setContent((prev) => {
-      const separator = prev.length > 0 && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
-      const next = prev + separator + finalText;
-      if (window.__SPEECH_DEBUG__) {
-        console.log('[NoteEditor] content:', JSON.stringify(prev), '→', JSON.stringify(next));
-      }
-      return next;
-    });
-  }, []);
+  }, [isListening, hookTranscript]);
 
   const toggleMic = () => {
     if (isListening) {
       stopListening();
     } else {
-      startListening(handleFinalTranscript);
+      startListening();
     }
+  };
+
+  const handleAiProcess = async (type) => {
+    if (!content.trim()) return;
+    setAiProcessing(true);
+    setAiProcessType(type);
+    setAiError(null);
+    setAiResult('');
+    try {
+      const res = await api.post('/notes/process', { text: content, processType: type });
+      setAiResult(res.data?.result || '');
+    } catch (err) {
+      setAiError(err.response?.data?.message || 'AI processing failed. Is an AI provider configured?');
+    } finally {
+      setAiProcessing(false);
+    }
+  };
+
+  const handleUseAiResult = () => {
+    if (aiResult) {
+      setContent(aiResult);
+      setAiResult('');
+      setAiProcessType(null);
+    }
+  };
+
+  const handleCopyAiResult = () => {
+    navigator.clipboard.writeText(aiResult || content);
+    setAiCopied(true);
+    setTimeout(() => setAiCopied(false), 2000);
   };
 
   const handleSave = async () => {
@@ -270,6 +307,83 @@ function NoteEditor({ note, onSaved, onCancel }) {
       {interim && (
         <div className="mt-1 px-3 py-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-dashed border-gray-300 dark:border-gray-600">
           <span className="text-xs text-gray-400 italic">{interim}</span>
+        </div>
+      )}
+
+      {/* AI Processing Section */}
+      {content.trim() && !isListening && (
+        <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-2.5 bg-gradient-to-r from-violet-50 to-indigo-50 dark:from-violet-900/10 dark:to-indigo-900/10 border-b border-gray-200 dark:border-gray-700">
+            <p className="text-xs font-semibold text-violet-700 dark:text-violet-400 flex items-center gap-1.5">
+              <Sparkles size={13} /> AI Enhancement
+            </p>
+          </div>
+          <div className="p-3">
+            {/* Process type buttons */}
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {AI_PROCESS_TYPES.map((pt) => (
+                <button
+                  key={pt.id}
+                  onClick={() => handleAiProcess(pt.id)}
+                  disabled={aiProcessing}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border disabled:opacity-50 ${
+                    aiProcessType === pt.id && aiProcessing
+                      ? 'bg-violet-100 border-violet-300 text-violet-700 dark:bg-violet-900/30 dark:border-violet-700 dark:text-violet-400'
+                      : pt.color === 'emerald' ? 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100 dark:text-emerald-400 dark:bg-emerald-900/20 dark:border-emerald-800'
+                      : pt.color === 'blue' ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100 dark:text-blue-400 dark:bg-blue-900/20 dark:border-blue-800'
+                      : pt.color === 'violet' ? 'text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100 dark:text-violet-400 dark:bg-violet-900/20 dark:border-violet-800'
+                      : 'text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100 dark:text-amber-400 dark:bg-amber-900/20 dark:border-amber-800'
+                  }`}
+                >
+                  {aiProcessType === pt.id && aiProcessing ? (
+                    <div className="w-3 h-3 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" />
+                  ) : (
+                    <pt.icon size={12} />
+                  )}
+                  {pt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* AI Error */}
+            {aiError && (
+              <div className="flex items-start gap-2 px-3 py-2 mb-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <AlertTriangle size={12} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] text-red-600 dark:text-red-400">{aiError}</p>
+              </div>
+            )}
+
+            {/* AI Result */}
+            {aiResult && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const pt = AI_PROCESS_TYPES.find((p) => p.id === aiProcessType);
+                    return pt ? (
+                      <span className="text-[10px] font-medium text-violet-600 bg-violet-50 dark:bg-violet-900/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <pt.icon size={10} /> {pt.label}
+                      </span>
+                    ) : null;
+                  })()}
+                  <span className="text-[10px] text-gray-400">AI Processed</span>
+                </div>
+                <div className="bg-violet-50/50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-lg p-3 max-h-[200px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
+                  {aiResult}
+                </div>
+                <div className="flex gap-1.5">
+                  <button onClick={handleUseAiResult} className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500 hover:bg-violet-600 text-white rounded-lg text-xs font-medium transition-colors">
+                    <Check size={12} /> Use This
+                  </button>
+                  <button onClick={handleCopyAiResult} className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 rounded-lg text-xs font-medium transition-colors">
+                    {aiCopied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
+                  </button>
+                  <button onClick={() => { setAiResult(''); setAiProcessType(null); }} className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xs transition-colors">
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

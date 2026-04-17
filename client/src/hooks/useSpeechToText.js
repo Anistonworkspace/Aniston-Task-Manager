@@ -33,11 +33,13 @@ export default function useSpeechToText({
   continuous = true,
   interimResults = true,
 } = {}) {
-  // Stable identity for this hook instance
-  const hookIdRef = useRef(`stt-${++_hookIdCounter}`);
+  // Stable identity for this hook instance (useRef initialiser runs once)
+  const hookIdRef = useRef(null);
+  if (hookIdRef.current === null) hookIdRef.current = `stt-${++_hookIdCounter}`;
   const id = hookIdRef.current;
 
   const [isListening, setIsListening] = useState(false);
+  const [transcript, setTranscript] = useState('');
   const [interim, setInterim] = useState('');
   const [error, setError] = useState(null);
 
@@ -47,8 +49,10 @@ export default function useSpeechToText({
   const onFinalCbRef = useRef(null);
   const networkRetriesRef = useRef(0);
   const stoppingRef = useRef(false);
+  const committedIndexRef = useRef(-1);
+  const lastFinalTextRef = useRef('');
 
-  // Config refs — updated each render so boot() always sees latest values
+  // Config refs — kept in sync every render
   const langRef = useRef(lang);
   const contRef = useRef(continuous);
   const interimOptRef = useRef(interimResults);
@@ -71,7 +75,6 @@ export default function useSpeechToText({
   function killInstance() {
     const r = recogRef.current;
     if (!r) return;
-    // Detach all handlers so no stale callbacks fire
     r.onstart = null;
     r.onaudiostart = null;
     r.onspeechstart = null;
@@ -97,8 +100,11 @@ export default function useSpeechToText({
     setTimeout(() => { stoppingRef.current = false; }, 100);
   }
 
-  /** Create a new SpeechRecognition, attach handlers, call start(). */
-  function boot() {
+  // ── boot stored in a ref so startListening & auto-restart
+  //    always call the LATEST version (no stale closure) ───────
+  const bootRef = useRef(null);
+
+  bootRef.current = function boot() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       setError('Speech recognition is not supported in this browser. Use Chrome or Edge.');
@@ -113,7 +119,7 @@ export default function useSpeechToText({
     r.lang = langRef.current;
     r.maxAlternatives = 1;
 
-    // ── onstart ────────────────────────────────────────────────
+    // ── onstart ──────────────────────────────────────────────
     r.onstart = () => {
       dbg(id, 'onstart ✓ connected, lang=' + r.lang);
       networkRetriesRef.current = 0;
@@ -124,7 +130,7 @@ export default function useSpeechToText({
     r.onspeechstart = () => dbg(id, 'onspeechstart ✓ speech detected');
     r.onspeechend = () => dbg(id, 'onspeechend – speech stopped');
 
-    // ── onresult ───────────────────────────────────────────────
+    // ── onresult ─────────────────────────────────────────────
     r.onresult = (e) => {
       let finalChunk = '';
       let interimChunk = '';
@@ -132,7 +138,12 @@ export default function useSpeechToText({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const seg = e.results[i];
         if (seg.isFinal) {
+          if (i <= committedIndexRef.current) {
+            dbg(id, 'skipping already-committed index', i);
+            continue;
+          }
           finalChunk += seg[0].transcript;
+          committedIndexRef.current = i;
         } else {
           interimChunk += seg[0].transcript;
         }
@@ -141,32 +152,50 @@ export default function useSpeechToText({
       dbg(id, 'onresult', {
         idx: e.resultIndex,
         total: e.results.length,
+        committedUpTo: committedIndexRef.current,
         final: finalChunk || '(none)',
         interim: interimChunk || '(none)',
       });
 
+      // ── ALWAYS update interim + transcript state directly ──
+      // This guarantees the component re-renders with live text.
       setInterim(interimChunk);
 
-      if (finalChunk && onFinalCbRef.current) {
-        dbg(id, '>> delivering final to callback:', JSON.stringify(finalChunk));
-        try {
-          onFinalCbRef.current(finalChunk);
-        } catch (cbErr) {
-          console.error('[SpeechToText] callback threw:', cbErr);
+      if (finalChunk) {
+        const trimmed = finalChunk.trim();
+        // Deduplicate consecutive identical finals
+        if (trimmed && trimmed === lastFinalTextRef.current) {
+          dbg(id, 'skipping duplicate final:', JSON.stringify(trimmed));
+        } else {
+          lastFinalTextRef.current = trimmed;
+
+          // Append to the hook-level transcript (visible during recording)
+          setTranscript(prev => {
+            const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+            return prev + sep + finalChunk;
+          });
+
+          // Also call the consumer callback for additional processing
+          if (onFinalCbRef.current) {
+            dbg(id, '>> delivering final to callback:', JSON.stringify(finalChunk));
+            try {
+              onFinalCbRef.current(finalChunk);
+            } catch (cbErr) {
+              console.error('[SpeechToText] callback threw:', cbErr);
+            }
+          }
         }
       }
     };
 
-    // ── onerror ────────────────────────────────────────────────
+    // ── onerror ──────────────────────────────────────────────
     r.onerror = (e) => {
       dbg(id, 'onerror:', e.error);
 
       switch (e.error) {
         case 'no-speech':
-          // Silence — onend will fire and we auto-restart
           return;
         case 'aborted':
-          // We called stop/abort — ignore
           return;
 
         case 'network': {
@@ -176,7 +205,7 @@ export default function useSpeechToText({
             dbg(id, `network retry ${attempt}/${MAX_NETWORK_RETRIES}`);
             killInstance();
             setTimeout(() => {
-              if (listeningRef.current && !stoppingRef.current) boot();
+              if (listeningRef.current && !stoppingRef.current) bootRef.current();
             }, RETRY_DELAY_MS * attempt);
             return;
           }
@@ -208,15 +237,17 @@ export default function useSpeechToText({
       }
     };
 
-    // ── onend ──────────────────────────────────────────────────
+    // ── onend ────────────────────────────────────────────────
     r.onend = () => {
       dbg(id, 'onend', { stopping: stoppingRef.current, listening: listeningRef.current });
       if (stoppingRef.current) return;
 
       if (listeningRef.current) {
         dbg(id, 'auto-restarting...');
+        committedIndexRef.current = -1;
+        lastFinalTextRef.current = '';
         setTimeout(() => {
-          if (listeningRef.current && !stoppingRef.current) boot();
+          if (listeningRef.current && !stoppingRef.current) bootRef.current();
         }, 150);
       } else {
         setInterim('');
@@ -234,7 +265,7 @@ export default function useSpeechToText({
       setError('Failed to start speech recognition. Refresh and try again.');
       fullStop();
     }
-  }
+  };
 
   // ── Public API ──────────────────────────────────────────────
 
@@ -248,16 +279,20 @@ export default function useSpeechToText({
     }
 
     setError(null);
+    setTranscript('');
+    setInterim('');
     stoppingRef.current = false;
     networkRetriesRef.current = 0;
+    committedIndexRef.current = -1;
+    lastFinalTextRef.current = '';
     onFinalCbRef.current = onFinal;
     listeningRef.current = true;
     setIsListening(true);
 
-    // Register as the active instance
     _activeInstance = { id, stop: () => fullStop() };
 
-    boot();
+    // Call boot via ref — always the latest version
+    bootRef.current();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -267,5 +302,5 @@ export default function useSpeechToText({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { isListening, interim, error, startListening, stopListening };
+  return { isListening, transcript, interim, error, startListening, stopListening };
 }
