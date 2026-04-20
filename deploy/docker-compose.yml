@@ -1,5 +1,9 @@
 services:
   # PostgreSQL Database
+  # NOT exposed on host — backend reaches it via Docker DNS (DB_HOST=postgres).
+  # Publishing 5432 to the host caused collisions with host-level/other services
+  # and is unnecessary since the app network is self-contained. For ad-hoc DB access
+  # on the EC2 box, use: `docker exec -it aph-postgres psql -U $DB_USER aniston_project_hub`
   postgres:
     image: postgres:16-alpine
     container_name: aph-postgres
@@ -8,8 +12,8 @@ services:
       POSTGRES_DB: aniston_project_hub
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups:/backups

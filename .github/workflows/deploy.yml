@@ -102,6 +102,15 @@ jobs:
             docker compose -f "$COMPOSE_FILE" build
 
             echo "=== [6/8] Restarting containers ==="
+            # Pre-flight: log anything already bound to our ports so a failure is easy to diagnose.
+            # We no longer publish 5432 to the host, but we still want visibility into 5000/3000.
+            echo "--- Pre-flight port check ---"
+            for p in 5000 3000; do
+              HOLDER=$(docker ps --format '{{.Names}} {{.Ports}}' | grep ":$p->" || true)
+              if [ -n "$HOLDER" ]; then
+                echo "  Port $p currently held by: $HOLDER"
+              fi
+            done
             docker compose -f "$COMPOSE_FILE" up -d --no-build --remove-orphans
 
             echo "=== [7/8] Health check (retry loop) ==="
