@@ -12,6 +12,7 @@ import TextCell from './TextCell';
 import NumberCell from './NumberCell';
 import CheckboxCell from './CheckboxCell';
 import LinkCell from './LinkCell';
+import TaskReceiptIcon from '../common/TaskReceiptIcon';
 
 const TaskRow = React.memo(function TaskRow({
   task, members = [], color, columns = [], boardId,
@@ -75,6 +76,9 @@ const TaskRow = React.memo(function TaskRow({
 
         {/* Task Name — Monday.com style */}
         <div style={{ width: taskColWidth }} className="flex-shrink-0 px-3 py-2.5 text-[14px] text-[#323338] border-r border-[#e6e9ef] flex items-center gap-2">
+          {/* WhatsApp-style receipt: renders only for the task assigner (the
+              server only attaches _receipt for the creator/assigner). */}
+          {task._receipt ? <TaskReceiptIcon receipt={task._receipt} /> : null}
           <span className="truncate flex-1">{task.title}</span>
           <div className="flex items-center gap-1 flex-shrink-0 text-[#c4c4c4]">
             {subtaskTotal > 0 && (

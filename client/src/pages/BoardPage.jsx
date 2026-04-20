@@ -189,6 +189,16 @@ export default function BoardPage() {
   useSocket('tasks:reordered', () => loadTasks());
   useSocket('board:updated', (data) => { if (data?.board?.id === boardId) setBoard(data.board); });
 
+  // Receipt events: server emits only for mutations (delivered/seen). The
+  // payload targets the task's creator — ignore if the current viewer isn't
+  // the assigner (they'd have no receipt row anyway).
+  useSocket('task:receipt', (data) => {
+    if (!data?.taskId || !data?.summary) return;
+    if (data.boardId && data.boardId !== boardId) return;
+    if (data.createdBy && user?.id && data.createdBy !== user.id) return;
+    setTasks(prev => prev.map(t => t.id === data.taskId ? { ...t, _receipt: data.summary } : t));
+  });
+
   async function handleAddTask(groupId, title) {
     try {
       const res = await api.post('/tasks', {

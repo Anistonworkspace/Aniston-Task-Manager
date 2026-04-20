@@ -88,6 +88,15 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }, [task?.id]);
 
+  // Acknowledge "seen" when the assignee actually opens the task detail view.
+  // The server enforces that only assignees can write this state and is
+  // idempotent, so it's safe to call unconditionally. A 403 for non-assignees
+  // (like the creator) is expected and silently ignored.
+  useEffect(() => {
+    if (!task?.id || !user?.id) return;
+    api.post(`/tasks/${task.id}/receipt`, { event: 'seen' }).catch(() => { /* expected for non-assignees */ });
+  }, [task?.id, user?.id]);
+
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);

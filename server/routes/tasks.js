@@ -19,6 +19,7 @@ const {
   manageTaskMembers,
 } = require('../controllers/taskController');
 const { getCrossTeamDependencies } = require('../controllers/dependencyController');
+const { recordReceipt } = require('../controllers/taskReceiptController');
 
 const router = express.Router();
 
@@ -97,6 +98,20 @@ router.get('/', getTasks);
 
 // ─── GET /api/tasks/:id (with visibility check) ─────────────
 router.get('/:id', canViewTask, getTask);
+
+// ─── POST /api/tasks/:id/receipt ─────────────────────────────────────────
+// Records per-assignee delivered/seen acknowledgement for the WhatsApp-style
+// receipt UI. The controller enforces that only assignees can write their own
+// receipt state.
+router.post(
+  '/:id/receipt',
+  [
+    body('event')
+      .optional()
+      .isIn(['seen', 'delivered']).withMessage('event must be "seen" or "delivered"'),
+  ],
+  recordReceipt
+);
 
 // ─── PUT /api/tasks/:id/members (requires tasks.assign permission) ────────
 router.put(

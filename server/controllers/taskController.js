@@ -15,6 +15,7 @@ const { checkConflicts: detectConflicts, autoReschedule: rescheduleTask, getSche
 const { buildTaskVisibilityFilter, checkTaskAction } = require('../middleware/taskPermissions');
 const { scheduleReminders, cancelReminders, rescheduleReminders } = require('../services/reminderService');
 const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentNotificationService');
+const receiptService = require('../services/taskReceiptService');
 const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
@@ -168,6 +169,7 @@ const createTask = async (req, res) => {
         userId: uid,
         role: 'assignee',
         assignedAt: new Date(),
+        assignerId: req.user.id,
       }));
       await TaskAssignee.bulkCreate(assigneeRecords, { ignoreDuplicates: true });
     }
@@ -179,6 +181,7 @@ const createTask = async (req, res) => {
         userId: uid,
         role: 'supervisor',
         assignedAt: new Date(),
+        assignerId: req.user.id,
       }));
       await TaskAssignee.bulkCreate(supervisorRecords, { ignoreDuplicates: true });
     }
@@ -263,10 +266,17 @@ const createTask = async (req, res) => {
       );
     }
 
+    // Attach receipt summary so the creator sees the initial "single tick"
+    // state immediately on their own create response.
+    const createdTaskJSON = fullTask ? fullTask.toJSON() : null;
+    if (createdTaskJSON) {
+      createdTaskJSON._receipt = receiptService.buildSummary(createdTaskJSON, req.user.id);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Task created successfully.',
-      data: { task: fullTask },
+      data: { task: createdTaskJSON || fullTask },
     });
   } catch (error) {
     logger.error('[Task] Create error:', error);
@@ -396,7 +406,7 @@ const getTasks = async (req, res) => {
 
     const tasks = await Task.findAll(queryOpts);
 
-    // Add subtask counts and Board info to each task
+    // Add subtask counts, Board info, and receipt summary to each task
     const tasksWithCounts = tasks.map(t => {
       const plain = t.toJSON();
       const subs = plain.subtasks || [];
@@ -404,8 +414,33 @@ const getTasks = async (req, res) => {
       plain.subtaskDone = subs.filter(s => s.status === 'done').length;
       plain.Board = plain.board || null;
       delete plain.subtasks;
+      // Attach receipt summary for the viewer (only set when viewer is the
+      // assigner/creator and not also an assignee — see taskReceiptService).
+      plain._receipt = receiptService.buildSummary(plain, req.user.id);
       return plain;
     });
+
+    // Fire-and-forget: mark fetched tasks as delivered for this user. The
+    // service is idempotent — only transitions rows where deliveredAt IS NULL.
+    // We then emit `task:receipt` so the assigner's open board updates live.
+    (async () => {
+      try {
+        const taskIds = tasksWithCounts.map(t => t.id);
+        const transitioned = await receiptService.markDelivered(req.user.id, taskIds);
+        if (transitioned.length === 0) return;
+        for (const tid of transitioned) {
+          const tObj = tasksWithCounts.find(t => t.id === tid);
+          if (!tObj || !tObj.createdBy) continue;
+          const summary = await receiptService.fetchSummary(tid, tObj.createdBy);
+          if (!summary) continue;
+          const payload = { taskId: tid, boardId: tObj.boardId, createdBy: tObj.createdBy, summary };
+          try { emitToBoard(tObj.boardId, 'task:receipt', payload); } catch {}
+          try { emitToUser(tObj.createdBy, 'task:receipt', payload); } catch {}
+        }
+      } catch (e) {
+        logger.warn('[TaskReceipt] deferred delivery mark failed:', e.message);
+      }
+    })();
 
     res.json({ success: true, data: { tasks: tasksWithCounts } });
   } catch (error) {
@@ -454,6 +489,7 @@ const getTask = async (req, res) => {
       canReassign: reassignCheck.allowed,
       canDelete: deleteCheck.allowed,
     };
+    taskJSON._receipt = receiptService.buildSummary(taskJSON, req.user.id);
 
     res.json({ success: true, data: { task: taskJSON } });
   } catch (error) {
@@ -603,6 +639,15 @@ const updateTask = async (req, res) => {
       }
     }
 
+    // When `assignedTo` arrives as an array, it's a multi-assignee signal —
+    // the scalar Task.assignedTo column is updated later by the array-handling
+    // block below. Writing the array through the generic `task.update(updates)`
+    // call would try to shove an array into a UUID column and 500.
+    if (Array.isArray(updates.assignedTo)) {
+      delete updates.assignedTo;
+      delete changes.assignedTo;
+    }
+
     await task.update(updates);
 
     // ── Auto-group assignment: move task to matching group when status changes ──
@@ -642,11 +687,12 @@ const updateTask = async (req, res) => {
         const removedAssigneeIds = oldAssigneeIds.filter(uid => !newAssigneeIds.includes(uid));
         // Remove assignees not in the new list
         await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee', userId: { [Op.notIn]: newAssigneeIds } } });
-        // Upsert new assignees
+        // Upsert new assignees. Only stamp assignerId on brand-new rows so we
+        // don't overwrite history when an existing assignee is re-listed.
         for (const uid of newAssigneeIds) {
           await TaskAssignee.findOrCreate({
             where: { taskId: task.id, userId: uid, role: 'assignee' },
-            defaults: { assignedAt: new Date() },
+            defaults: { assignedAt: new Date(), assignerId: req.user.id },
           });
         }
         // Update legacy assignedTo to first in list
@@ -671,7 +717,7 @@ const updateTask = async (req, res) => {
           });
           await TaskAssignee.findOrCreate({
             where: { taskId: task.id, userId: updates.assignedTo, role: 'assignee' },
-            defaults: { assignedAt: new Date() },
+            defaults: { assignedAt: new Date(), assignerId: req.user.id },
           });
         } catch (e) { /* task_assignees table may not exist yet */ }
         await boardMembershipService.autoAddMember(task.boardId, updates.assignedTo);
@@ -705,7 +751,7 @@ const updateTask = async (req, res) => {
         for (const uid of newSupervisorIds) {
           await TaskAssignee.findOrCreate({
             where: { taskId: task.id, userId: uid, role: 'supervisor' },
-            defaults: { assignedAt: new Date() },
+            defaults: { assignedAt: new Date(), assignerId: req.user.id },
           });
         }
         // Auto-add new supervisors as board members
@@ -761,7 +807,7 @@ const updateTask = async (req, res) => {
           for (const uid of newOwnerIds) {
             await TaskAssignee.findOrCreate({
               where: { taskId: task.id, userId: uid, role: 'assignee' },
-              defaults: { assignedAt: new Date() },
+              defaults: { assignedAt: new Date(), assignerId: req.user.id },
             });
           }
         } else {
@@ -972,10 +1018,15 @@ const updateTask = async (req, res) => {
       );
     }
 
+    const updatedTaskJSON = fullTask ? fullTask.toJSON() : null;
+    if (updatedTaskJSON) {
+      updatedTaskJSON._receipt = receiptService.buildSummary(updatedTaskJSON, req.user.id);
+    }
+
     res.json({
       success: true,
       message: 'Task updated successfully.',
-      data: { task: fullTask },
+      data: { task: updatedTaskJSON || fullTask },
     });
   } catch (error) {
     logger.error('[Task] Update error:', error);
@@ -1614,7 +1665,7 @@ const manageTaskMembers = async (req, res) => {
       for (const uid of assignees) {
         await TaskAssignee.findOrCreate({
           where: { taskId: task.id, userId: uid, role: 'assignee' },
-          defaults: { assignedAt: new Date() },
+          defaults: { assignedAt: new Date(), assignerId: req.user.id },
         });
       }
       // Update legacy assignedTo field to first assignee
@@ -1673,7 +1724,7 @@ const manageTaskMembers = async (req, res) => {
       for (const uid of supervisors) {
         await TaskAssignee.findOrCreate({
           where: { taskId: task.id, userId: uid, role: 'supervisor' },
-          defaults: { assignedAt: new Date() },
+          defaults: { assignedAt: new Date(), assignerId: req.user.id },
         });
       }
 

@@ -549,6 +549,25 @@ const start = async () => {
       console.warn('[Server] boards.archivedGroups migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: Add receipt columns to task_assignees ──
+    // Per-assignee delivery/seen tracking for the WhatsApp-style receipt UI.
+    // assignerId records who triggered the assignment (used to scope visibility
+    // of the receipt icon to the assigner only).
+    try {
+      const [taTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'task_assignees'`
+      );
+      if (taTables.length > 0) {
+        await sequelize.query(`ALTER TABLE task_assignees ADD COLUMN IF NOT EXISTS "deliveredAt" TIMESTAMP WITH TIME ZONE`);
+        await sequelize.query(`ALTER TABLE task_assignees ADD COLUMN IF NOT EXISTS "seenAt" TIMESTAMP WITH TIME ZONE`);
+        await sequelize.query(`ALTER TABLE task_assignees ADD COLUMN IF NOT EXISTS "assignerId" UUID REFERENCES users(id) ON DELETE SET NULL`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_task_assignees_user_delivery ON task_assignees("userId", "deliveredAt")`);
+        console.log('[Server] task_assignees receipt columns ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] task_assignees receipt-column migration warning:', e.message?.slice(0, 100));
+    }
+
     // Create performance indices on frequently queried columns (safe to re-run)
     const indices = [
       'CREATE INDEX IF NOT EXISTS idx_tasks_board_id ON tasks("boardId")',

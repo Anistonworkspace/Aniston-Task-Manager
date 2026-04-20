@@ -27,6 +27,24 @@ const TaskAssignee = sequelize.define('TaskAssignee', {
     allowNull: false,
     defaultValue: DataTypes.NOW,
   },
+  // Who triggered this assignment. Used to scope receipt-icon visibility —
+  // only the assigner (or task creator) sees the read-receipt UI.
+  assignerId: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    references: { model: 'users', key: 'id' },
+  },
+  // Delivered = the app has the task in the assignee's view (list fetch).
+  // Seen = the assignee opened the task modal / detail view.
+  // Both are nullable and idempotent-set-once.
+  deliveredAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  seenAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   tableName: 'task_assignees',
   timestamps: true,
