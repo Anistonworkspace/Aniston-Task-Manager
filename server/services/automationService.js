@@ -1,5 +1,29 @@
 const { Automation, Task, User, Notification, Board } = require('../models');
 const { emitToUser } = require('./socketService');
+const calendarService = require('./calendarService');
+const logger = require('../utils/logger');
+
+/**
+ * Trigger calendar sync for a task that was mutated by an automation action.
+ * Does an assignee-aware delete+create when reassigning, or an update otherwise.
+ * Fire-and-forget — automations must not block if Graph is down.
+ */
+async function syncCalendarForAutomation(taskId, previousAssignedTo, newAssignedTo) {
+  try {
+    if (previousAssignedTo !== newAssignedTo) {
+      if (previousAssignedTo) {
+        await calendarService.deleteTaskEvent(taskId, previousAssignedTo);
+      }
+      if (newAssignedTo) {
+        await calendarService.createTaskEvent(taskId, newAssignedTo);
+      }
+    } else if (newAssignedTo) {
+      await calendarService.updateTaskEvent(taskId, newAssignedTo);
+    }
+  } catch (err) {
+    logger.warn('[Automation] Calendar sync failed', { taskId, err: err.message });
+  }
+}
 
 /**
  * Process automations when a trigger event occurs.
@@ -66,23 +90,27 @@ async function executeAction(auto, context) {
     case 'change_status': {
       if (config.targetStatus) {
         await Task.update({ status: config.targetStatus }, { where: { id: task.id } });
+        syncCalendarForAutomation(task.id, task.assignedTo, task.assignedTo);
       }
       break;
     }
     case 'change_priority': {
       if (config.targetPriority) {
         await Task.update({ priority: config.targetPriority }, { where: { id: task.id } });
+        syncCalendarForAutomation(task.id, task.assignedTo, task.assignedTo);
       }
       break;
     }
     case 'move_to_group': {
       if (config.targetGroupId) {
         await Task.update({ groupId: config.targetGroupId }, { where: { id: task.id } });
+        // groupId isn't reflected in the event body, but keep the hook in case future body changes include it.
       }
       break;
     }
     case 'assign_to': {
       if (config.targetUserId) {
+        const prevAssignedTo = task.assignedTo;
         await Task.update({ assignedTo: config.targetUserId }, { where: { id: task.id } });
         const notification = await Notification.create({
           type: 'task_assigned',
@@ -90,6 +118,7 @@ async function executeAction(auto, context) {
           entityType: 'task', entityId: task.id, userId: config.targetUserId,
         });
         emitToUser(config.targetUserId, 'notification:new', { notification });
+        syncCalendarForAutomation(task.id, prevAssignedTo, config.targetUserId);
       }
       break;
     }

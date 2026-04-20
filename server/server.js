@@ -623,6 +623,10 @@ const start = async () => {
       // Start priority escalation job (daily at midnight)
       const { startPriorityEscalationJob } = require('./jobs/priorityEscalationJob');
       startPriorityEscalationJob();
+
+      // Start Microsoft calendar sync retry job (every 15 min)
+      const { startCalendarSyncRetryJob } = require('./jobs/calendarSyncRetryJob');
+      startCalendarSyncRetryJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

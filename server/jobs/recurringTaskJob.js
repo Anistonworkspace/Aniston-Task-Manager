@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const { Op } = require('sequelize');
 const { Task, Notification } = require('../models');
 const { emitToUser } = require('../services/socketService');
+const calendarService = require('../services/calendarService');
+const logger = require('../utils/logger');
 
 /**
  * Recurring Task Cron Job
@@ -80,6 +82,11 @@ function startRecurringTaskJob() {
           emitToUser(task.assignedTo, 'notification:new', {
             message: `Recurring task "${task.title}" created`,
           });
+
+          // One-way sync the new instance to the assignee's Teams calendar.
+          calendarService.createTaskEvent(newTask.id, newTask.assignedTo).catch(err =>
+            logger.warn('[RecurringJob] Calendar sync failed', { taskId: newTask.id, err: err.message })
+          );
         }
 
         console.log(`[RecurringJob] Created recurring instance of "${task.title}" (${newTask.id})`);

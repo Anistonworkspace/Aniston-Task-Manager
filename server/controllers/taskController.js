@@ -72,6 +72,7 @@ const createTask = async (req, res) => {
       title, description, status, priority, groupId,
       dueDate, startDate, tags, customFields, boardId,
       assignedTo, ownerIds, supervisors, statusConfig,
+      plannedStartTime, plannedEndTime, estimatedHours,
     } = req.body;
 
     // Verify board exists
@@ -149,6 +150,9 @@ const createTask = async (req, res) => {
       groupId: effectiveGroupId,
       dueDate: dueDate || null,
       startDate: startDate || null,
+      plannedStartTime: plannedStartTime || null,
+      plannedEndTime: plannedEndTime || null,
+      estimatedHours: estimatedHours != null ? estimatedHours : 0,
       position: (maxPosition || 0) + 1,
       tags: tags || [],
       customFields: customFields || {},
@@ -530,6 +534,7 @@ const updateTask = async (req, res) => {
     const previousStatus = task.status;
     const previousAssignee = task.assignedTo;
     const previousDueDate = task.dueDate;
+    const previousIsArchived = task.isArchived;
 
     // Members cannot modify statusConfig — only creators/managers/admins
     if (updates.statusConfig !== undefined && isMember) {
@@ -807,19 +812,9 @@ const updateTask = async (req, res) => {
 
     // Notification: task completed
     if (updates.status === 'done' && previousStatus !== 'done') {
-      // Update Teams calendar event with [DONE] prefix (fire-and-forget)
-      if (task.teamsEventId && task.assignedTo) {
-        const { updateCalendarEvent } = require('../services/teamsCalendarService');
-        (async () => {
-          try {
-            await updateCalendarEvent(task.assignedTo, task.teamsEventId, {
-              subject: `[DONE] ${task.title}`,
-            });
-          } catch (err) {
-            console.error('[Task] Teams calendar [DONE] update error:', err.message);
-          }
-        })();
-      }
+      // [DONE] prefix is applied inside calendarService.updateTaskEvent() based on
+      // task.status === 'done'. The calendar sync block further down handles the
+      // actual Graph PATCH, so no separate call is needed here.
 
       teamsWebhook.sendTaskCompleted({
         task: fullTask,
@@ -934,19 +929,46 @@ const updateTask = async (req, res) => {
       });
     }
 
-    // Sync to Teams calendar (fire-and-forget)
-    if (updates.assignedTo && updates.assignedTo !== previousAssignee) {
-      // Assignee changed — delete old event, create new one
-      if (previousAssignee && task.teamsEventId) {
-        calendarService.deleteTaskEvent(task.id, previousAssignee).catch(() => {});
+    // Sync to Teams calendar (fire-and-forget).
+    //
+    // Archive-as-delete:
+    //   The board UI treats "delete" as "archive" — it sends PUT {isArchived:true}
+    //   instead of DELETE. Previously this path only PATCHed the event, leaving
+    //   an orphan on the user's calendar. Treat archive transitions as lifecycle
+    //   events: archive=true → remove remote event; archive=false (restore) →
+    //   recreate it. We handle archive FIRST so the delete takes precedence over
+    //   any other field change in the same PUT.
+    const mailboxForArchive = task.teamsCalendarUserId ? task.assignedTo : (task.assignedTo || previousAssignee);
+    if (updates.isArchived === true && previousIsArchived !== true) {
+      if (mailboxForArchive) {
+        calendarService.deleteTaskEvent(task.id, mailboxForArchive).catch(err =>
+          logger.warn('[Task] Calendar delete (archive) failed:', err.message)
+        );
       }
-      calendarService.createTaskEvent(task.id, updates.assignedTo).catch(err =>
-        console.warn('[Teams] Calendar sync failed for reassigned task:', err.message)
-      );
-    } else if (task.teamsEventId && task.assignedTo && Object.keys(changes).length > 0) {
-      // Task details changed (title, dates, etc.) — update existing event
+    } else if (updates.isArchived === false && previousIsArchived === true) {
+      if (task.assignedTo) {
+        calendarService.createTaskEvent(task.id, task.assignedTo).catch(err =>
+          logger.warn('[Task] Calendar create (unarchive) failed:', err.message)
+        );
+      }
+    } else if (updates.assignedTo !== undefined && updates.assignedTo !== previousAssignee) {
+      // Assignee changed — remove event from previous mailbox (if any),
+      // then create on the new mailbox. Service handles old-task attach internally.
+      if (previousAssignee) {
+        calendarService.deleteTaskEvent(task.id, previousAssignee).catch(err =>
+          logger.warn('[Task] Calendar delete (reassign) failed:', err.message)
+        );
+      }
+      if (updates.assignedTo) {
+        calendarService.createTaskEvent(task.id, updates.assignedTo).catch(err =>
+          logger.warn('[Task] Calendar create (reassign) failed:', err.message)
+        );
+      }
+    } else if (task.assignedTo && !task.isArchived && Object.keys(changes).length > 0) {
+      // Task details changed (and it's still active) — sync. Service falls
+      // back to create-or-attach if unmapped.
       calendarService.updateTaskEvent(task.id, task.assignedTo).catch(err =>
-        console.warn('[Teams] Calendar event update failed:', err.message)
+        logger.warn('[Task] Calendar update failed:', err.message)
       );
     }
 
@@ -981,9 +1003,11 @@ const deleteTask = async (req, res) => {
       if (!isAssignedLegacy && !assigneeRecord) {
         return res.status(403).json({ success: false, message: 'You can only archive tasks assigned to you.' });
       }
-      // Remove Teams calendar event on archive
-      if (task.teamsEventId && task.assignedTo) {
-        calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(() => {});
+      // Remove Teams calendar event on archive (service safely skips if no mapping / no remote event)
+      if (task.assignedTo) {
+        calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(err =>
+          logger.warn('[Task] Calendar delete (archive) failed:', err.message)
+        );
       }
       await task.update({ isArchived: true, archivedAt: new Date(), archivedBy: req.user.id });
       // Cancel pending deadline reminders on archive
@@ -1032,9 +1056,16 @@ const deleteTask = async (req, res) => {
       logger.warn('[Task] Teams delete notification failed:', err.message)
     );
 
-    // Remove Teams calendar event before deleting
-    if (task.teamsEventId && task.assignedTo) {
-      calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(() => {});
+    // Remove Teams calendar event before deleting the local task.
+    // Awaited so the local delete only proceeds after the remote attempt completes,
+    // preventing a race where the task row is gone before the service can look up
+    // its mailbox mapping. Service internally tolerates missing mappings + 404s.
+    if (task.assignedTo) {
+      try {
+        await calendarService.deleteTaskEvent(task.id, task.assignedTo);
+      } catch (err) {
+        logger.warn('[Task] Calendar delete (destroy) failed:', err.message);
+      }
     }
 
     await task.destroy();
@@ -1154,19 +1185,26 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
-    // Capture old assignees before updating (for board membership cleanup)
+    // Capture pre-update state — used by both board-membership cleanup and
+    // calendar sync (we need to know each task's previous assignee to safely
+    // delete events from the old mailbox before creating in the new one).
     let oldAssigneeMap = {};
-    if (safeUpdates.assignedTo !== undefined) {
+    const preUpdateById = new Map(); // taskId -> { assignedTo, teamsEventId, teamsCalendarUserId }
+    {
       const tasksBeforeUpdate = await Task.findAll({
         where: { id: { [Op.in]: taskIds } },
-        attributes: ['id', 'boardId', 'assignedTo'],
+        attributes: ['id', 'boardId', 'assignedTo', 'teamsEventId', 'teamsCalendarUserId'],
         raw: true,
       });
       for (const t of tasksBeforeUpdate) {
-        if (t.assignedTo) {
-          const key = t.boardId;
-          if (!oldAssigneeMap[key]) oldAssigneeMap[key] = new Set();
-          oldAssigneeMap[key].add(t.assignedTo);
+        preUpdateById.set(t.id, {
+          assignedTo: t.assignedTo,
+          teamsEventId: t.teamsEventId,
+          teamsCalendarUserId: t.teamsCalendarUserId,
+        });
+        if (safeUpdates.assignedTo !== undefined && t.assignedTo) {
+          if (!oldAssigneeMap[t.boardId]) oldAssigneeMap[t.boardId] = new Set();
+          oldAssigneeMap[t.boardId].add(t.assignedTo);
         }
       }
     }
@@ -1247,6 +1285,42 @@ const bulkUpdateTasks = async (req, res) => {
         teamsNotif.notifyTaskArchived(t.id).catch(err =>
           logger.warn('[Task] Teams bulk archive cancel failed:', err.message)
         );
+      }
+    }
+
+    // Calendar sync for bulk operations.
+    // Each task's sync runs serially within its own Promise chain so delete +
+    // create can't race on the same row's teamsCalendarUserId. The overall
+    // dispatch is fire-and-forget relative to the HTTP response.
+    const calendarTouching = ['status', 'priority', 'dueDate', 'assignedTo', 'isArchived']
+      .some(f => safeUpdates[f] !== undefined);
+    if (calendarTouching) {
+      for (const t of updatedTasks) {
+        const prev = preUpdateById.get(t.id) || {};
+        (async () => {
+          try {
+            if (safeUpdates.isArchived === true) {
+              if (prev.assignedTo || t.assignedTo) {
+                await calendarService.deleteTaskEvent(t.id, prev.assignedTo || t.assignedTo);
+              }
+              return;
+            }
+            if (safeUpdates.assignedTo !== undefined && prev.assignedTo !== t.assignedTo) {
+              if (prev.assignedTo) {
+                await calendarService.deleteTaskEvent(t.id, prev.assignedTo);
+              }
+              if (t.assignedTo) {
+                await calendarService.createTaskEvent(t.id, t.assignedTo);
+              }
+              return;
+            }
+            if (t.assignedTo) {
+              await calendarService.updateTaskEvent(t.id, t.assignedTo);
+            }
+          } catch (err) {
+            logger.warn('[Task] Bulk calendar sync failed', { taskId: t.id, err: err.message });
+          }
+        })();
       }
     }
 
@@ -1456,10 +1530,10 @@ const autoReschedule = async (req, res) => {
       emitToBoard(fullTask.boardId, 'task:updated', { task: fullTask });
       if (fullTask.assignedTo) emitToUser(fullTask.assignedTo, 'task:updated', { task: fullTask });
 
-      // Sync rescheduled task to Teams calendar (fire-and-forget)
-      if (fullTask.teamsEventId && fullTask.assignedTo) {
+      // Sync rescheduled task to Teams calendar (service falls back to create-or-attach if unmapped).
+      if (fullTask.assignedTo) {
         calendarService.updateTaskEvent(fullTask.id, fullTask.assignedTo).catch(err =>
-          console.warn('[Teams] Calendar sync failed for rescheduled task:', err.message)
+          logger.warn('[Task] Calendar sync (reschedule) failed:', err.message)
         );
       }
     }

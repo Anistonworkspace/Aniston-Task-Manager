@@ -99,6 +99,30 @@ const Task = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    teamsCalendarUserId: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      comment: 'Azure AD user ID (teamsUserId) whose mailbox holds teamsEventId. Needed because task.assignedTo can change after the event is created, and Graph DELETE/PATCH must target the original mailbox.',
+    },
+    syncStatus: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'not_synced',
+      comment: 'not_synced | pending | synced | failed | skipped',
+    },
+    lastSyncedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    syncError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    syncAttempts: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     approvalStatus: {
       type: DataTypes.STRING(30),
       allowNull: true,
