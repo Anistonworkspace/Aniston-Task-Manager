@@ -33,6 +33,8 @@ const Note = require('./Note');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
 const AIProvider = require('./AIProvider');
+const TranscriptionProvider = require('./TranscriptionProvider');
+const TranscriptSegment = require('./TranscriptSegment');
 const ApiKey = require('./ApiKey');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
 const ManagerRelation = require('./ManagerRelation');
@@ -360,6 +362,8 @@ module.exports = {
   Feedback,
   AIConfig,
   AIProvider,
+  TranscriptionProvider,
+  TranscriptSegment,
   ApiKey,
   TeamsNotificationLog,
   ManagerRelation,
@@ -450,6 +454,13 @@ AIConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelet
 
 // ─── AIProvider <-> User (configuredBy) ─────────────────────
 AIProvider.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── TranscriptionProvider <-> User (configuredBy) ──────────
+TranscriptionProvider.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── TranscriptSegment <-> Note ─────────────────────────────
+TranscriptSegment.belongsTo(Note, { foreignKey: 'noteId', as: 'note', onDelete: 'CASCADE' });
+Note.hasMany(TranscriptSegment, { foreignKey: 'noteId', as: 'segments', onDelete: 'CASCADE' });
 
 // ─── Note <-> User ──────────────────────────────────────────
 Note.belongsTo(User, { foreignKey: 'userId', as: 'author', onDelete: 'CASCADE' });

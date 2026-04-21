@@ -51,6 +51,11 @@ export default function useSpeechToText({
   const stoppingRef = useRef(false);
   const committedIndexRef = useRef(-1);
   const lastFinalTextRef = useRef('');
+  // Full concatenation of ALL final transcripts emitted in the CURRENT
+  // recognition session. Used to compute per-event deltas so mobile engines
+  // that emit cumulative text across new result indexes (Android Chrome/Edge)
+  // don't cause the whole accumulated sentence to be re-appended each event.
+  const sessionEmittedTextRef = useRef('');
 
   // Config refs — kept in sync every render
   const langRef = useRef(lang);
@@ -132,58 +137,79 @@ export default function useSpeechToText({
 
     // ── onresult ─────────────────────────────────────────────
     r.onresult = (e) => {
-      let finalChunk = '';
+      // Build the full session-final text by concatenating EVERY final result
+      // in the current results list. Mobile Chrome/Edge can grow this list by
+      // creating new result indexes whose transcripts are cumulative — the
+      // delta vs `sessionEmittedTextRef` is the only reliable "new text" slice.
+      let sessionFullFinal = '';
       let interimChunk = '';
 
-      for (let i = e.resultIndex; i < e.results.length; i++) {
+      for (let i = 0; i < e.results.length; i++) {
         const seg = e.results[i];
         if (seg.isFinal) {
-          if (i <= committedIndexRef.current) {
-            dbg(id, 'skipping already-committed index', i);
-            continue;
-          }
-          finalChunk += seg[0].transcript;
-          committedIndexRef.current = i;
-        } else {
+          sessionFullFinal += seg[0].transcript;
+          if (i > committedIndexRef.current) committedIndexRef.current = i;
+        } else if (i >= e.resultIndex) {
           interimChunk += seg[0].transcript;
         }
+      }
+
+      // Compute the new-final delta since the last emission in this session.
+      const prevEmitted = sessionEmittedTextRef.current;
+      let delta = '';
+      if (sessionFullFinal === prevEmitted) {
+        // No new final text — only interim changed.
+      } else if (prevEmitted && sessionFullFinal.startsWith(prevEmitted)) {
+        // Normal growth (desktop) AND mobile cumulative case.
+        delta = sessionFullFinal.slice(prevEmitted.length);
+        sessionEmittedTextRef.current = sessionFullFinal;
+      } else if (prevEmitted && prevEmitted.startsWith(sessionFullFinal)) {
+        // Browser shrank / replaced text (rare correction). Adopt the new
+        // shorter baseline silently — do NOT re-emit already-delivered text.
+        sessionEmittedTextRef.current = sessionFullFinal;
+      } else {
+        // Disjoint text (e.g., correction). Emit the whole new final as a
+        // fresh chunk; the consumer-side suffix dedup will catch overlaps.
+        delta = sessionFullFinal;
+        sessionEmittedTextRef.current = sessionFullFinal;
       }
 
       dbg(id, 'onresult', {
         idx: e.resultIndex,
         total: e.results.length,
-        committedUpTo: committedIndexRef.current,
-        final: finalChunk || '(none)',
+        sessionFullFinal: sessionFullFinal || '(empty)',
+        prevEmitted: prevEmitted || '(empty)',
+        delta: delta || '(none)',
         interim: interimChunk || '(none)',
       });
 
-      // ── ALWAYS update interim + transcript state directly ──
-      // This guarantees the component re-renders with live text.
       setInterim(interimChunk);
 
-      if (finalChunk) {
-        const trimmed = finalChunk.trim();
-        // Deduplicate consecutive identical finals
-        if (trimmed && trimmed === lastFinalTextRef.current) {
-          dbg(id, 'skipping duplicate final:', JSON.stringify(trimmed));
-        } else {
-          lastFinalTextRef.current = trimmed;
+      if (!delta) return;
 
-          // Append to the hook-level transcript (visible during recording)
-          setTranscript(prev => {
-            const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
-            return prev + sep + finalChunk;
-          });
+      const trimmed = delta.trim();
+      if (!trimmed) return;
 
-          // Also call the consumer callback for additional processing
-          if (onFinalCbRef.current) {
-            dbg(id, '>> delivering final to callback:', JSON.stringify(finalChunk));
-            try {
-              onFinalCbRef.current(finalChunk);
-            } catch (cbErr) {
-              console.error('[SpeechToText] callback threw:', cbErr);
-            }
-          }
+      // Dedup consecutive identical finals (e.g. post-restart replays).
+      if (trimmed === lastFinalTextRef.current) {
+        dbg(id, 'skipping duplicate final:', JSON.stringify(trimmed));
+        return;
+      }
+      lastFinalTextRef.current = trimmed;
+
+      // Append to the hook-level transcript (visible during recording).
+      setTranscript(prev => {
+        const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+        return prev + sep + delta;
+      });
+
+      // Deliver delta to the consumer callback.
+      if (onFinalCbRef.current) {
+        dbg(id, '>> delivering final to callback:', JSON.stringify(delta));
+        try {
+          onFinalCbRef.current(delta);
+        } catch (cbErr) {
+          console.error('[SpeechToText] callback threw:', cbErr);
         }
       }
     };
@@ -246,6 +272,9 @@ export default function useSpeechToText({
         dbg(id, 'auto-restarting...');
         committedIndexRef.current = -1;
         lastFinalTextRef.current = '';
+        // Each fresh recognition session starts with an empty results list,
+        // so the cumulative-final baseline must reset too.
+        sessionEmittedTextRef.current = '';
         setTimeout(() => {
           if (listeningRef.current && !stoppingRef.current) bootRef.current();
         }, 150);
@@ -285,6 +314,7 @@ export default function useSpeechToText({
     networkRetriesRef.current = 0;
     committedIndexRef.current = -1;
     lastFinalTextRef.current = '';
+    sessionEmittedTextRef.current = '';
     onFinalCbRef.current = onFinal;
     listeningRef.current = true;
     setIsListening(true);
@@ -302,5 +332,18 @@ export default function useSpeechToText({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { isListening, transcript, interim, error, startListening, stopListening };
+  // Clear the accumulated transcript so the consumer can fully reset the UI
+  // after a discard or a successful save. Safe to call while recording — the
+  // delta-tracking refs are reset so the next final chunk is emitted whole.
+  const resetTranscript = useCallback(() => {
+    setTranscript('');
+    setInterim('');
+    setError(null);
+    committedIndexRef.current = -1;
+    lastFinalTextRef.current = '';
+    sessionEmittedTextRef.current = '';
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return { isListening, transcript, interim, error, startListening, stopListening, resetTranscript };
 }

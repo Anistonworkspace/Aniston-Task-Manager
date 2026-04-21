@@ -9,6 +9,7 @@ import {
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
+import TranscriptionProviderSection from '../components/integrations/TranscriptionProviderSection';
 
 function TeamsNotificationStats() {
   const [stats, setStats] = useState(null);
@@ -1186,6 +1187,14 @@ export default function IntegrationsPage() {
             </>
           )}
         </div>
+      )}
+
+      {/* Transcription Provider (admin only) */}
+      {isAdmin && (
+        <TranscriptionProviderSection
+          onError={(msg) => { setError(msg); setTimeout(() => setError(''), 6000); }}
+          onSuccess={(msg) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(''), 5000); }}
+        />
       )}
 
       {/* External API Access Card */}

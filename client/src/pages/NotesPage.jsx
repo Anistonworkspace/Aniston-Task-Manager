@@ -93,6 +93,13 @@ function NoteEditor({ note, onSaved, onCancel }) {
   const handleFinalTranscript = useCallback((finalText) => {
     if (!finalText) return;
     setContent((prev) => {
+      // Safety net: drop already-appended chunks that mobile engines can
+      // replay after auto-restart cycles (keeps user-typed prefix intact).
+      const chunkTrim = finalText.trim();
+      if (chunkTrim) {
+        const prevTail = prev.trimEnd().toLowerCase();
+        if (prevTail.endsWith(chunkTrim.toLowerCase())) return prev;
+      }
       const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
       return prev + sep + finalText;
     });
@@ -192,6 +199,10 @@ function NoteEditor({ note, onSaved, onCancel }) {
       }
 
       setDirty(false);
+      // Notify other surfaces (VoiceNotes panel) so their lists refresh.
+      window.dispatchEvent(new CustomEvent('notes:changed', {
+        detail: { action: isNew ? 'created' : 'updated', id: note?.id },
+      }));
       onSaved();
     } catch (err) {
       console.error('[NoteEditor] Save failed:', err);
@@ -455,6 +466,8 @@ function NotesList({ notes, loading, searchQuery, onSearchChange, onEdit, onDele
       onDelete(id);
       setDeleteConfirm(null);
       if (expandedId === id) setExpandedId(null);
+      // Notify other surfaces (VoiceNotes panel) so their lists refresh.
+      window.dispatchEvent(new CustomEvent('notes:changed', { detail: { action: 'deleted', id } }));
     } catch (err) {
       console.error('Failed to delete note:', err);
     }
@@ -590,6 +603,15 @@ export default function NotesPage() {
   const [editingNote, setEditingNote] = useState(null);
 
   useEffect(() => { loadNotes(); }, []);
+
+  // Cross-surface invalidation: when any other component (e.g. the Voice
+  // Notes panel) creates/deletes a note, it dispatches `notes:changed` so
+  // this list refetches without a page reload.
+  useEffect(() => {
+    const handler = () => loadNotes();
+    window.addEventListener('notes:changed', handler);
+    return () => window.removeEventListener('notes:changed', handler);
+  }, []);
 
   async function loadNotes() {
     setLoading(true);

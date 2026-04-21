@@ -3,16 +3,42 @@ import {
   Mic, Square, X, ChevronDown, ChevronUp, Clock, FileText,
   Trash2, Save, Settings, AlertCircle, Shield, AlertTriangle,
   Sparkles, List, CheckSquare, FileText as FileTextIcon,
-  Users, UserPlus, ArrowRight, RotateCcw, Copy, Check,
+  Users, UserPlus, ArrowRight, RotateCcw, Copy, Check, Edit2, Headphones,
 } from 'lucide-react';
 import api from '../../services/api';
 import useSpeechToText from '../../hooks/useSpeechToText';
+import useMeetingTranscription from '../../hooks/useMeetingTranscription';
 
 const DEFAULT_SETTINGS = {
   language: 'en-US',
   continuous: true,
   maxSilenceDuration: 'none',
+  highAccuracyMode: false,
 };
+
+// Stable palette for speaker bubbles.
+const SPEAKER_COLORS = [
+  { bg: 'bg-emerald-50', text: 'text-emerald-700', dark: 'dark:bg-emerald-900/30 dark:text-emerald-300', dot: 'bg-emerald-500' },
+  { bg: 'bg-violet-50',  text: 'text-violet-700',  dark: 'dark:bg-violet-900/30 dark:text-violet-300',   dot: 'bg-violet-500' },
+  { bg: 'bg-amber-50',   text: 'text-amber-700',   dark: 'dark:bg-amber-900/30 dark:text-amber-300',    dot: 'bg-amber-500' },
+  { bg: 'bg-blue-50',    text: 'text-blue-700',    dark: 'dark:bg-blue-900/30 dark:text-blue-300',      dot: 'bg-blue-500' },
+  { bg: 'bg-rose-50',    text: 'text-rose-700',    dark: 'dark:bg-rose-900/30 dark:text-rose-300',      dot: 'bg-rose-500' },
+  { bg: 'bg-cyan-50',    text: 'text-cyan-700',    dark: 'dark:bg-cyan-900/30 dark:text-cyan-300',      dot: 'bg-cyan-500' },
+];
+function speakerColor(label, mapRef) {
+  const map = mapRef.current;
+  if (map.has(label)) return SPEAKER_COLORS[map.get(label) % SPEAKER_COLORS.length];
+  const idx = map.size;
+  map.set(label, idx);
+  return SPEAKER_COLORS[idx % SPEAKER_COLORS.length];
+}
+
+function formatSegmentsAsText(segments, labelOverrides = {}) {
+  return segments.map(s => {
+    const label = labelOverrides[s.speaker] || s.speaker;
+    return `${label}: ${s.text}`;
+  }).join('\n');
+}
 
 const LANGUAGES = [
   { value: 'en-US', label: 'English (US)' },
@@ -77,6 +103,14 @@ export default function VoiceNotes({ isOpen, onClose }) {
   const [meetingMode, setMeetingMode] = useState(false);
   const [currentSpeaker, setCurrentSpeaker] = useState(1);
 
+  // High Accuracy Meeting Mode (Deepgram-backed): speaker-labeled segments
+  // accumulated via the onFinal callback from useMeetingTranscription.
+  const [segments, setSegments] = useState([]);
+  const [speakerLabelOverrides, setSpeakerLabelOverrides] = useState({});
+  const [renamingSpeaker, setRenamingSpeaker] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const speakerColorMapRef = useRef(new Map());
+
   // AI processing state
   const [processing, setProcessing] = useState(false);
   const [processType, setProcessType] = useState(null);
@@ -87,8 +121,20 @@ export default function VoiceNotes({ isOpen, onClose }) {
   const timerRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const liveTranscriptRef = useRef(null);
+  const wakeLockRef = useRef(null);
 
-  // The hook now owns transcript + interim state directly
+  const highAccuracyMode = !!settings.highAccuracyMode;
+
+  // Both engines are always mounted — they are inert until startListening() is
+  // invoked. We pick one at start time based on highAccuracyMode.
+  const webSpeech = useSpeechToText({
+    lang: settings.language,
+    continuous: settings.continuous,
+    interimResults: true,
+  });
+  const meetingStream = useMeetingTranscription();
+
+  const activeEngine = highAccuracyMode ? meetingStream : webSpeech;
   const {
     isListening,
     transcript: hookTranscript,
@@ -96,13 +142,41 @@ export default function VoiceNotes({ isOpen, onClose }) {
     error: speechError,
     startListening,
     stopListening,
-  } = useSpeechToText({
-    lang: settings.language,
-    continuous: settings.continuous,
-    interimResults: true,
-  });
+    resetTranscript,
+  } = activeEngine;
 
-  const speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  // ──────────────────────────────────────────────────────────────
+  // VoiceNotes state machine (post-bugfix)
+  //
+  //   idle ──► recording ──► stopped (transcript visible)
+  //     ▲        │                │
+  //     │        │         ┌──────┴──────┐
+  //     │        │         │             │
+  //     │        │    (discard)      (saveNote)
+  //     │        │         │             │
+  //     │        │         ▼             ▼
+  //     │        │       idle        saving (button disabled)
+  //     │        │                       │
+  //     │        │                   ┌───┴────────┐
+  //     │        │                   │            │
+  //     │        │                (success)    (error)
+  //     │        │                   │            │
+  //     └────────┴───────────────────┘            ▼
+  //                                           stopped+err
+  //
+  // Invariants:
+  //   • discard + save BOTH wipe: savedTranscript, hookTranscript
+  //     (via engine.resetTranscript), segments, overrides, duration.
+  //   • Save is idempotent: the click only fires one POST because
+  //     `saving` disables the button AND success resets hookTranscript
+  //     so the fallback text source is empty on the next click.
+  //   • On success we dispatch `notes:changed` so any open NotesPage
+  //     refetches — the panel and the main list stay in sync.
+  // ──────────────────────────────────────────────────────────────
+
+  const speechSupported = highAccuracyMode
+    ? !!(window.AudioContext || window.webkitAudioContext) && !!navigator.mediaDevices?.getUserMedia
+    : !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   // The "display transcript" is whichever has content:
   // during recording → hookTranscript (live from the hook)
@@ -111,6 +185,15 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
   useEffect(() => { checkMicPermission(); }, []);
   useEffect(() => { if (isOpen) loadRecentNotes(); }, [isOpen]);
+  // Keep Recent Notes in sync when another surface (e.g. NotesPage) mutates
+  // the note list. Using a window event avoids a dedicated notes context for
+  // a single cross-component fan-out.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handler = () => loadRecentNotes();
+    window.addEventListener('notes:changed', handler);
+    return () => window.removeEventListener('notes:changed', handler);
+  }, [isOpen]);
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -180,26 +263,61 @@ export default function VoiceNotes({ isOpen, onClose }) {
   useEffect(() => { currentSpeakerRef.current = currentSpeaker; }, [currentSpeaker]);
   useEffect(() => { silenceDurationRef.current = settings.maxSilenceDuration; }, [settings.maxSilenceDuration]);
 
-  // Called by the hook for each finalized speech chunk. Always appends to
-  // savedTranscript (with speaker labels in meeting mode, plain otherwise)
-  // and resets the silence auto-stop timer on each valid speech segment.
-  const handleFinalTranscript = useCallback((finalText) => {
-    if (!finalText) return;
+  // Called by the active engine for each finalized speech chunk.
+  //   - useSpeechToText passes a string (legacy, Web Speech mode)
+  //   - useMeetingTranscription passes { speaker, text, startMs, endMs }
+  // We persist segments for the Deepgram path and plain text for Web Speech.
+  const handleFinalTranscript = useCallback((payload) => {
+    if (payload == null) return;
+
+    const isSegment = typeof payload === 'object' && typeof payload.text === 'string';
+    const rawText = isSegment ? payload.text : String(payload);
+
+    // High Accuracy path: append a speaker segment and mirror text into the
+    // plain transcript so AI processing / save still see readable content.
+    if (isSegment) {
+      setSegments(prev => [...prev, {
+        speaker: payload.speaker || 'Speaker 0',
+        text: rawText,
+        startMs: payload.startMs || 0,
+        endMs: payload.endMs || 0,
+      }]);
+    }
 
     setSavedTranscript((prev) => {
+      // Safety net: if the incoming chunk is already a trailing suffix of the
+      // existing transcript (can happen after auto-restart replays or buggy
+      // mobile engines re-emitting cumulative text), drop it to prevent
+      // duplicated phrases from accumulating.
+      const chunkTrim = rawText.trim();
+      if (chunkTrim) {
+        const prevTail = prev.trimEnd().toLowerCase();
+        if (prevTail.endsWith(chunkTrim.toLowerCase())) return prev;
+      }
+      if (isSegment) {
+        const label = payload.speaker || 'Speaker 0';
+        const tag = `[${label}]`;
+        const lastSpeakerMatch = prev.match(/\[[^\]]+\][^[]*$/);
+        if (!lastSpeakerMatch || !lastSpeakerMatch[0].startsWith(tag)) {
+          const sep = prev ? '\n' : '';
+          return prev + sep + tag + ': ' + rawText;
+        }
+        const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+        return prev + sep + rawText;
+      }
       if (meetingModeRef.current) {
         const speaker = currentSpeakerRef.current;
         const speakerTag = `[Speaker ${speaker}]`;
         const lastSpeakerMatch = prev.match(/\[Speaker \d+\][^[]*$/);
         if (!lastSpeakerMatch || !lastSpeakerMatch[0].startsWith(speakerTag)) {
           const sep = prev ? '\n' : '';
-          return prev + sep + speakerTag + ': ' + finalText;
+          return prev + sep + speakerTag + ': ' + rawText;
         }
         const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
-        return prev + sep + finalText;
+        return prev + sep + rawText;
       }
       const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
-      return prev + sep + finalText;
+      return prev + sep + rawText;
     });
 
     // Reset silence auto-stop timer on any speech, regardless of mode
@@ -214,6 +332,22 @@ export default function VoiceNotes({ isOpen, onClose }) {
     }
   }, []);
 
+  async function acquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator && navigator.wakeLock?.request) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+      }
+    } catch { /* permission denied or not supported — non-fatal */ }
+  }
+
+  function releaseWakeLock() {
+    const lock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (lock && typeof lock.release === 'function') {
+      try { lock.release(); } catch { /* ignore */ }
+    }
+  }
+
   const handleStartRecording = useCallback(async () => {
     if (!speechSupported) return;
 
@@ -224,11 +358,15 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
     setSaveError(null);
     setSavedTranscript('');
+    setSegments([]);
+    setSpeakerLabelOverrides({});
+    speakerColorMapRef.current = new Map();
     setProcessedResult('');
     setProcessError(null);
     setActiveTab('record');
 
     startListening(handleFinalTranscript);
+    acquireWakeLock();
 
     setDuration(0);
     timerRef.current = setInterval(() => setDuration((p) => p + 1), 1000);
@@ -244,9 +382,21 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
   const handleStopRecording = useCallback(() => {
     stopListening();
+    releaseWakeLock();
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
   }, [stopListening]);
+
+  // Re-acquire wake lock when the tab returns to foreground during recording.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && isListening && !wakeLockRef.current) {
+        acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [isListening]);
 
   const handleNextSpeaker = () => {
     setCurrentSpeaker((prev) => prev + 1);
@@ -292,7 +442,12 @@ export default function VoiceNotes({ isOpen, onClose }) {
   };
 
   const saveNote = async (content) => {
-    const text = (content || savedTranscript || hookTranscript).trim();
+    // Prefer the speaker-labeled rendering when segments exist so the saved
+    // content matches what the user sees on screen.
+    const segmentText = segments.length
+      ? formatSegmentsAsText(segments, speakerLabelOverrides)
+      : '';
+    const text = (content || segmentText || savedTranscript || hookTranscript).trim();
     if (!text) return;
 
     setSaving(true);
@@ -302,12 +457,37 @@ export default function VoiceNotes({ isOpen, onClose }) {
     const payload = { title, content: text, duration, type: 'voice_note', lang: settings.language };
 
     try {
-      await api.post('/notes', payload);
+      const res = await api.post('/notes', payload);
+      const noteId = res.data?.data?.id || res.data?.id || res.data?.note?.id;
+      // Persist raw segments so the speaker-rename endpoint can operate on a
+      // structured row set (separate from the rendered `content` text).
+      if (noteId && segments.length) {
+        const payload2 = {
+          segments: segments.map(s => ({
+            speakerLabel: speakerLabelOverrides[s.speaker] || s.speaker,
+            startMs: s.startMs,
+            endMs: s.endMs,
+            text: s.text,
+          })),
+        };
+        try { await api.post(`/notes/${noteId}/segments`, payload2); }
+        catch (segErr) { console.warn('[VoiceNotes] segments save failed:', segErr?.message); }
+      }
       setSavedTranscript('');
+      setSegments([]);
+      setSpeakerLabelOverrides({});
+      speakerColorMapRef.current = new Map();
       setProcessedResult('');
       setDuration(0);
       setActiveTab('record');
+      // Wipe the engine-owned transcript too — otherwise hookTranscript would
+      // still be non-empty, the saved-transcript view would stay visible, and
+      // a second click on Save Raw would POST the same content again (Bug 3).
+      resetTranscript();
       loadRecentNotes();
+      // Signal any open NotesPage (or other listeners) to refetch so the main
+      // list stays in sync with what was just persisted (Bug 2).
+      window.dispatchEvent(new CustomEvent('notes:changed', { detail: { action: 'created' } }));
     } catch (err) {
       const backendMsg = err?.response?.data?.message;
       setSaveError(backendMsg || 'Save failed. Please try again.');
@@ -316,21 +496,48 @@ export default function VoiceNotes({ isOpen, onClose }) {
     }
   };
 
+  const handleRenameSpeaker = (speaker) => {
+    setRenamingSpeaker(speaker);
+    setRenameValue(speakerLabelOverrides[speaker] || speaker);
+  };
+
+  const handleConfirmRename = () => {
+    const from = renamingSpeaker;
+    const to = renameValue.trim();
+    if (!from || !to || to === from) {
+      setRenamingSpeaker(null);
+      setRenameValue('');
+      return;
+    }
+    // Local update is immediate — the remote PATCH happens after save once we
+    // have a noteId, via the rename-speaker endpoint.
+    setSpeakerLabelOverrides(prev => ({ ...prev, [from]: to }));
+    setRenamingSpeaker(null);
+    setRenameValue('');
+  };
+
   const deleteNote = async (noteId) => {
     try {
       await api.delete(`/notes/${noteId}`);
       setRecentNotes((prev) => prev.filter((n) => n.id !== noteId));
+      window.dispatchEvent(new CustomEvent('notes:changed', { detail: { action: 'deleted', id: noteId } }));
     } catch {}
   };
 
   const discardAll = () => {
     setSavedTranscript('');
+    setSegments([]);
+    setSpeakerLabelOverrides({});
+    speakerColorMapRef.current = new Map();
     setProcessedResult('');
     setDuration(0);
     setSaveError(null);
     setProcessError(null);
     setCurrentSpeaker(1);
     setActiveTab('record');
+    // Clear the engine-owned transcript so hasTranscript flips to false and
+    // the panel falls back to the idle "Tap to start recording" view (Bug 1).
+    resetTranscript();
   };
 
   const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
@@ -354,7 +561,15 @@ export default function VoiceNotes({ isOpen, onClose }) {
   const hasProcessedResult = processedResult.trim().length > 0;
 
   return (
-    <div className="fixed bottom-[76px] right-4 z-[9998]" style={{ animation: 'voicePanelSlideIn 250ms cubic-bezier(0.16,1,0.3,1) both' }}>
+    <div
+      className="fixed z-[9998] bottom-2 right-2 left-2 sm:left-auto sm:bottom-[76px] sm:right-4"
+      style={{
+        animation: 'voicePanelSlideIn 250ms cubic-bezier(0.16,1,0.3,1) both',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}
+    >
       <style>{`
         @keyframes voicePanelSlideIn {
           from { opacity: 0; transform: translateY(16px) scale(0.97); }
@@ -369,7 +584,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
           100% { background-position: 200% 0; }
         }
       `}</style>
-      <div className="w-[340px] max-h-[calc(100vh-100px)] bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
+      <div className="w-full sm:w-[340px] max-h-[min(calc(100vh-24px),calc(100vh-100px))] sm:max-h-[calc(100vh-100px)] bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white flex-shrink-0">
           <div className="flex items-center gap-2">
@@ -486,15 +701,37 @@ export default function VoiceNotes({ isOpen, onClose }) {
             <div className="flex items-center justify-between pt-1">
               <div>
                 <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block flex items-center gap-1">
-                  <Users size={11} /> Meeting Mode
+                  <Users size={11} /> Meeting Mode (manual)
                 </label>
-                <p className="text-[10px] text-gray-400">Tag speakers sequentially</p>
+                <p className="text-[10px] text-gray-400">Tag speakers sequentially (Next Speaker button)</p>
               </div>
-              <button onClick={() => { setMeetingMode(!meetingMode); setCurrentSpeaker(1); }} className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${meetingMode ? 'bg-violet-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'}`}>
+              <button
+                disabled={highAccuracyMode}
+                onClick={() => { setMeetingMode(!meetingMode); setCurrentSpeaker(1); }}
+                className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${meetingMode && !highAccuracyMode ? 'bg-violet-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'} ${highAccuracyMode ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
                 <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
               </button>
             </div>
-            <p className="text-[9px] text-gray-400 italic">Web Speech API · Chrome/Edge recommended</p>
+            <div className="flex items-center justify-between pt-1 border-t border-gray-200 dark:border-gray-700 mt-2">
+              <div>
+                <label className="text-[11px] font-medium text-gray-500 dark:text-gray-400 block flex items-center gap-1">
+                  <Headphones size={11} /> High Accuracy Meeting Mode
+                </label>
+                <p className="text-[10px] text-gray-400">Deepgram streaming with automatic speaker diarization</p>
+              </div>
+              <button
+                onClick={() => updateSetting('highAccuracyMode', !highAccuracyMode)}
+                className={`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${highAccuracyMode ? 'bg-emerald-500 justify-end' : 'bg-gray-300 dark:bg-gray-600 justify-start'}`}
+              >
+                <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
+              </button>
+            </div>
+            <p className="text-[9px] text-gray-400 italic">
+              {highAccuracyMode
+                ? 'Deepgram Live · Admin must configure a provider in Integrations'
+                : 'Web Speech API · Chrome/Edge recommended'}
+            </p>
           </div>
         )}
 
@@ -510,8 +747,8 @@ export default function VoiceNotes({ isOpen, onClose }) {
                   <span className="text-sm text-gray-500 ml-auto font-mono">{fmt(duration)}</span>
                 </div>
 
-                {/* Meeting mode speaker controls */}
-                {meetingMode && (
+                {/* Meeting mode speaker controls (legacy manual mode only) */}
+                {meetingMode && !highAccuracyMode && (
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-medium text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 px-2 py-1 rounded-full flex items-center gap-1">
                       <Users size={10} /> Speaker {currentSpeaker}
@@ -522,6 +759,13 @@ export default function VoiceNotes({ isOpen, onClose }) {
                     >
                       <UserPlus size={10} /> Next Speaker
                     </button>
+                  </div>
+                )}
+                {highAccuracyMode && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-1 rounded-full flex items-center gap-1">
+                      <Headphones size={10} /> High Accuracy · Auto-diarization
+                    </span>
                   </div>
                 )}
 
@@ -540,11 +784,32 @@ export default function VoiceNotes({ isOpen, onClose }) {
                 </div>
 
                 {/* ── LIVE TRANSCRIPT ─────────────────────────────── */}
-                <div ref={liveTranscriptRef} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[80px] max-h-[160px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300">
-                  {hookTranscript && <span>{hookTranscript} </span>}
-                  {interim && <span className="text-gray-400 italic">{interim}</span>}
-                  {!hookTranscript && !interim && (
-                    <span className="text-gray-400 italic">Listening... speak now</span>
+                <div ref={liveTranscriptRef} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[80px] max-h-[220px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 space-y-1.5">
+                  {highAccuracyMode && segments.length > 0 ? (
+                    <>
+                      {segments.map((seg, i) => {
+                        const c = speakerColor(seg.speaker, speakerColorMapRef);
+                        const label = speakerLabelOverrides[seg.speaker] || seg.speaker;
+                        return (
+                          <div key={i} className={`rounded-lg px-2.5 py-1.5 ${c.bg} ${c.dark}`}>
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+                              <span className={`text-[10px] font-semibold ${c.text}`}>{label}</span>
+                            </div>
+                            <p className="text-[13px] leading-snug">{seg.text}</p>
+                          </div>
+                        );
+                      })}
+                      {interim && <p className="text-gray-400 italic text-[12px]">{interim}</p>}
+                    </>
+                  ) : (
+                    <>
+                      {hookTranscript && <span className="whitespace-pre-wrap">{hookTranscript} </span>}
+                      {interim && <span className="text-gray-400 italic">{interim}</span>}
+                      {!hookTranscript && !interim && (
+                        <span className="text-gray-400 italic">Listening... speak now</span>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -554,10 +819,49 @@ export default function VoiceNotes({ isOpen, onClose }) {
               </div>
             ) : hasTranscript ? (
               <div className="space-y-3">
-                {/* Stopped: show saved transcript */}
-                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[60px] max-h-[120px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                  {savedTranscript || hookTranscript}
-                </div>
+                {/* Stopped: show saved transcript — segment bubbles in high-accuracy mode */}
+                {segments.length > 0 ? (
+                  <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[60px] max-h-[220px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 space-y-1.5">
+                    {segments.map((seg, i) => {
+                      const c = speakerColor(seg.speaker, speakerColorMapRef);
+                      const label = speakerLabelOverrides[seg.speaker] || seg.speaker;
+                      const isRenaming = renamingSpeaker === seg.speaker;
+                      return (
+                        <div key={i} className={`rounded-lg px-2.5 py-1.5 ${c.bg} ${c.dark}`}>
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+                            {isRenaming ? (
+                              <input
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleConfirmRename();
+                                  if (e.key === 'Escape') { setRenamingSpeaker(null); setRenameValue(''); }
+                                }}
+                                onBlur={handleConfirmRename}
+                                autoFocus
+                                className={`text-[10px] font-semibold ${c.text} bg-transparent border-b border-current outline-none w-32`}
+                              />
+                            ) : (
+                              <button
+                                onClick={() => handleRenameSpeaker(seg.speaker)}
+                                className={`text-[10px] font-semibold ${c.text} hover:underline flex items-center gap-1`}
+                                title="Click to rename speaker"
+                              >
+                                {label} <Edit2 size={9} />
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[13px] leading-snug">{seg.text}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[60px] max-h-[120px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                    {savedTranscript || hookTranscript}
+                  </div>
+                )}
                 <div className="flex items-center gap-1 text-xs text-gray-400"><Clock size={11} /><span>{fmt(duration)}</span></div>
 
                 {/* AI Processing buttons */}

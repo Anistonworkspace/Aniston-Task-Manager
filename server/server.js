@@ -59,6 +59,7 @@ const integrationConfigRoutes = require('./routes/integrationConfig');
 const noteRoutes = require('./routes/notes');
 const feedbackRoutes = require('./routes/feedback');
 const aiRoutes = require('./routes/ai');
+const transcriptionRoutes = require('./routes/transcriptionProviders');
 const apiKeyRoutes = require('./routes/apiKeys');
 
 // ─── App initialisation ─────────────────────────────────────
@@ -67,6 +68,13 @@ const server = http.createServer(app);
 
 // ─── Socket.io initialisation ────────────────────────────────
 initializeSocket(server);
+
+// ─── Meeting-mode audio streaming WebSocket ──────────────────
+// Proxies browser PCM audio to Deepgram and forwards speaker-labeled
+// transcripts back. Claims only /api/meeting-stream/ws so it coexists
+// with Socket.io (which handles /socket.io/*).
+const { attachMeetingStream } = require('./services/meetingStreamService');
+attachMeetingStream(server);
 
 // ─── Global middleware ───────────────────────────────────────
 app.use(helmet({
@@ -216,6 +224,7 @@ app.use('/api/integrations', integrationConfigRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/transcription', transcriptionRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
@@ -468,6 +477,50 @@ const start = async () => {
       console.log('[Server] file_attachments provider/category columns ensured.');
     } catch (e) {
       console.warn('[Server] file_attachments column migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: transcription_providers + transcript_segments ──
+    // Creates the tables required for the Deepgram meeting-mode integration.
+    // IF NOT EXISTS keeps this idempotent on every boot.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS transcription_providers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(100) NOT NULL,
+        "providerType" VARCHAR(30) NOT NULL,
+        "apiKey" TEXT NOT NULL,
+        model VARCHAR(100) DEFAULT '',
+        language VARCHAR(10) DEFAULT 'en-US',
+        "baseUrl" VARCHAR(500) DEFAULT '',
+        "diarizationEnabled" BOOLEAN DEFAULT true,
+        "isActive" BOOLEAN DEFAULT true,
+        "isDefault" BOOLEAN DEFAULT false,
+        "lastTestedAt" TIMESTAMP WITH TIME ZONE,
+        "configuredBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_transcription_providers_default ON transcription_providers("isDefault", "isActive")`);
+      console.log('[Server] transcription_providers table ensured.');
+    } catch (e) {
+      console.warn('[Server] transcription_providers migration warning:', e.message?.slice(0, 100));
+    }
+
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS transcript_segments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "noteId" UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+        "speakerLabel" VARCHAR(50) NOT NULL DEFAULT 'Speaker 0',
+        "startMs" INTEGER NOT NULL DEFAULT 0,
+        "endMs" INTEGER NOT NULL DEFAULT 0,
+        text TEXT NOT NULL DEFAULT '',
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_transcript_segments_note_id ON transcript_segments("noteId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_transcript_segments_note_start ON transcript_segments("noteId", "startMs")`);
+      console.log('[Server] transcript_segments table ensured.');
+    } catch (e) {
+      console.warn('[Server] transcript_segments migration warning:', e.message?.slice(0, 100));
     }
 
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
