@@ -47,10 +47,13 @@ router.get('/', getBoards);
 // ─── GET /api/boards/:id ─────────────────────────────────────
 router.get('/:id', getBoard);
 
-// ─── PUT /api/boards/:id (manager/admin only) ────────────────
+// ─── PUT /api/boards/:id ─────────────────────────────────────
+// Permission is enforced field-by-field in the controller. Admins, managers,
+// assistant managers and super admins may touch any allowed field; explicit
+// board members may only update the structural subset (customColumns). Other
+// roles get 403 from the controller.
 router.put(
   '/:id',
-  boardMutate,
   [
     body('name')
       .optional()

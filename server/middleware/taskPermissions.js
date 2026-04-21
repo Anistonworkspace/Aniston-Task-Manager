@@ -166,9 +166,17 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
       if (role === 'assistant_manager') {
         return { allowed: true, reason: 'assistant_manager_access', allowedFields: null };
       }
-      // Assignee employee — can only update status/progress on own tasks
+      // Assignee / creator — can update a narrow, safe subset on their own tasks.
+      // customFields is included because custom columns are free-form data cells,
+      // not structural board config — assignees must be able to fill their own
+      // values. Sensitive fields (priority, dueDate, assignedTo, isArchived, etc.)
+      // remain manager-only.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
-        return { allowed: true, reason: 'assignee_restricted', allowedFields: ['title', 'status', 'progress', 'groupId', 'position'] };
+        return {
+          allowed: true,
+          reason: 'assignee_restricted',
+          allowedFields: ['title', 'status', 'progress', 'groupId', 'position', 'customFields'],
+        };
       }
       // Supervisor — can view and comment but NOT edit fields
       if (isSupervisor) {

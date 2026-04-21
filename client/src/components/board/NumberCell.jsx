@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 export default function NumberCell({ value, onChange }) {
+  const readOnly = typeof onChange !== 'function';
   const [editing, setEditing] = useState(false);
   const [localVal, setLocalVal] = useState(value ?? '');
   const inputRef = useRef(null);
@@ -10,12 +11,15 @@ export default function NumberCell({ value, onChange }) {
 
   function handleSave() {
     const v = localVal === '' ? null : Number(localVal);
-    if (v !== value) onChange(v);
+    if (!readOnly && v !== value) onChange(v);
     setEditing(false);
   }
 
   return (
-    <div className="w-full h-full flex items-center justify-center px-2 cursor-text" onClick={(e) => { e.stopPropagation(); setEditing(true); }}>
+    <div
+      className={`w-full h-full flex items-center justify-center px-2 ${readOnly ? 'cursor-default' : 'cursor-text'}`}
+      onClick={(e) => { e.stopPropagation(); if (!readOnly) setEditing(true); }}
+    >
       {editing ? (
         <input ref={inputRef} type="number" value={localVal}
           onChange={(e) => setLocalVal(e.target.value)}

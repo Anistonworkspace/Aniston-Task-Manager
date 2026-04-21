@@ -312,7 +312,23 @@ const getBoard = async (req, res) => {
 
 /**
  * PUT /api/boards/:id
+ *
+ * Permission model:
+ *   - Admin / manager / assistant_manager / super admin → may update every allowed field.
+ *   - Explicit board members (any role) → may only update the MEMBER_STRUCTURAL_FIELDS
+ *     subset. This is what lets a member add/rename/remove a custom column on a board
+ *     they belong to without needing full board-admin rights.
+ *   - Anyone else → 403.
+ *
+ * Fields outside either subset in the request body are silently ignored (parity with
+ * the legacy behaviour before per-field gating).
  */
+const ALL_UPDATABLE_BOARD_FIELDS = [
+  'name', 'description', 'color', 'columns', 'groups',
+  'archivedGroups', 'customColumns', 'isArchived', 'workspaceId',
+];
+const MEMBER_STRUCTURAL_FIELDS = ['customColumns'];
+
 const updateBoard = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -325,15 +341,75 @@ const updateBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    const allowedFields = ['name', 'description', 'color', 'columns', 'groups', 'archivedGroups', 'customColumns', 'isArchived', 'workspaceId'];
+    const role = req.user.role;
+    const isSuperAdmin = !!req.user.isSuperAdmin;
+    const isManagementRole = isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role);
+
+    // Determine which fields the caller is permitted to touch on this board.
+    let permittedFields = ALL_UPDATABLE_BOARD_FIELDS;
+    if (!isManagementRole) {
+      // Non-management role: must be an explicit (non-auto-added) board member
+      // to touch the structural subset. We check the explicit flag because an
+      // auto-added row (from a task assignment) can churn and we don't want
+      // that to implicitly grant structural edit rights.
+      let isExplicitBoardMember = false;
+      try {
+        const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
+        if (hasAutoAddedCol) {
+          const [rows] = await sequelize.query(
+            `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId AND "autoAdded" = false LIMIT 1`,
+            { replacements: { boardId: board.id, userId: req.user.id } }
+          );
+          isExplicitBoardMember = rows.length > 0;
+        } else {
+          const [rows] = await sequelize.query(
+            `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId LIMIT 1`,
+            { replacements: { boardId: board.id, userId: req.user.id } }
+          );
+          isExplicitBoardMember = rows.length > 0;
+        }
+      } catch (err) {
+        console.error('[Board] Membership check error:', err.message);
+        isExplicitBoardMember = false;
+      }
+
+      if (!isExplicitBoardMember) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to modify this board.',
+        });
+      }
+
+      // Reject the request outright if the caller tries to touch admin-only
+      // fields — so the frontend gets a clear signal instead of a silent no-op.
+      const attemptedAdminFields = Object.keys(req.body).filter(
+        (f) => ALL_UPDATABLE_BOARD_FIELDS.includes(f) && !MEMBER_STRUCTURAL_FIELDS.includes(f)
+      );
+      if (attemptedAdminFields.length > 0) {
+        return res.status(403).json({
+          success: false,
+          message: 'Only managers or admins can change this board setting.',
+        });
+      }
+
+      permittedFields = MEMBER_STRUCTURAL_FIELDS;
+    }
+
     const updates = {};
-    for (const field of allowedFields) {
+    for (const field of permittedFields) {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
       }
     }
     if (updates.name !== undefined) updates.name = sanitizeInput(updates.name);
     if (updates.description !== undefined) updates.description = sanitizeInput(updates.description);
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No updatable fields were provided.',
+      });
+    }
 
     await board.update(updates);
 

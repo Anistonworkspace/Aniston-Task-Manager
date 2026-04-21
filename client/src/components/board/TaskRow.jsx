@@ -25,15 +25,38 @@ const TaskRow = React.memo(function TaskRow({
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== 'done';
   const daysOverdue = isOverdue ? Math.ceil((new Date() - new Date(task.dueDate)) / (1000 * 60 * 60 * 24)) : 0;
 
-  const { isMember, isManager, isAdmin, isAssistantManager } = useAuth();
+  const { user, isManager, isAdmin, isAssistantManager } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
+
+  // Row background: selected wins over overdue wins over default. Overdue uses
+  // a solid subtle red tint (not alpha) so text stays readable and the sticky
+  // task-title column inherits an opaque color instead of a washed-out one.
+  const rowBg = selected
+    ? 'bg-[#e6f0ff] hover:bg-[#dbeaff]'
+    : isOverdue
+      ? 'bg-[#fff5f6] hover:bg-[#ffeaee]'
+      : 'bg-white hover:bg-[#f5f6f8]';
   // Strict RBAC: Only Admin/Manager/AssistantManager can edit all fields. Members restricted.
   const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
   const isBlockedByDependency = !!task.customFields?.blockedByDependency;
   const canEditStatus = !isApproved && !isBlockedByDependency;
 
+  // Custom-column cell editability mirrors the backend allowlist in
+  // server/middleware/taskPermissions.js (`edit` action → customFields).
+  // Management roles can always edit; otherwise the caller must be the
+  // assignee, creator, or appear in taskAssignees for this task.
+  const isOwnTask = !!user?.id && (
+    task.assignedTo === user.id ||
+    task.createdBy === user.id ||
+    (Array.isArray(task.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
+  );
+  const canEditCustomFields = !isApproved && (canEditAllFields || isOwnTask);
+
   function renderCell(col) {
     const customVal = task.customFields?.[col.id];
+    const customOnChange = canEditCustomFields
+      ? val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })
+      : undefined;
     switch (col.type) {
       case 'status': return <StatusCell value={task.status} onChange={canEditStatus ? (val => onUpdate({ status: val })) : undefined} taskStatuses={task.statusConfig} boardStatuses={boardStatuses} onSaveTaskStatuses={canEditAllFields ? (cfg => onUpdate({ statusConfig: cfg })) : undefined} canConfigureStatuses={canEditAllFields} approvalStatus={task.approvalStatus} isBlocked={isBlockedByDependency} />;
       case 'person': return <PersonCell value={task.assignedTo || task.assignee} owners={task.owners || []} members={members} taskAssignees={task.taskAssignees || []} onChange={canEditAllFields ? (val => onUpdate({ assignedTo: val })) : undefined} onOwnersChange={canEditAllFields ? (ids => onUpdate({ ownerIds: ids })) : undefined} />;
@@ -41,11 +64,11 @@ const TaskRow = React.memo(function TaskRow({
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
       case 'progress': return <ProgressCell value={task.progress || 0} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
       case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;
-      case 'text': return <TextCell value={customVal || ''} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
-      case 'number': return <NumberCell value={customVal} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
-      case 'checkbox': return <CheckboxCell value={customVal || false} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
-      case 'link': return <LinkCell value={customVal || ''} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
-      default: return <TextCell value={customVal || ''} onChange={val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })} />;
+      case 'text': return <TextCell value={customVal || ''} onChange={customOnChange} />;
+      case 'number': return <NumberCell value={customVal} onChange={customOnChange} />;
+      case 'checkbox': return <CheckboxCell value={customVal || false} onChange={customOnChange} />;
+      case 'link': return <LinkCell value={customVal || ''} onChange={customOnChange} />;
+      default: return <TextCell value={customVal || ''} onChange={customOnChange} />;
     }
   }
 
@@ -54,7 +77,7 @@ const TaskRow = React.memo(function TaskRow({
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className={`flex items-stretch border-b border-[#e6e9ef] hover:bg-[#f5f6f8] cursor-pointer transition-all duration-150 group/row ${selected ? 'bg-[#e6f0ff]' : 'bg-white'} ${isOverdue && daysOverdue > 3 ? '!bg-[#fde8ec]/30' : ''}`}
+      className={`flex items-stretch border-b border-[#e6e9ef] cursor-pointer transition-all duration-150 group/row ${rowBg}`}
       onClick={onClick}>
 
       {/* Sticky left: color bar + checkbox + task name */}

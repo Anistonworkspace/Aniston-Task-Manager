@@ -324,15 +324,42 @@ export default function BoardPage() {
     );
   }
 
-  // Column management
+  // ── Column management ────────────────────────────────────────────────
+  // All mutations use a single helper that optimistically applies the new
+  // customColumns array, rolls the UI back if the server rejects, and lets
+  // the global axios 403 interceptor handle the user-facing toast. This
+  // prevents the "column appears, but 'no permission' toast fires" state
+  // that the old silent .catch(console.error) left behind.
+  async function saveCustomColumns(nextCols, { previousCols, failureToast } = {}) {
+    const prevCols = previousCols ?? (board?.customColumns || []);
+    setBoard(prev => ({ ...prev, customColumns: nextCols }));
+    try {
+      const res = await api.put(`/boards/${boardId}`, { customColumns: nextCols });
+      // Trust the server response so we pick up any server-side normalisation.
+      const serverBoard = res.data?.board || res.data?.data?.board;
+      if (serverBoard?.customColumns) {
+        setBoard(prev => ({ ...prev, customColumns: serverBoard.customColumns }));
+      }
+      return true;
+    } catch (err) {
+      console.error('[BoardPage] saveCustomColumns error:', err);
+      setBoard(prev => ({ ...prev, customColumns: prevCols }));
+      // The axios interceptor already surfaces 403/5xx toasts. Only add a
+      // local toast for cases it wouldn't cover (network error, etc.).
+      if (failureToast && !err.response) {
+        toastError(failureToast);
+      }
+      return false;
+    }
+  }
+
   function handleEditColumn(colId, updates) {
-    const cols = [...(board?.customColumns || [])];
-    // Check if it's a custom column
-    const idx = cols.findIndex(c => c.id === colId);
+    const prevCols = [...(board?.customColumns || [])];
+    const idx = prevCols.findIndex(c => c.id === colId);
     if (idx >= 0) {
-      cols[idx] = { ...cols[idx], ...updates };
-      setBoard(prev => ({ ...prev, customColumns: cols }));
-      api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+      const nextCols = [...prevCols];
+      nextCols[idx] = { ...nextCols[idx], ...updates };
+      saveCustomColumns(nextCols, { previousCols: prevCols });
     }
     // For default columns, we save title overrides in localStorage
     const overrides = JSON.parse(localStorage.getItem(`board_col_titles_${boardId}`) || '{}');
@@ -341,23 +368,21 @@ export default function BoardPage() {
   }
 
   function handleAddColumn(col, afterColumnId) {
-    const cols = [...(board?.customColumns || [])];
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = [...prevCols];
     if (afterColumnId) {
-      const idx = cols.findIndex(c => c.id === afterColumnId);
-      cols.splice(idx >= 0 ? idx + 1 : cols.length, 0, col);
+      const idx = nextCols.findIndex(c => c.id === afterColumnId);
+      nextCols.splice(idx >= 0 ? idx + 1 : nextCols.length, 0, col);
     } else {
-      cols.push(col);
+      nextCols.push(col);
     }
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(err => {
-      console.error('Failed to save column:', err);
-    });
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   function handleRemoveColumn(colId) {
-    const cols = (board?.customColumns || []).filter(c => c.id !== colId);
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = prevCols.filter(c => c.id !== colId);
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   // Duplicate column
@@ -368,35 +393,35 @@ export default function BoardPage() {
       type: column.type || 'text',
       width: column.width || 130,
     };
-    const cols = [...(board?.customColumns || [])];
-    const idx = cols.findIndex(c => c.id === column.id);
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = [...prevCols];
+    const idx = nextCols.findIndex(c => c.id === column.id);
     if (idx >= 0) {
       // Custom column — insert right after it
-      cols.splice(idx + 1, 0, newCol);
+      nextCols.splice(idx + 1, 0, newCol);
     } else {
       // Built-in column — append to custom columns (will appear after built-ins)
-      cols.push(newCol);
+      nextCols.push(newCol);
     }
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   // Set column as required
   function handleSetColumnRequired(colId) {
-    const cols = (board?.customColumns || []).map(c =>
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = prevCols.map(c =>
       c.id === colId ? { ...c, required: !c.required } : c
     );
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   // Set column description
   function handleSetColumnDescription(colId, description) {
-    const cols = (board?.customColumns || []).map(c =>
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = prevCols.map(c =>
       c.id === colId ? { ...c, description } : c
     );
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   // Reorder columns via drag-and-drop
@@ -415,11 +440,11 @@ export default function BoardPage() {
 
   // Change column type
   function handleChangeColumnType(colId, newType) {
-    const cols = (board?.customColumns || []).map(c =>
+    const prevCols = [...(board?.customColumns || [])];
+    const nextCols = prevCols.map(c =>
       c.id === colId ? { ...c, type: newType } : c
     );
-    setBoard(prev => ({ ...prev, customColumns: cols }));
-    api.put(`/boards/${boardId}`, { customColumns: cols }).catch(console.error);
+    saveCustomColumns(nextCols, { previousCols: prevCols });
   }
 
   // Column resize — update width in allColumns or customColumns

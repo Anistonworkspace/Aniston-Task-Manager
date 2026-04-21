@@ -125,15 +125,9 @@ export default function VoiceNotes({ isOpen, onClose }) {
     }
   }, [hookTranscript, interim, isListening]);
 
-  // When recording stops, snapshot the hook transcript into savedTranscript
-  // so the user can edit/process/save it
-  const wasListeningRef = useRef(false);
-  useEffect(() => {
-    if (wasListeningRef.current && !isListening && hookTranscript) {
-      setSavedTranscript(hookTranscript);
-    }
-    wasListeningRef.current = isListening;
-  }, [isListening, hookTranscript]);
+  // savedTranscript is populated via the onFinal callback below (both in
+  // meeting mode and normal mode), so no snapshot-on-stop effect is needed.
+  // Snapshotting hookTranscript would clobber meeting-mode speaker labels.
 
   async function checkMicPermission() {
     try {
@@ -186,24 +180,29 @@ export default function VoiceNotes({ isOpen, onClose }) {
   useEffect(() => { currentSpeakerRef.current = currentSpeaker; }, [currentSpeaker]);
   useEffect(() => { silenceDurationRef.current = settings.maxSilenceDuration; }, [settings.maxSilenceDuration]);
 
-  // Called by the hook for each final chunk — used for meeting-mode labelling only
+  // Called by the hook for each finalized speech chunk. Always appends to
+  // savedTranscript (with speaker labels in meeting mode, plain otherwise)
+  // and resets the silence auto-stop timer on each valid speech segment.
   const handleFinalTranscript = useCallback((finalText) => {
-    if (!meetingModeRef.current) return; // no extra processing needed
+    if (!finalText) return;
 
-    // In meeting mode, build a labelled version in savedTranscript
     setSavedTranscript((prev) => {
-      const speaker = currentSpeakerRef.current;
-      const speakerTag = `[Speaker ${speaker}]`;
-      const lastSpeakerMatch = prev.match(/\[Speaker \d+\][^[]*$/);
-      if (!lastSpeakerMatch || !lastSpeakerMatch[0].startsWith(speakerTag)) {
-        const sep = prev ? '\n' : '';
-        return prev + sep + speakerTag + ': ' + finalText;
+      if (meetingModeRef.current) {
+        const speaker = currentSpeakerRef.current;
+        const speakerTag = `[Speaker ${speaker}]`;
+        const lastSpeakerMatch = prev.match(/\[Speaker \d+\][^[]*$/);
+        if (!lastSpeakerMatch || !lastSpeakerMatch[0].startsWith(speakerTag)) {
+          const sep = prev ? '\n' : '';
+          return prev + sep + speakerTag + ': ' + finalText;
+        }
+        const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+        return prev + sep + finalText;
       }
       const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
       return prev + sep + finalText;
     });
 
-    // Reset silence timer
+    // Reset silence auto-stop timer on any speech, regardless of mode
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;

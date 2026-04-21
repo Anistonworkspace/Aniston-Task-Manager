@@ -53,7 +53,7 @@ function NoteEditor({ note, onSaved, onCancel }) {
 
   const speechSupported = isSpeechSupported();
 
-  const { isListening, transcript: hookTranscript, interim, error: speechError, startListening, stopListening } =
+  const { isListening, interim, error: speechError, startListening, stopListening } =
     useSpeechToText({ lang, continuous: true, interimResults: true });
 
   // Mark dirty on any change
@@ -87,18 +87,22 @@ function NoteEditor({ note, onSaved, onCancel }) {
     if (title.trim()) setTitleError(false);
   }, [title]);
 
-  // Sync hook's transcript into content field while recording
-  useEffect(() => {
-    if (isListening && hookTranscript) {
-      setContent(hookTranscript);
-    }
-  }, [isListening, hookTranscript]);
+  // Append each finalized speech chunk to the content field.
+  // Using onFinal callback preserves pre-existing typed content, allows
+  // multi-session resume-recording, and doesn't clobber manual edits.
+  const handleFinalTranscript = useCallback((finalText) => {
+    if (!finalText) return;
+    setContent((prev) => {
+      const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+      return prev + sep + finalText;
+    });
+  }, []);
 
   const toggleMic = () => {
     if (isListening) {
       stopListening();
     } else {
-      startListening();
+      startListening(handleFinalTranscript);
     }
   };
 
