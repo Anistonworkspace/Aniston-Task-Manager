@@ -1,4 +1,4 @@
-const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency, TaskApprovalFlow } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
@@ -20,6 +20,64 @@ const teamsNotif = require('../services/teamsNotificationService');
 const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig');
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 const boardMembershipService = require('../services/boardMembershipService');
+const { hasPermission: enginePermission } = require('../services/permissionEngine');
+
+/**
+ * Centralized check: can this user assign a task to the given target user IDs?
+ *
+ * Rules:
+ *   1. Self-only assignment (every targetId === user.id) is allowed for anyone
+ *      who has the base `tasks.assign` permission (true for all roles by
+ *      default, unless an admin denied it).
+ *   2. Assigning to others requires `tasks.assign_others` (deny override
+ *      blocks even if the role normally has it).
+ *   3. For roles whose `assign_others` is hierarchy-scoped (assistant manager,
+ *      manager), the additional `hierarchyService.canAssignTo` check still
+ *      applies on top.
+ *
+ * Returns { allowed: true } or { allowed: false, status, message }.
+ */
+async function checkAssignmentAuthority(user, targetUserIds = []) {
+  const targets = (targetUserIds || []).filter(Boolean);
+  if (targets.length === 0) return { allowed: true };
+
+  const isSelfOnly = targets.every((id) => id === user.id);
+
+  if (isSelfOnly) {
+    const canAssignSelf = await enginePermission(user, 'tasks', 'assign');
+    if (!canAssignSelf) {
+      return { allowed: false, status: 403, message: 'You do not have permission to self-assign tasks.' };
+    }
+    return { allowed: true };
+  }
+
+  const canAssignOthers = await enginePermission(user, 'tasks', 'assign_others');
+  if (!canAssignOthers) {
+    return {
+      allowed: false,
+      status: 403,
+      message: 'You do not have permission to assign tasks to other users.',
+    };
+  }
+
+  // Hierarchy subtree check (manager / assistant manager). Admins and super
+  // admins are short-circuited inside hierarchyService.
+  if (user.role === 'manager' || user.role === 'assistant_manager') {
+    const { canAssignTo } = require('../services/hierarchyService');
+    for (const id of targets) {
+      const ok = await canAssignTo(user, id);
+      if (!ok) {
+        return {
+          allowed: false,
+          status: 403,
+          message: 'You can only assign tasks to users in your reporting subtree.',
+        };
+      }
+    }
+  }
+
+  return { allowed: true };
+}
 
 // ── Table existence cache ────────────────────────────────────────────────
 // Checks once per process lifetime whether a table exists. Prevents every
@@ -41,6 +99,7 @@ async function tableExists(tableName) {
 const hasTaskAssigneesTable = () => tableExists('task_assignees');
 const hasTaskOwnersTable = () => tableExists('task_owners');
 const hasTaskLabelsTable = () => tableExists('task_labels');
+const hasTaskApprovalFlowsTable = () => tableExists('task_approval_flows');
 
 // Reusable include block — built dynamically to handle missing tables gracefully.
 const TASK_INCLUDES_CORE = [
@@ -55,6 +114,20 @@ async function getTaskIncludes() {
   }
   if (await hasTaskAssigneesTable()) {
     includes.push({ model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role'] }] });
+  }
+  if (await hasTaskApprovalFlowsTable()) {
+    // separate:true issues a single grouped query for all task ids — avoids N+1
+    // when listing many tasks. Trimmed attributes since the table-level indicator
+    // only needs level/status/userName for rendering segments + tooltip.
+    includes.push({
+      model: TaskApprovalFlow,
+      as: 'approvalFlows',
+      separate: true,
+      order: [['level', 'ASC']],
+      // `comment` is needed by the Approvals tab timeline; `attachmentUrl` for
+      // the level-0 submission attachment surfaced inside the modal section.
+      attributes: ['id', 'level', 'status', 'userId', 'userName', 'role', 'actionAt', 'comment', 'attachmentUrl'],
+    });
   }
   return includes;
 }
@@ -90,41 +163,63 @@ const createTask = async (req, res) => {
       }
     }
 
-    // Authorized users who can assign tasks to others:
-    // Strict RBAC: only management roles can assign others
-    const isManagementRole = ['admin', 'manager', 'assistant_manager'].includes(req.user.role);
-    const canAssignOthers = isManagementRole;
-    const isMemberRole = !canAssignOthers;
+    // Permission resolution via the central engine — honors role defaults,
+    // grant overrides, and DENY overrides.
+    const canCreate = await enginePermission(req.user, 'tasks', 'create');
+    if (!canCreate) {
+      return res.status(403).json({ success: false, message: 'You do not have permission to create tasks.' });
+    }
 
-    // Members cannot configure task-level statuses
+    const canAssignOthers = await enginePermission(req.user, 'tasks', 'assign_others');
+    // We treat anyone WITHOUT assign_others as a "self-only assigner" for the
+    // purpose of normalizing input — even managers who had the perm denied.
+    const restrictToSelf = !canAssignOthers;
+
+    // Member-style restriction: cannot configure task-level status options or
+    // override priority. (Mirrors the previous behavior; field-level whitelist
+    // for full edits is enforced in updateTask via taskPermissions middleware.)
+    const isMemberRole = req.user.role === 'member';
     const safeStatusConfig = (!isMemberRole && Array.isArray(statusConfig) && statusConfig.length > 0)
       ? statusConfig : null;
 
-    // Support both single assignedTo (backward compat) and array format
-    let assigneeIds = [];
-    if (Array.isArray(assignedTo)) {
-      assigneeIds = canAssignOthers ? assignedTo : [req.user.id];
-    } else if (assignedTo) {
-      assigneeIds = canAssignOthers ? [assignedTo] : [req.user.id];
-    }
-    // Members must always self-assign (they can't leave tasks unassigned)
-    if (assigneeIds.length === 0 && isMemberRole) {
-      assigneeIds = [req.user.id];
-    }
-    // For admin/manager/assistant_manager: if no assignee specified, leave unassigned (NULL)
+    // Normalize assigneeIds. Anyone restricted to self gets forced to [self];
+    // we DO NOT silently drop other IDs — instead we 403 below if the request
+    // tried to assign someone else, so a malicious client can't bypass via the
+    // API. Empty array is fine and falls through.
+    const requestedAssignees = Array.isArray(assignedTo)
+      ? assignedTo
+      : (assignedTo ? [assignedTo] : []);
+    const requestedSupervisors = Array.isArray(supervisors) ? supervisors : [];
 
-    const supervisorIds = (Array.isArray(supervisors) && canAssignOthers) ? supervisors : [];
+    let assigneeIds = requestedAssignees.filter(Boolean);
+    let supervisorIds = requestedSupervisors.filter(Boolean);
 
-    // Hierarchy-based assignment validation: managers can only assign within their subtree
-    if (canAssignOthers && (assigneeIds.length > 0 || supervisorIds.length > 0)) {
-      const { canAssignTo } = require('../services/hierarchyService');
-      const allTargetIds = [...assigneeIds, ...supervisorIds];
-      for (const targetId of allTargetIds) {
-        const allowed = await canAssignTo(req.user, targetId);
-        if (!allowed) {
-          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
-        }
+    if (restrictToSelf) {
+      const triedToAssignOthers = assigneeIds.some((id) => id !== req.user.id);
+      const triedToSupervise   = supervisorIds.length > 0;
+      if (triedToAssignOthers || triedToSupervise) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to assign tasks to other users.',
+        });
       }
+      // If no explicit assignee, default to self (members must own their tasks).
+      if (assigneeIds.length === 0) assigneeIds = [req.user.id];
+    }
+
+    // Cross-target authorization: assign + hierarchy subtree check.
+    const allTargets = [...new Set([...assigneeIds, ...supervisorIds])];
+    const authCheck = await checkAssignmentAuthority(req.user, allTargets);
+    if (!authCheck.allowed) {
+      return res.status(authCheck.status).json({ success: false, message: authCheck.message });
+    }
+
+    // Due-date gate stays — applies to self-assigns too.
+    if ((assigneeIds.length > 0 || supervisorIds.length > 0) && !dueDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please set a due date before assigning this task.',
+      });
     }
 
     // Keep backward compat: set assignedTo to first assignee
@@ -147,13 +242,14 @@ const createTask = async (req, res) => {
       description: sanitizeInput(description) || '',
       status: status || 'not_started',
       statusConfig: safeStatusConfig,
-      priority: isMemberRole ? 'medium' : (priority || 'medium'),
+      priority: priority || 'medium',
       groupId: effectiveGroupId,
       dueDate: dueDate || null,
       startDate: startDate || null,
       plannedStartTime: plannedStartTime || null,
       plannedEndTime: plannedEndTime || null,
       estimatedHours: estimatedHours != null ? estimatedHours : 0,
+      progress: status === 'done' ? 100 : 0,
       position: (maxPosition || 0) + 1,
       tags: tags || [],
       customFields: customFields || {},
@@ -623,18 +719,60 @@ const updateTask = async (req, res) => {
       changes.startDate = today;
     }
 
-    // Hierarchy validation: ensure assignment targets are in the actor's subtree (BEFORE save)
+    // Completion → progress 100. Applies whether status is being changed to
+    // 'done' here or the task is already 'done' (server is the source of truth
+    // for this invariant). Status changes away from 'done' do not reset progress.
+    const willBeDone = updates.status === 'done' || (updates.status === undefined && task.status === 'done');
+    if (willBeDone && updates.progress !== 100) {
+      updates.progress = 100;
+      if (task.progress !== 100) changes.progress = 100;
+    }
+
+    // Centralized assignment authority check — covers role default, grant
+    // override, deny override, and hierarchy subtree (where applicable).
     const allAssignmentTargets = [
       ...(Array.isArray(req.body.assignedTo) ? req.body.assignedTo : (updates.assignedTo && typeof updates.assignedTo === 'string' ? [updates.assignedTo] : [])),
       ...(Array.isArray(req.body.ownerIds) ? req.body.ownerIds : []),
       ...(Array.isArray(req.body.supervisors) ? req.body.supervisors : []),
-    ];
+    ].filter(Boolean);
     if (allAssignmentTargets.length > 0) {
-      const { canAssignTo } = require('../services/hierarchyService');
-      for (const targetId of allAssignmentTargets) {
-        const allowed = await canAssignTo(req.user, targetId);
-        if (!allowed) {
-          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
+      const auth = await checkAssignmentAuthority(req.user, allAssignmentTargets);
+      if (!auth.allowed) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
+      }
+    }
+
+    // Due-date gate for assignment changes. Fires only when the request is
+    // actually adding or replacing assignees / supervisors / owners — pure
+    // removals (empty array, null) are allowed even without a due date because
+    // the resulting task has nobody on the hook for it. Existing tasks with
+    // assignees-but-no-due-date are not retro-blocked unless the caller tries
+    // to edit who's assigned.
+    const isAssigneeMutation = req.body.assignedTo !== undefined ||
+      Array.isArray(req.body.supervisors) ||
+      Array.isArray(req.body.ownerIds);
+    if (isAssigneeMutation) {
+      const existingTaskAssignees = task.taskAssignees || [];
+      const currentAssigneeIds = existingTaskAssignees.filter(ta => ta.role === 'assignee').map(ta => ta.userId);
+      const currentSupervisorIds = existingTaskAssignees.filter(ta => ta.role === 'supervisor').map(ta => ta.userId);
+
+      let nextAssigneeIds = currentAssigneeIds;
+      if (Array.isArray(req.body.assignedTo)) nextAssigneeIds = req.body.assignedTo;
+      else if (typeof req.body.assignedTo === 'string' && req.body.assignedTo) nextAssigneeIds = [req.body.assignedTo];
+      else if (req.body.assignedTo === null) nextAssigneeIds = [];
+      if (Array.isArray(req.body.ownerIds)) nextAssigneeIds = req.body.ownerIds;
+
+      const nextSupervisorIds = Array.isArray(req.body.supervisors) ? req.body.supervisors : currentSupervisorIds;
+
+      const willHaveMembers = nextAssigneeIds.length > 0 || nextSupervisorIds.length > 0;
+      if (willHaveMembers) {
+        // dueDate may be sent in this same payload — honor that as the effective value.
+        const effectiveDueDate = updates.dueDate !== undefined ? updates.dueDate : task.dueDate;
+        if (!effectiveDueDate) {
+          return res.status(400).json({
+            success: false,
+            message: 'Please set a due date before assigning this task.',
+          });
         }
       }
     }
@@ -665,8 +803,12 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // Sync task_assignees if assignedTo (array) or supervisors or ownerIds provided
-    const canManageMembers = isAdmin || isManager || isAssistantManager || !!req.user.isSuperAdmin;
+    // Sync task_assignees if assignedTo (array) or supervisors or ownerIds provided.
+    // canManageMembers is gated on the central engine (assign_others) so that:
+    //   - members with assign_others granted can mutate assignees
+    //   - managers/asst-mgrs with assign_others denied cannot
+    //   - super admin always passes (engine short-circuits)
+    const canManageMembers = await enginePermission(req.user, 'tasks', 'assign_others');
     const membersChanged = canManageMembers && (Array.isArray(req.body.assignedTo) || Array.isArray(req.body.supervisors));
     const ownerIdsChanged = canManageMembers && Array.isArray(req.body.ownerIds);
 
@@ -1208,7 +1350,7 @@ const bulkUpdateTasks = async (req, res) => {
 
     const allowedFields = [
       'status', 'priority', 'groupId', 'assignedTo',
-      'dueDate', 'isArchived',
+      'dueDate', 'isArchived', 'progress',
     ];
 
     const safeUpdates = {};
@@ -1222,6 +1364,24 @@ const bulkUpdateTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid update fields provided.' });
     }
 
+    // Bulk assignment authority. If the bulk update changes assignees and the
+    // target is anyone other than the requester, the requester must hold
+    // tasks.assign_others (and pass the hierarchy check for managers/asst-mgrs).
+    if (safeUpdates.assignedTo !== undefined && safeUpdates.assignedTo !== null) {
+      const targets = Array.isArray(safeUpdates.assignedTo)
+        ? safeUpdates.assignedTo
+        : [safeUpdates.assignedTo];
+      const auth = await checkAssignmentAuthority(req.user, targets);
+      if (!auth.allowed) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
+      }
+    }
+
+    // Completion → progress 100 (mirrors single-update invariant).
+    if (safeUpdates.status === 'done') {
+      safeUpdates.progress = 100;
+    }
+
     // Validate status against task-level then board config for all affected tasks
     if (safeUpdates.status) {
       const affectedTasks = await Task.findAll({
@@ -1233,6 +1393,26 @@ const bulkUpdateTasks = async (req, res) => {
         if (!isValidStatusForTask(safeUpdates.status, t, t.board)) {
           return res.status(400).json({ success: false, message: `Invalid status "${safeUpdates.status}" for task "${t.id}".` });
         }
+      }
+    }
+
+    // Due-date gate for bulk assignment. If the request assigns someone to
+    // every selected task, every selected task must have a due date (or one
+    // must be supplied in the same payload). Refuses early so we don't end up
+    // with a partial bulk write.
+    if (safeUpdates.assignedTo) {
+      const tasksMissingDue = await Task.findAll({
+        where: { id: { [Op.in]: taskIds } },
+        attributes: ['id', 'title', 'dueDate'],
+      });
+      const blocking = safeUpdates.dueDate
+        ? []
+        : tasksMissingDue.filter(t => !t.dueDate);
+      if (blocking.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Please set a due date before assigning. ${blocking.length} task(s) in the selection have no due date.`,
+        });
       }
     }
 
@@ -1643,16 +1823,27 @@ const manageTaskMembers = async (req, res) => {
     const { assignees, supervisors } = req.body;
     const board = task.board ? await Board.findByPk(task.boardId) : null;
 
-    // Hierarchy-based assignment validation
-    const allTargetIds = [...(Array.isArray(assignees) ? assignees : []), ...(Array.isArray(supervisors) ? supervisors : [])];
+    // Centralized assignment authority (engine + hierarchy).
+    const allTargetIds = [
+      ...(Array.isArray(assignees) ? assignees : []),
+      ...(Array.isArray(supervisors) ? supervisors : []),
+    ].filter(Boolean);
     if (allTargetIds.length > 0) {
-      const { canAssignTo } = require('../services/hierarchyService');
-      for (const targetId of allTargetIds) {
-        const allowed = await canAssignTo(req.user, targetId);
-        if (!allowed) {
-          return res.status(403).json({ success: false, message: 'You can only assign tasks to users in your reporting subtree.' });
-        }
+      const auth = await checkAssignmentAuthority(req.user, allTargetIds);
+      if (!auth.allowed) {
+        return res.status(auth.status).json({ success: false, message: auth.message });
       }
+    }
+
+    // Due-date gate: refuse to register any assignee/supervisor on a task that
+    // has no due date. Pure removals (sending empty arrays) are allowed.
+    const willHaveAssignees = Array.isArray(assignees) ? assignees.length > 0 : false;
+    const willHaveSupervisors = Array.isArray(supervisors) ? supervisors.length > 0 : false;
+    if ((willHaveAssignees || willHaveSupervisors) && !task.dueDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please set a due date before assigning this task.',
+      });
     }
 
     // Sync assignees

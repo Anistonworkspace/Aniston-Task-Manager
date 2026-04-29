@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MessageSquare, Star, Filter, ChevronDown, ChevronUp, Save, Trash2, BarChart3 } from 'lucide-react';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 const CATEGORIES = [
   { value: 'bug', label: 'Bug Report', color: '#e2445c' },
@@ -29,6 +30,11 @@ function StarRating({ value }) {
 }
 
 export default function FeedbackPage() {
+  const { isSuperAdmin, granularPermissions } = useAuth();
+  // Manage actions (edit status/notes, delete) need feedback.manage. View-only
+  // grants get a read-only experience.
+  const canManageFeedback = isSuperAdmin || !!granularPermissions?.['feedback.manage'];
+
   const [feedback, setFeedback] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -255,16 +261,18 @@ export default function FeedbackPage() {
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => startEdit(item)}
-                      className="p-1.5 text-gray-400 hover:text-blue-500 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
-                      <Save size={13} />
-                    </button>
-                    <button onClick={() => setDeleteConfirm(item.id)}
-                      className="p-1.5 text-gray-400 hover:text-red-500 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
+                  {canManageFeedback && (
+                    <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                      <button onClick={() => startEdit(item)}
+                        className="p-1.5 text-gray-400 hover:text-blue-500 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+                        <Save size={13} />
+                      </button>
+                      <button onClick={() => setDeleteConfirm(item.id)}
+                        className="p-1.5 text-gray-400 hover:text-red-500 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Expanded content */}

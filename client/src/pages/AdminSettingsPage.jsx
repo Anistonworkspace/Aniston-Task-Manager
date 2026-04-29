@@ -660,7 +660,7 @@ function PermissionsTab() {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState([]);
   const [showGrant, setShowGrant] = useState(false);
-  const [form, setForm] = useState({ userId: '', resources: [], actions: [], expiresAt: '', reason: '', scope: 'global' });
+  const [form, setForm] = useState({ userId: '', resources: [], actions: [], expiresAt: '', reason: '', scope: 'global', effect: 'grant' });
   const [grantError, setGrantError] = useState('');
   const [grantSuccess, setGrantSuccess] = useState('');
   const [granting, setGranting] = useState(false);
@@ -733,14 +733,16 @@ function PermissionsTab() {
         scope: form.scope || 'global',
         expiresAt: form.expiresAt || null,
         reason: form.reason || null,
+        effect: form.effect || 'grant',
       });
       const s = res.data?.data?.summary || {};
       const parts = [];
       if (s.created > 0) parts.push(`${s.created} created`);
       if (s.updated > 0) parts.push(`${s.updated} updated`);
       if (s.skipped > 0) parts.push(`${s.skipped} skipped`);
-      setGrantSuccess(`Permissions granted successfully (${parts.join(', ')}).`);
-      setForm({ userId: '', resources: [], actions: [], expiresAt: '', reason: '', scope: 'global' });
+      const verb = form.effect === 'deny' ? 'denied' : 'granted';
+      setGrantSuccess(`Permissions ${verb} successfully (${parts.join(', ')}).`);
+      setForm({ userId: '', resources: [], actions: [], expiresAt: '', reason: '', scope: 'global', effect: 'grant' });
       fetchData();
       setTimeout(() => setGrantSuccess(''), 6000);
     } catch (err) {
@@ -787,11 +789,11 @@ function PermissionsTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-200">Permission Overrides</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Grant extra permissions beyond a user's base role. Select multiple resources and actions at once.</p>
+          <p className="text-xs text-gray-500 mt-0.5">Grant extra permissions beyond a user's base role, or deny a default permission for a specific user. Deny wins over grant and role default.</p>
         </div>
         <button onClick={() => { setShowGrant(!showGrant); setGrantError(''); setGrantSuccess(''); }}
           className="flex items-center gap-1.5 px-3 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors">
-          <Plus size={14} /> Grant Permission
+          <Plus size={14} /> Grant / Deny
         </button>
       </div>
 
@@ -800,6 +802,32 @@ function PermissionsTab() {
         {showGrant && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
             className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 p-5">
+
+            {/* Row 0: Effect — Grant or Deny */}
+            <div className="mb-4">
+              <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1 block">Effect</label>
+              <div className="inline-flex rounded-lg border border-gray-200 dark:border-zinc-600 overflow-hidden text-sm">
+                <button type="button"
+                  onClick={() => setForm({ ...form, effect: 'grant' })}
+                  className={`px-4 py-2 font-medium transition-colors ${form.effect !== 'deny'
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                    : 'bg-white dark:bg-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-600'}`}>
+                  Grant — add permission
+                </button>
+                <button type="button"
+                  onClick={() => setForm({ ...form, effect: 'deny' })}
+                  className={`px-4 py-2 font-medium transition-colors border-l border-gray-200 dark:border-zinc-600 ${form.effect === 'deny'
+                    ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                    : 'bg-white dark:bg-zinc-700 text-gray-500 hover:bg-gray-50 dark:hover:bg-zinc-600'}`}>
+                  Deny — block permission
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-gray-500">
+                {form.effect === 'deny'
+                  ? 'Deny overrides win over role defaults and grants. Use to revoke a default permission for one user.'
+                  : 'Grant adds extra permissions beyond the user\'s base role.'}
+              </p>
+            </div>
 
             {/* Row 1: User */}
             <div className="mb-4">
@@ -929,11 +957,11 @@ function PermissionsTab() {
             {/* Actions */}
             <div className="flex items-center gap-3">
               <button onClick={handleGrant} disabled={granting || !form.userId || form.resources.length === 0 || form.actions.length === 0}
-                className="px-5 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/90 disabled:opacity-40 transition-colors flex items-center gap-2">
+                className={`px-5 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-40 transition-colors flex items-center gap-2 ${form.effect === 'deny' ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary/90'}`}>
                 {granting ? (
-                  <><RefreshCw size={14} className="animate-spin" /> Granting {totalCombinations} permission{totalCombinations !== 1 ? 's' : ''}...</>
+                  <><RefreshCw size={14} className="animate-spin" /> {form.effect === 'deny' ? 'Denying' : 'Granting'} {totalCombinations} permission{totalCombinations !== 1 ? 's' : ''}...</>
                 ) : (
-                  <>Grant {totalCombinations > 0 ? `${totalCombinations} Override${totalCombinations !== 1 ? 's' : ''}` : 'Override'}</>
+                  <>{form.effect === 'deny' ? 'Deny' : 'Grant'} {totalCombinations > 0 ? `${totalCombinations} Override${totalCombinations !== 1 ? 's' : ''}` : 'Override'}</>
                 )}
               </button>
               <button onClick={() => { setShowGrant(false); setGrantError(''); setGrantSuccess(''); }}
@@ -980,8 +1008,13 @@ function PermissionsTab() {
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">Super Admin — Full Access</span>
               )}
               {effectiveData.overrides?.length > 0 && (
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                  +{effectiveData.overrides.length} override{effectiveData.overrides.length > 1 ? 's' : ''}
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                  +{effectiveData.overrides.length} grant{effectiveData.overrides.length > 1 ? 's' : ''}
+                </span>
+              )}
+              {effectiveData.denials?.length > 0 && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                  −{effectiveData.denials.length} deny{effectiveData.denials.length > 1 ? 's' : ''}
                 </span>
               )}
             </div>
@@ -1002,6 +1035,9 @@ function PermissionsTab() {
                     const overrideActions = (effectiveData.overrides || [])
                       .filter(o => o.resource === resKey)
                       .map(o => o.action);
+                    const denialActions = (effectiveData.denials || [])
+                      .filter(o => o.resource === resKey)
+                      .map(o => o.action);
 
                     return (
                       <div key={resKey} className="flex items-start gap-3 py-1.5 border-b border-gray-50 dark:border-zinc-700/50 last:border-0">
@@ -1011,18 +1047,23 @@ function PermissionsTab() {
                         <div className="flex flex-wrap gap-1">
                           {resourcePerms.map(p => {
                             const isOverride = overrideActions.includes(p.action);
-                            const isBase = !!basePerms[`${resKey}.${p.action}`];
+                            const isDenied = denialActions.includes(p.action);
+                            const cls = isDenied
+                              ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800 line-through'
+                              : p.allowed
+                                ? (isOverride
+                                  ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800'
+                                  : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800')
+                                : 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-zinc-700 dark:text-zinc-500 dark:border-zinc-600';
+                            const title = isDenied
+                              ? 'Explicitly denied (overrides base + grant)'
+                              : p.allowed
+                                ? (isOverride ? 'Override grant' : 'Base role permission')
+                                : 'Not allowed';
+                            const prefix = isDenied ? '−' : (isOverride ? '+' : '');
                             return (
-                              <span key={p.action}
-                                className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${
-                                  p.allowed
-                                    ? isOverride
-                                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800'
-                                      : 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800'
-                                    : 'bg-gray-50 text-gray-400 border-gray-200 dark:bg-zinc-700 dark:text-zinc-500 dark:border-zinc-600'
-                                }`}
-                                title={p.allowed ? (isOverride ? 'Override grant' : 'Base role permission') : 'Not allowed'}>
-                                {isOverride ? '+' : ''}{p.action}
+                              <span key={p.action} className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${cls}`} title={title}>
+                                {prefix}{p.action}
                               </span>
                             );
                           })}
@@ -1033,7 +1074,8 @@ function PermissionsTab() {
                 </div>
                 <div className="mt-2 flex items-center gap-4 text-[10px] text-gray-400 border-t border-gray-100 dark:border-zinc-700 pt-2">
                   <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-green-50 border border-green-200" /> Base role</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-amber-50 border border-amber-200" /> Override grant</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-amber-50 border border-amber-200" /> Grant override</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-red-50 border border-red-200" /> Deny override</span>
                   <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-gray-50 border border-gray-200" /> Not allowed</span>
                 </div>
               </div>
@@ -1055,9 +1097,15 @@ function PermissionsTab() {
               <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-gray-600"><X size={14} /></button>
             </div>
             <div className="space-y-2 max-h-60 overflow-y-auto">
-              {historyData.map((h, i) => (
-                <div key={i} className={`flex items-center gap-3 text-xs p-2 rounded-lg ${h.isActive ? 'bg-green-50/50 dark:bg-green-900/10' : 'bg-gray-50 dark:bg-zinc-700/30'}`}>
-                  <div className={`w-2 h-2 rounded-full ${h.isActive ? 'bg-green-500' : h.revokedAt ? 'bg-red-400' : 'bg-gray-400'}`} />
+              {historyData.map((h, i) => {
+                const effect = h.effect || 'grant';
+                const isDeny = effect === 'deny';
+                return (
+                <div key={i} className={`flex items-center gap-3 text-xs p-2 rounded-lg ${h.isActive ? (isDeny ? 'bg-red-50/50 dark:bg-red-900/10' : 'bg-green-50/50 dark:bg-green-900/10') : 'bg-gray-50 dark:bg-zinc-700/30'}`}>
+                  <div className={`w-2 h-2 rounded-full ${h.isActive ? (isDeny ? 'bg-red-500' : 'bg-green-500') : h.revokedAt ? 'bg-red-400' : 'bg-gray-400'}`} />
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${isDeny ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`}>
+                    {effect}
+                  </span>
                   <span className="font-medium text-gray-700 dark:text-gray-300 w-28 shrink-0 capitalize">{RESOURCES[h.resourceType]?.label || h.resourceType}</span>
                   <span className="font-semibold px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: `${LEVEL_COLORS[h.action || h.permissionLevel] || '#ccc'}15`, color: LEVEL_COLORS[h.action || h.permissionLevel] || '#666' }}>
                     {h.action || h.permissionLevel}
@@ -1068,7 +1116,8 @@ function PermissionsTab() {
                   {h.expiresAt && !h.revokedAt && h.isActive && <span className="text-yellow-500 text-[10px] flex items-center gap-0.5"><Clock size={8} /> {new Date(h.expiresAt).toLocaleDateString()}</span>}
                   {!h.isActive && !h.revokedAt && <span className="text-gray-400 text-[10px]">Inactive</span>}
                 </div>
-              ))}
+                );
+              })}
               {historyData.length === 0 && <p className="text-xs text-gray-400 text-center py-4">No permission history</p>}
             </div>
           </motion.div>
@@ -1093,6 +1142,7 @@ function PermissionsTab() {
             <thead>
               <tr className="border-b border-gray-100 dark:border-zinc-700 bg-gray-50/50 dark:bg-zinc-800/50">
                 <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">User</th>
+                <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Effect</th>
                 <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Resource</th>
                 <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Action</th>
                 <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Scope</th>
@@ -1102,8 +1152,11 @@ function PermissionsTab() {
               </tr>
             </thead>
             <tbody>
-              {filteredPermissions.map(p => (
-                <tr key={p.id} className="border-b border-gray-50 dark:border-zinc-700/50 hover:bg-gray-50/50 dark:hover:bg-zinc-700/30 transition-colors">
+              {filteredPermissions.map(p => {
+                const effect = p.effect || 'grant';
+                const isDeny = effect === 'deny';
+                return (
+                <tr key={p.id} className={`border-b border-gray-50 dark:border-zinc-700/50 hover:bg-gray-50/50 dark:hover:bg-zinc-700/30 transition-colors ${isDeny ? 'bg-red-50/30 dark:bg-red-900/10' : ''}`}>
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary">
@@ -1114,6 +1167,11 @@ function PermissionsTab() {
                         <p className="text-[10px] text-gray-500">{p.user?.isSuperAdmin ? 'Super Admin' : p.user?.role}</p>
                       </div>
                     </div>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${isDeny ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`}>
+                      {isDeny ? 'Deny' : 'Grant'}
+                    </span>
                   </td>
                   <td className="px-4 py-2.5">
                     <span className="text-xs text-gray-600 dark:text-gray-400">{RESOURCES[p.resourceType]?.label || p.resourceType}</span>
@@ -1135,9 +1193,10 @@ function PermissionsTab() {
                     <button onClick={() => handleRevoke(p.id)} className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors">Revoke</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {filteredPermissions.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">
+                <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">
                   <Shield size={28} className="mx-auto mb-2 opacity-30" />
                   No active permission overrides
                 </td></tr>

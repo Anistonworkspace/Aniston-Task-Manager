@@ -1,6 +1,5 @@
 const axios = require('axios');
 const { User, Department } = require('../models');
-const { Op } = require('sequelize');
 const { getTeamsConfig } = require('../config/teams');
 
 /**
@@ -63,15 +62,48 @@ async function syncUsersFromM365() {
     const email = m365User.mail.toLowerCase();
 
     try {
-      // Check if user already exists by email or teamsUserId
-      const existing = await User.findOne({
-        where: {
-          [Op.or]: [
-            { email },
-            ...(m365User.id ? [{ teamsUserId: m365User.id }] : []),
-          ],
-        },
-      });
+      // Resolve the local user DETERMINISTICALLY — same rule as the SSO callback
+      // (see authController.microsoftCallback). OID-first, then email, with explicit
+      // conflict detection. Never use Op.or here because it can match two different
+      // local users and silently pick one.
+      let existing = null;
+
+      if (m365User.id) {
+        const oidMatches = await User.findAll({ where: { teamsUserId: m365User.id } });
+        if (oidMatches.length > 1) {
+          throw new Error(
+            `Refusing to sync: ${oidMatches.length} local users share teamsUserId for ${email}. ` +
+              `Resolve duplicates before re-running the sync.`
+          );
+        }
+        if (oidMatches.length === 1) {
+          const candidate = oidMatches[0];
+          if ((candidate.email || '').toLowerCase() !== email) {
+            throw new Error(
+              `Refusing to sync: M365 user ${email} maps to OID already on local user ` +
+                `${candidate.id} (${candidate.email}). Manual review required.`
+            );
+          }
+          existing = candidate;
+        }
+      }
+
+      if (!existing) {
+        const emailMatches = await User.findAll({ where: { email } });
+        if (emailMatches.length > 1) {
+          throw new Error(`Refusing to sync: duplicate local emails for ${email}.`);
+        }
+        if (emailMatches.length === 1) {
+          const candidate = emailMatches[0];
+          // Never overwrite a different existing teamsUserId on this row.
+          if (candidate.teamsUserId && m365User.id && candidate.teamsUserId !== m365User.id) {
+            throw new Error(
+              `Refusing to sync: ${email} is already linked to a different Microsoft identity locally.`
+            );
+          }
+          existing = candidate;
+        }
+      }
 
       if (existing) {
         // Update teamsUserId and authProvider if not set

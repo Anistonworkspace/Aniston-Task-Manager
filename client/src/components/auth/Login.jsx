@@ -5,7 +5,7 @@ import { FolderKanban, Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import api from '../../services/api';
 
 export default function Login() {
-  const { login, loginWithToken } = useAuth();
+  const { login, loginWithToken, logout } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -41,6 +41,8 @@ export default function Login() {
       }
     } else if (ssoStatus === 'error') {
       const msg = params.get('msg') || 'Microsoft sign-in failed.';
+      // SSO failed — clear any stale local auth so the user starts fresh.
+      logout();
       setError(decodeURIComponent(msg));
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -65,6 +67,10 @@ export default function Login() {
   async function handleMicrosoftSSO() {
     setError('');
     setSsoLoading(true);
+    // Clear any stale auth state before starting SSO so the previous session cannot
+    // bleed into the new one (defence-in-depth — the JWT comes from the backend,
+    // but stray sessionStorage from another user could still confuse the UI).
+    logout();
     try {
       const res = await api.get('/auth/microsoft');
       const authUrl = res.data?.data?.authUrl || res.data?.authUrl;

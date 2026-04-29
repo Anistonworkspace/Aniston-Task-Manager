@@ -1,15 +1,41 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, X, Star, Eye } from 'lucide-react';
+import { Search, X, Star, Eye, AlertTriangle } from 'lucide-react';
 import Avatar from '../common/Avatar';
 import PortalDropdown from '../common/PortalDropdown';
+import { useToast } from '../common/Toast';
 
-export default function PersonCell({ value, owners = [], members = [], onChange, onOwnersChange, taskAssignees = [] }) {
+export default function PersonCell({
+  value,
+  owners = [],
+  members = [],
+  onChange,
+  onOwnersChange,
+  taskAssignees = [],
+  dueDate = null,
+  /**
+   * When true, the picker only shows the current user — used for members
+   * without the `tasks.assign_others` permission. Backend is the source of
+   * truth; this is a UX guardrail to avoid letting them try to assign others.
+   */
+  assignSelfOnly = false,
+  currentUserId = null,
+}) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [multiMode, setMultiMode] = useState(false);
   const [selectedOwnerIds, setSelectedOwnerIds] = useState([]);
   const btnRef = useRef(null);
   const inputRef = useRef(null);
+  const { error: toastError } = useToast();
+  // Removing assignees is always allowed; only adding requires a due date.
+  const requireDueDate = !dueDate;
+  function blockIfNoDueDate() {
+    if (requireDueDate) {
+      toastError('Please set a due date before assigning this task.');
+      return true;
+    }
+    return false;
+  }
 
   // Derive assignees and supervisors from taskAssignees
   const assigneeUsers = taskAssignees.filter(ta => ta.role === 'assignee');
@@ -36,9 +62,14 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
   const assignee = value ? members.find(m => (m.id || m.user?.id) === (value?.id || value)) : null;
   const assigneeName = assignee?.name || assignee?.user?.name || value?.name;
 
-  const filtered = search
-    ? members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(search.toLowerCase()))
+  // When the actor cannot assign others, restrict the picker to just them.
+  const visibleMembers = assignSelfOnly && currentUserId
+    ? members.filter(m => (m.id || m.user?.id) === currentUserId)
     : members;
+
+  const filtered = search
+    ? visibleMembers.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(search.toLowerCase()))
+    : visibleMembers;
 
   // For display: use taskAssignees if available, else fall back to owners
   const displayPeople = hasTaskAssignees
@@ -54,14 +85,17 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
 
   function handleMultiToggle(mId) {
     setSelectedOwnerIds(prev => {
-      if (prev.includes(mId)) {
-        return prev.filter(id => id !== mId);
-      }
+      const isAdding = !prev.includes(mId);
+      if (isAdding && blockIfNoDueDate()) return prev;
+      if (!isAdding) return prev.filter(id => id !== mId);
       return [...prev, mId];
     });
   }
 
   function handleMultiSave() {
+    // Only block if the user is trying to leave anyone assigned. An empty
+    // selection means "remove all", which is allowed even with no due date.
+    if (selectedOwnerIds.length > 0 && blockIfNoDueDate()) return;
     if (onOwnersChange && selectedOwnerIds.length > 0) {
       onOwnersChange(selectedOwnerIds);
     } else if (onOwnersChange && selectedOwnerIds.length === 0) {
@@ -109,8 +143,8 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
   function renderDropdownContent() {
     return (
       <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
-        {/* Header with mode toggle */}
-        {onOwnersChange && (
+        {/* Header with mode toggle (hidden when locked to self) */}
+        {onOwnersChange && !assignSelfOnly && (
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-border dark:border-[#222327] bg-surface-50 dark:bg-[#17181C]">
             <button
               onClick={(e) => { e.stopPropagation(); setMultiMode(false); }}
@@ -120,6 +154,14 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
               onClick={(e) => { e.stopPropagation(); setMultiMode(true); }}
               className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${multiMode ? 'bg-primary-500 text-white' : 'text-text-tertiary hover:text-text-secondary'}`}
             >Multi</button>
+          </div>
+        )}
+        {assignSelfOnly && (
+          <div className="px-3 py-1.5 border-b border-border dark:border-[#222327] bg-amber-50 dark:bg-amber-900/20">
+            <div className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={10} />
+              <span>You can only assign tasks to yourself.</span>
+            </div>
           </div>
         )}
         {/* Search */}
@@ -171,7 +213,7 @@ export default function PersonCell({ value, owners = [], members = [], onChange,
 
             const isSelected = mId === (value?.id || value);
             return (
-              <button key={mId} onClick={(e) => { e.stopPropagation(); onChange?.(mId); setOpen(false); setSearch(''); }}
+              <button key={mId} onClick={(e) => { e.stopPropagation(); if (blockIfNoDueDate()) return; onChange?.(mId); setOpen(false); setSearch(''); }}
                 className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isSelected ? 'bg-primary-50' : ''}`}>
                 <Avatar name={mName} image={mAvatar} size="xs" />
                 <div className="flex-1 min-w-0 text-left">

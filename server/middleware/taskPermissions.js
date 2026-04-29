@@ -166,16 +166,22 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
       if (role === 'assistant_manager') {
         return { allowed: true, reason: 'assistant_manager_access', allowedFields: null };
       }
-      // Assignee / creator — can update a narrow, safe subset on their own tasks.
-      // customFields is included because custom columns are free-form data cells,
-      // not structural board config — assignees must be able to fill their own
-      // values. Sensitive fields (priority, dueDate, assignedTo, isArchived, etc.)
-      // remain manager-only.
+      // Assignee / creator — can update an extended whitelist on their own
+      // tasks. Members may set their own due date, priority, dates, tags,
+      // description, etc. — the fields a self-creator legitimately needs to
+      // manage their own work. NOT included: assignedTo (assign others is
+      // gated separately via assign_others), isArchived, statusConfig
+      // (board-level config), and supervisor mutations.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
         return {
           allowed: true,
           reason: 'assignee_restricted',
-          allowedFields: ['title', 'status', 'progress', 'groupId', 'position', 'customFields'],
+          allowedFields: [
+            'title', 'description', 'status', 'priority', 'progress',
+            'groupId', 'position', 'tags', 'customFields',
+            'dueDate', 'startDate',
+            'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',
+          ],
         };
       }
       // Supervisor — can view and comment but NOT edit fields

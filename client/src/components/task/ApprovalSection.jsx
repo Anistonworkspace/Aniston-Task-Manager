@@ -1,133 +1,527 @@
-import React, { useState } from 'react';
-import { Shield, Check, X, Clock, MessageSquare, Send } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Shield, Check, X, Clock, MessageSquare, Send, RotateCcw, AlertCircle } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import useSocket from '../../hooks/useSocket';
+import MarkDoneApprovalModal from './MarkDoneApprovalModal';
+import { useToast } from '../common/Toast';
 
-const STATUS_STYLES = {
-  pending_approval: { label: 'Pending Approval', bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-  approved: { label: 'Approved', bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  changes_requested: { label: 'Changes Requested', bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+// Visual mapping for the approvalStatus badge at the top of the section.
+const STATUS_BADGE = {
+  pending_approval:   { label: 'Pending Approval',   bg: 'bg-amber-50 dark:bg-amber-500/10',   text: 'text-amber-700 dark:text-amber-300',   border: 'border-amber-200 dark:border-amber-500/30' },
+  approved:           { label: 'Approved',           bg: 'bg-emerald-50 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-300', border: 'border-emerald-200 dark:border-emerald-500/30' },
+  rejected:           { label: 'Rejected',           bg: 'bg-red-50 dark:bg-red-500/10',         text: 'text-red-700 dark:text-red-300',         border: 'border-red-200 dark:border-red-500/30' },
+  changes_requested:  { label: 'Changes Requested',  bg: 'bg-orange-50 dark:bg-orange-500/10',   text: 'text-orange-700 dark:text-orange-300',   border: 'border-orange-200 dark:border-orange-500/30' },
 };
 
+// Per-row pip color in the timeline.
+const ROW_STYLES = {
+  submitted:          { bg: 'bg-emerald-500',  Icon: Check,           label: 'Submitted' },
+  approved:           { bg: 'bg-emerald-500',  Icon: Check,           label: 'Approved' },
+  pending:            { bg: 'bg-amber-400',    Icon: Clock,           label: 'Pending' },
+  rejected:           { bg: 'bg-red-500',      Icon: X,               label: 'Rejected' },
+  changes_requested:  { bg: 'bg-orange-400',   Icon: MessageSquare,   label: 'Changes requested' },
+  awaiting:           { bg: 'bg-zinc-300 dark:bg-zinc-700', Icon: Clock, label: 'Awaiting' },
+};
+
+function formatTime(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch { return null; }
+}
+
+/**
+ * Approvals tab content for TaskModal.
+ *
+ * Replaces the old single-button + JSONB-list view with a normalized
+ * level-by-level timeline backed by task_approval_flows. Action buttons
+ * (Approve / Reject / Request Changes) appear ONLY for the user who is the
+ * current pending approver — role-based gating happens in the backend, this
+ * is just the UX gate.
+ *
+ * Live updates: subscribes to `task:approval-updated` socket so a reviewer in
+ * one tab and the submitter in another stay in sync without refresh.
+ */
 export default function ApprovalSection({ task, onUpdate }) {
-  const { canManage } = useAuth();
-  const [comment, setComment] = useState('');
-  const [loading, setLoading] = useState(false);
+  const { user } = useAuth();
+  const { success, error: toastError } = useToast();
 
-  const approvalStatus = task?.approvalStatus;
-  const approvalChain = task?.approvalChain || [];
-  const style = STATUS_STYLES[approvalStatus];
+  // Local mirror of the chain. Hydrated from props (flows ship via the task
+  // include in Phase 6) and refreshed on the socket event so the timeline
+  // stays current even when another user acts.
+  const [flows, setFlows] = useState(() => task?.approvalFlows || []);
+  const [approvalStatus, setApprovalStatus] = useState(task?.approvalStatus || null);
 
-  async function submitForApproval() {
-    setLoading(true);
+  // Action UI state
+  const [showActionPanel, setShowActionPanel] = useState(null); // 'approve' | 'reject' | 'request_changes' | null
+  const [actionComment, setActionComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  // Resubmit modal (after changes_requested / rejected)
+  const [showResubmitModal, setShowResubmitModal] = useState(false);
+
+  // Re-hydrate when the task prop changes (e.g. user switched tasks).
+  useEffect(() => {
+    setFlows(task?.approvalFlows || []);
+    setApprovalStatus(task?.approvalStatus || null);
+  }, [task?.id, task?.approvalStatus, task?.approvalFlows]);
+
+  // Live updates from the backend (emitted by approvalController on every
+  // submit/approve/reject/changes_requested). Filtered to this task only.
+  useSocket('task:approval-updated', (data) => {
+    if (data?.taskId !== task?.id) return;
+    if (Array.isArray(data.flows)) setFlows(data.flows);
+  });
+  useSocket('task:updated', (data) => {
+    if (data?.task?.id !== task?.id) return;
+    if (data.task.approvalStatus !== undefined) setApprovalStatus(data.task.approvalStatus);
+  });
+
+  // Backward-compat: rows missing `stage` (legacy) fall back to using level.
+  const stageOf = (r) => (r && r.stage != null ? r.stage : r?.level);
+
+  // Derive: which stage is currently pending? A stage may have one OR many
+  // approvers. ALL pending rows in the lowest pending stage are "current".
+  const pendingRows = flows.filter((f) => f.status === 'pending');
+  const currentStageValue = pendingRows.length > 0
+    ? Math.min(...pendingRows.map(stageOf))
+    : null;
+  const currentStageRows = currentStageValue !== null
+    ? pendingRows.filter((r) => stageOf(r) === currentStageValue)
+    : [];
+  // Used for "is it my turn" gating + the "waiting on" message. Picks the
+  // first row in the current stage as a representative when single.
+  const currentPendingRow = currentStageRows[0] || null;
+  const isCurrentApprover = !!user?.id && currentStageRows.some((r) => r.userId === user.id);
+  // Early-completion eligibility: actor has a pending row in a stage HIGHER
+  // than the current one. Reject and request_changes still require being in
+  // the current stage only.
+  const myAnyPendingRow = !!user?.id ? flows.find((f) => f.status === 'pending' && f.userId === user.id) : null;
+  const canEarlyComplete = !!myAnyPendingRow && stageOf(myAnyPendingRow) > (currentStageValue ?? 0);
+  const isInActiveCycle = approvalStatus === 'pending_approval';
+
+  // Resubmit button rules:
+  //   - rejected / changes_requested: only the original submitter (the L0 row's
+  //     user) sees it. The reviewer who rejected shouldn't be offered the
+  //     resubmit affordance — that would be confusing.
+  //   - never submitted: any task owner (assignee / creator / multi-assignee)
+  //     can kick off the chain from here as a fallback path to the Done intercept.
+  const submitterRow = flows.find((f) => f.level === 0);
+  const submitterId = submitterRow?.userId;
+  const isOwner = !!user?.id && (
+    task?.assignedTo === user?.id
+    || task?.createdBy === user?.id
+    || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some((ta) => (ta.userId || ta.user?.id) === user?.id))
+  );
+  const isOriginalSubmitter = !!user?.id && submitterId === user?.id;
+  const canResubmit =
+    ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
+    || (!approvalStatus && isOwner);
+
+  function openActionPanel(action) {
+    setShowActionPanel(action);
+    setActionComment('');
+  }
+  function cancelActionPanel() {
+    setShowActionPanel(null);
+    setActionComment('');
+  }
+
+  async function performAction() {
+    if (!showActionPanel) return;
+    const requiresComment = showActionPanel === 'reject' || showActionPanel === 'request_changes';
+    if (requiresComment && !actionComment.trim()) {
+      toastError('A comment is required.');
+      return;
+    }
+    const endpoint =
+      showActionPanel === 'approve' ? 'approve' :
+      showActionPanel === 'reject' ? 'reject' :
+      'request-changes';
+    setSubmitting(true);
     try {
-      const res = await api.post(`/task-extras/${task.id}/submit-approval`, { comment });
-      if (onUpdate) onUpdate(res.data.task || res.data);
-      setComment('');
+      const res = await api.post(`/task-extras/${task.id}/${endpoint}`, { comment: actionComment.trim() || undefined });
+      const data = res.data?.data || res.data;
+      // Optimistic local apply (the socket event will arrive milliseconds later
+      // and re-confirm). Saves a flicker.
+      if (Array.isArray(data?.approvalFlows)) setFlows(data.approvalFlows);
+      if (data?.task?.approvalStatus !== undefined) setApprovalStatus(data.task.approvalStatus);
+      if (onUpdate && data?.task) onUpdate(data.task);
+      success(
+        showActionPanel === 'approve' ? 'Approved.' :
+        showActionPanel === 'reject' ? 'Rejected — bounced back one level.' :
+        'Changes requested.'
+      );
+      cancelActionPanel();
     } catch (err) {
-      console.error(err);
+      const msg = err.response?.data?.message || 'Action failed.';
+      toastError(msg);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   }
 
-  async function approve() {
-    setLoading(true);
-    try {
-      const res = await api.post(`/task-extras/${task.id}/approve`, { comment });
-      if (onUpdate) onUpdate(res.data.task || res.data);
-      setComment('');
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function requestChanges() {
-    setLoading(true);
-    try {
-      const res = await api.post(`/task-extras/${task.id}/request-changes`, { comment });
-      if (onUpdate) onUpdate(res.data.task || res.data);
-      setComment('');
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const badge = approvalStatus ? STATUS_BADGE[approvalStatus] : null;
 
   return (
     <div className="mb-5">
-      <div className="flex items-center justify-between mb-2">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
         <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider flex items-center gap-1.5">
           <Shield size={12} /> Approval
         </h3>
-        {approvalStatus && style && (
-          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${style.bg} ${style.text} ${style.border} border`}>
-            {style.label}
+        {badge && (
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.bg} ${badge.text} ${badge.border}`}>
+            {badge.label}
           </span>
         )}
       </div>
 
-      {/* Approval Chain History */}
-      {approvalChain.length > 0 && (
-        <div className="space-y-1.5 mb-3 max-h-32 overflow-y-auto">
-          {approvalChain.map((entry, i) => (
-            <div key={i} className="flex items-start gap-2 text-[11px]">
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center mt-0.5 ${
-                entry.action === 'approved' ? 'bg-green-100 text-green-600' :
-                entry.action === 'changes_requested' ? 'bg-red-100 text-red-600' :
-                'bg-yellow-100 text-yellow-600'
-              }`}>
-                {entry.action === 'approved' ? <Check size={8} /> :
-                 entry.action === 'changes_requested' ? <X size={8} /> :
-                 <Clock size={8} />}
-              </div>
-              <div>
-                <span className="font-medium text-gray-700 dark:text-gray-300">{entry.userName}</span>
-                <span className="text-gray-500 ml-1">{entry.action.replace(/_/g, ' ')}</span>
-                {entry.comment && <p className="text-gray-500 italic mt-0.5">"{entry.comment}"</p>}
-                <p className="text-[9px] text-gray-400">{new Date(entry.timestamp).toLocaleString()}</p>
-              </div>
-            </div>
-          ))}
+      {/* Empty state — no flow yet */}
+      {flows.length === 0 && (
+        <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-3">
+          Mark this task <span className="font-medium text-zinc-700 dark:text-zinc-200">Done</span> from the status column to start an approval chain, or use the button below.
         </div>
       )}
 
-      {/* Comment input */}
-      <div className="flex gap-2 mb-2">
-        <input type="text" value={comment} onChange={e => setComment(e.target.value)}
-          placeholder="Add approval comment..." className="flex-1 text-xs border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:border-primary" />
-      </div>
+      {/* Timeline — grouped by stage so the parallel final stage renders as
+          one collapsible block instead of three sequential rows. */}
+      {flows.length > 0 && (() => {
+        // Group rows by stage value, preserving order.
+        const stageGroups = [];
+        for (const row of flows) {
+          const s = stageOf(row);
+          let last = stageGroups[stageGroups.length - 1];
+          if (!last || last.stage !== s) {
+            last = { stage: s, rows: [] };
+            stageGroups.push(last);
+          }
+          last.rows.push(row);
+        }
 
-      {/* Actions */}
-      <div className="flex gap-2">
-        {!approvalStatus && (
-          <button onClick={submitForApproval} disabled={loading}
-            className="flex items-center gap-1 px-3 py-1.5 bg-purple-500 text-white text-xs font-medium rounded-md hover:bg-purple-600 disabled:opacity-50">
-            <Send size={11} /> Submit for Approval
-          </button>
-        )}
-        {approvalStatus === 'pending_approval' && canManage && (
-          <>
-            <button onClick={approve} disabled={loading}
-              className="flex items-center gap-1 px-3 py-1.5 bg-green-500 text-white text-xs font-medium rounded-md hover:bg-green-600 disabled:opacity-50">
-              <Check size={11} /> Approve
+        // Display label for a row's status given its stage context.
+        const rowVisualStatus = (row) => {
+          if (row.status !== 'pending') return row.status;
+          // Pending row in a stage AFTER the current one → "awaiting" pip.
+          if (currentStageValue != null && stageOf(row) > currentStageValue) return 'awaiting';
+          return 'pending';
+        };
+
+        return (
+          <ol className="relative ml-1 mb-3 space-y-2">
+            {stageGroups.map((group, gIdx) => {
+              const isLastGroup = gIdx === stageGroups.length - 1;
+              const isParallel = group.rows.length > 1 && group.rows.some((r) => r.level > 0);
+              const isCurrentStage = currentStageValue !== null && group.stage === currentStageValue;
+
+              // Roll-up status for the stage header (only used when parallel).
+              let groupStatus = 'awaiting';
+              if (group.rows.some((r) => r.status === 'rejected')) groupStatus = 'rejected';
+              else if (group.rows.some((r) => r.status === 'changes_requested')) groupStatus = 'changes_requested';
+              else if (group.rows.some((r) => r.status === 'approved')) groupStatus = 'approved';
+              else if (isCurrentStage) groupStatus = 'pending';
+
+              if (isParallel) {
+                const groupStyle = ROW_STYLES[groupStatus] || ROW_STYLES.awaiting;
+                const GroupIcon = groupStyle.Icon;
+                return (
+                  <li key={`stage-${group.stage}`} className="text-[11px]">
+                    <div className="flex items-start gap-2.5">
+                      <div className="flex flex-col items-center self-stretch">
+                        <span className={`flex items-center justify-center w-5 h-5 rounded-full ${groupStyle.bg} ${isCurrentStage ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white dark:ring-offset-[#1E1F23]' : ''}`}>
+                          <GroupIcon className="w-2.5 h-2.5 text-white" />
+                        </span>
+                        {!isLastGroup && (
+                          <span className="flex-1 w-px bg-zinc-200 dark:bg-zinc-700 mt-1" />
+                        )}
+                      </div>
+                      <div className="flex-1 pb-1">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          <span className="font-semibold text-zinc-800 dark:text-zinc-100">
+                            Stage {group.stage} · Final stage
+                          </span>
+                          <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                            any one approves
+                          </span>
+                          <span className={`text-[9px] uppercase tracking-wide font-semibold px-1.5 py-px rounded ${groupStyle.bg} text-white`}>
+                            {groupStyle.label}
+                          </span>
+                        </div>
+                        {/* Member rows */}
+                        <ul className="ml-1 space-y-1 border-l-2 border-zinc-200 dark:border-zinc-700 pl-3">
+                          {group.rows.map((row) => {
+                            const memberVis = rowVisualStatus(row);
+                            const memberStyle = ROW_STYLES[memberVis] || ROW_STYLES.awaiting;
+                            const isYou = row.userId && row.userId === user?.id;
+                            return (
+                              <li key={row.id || row.level} className="flex items-start gap-2">
+                                <span className={`flex-shrink-0 mt-0.5 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full ${memberStyle.bg}`}>
+                                  <memberStyle.Icon className="w-2 h-2 text-white" />
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-medium text-zinc-800 dark:text-zinc-100 truncate">
+                                      {row.userName || '(deleted user)'}
+                                    </span>
+                                    {isYou && (
+                                      <span className="text-[9px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400 font-semibold">you</span>
+                                    )}
+                                    {row.role && (
+                                      <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                                        {row.role.replace('_', ' ')}
+                                      </span>
+                                    )}
+                                    <span className={`text-[9px] uppercase tracking-wide font-semibold ${
+                                      row.status === 'approved' ? 'text-emerald-600 dark:text-emerald-400'
+                                      : row.status === 'rejected' ? 'text-red-600 dark:text-red-400'
+                                      : row.status === 'changes_requested' ? 'text-orange-600 dark:text-orange-400'
+                                      : row.status === 'pending' ? 'text-amber-600 dark:text-amber-400'
+                                      : 'text-zinc-400 dark:text-zinc-500'
+                                    }`}>
+                                      {row.status === 'skipped_parallel' ? 'auto-skipped'
+                                        : row.status === 'cancelled_peer' ? 'cancelled'
+                                        : row.status.replace('_', ' ')}
+                                    </span>
+                                  </div>
+                                  {row.comment && (
+                                    <p className="mt-0.5 text-zinc-600 dark:text-zinc-300 italic break-words">
+                                      &ldquo;{row.comment}&rdquo;
+                                    </p>
+                                  )}
+                                  {row.actionAt && (
+                                    <p className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">{formatTime(row.actionAt)}</p>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                  </li>
+                );
+              }
+
+              // Sequential single-row stage — render the original timeline row.
+              const row = group.rows[0];
+              const visualStatus = rowVisualStatus(row);
+              const style = ROW_STYLES[visualStatus] || ROW_STYLES.awaiting;
+              const Icon = style.Icon;
+              const isCurrent = row.status === 'pending' && isCurrentStage;
+              const isYou = row.userId && row.userId === user?.id;
+              return (
+                <li key={row.id || `${row.level}-${gIdx}`} className="flex items-start gap-2.5 text-[11px]">
+                  <div className="flex flex-col items-center self-stretch">
+                    <span
+                      className={`flex items-center justify-center w-5 h-5 rounded-full ${style.bg} ${isCurrent ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white dark:ring-offset-[#1E1F23]' : ''}`}
+                    >
+                      <Icon className="w-2.5 h-2.5 text-white" />
+                    </span>
+                    {!isLastGroup && (
+                      <span className="flex-1 w-px bg-zinc-200 dark:bg-zinc-700 mt-1" />
+                    )}
+                  </div>
+                  <div className="flex-1 pb-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-zinc-800 dark:text-zinc-100">
+                        {row.level === 0 ? 'Submitted' : `L${group.stage}`} · {row.userName || '(deleted user)'}
+                      </span>
+                      {isYou && (
+                        <span className="text-[9px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400 font-semibold">you</span>
+                      )}
+                      {row.role && (
+                        <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                          {row.role.replace('_', ' ')}
+                        </span>
+                      )}
+                      <span className={`text-[9px] uppercase tracking-wide font-semibold px-1.5 py-px rounded ${style.bg} text-white`}>
+                        {style.label}
+                      </span>
+                    </div>
+                    {row.comment && (
+                      <p className="mt-0.5 text-zinc-600 dark:text-zinc-300 italic break-words">
+                        &ldquo;{row.comment}&rdquo;
+                      </p>
+                    )}
+                    {row.actionAt && (
+                      <p className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">{formatTime(row.actionAt)}</p>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        );
+      })()}
+
+      {/* Action panel — appears when current approver clicks Approve / Reject / Request Changes */}
+      {showActionPanel && (
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/40 p-2.5 mb-2 space-y-2">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-700 dark:text-zinc-200">
+            {showActionPanel === 'approve' && <><Check size={12} className="text-emerald-500" /> Approve this level</>}
+            {showActionPanel === 'reject' && <><X size={12} className="text-red-500" /> Reject — bounce back one level</>}
+            {showActionPanel === 'request_changes' && <><MessageSquare size={12} className="text-orange-500" /> Request changes</>}
+          </div>
+          <textarea
+            autoFocus
+            value={actionComment}
+            onChange={(e) => setActionComment(e.target.value)}
+            disabled={submitting}
+            placeholder={
+              showActionPanel === 'approve'
+                ? 'Optional comment…'
+                : 'Required — explain what needs to change…'
+            }
+            rows={2}
+            maxLength={2000}
+            className="w-full text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 resize-none disabled:opacity-60"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={cancelActionPanel}
+              disabled={submitting}
+              className="text-[11px] font-medium text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200 disabled:opacity-40"
+            >
+              Cancel
             </button>
-            <button onClick={requestChanges} disabled={loading}
-              className="flex items-center gap-1 px-3 py-1.5 bg-red-500 text-white text-xs font-medium rounded-md hover:bg-red-600 disabled:opacity-50">
-              <X size={11} /> Request Changes
+            <button
+              type="button"
+              onClick={performAction}
+              disabled={
+                submitting
+                || ((showActionPanel === 'reject' || showActionPanel === 'request_changes') && !actionComment.trim())
+              }
+              className={`text-[11px] font-semibold px-3 py-1.5 rounded-md text-white disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed ${
+                showActionPanel === 'approve' ? 'bg-emerald-500 hover:bg-emerald-600' :
+                showActionPanel === 'reject' ? 'bg-red-500 hover:bg-red-600' :
+                'bg-orange-500 hover:bg-orange-600'
+              }`}
+            >
+              {submitting ? 'Working…' : (
+                showActionPanel === 'approve' ? 'Confirm approve' :
+                showActionPanel === 'reject' ? 'Confirm reject' :
+                'Send request'
+              )}
             </button>
-          </>
-        )}
-        {approvalStatus === 'changes_requested' && (
-          <button onClick={submitForApproval} disabled={loading}
-            className="flex items-center gap-1 px-3 py-1.5 bg-purple-500 text-white text-xs font-medium rounded-md hover:bg-purple-600 disabled:opacity-50">
-            <Send size={11} /> Resubmit
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons row — visible to the current pending approver (full
+          action set) OR to any higher-level pending approver (approve only,
+          for early completion). Reject + request_changes always require being
+          the current approver since they don't make sense from above. */}
+      {!showActionPanel && isInActiveCycle && isCurrentApprover && (
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={() => openActionPanel('approve')}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+          >
+            <Check size={11} /> Approve
           </button>
-        )}
-      </div>
+          <button
+            onClick={() => openActionPanel('reject')}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+          >
+            <X size={11} /> Reject
+          </button>
+          <button
+            onClick={() => openActionPanel('request_changes')}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+          >
+            <MessageSquare size={11} /> Request changes
+          </button>
+        </div>
+      )}
+
+      {/* Early-completion: actor is a higher-stage pending approver. Only
+          Approve is offered — confirming auto-approves all lower pending
+          stages (backend handles the cascade). */}
+      {!showActionPanel && isInActiveCycle && !isCurrentApprover && canEarlyComplete && currentPendingRow && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <Clock size={11} className="text-amber-500" />
+            Currently with{' '}
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">
+              {currentStageRows.length > 1
+                ? `${currentStageRows.length} parallel approvers`
+                : currentPendingRow.userName}
+            </span>
+            . As a higher-level approver, you may approve early:
+          </div>
+          <button
+            onClick={() => openActionPanel('approve')}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+          >
+            <Check size={11} /> Approve early (skip lower stages)
+          </button>
+        </div>
+      )}
+
+      {/* Plain hint for users who are downstream watchers but not in the chain */}
+      {isInActiveCycle && !isCurrentApprover && !canEarlyComplete && currentPendingRow && (
+        <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
+          <Clock size={11} className="text-amber-500" />
+          {currentStageRows.length > 1 ? (
+            <>
+              Waiting on the final stage — any of{' '}
+              <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                {currentStageRows.map((r) => r.userName).filter(Boolean).slice(0, 3).join(', ')}
+                {currentStageRows.length > 3 ? ` +${currentStageRows.length - 3}` : ''}
+              </span>{' '}
+              can approve.
+            </>
+          ) : (
+            <>
+              Waiting on <span className="font-medium text-zinc-700 dark:text-zinc-200">{currentPendingRow.userName}</span> to review.
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Resubmit / submit button — for changes_requested, rejected, or unsubmitted owned tasks */}
+      {!isInActiveCycle && canResubmit && (
+        <button
+          onClick={() => setShowResubmitModal(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors mt-1"
+        >
+          {approvalStatus ? <RotateCcw size={11} /> : <Send size={11} />}
+          {approvalStatus === 'changes_requested' ? 'Address feedback & resubmit' :
+           approvalStatus === 'rejected' ? 'Resubmit for approval' :
+           'Submit for approval'}
+        </button>
+      )}
+
+      {/* Approved terminal hint */}
+      {approvalStatus === 'approved' && (
+        <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-400 mt-1">
+          <Check size={11} /> Fully approved — task is complete.
+        </div>
+      )}
+
+      {/* Bottom-sheet for resubmission — reuses the same modal as the Done intercept */}
+      {showResubmitModal && (
+        <MarkDoneApprovalModal
+          task={task}
+          onClose={() => setShowResubmitModal(false)}
+          onSubmitted={(updated) => {
+            if (updated && onUpdate) onUpdate(updated);
+            // Local mirror update happens via the socket event from the controller.
+          }}
+        />
+      )}
+
+      {/* Inline error banner if backend says they can't act (defensive — controller
+          enforces this server-side, but if state drifts we surface gracefully) */}
+      {isInActiveCycle && !isCurrentApprover && currentPendingRow && currentPendingRow.userId === null && (
+        <div className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400 mt-2 p-2 bg-amber-50 dark:bg-amber-500/10 rounded-md border border-amber-200 dark:border-amber-500/30">
+          <AlertCircle size={12} className="flex-shrink-0 mt-0.5" />
+          <span>Current approver was deleted from the system. Contact an admin to resolve this chain.</span>
+        </div>
+      )}
     </div>
   );
 }

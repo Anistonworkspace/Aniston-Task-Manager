@@ -378,6 +378,41 @@ body {
   to { transform: translateX(0); opacity: 1; }
 }
 
+/* ===== Detail Modal (TaskModal, MemberDrillDown) ===== */
+.detail-modal-backdrop {
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: detailBackdropIn 180ms ease-out;
+}
+.detail-modal-panel-center {
+  animation: detailPanelInCenter 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center center;
+}
+.detail-modal-panel-bottom {
+  animation: detailPanelInBottom 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center bottom;
+}
+@keyframes detailBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes detailPanelInCenter {
+  from { opacity: 0; transform: translateY(40px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes detailPanelInBottom {
+  from { opacity: 0; transform: translateY(80px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .detail-modal-backdrop,
+  .detail-modal-panel-center,
+  .detail-modal-panel-bottom {
+    animation: none !important;
+  }
+}
+
 .animate-fade-in { animation: fadeIn 0.2s ease-out; }
 
 .animate-slide-up {
@@ -431,4 +466,138 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(80px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* =====================================================================
+   FLOATING-CARD SHELL THEME  (visual-only, rollback-safe)
+   ---------------------------------------------------------------------
+   Activated by adding the `.app-shell` class to the Layout root and
+   wrapping the main content area in `.floating-card`.
+   To roll back: remove `.app-shell` / `.floating-card` from Layout.jsx
+   and (optionally) delete this block. No logic depends on it.
+   ===================================================================== */
+:root {
+  --base-tint: #f1ece3;          /* tinted base layer behind sidebar/header */
+  --card-bg: #ffffff;            /* floating content card background */
+  --card-border-color: rgba(15, 23, 42, 0.05);
+  --card-radius: 14px;
+  --shell-gap: 12px;             /* gap between card and viewport edges */
+  --card-shadow:
+    -4px 0 8px rgba(0, 0, 0, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    0 8px 18px rgba(0, 0, 0, 0.06);
+}
+.dark {
+  --base-tint: #231f1a;
+  --card-bg: #2a2a2e;
+  --card-border-color: rgba(255, 255, 255, 0.05);
+  --card-shadow:
+    -4px 0 12px rgba(0, 0, 0, 0.35),
+    0 4px 12px rgba(0, 0, 0, 0.45),
+    0 12px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* App shell — paint the tinted base layer behind everything */
+.app-shell,
+.dark .app-shell {
+  background-color: var(--base-tint) !important;
+}
+
+/* Sidebar — blend visually into the base tint, drop the right divider */
+.app-shell .bg-sidebar-bg {
+  background-color: var(--base-tint) !important;
+  border-right-color: transparent !important;
+}
+.dark .app-shell [class*="bg-\[\#1A1B1F\]"] {
+  background-color: var(--base-tint) !important;
+}
+.app-shell .border-sidebar-border {
+  border-color: transparent !important;
+}
+
+/* Header — sit transparently over the base tint */
+.app-shell > div > header {
+  background-color: transparent !important;
+  border-bottom-color: transparent !important;
+}
+.dark .app-shell > div > header {
+  background-color: transparent !important;
+}
+
+/* Floating content card — detached, rounded, layered shadow */
+.floating-card {
+  background-color: var(--card-bg);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  border: 1px solid var(--card-border-color);
+}
+.dark .floating-card {
+  background-color: var(--card-bg);
+  border-color: var(--card-border-color);
+  box-shadow: var(--card-shadow);
+}
+
+/* Stuck variant — flush to right and bottom bezels.
+   Top-left and top-right stay rounded; bottom corners are flat so the
+   right/bottom edges meet the viewport cleanly with no shadow gap. */
+.floating-card--stuck {
+  border-radius: var(--card-radius) var(--card-radius) 0 0;
+  border-right: none;
+  border-bottom: none;
+}
+
+/* Sidebar — kill horizontal scroll, force ellipsis on overflowing labels.
+   Scoped under .app-shell so login/register layouts are untouched. */
+.app-shell .bg-sidebar-bg {
+  overflow-x: hidden;
+}
+.app-shell .bg-sidebar-bg .overflow-y-auto {
+  overflow-x: hidden;
+}
+
+/* Sidebar vertical scrollbar — hidden by default, polished thin scrollbar
+   appears on sidebar hover. Uses the standard `scrollbar-color` property so
+   modern Chromium honours our custom colors instead of falling back to its
+   native thin scrollbar (which is what made it look default before). */
+.app-shell .scrollbar-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 200ms ease;
+}
+.app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar {
+  scrollbar-color: #c5c7d0 transparent;
+}
+.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar {
+  scrollbar-color: #3a3b40 transparent;
+}
+
+/* WebKit fallback for older browsers that don't yet support scrollbar-color.
+   Also overrides the always-visible thumb declared earlier in this file. */
+.app-shell .scrollbar-sidebar::-webkit-scrollbar { width: 6px; }
+.app-shell .scrollbar-sidebar::-webkit-scrollbar-track { background: transparent !important; }
+.app-shell .scrollbar-sidebar::-webkit-scrollbar-thumb {
+  background-color: transparent !important;
+  border-radius: 99px;
+  transition: background-color 200ms ease;
+}
+.app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb {
+  background-color: #c5c7d0 !important;
+}
+.app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
+  background-color: #a1a3ab !important;
+}
+.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb {
+  background-color: #3a3b40 !important;
+}
+.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
+  background-color: #4a4b52 !important;
+}
+/* Make every flex child inside the sidebar respect its parent width
+   so `truncate` on labels actually truncates instead of pushing wider. */
+.app-shell .bg-sidebar-bg .sidebar-item,
+.app-shell .bg-sidebar-bg .sidebar-item > *,
+.app-shell .bg-sidebar-bg button,
+.app-shell .bg-sidebar-bg [class*="ml-4"],
+.app-shell .bg-sidebar-bg [class*="pl-1"] {
+  min-width: 0;
 }

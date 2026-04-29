@@ -1,17 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   ClipboardCheck, Clock, HelpCircle, ChevronDown, Check, X,
-  AlertTriangle, Calendar, MessageSquare, ExternalLink, Filter,
+  AlertTriangle, Calendar, MessageSquare, ExternalLink, Filter, Inbox,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import TaskModal from '../components/task/TaskModal';
+import useSocket from '../hooks/useSocket';
 import { getBoardStatuses } from '../utils/constants';
 
 const TABS = [
   { id: 'approvals', label: 'Approvals', icon: ClipboardCheck, color: '#8b5cf6' },
+  { id: 'myFeedback', label: 'My Feedback', icon: Inbox, color: '#10b981' },
   { id: 'extensions', label: 'Extensions', icon: Clock, color: '#f59e0b' },
   { id: 'help', label: 'Help Requests', icon: HelpCircle, color: '#e2445c' },
 ];
@@ -35,9 +37,12 @@ const URGENCY_COLORS = {
 };
 
 export default function TasksPage() {
-  const { canManage, isAdmin } = useAuth();
+  const { canManage, isAdmin, isAssistantManager } = useAuth();
+  const canViewTeamFeedback = canManage || isAssistantManager;
   const [activeTab, setActiveTab] = useState('approvals');
   const [data, setData] = useState({ approvals: [], extensions: [], helpRequests: [] });
+  const [myFeedback, setMyFeedback] = useState([]);
+  const [feedbackScope, setFeedbackScope] = useState('mine');
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
   const [actionLoading, setActionLoading] = useState(null);
@@ -74,11 +79,25 @@ export default function TasksPage() {
     setBoardStatuses(null);
   }, []);
 
+  const fetchMyFeedback = useCallback(async (scope) => {
+    try {
+      const res = await api.get('/task-extras/my-feedback', { params: scope ? { scope } : {} });
+      const payload = res.data?.data || res.data;
+      setMyFeedback(Array.isArray(payload?.feedback) ? payload.feedback : []);
+    } catch (err) {
+      // Non-fatal — don't blank the rest of the page if just this endpoint fails.
+      console.error('Failed to load my feedback:', err);
+      setMyFeedback([]);
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await api.get('/task-extras/workflow-items');
-      setData(res.data.data || res.data);
+      // workflow-items only — my-feedback is handled by the scope-driven effect
+      // below so changing the scope toggle doesn't re-pull the whole page.
+      const workflowRes = await api.get('/task-extras/workflow-items');
+      setData(workflowRes.data.data || workflowRes.data);
     } catch (err) {
       console.error('Failed to load workflow items:', err);
     } finally {
@@ -87,6 +106,18 @@ export default function TasksPage() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Re-pull my-feedback whenever the scope toggle changes (and on mount).
+  useEffect(() => {
+    fetchMyFeedback(feedbackScope === 'mine' ? undefined : feedbackScope);
+  }, [feedbackScope, fetchMyFeedback]);
+
+  // Live-refresh feedback view when any approval action fires anywhere — covers
+  // the case where the submitter is watching the page and an approver acts.
+  // Cheap (limit 200, indexed) and keeps the UI honest without a full reload.
+  useSocket('task:approval-updated', () => {
+    fetchMyFeedback(feedbackScope === 'mine' ? undefined : feedbackScope);
+  });
 
   // Approval actions
   async function handleApprove(taskId) {
@@ -143,10 +174,15 @@ export default function TasksPage() {
 
   const counts = {
     approvals: data.approvals?.filter(t => t.approvalStatus === 'pending_approval').length || 0,
+    myFeedback: myFeedback?.filter(f => f.status === 'pending').length || 0,
     extensions: data.extensions?.filter(e => e.status === 'pending').length || 0,
-
     help: data.helpRequests?.filter(h => h.status !== 'resolved').length || 0,
   };
+
+  const filteredMyFeedback = useMemo(() => {
+    if (statusFilter === 'all') return myFeedback;
+    return myFeedback.filter((f) => f.status === statusFilter);
+  }, [myFeedback, statusFilter]);
 
   function StatusBadge({ status }) {
     const cfg = STATUS_COLORS[status] || STATUS_COLORS.pending;
@@ -164,7 +200,7 @@ export default function TasksPage() {
         <h1 className="text-2xl font-bold text-text-primary flex items-center gap-2">
           <ClipboardCheck size={24} className="text-primary" /> Tasks & Workflows
         </h1>
-        <p className="text-sm text-text-tertiary mt-0.5">Approvals, extensions, and help requests</p>
+        <p className="text-sm text-text-tertiary mt-0.5">Approvals, your submitted feedback, extensions, and help requests</p>
       </div>
 
       {/* Tabs */}
@@ -184,15 +220,39 @@ export default function TasksPage() {
       </div>
 
       {/* Status Filter */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Filter size={13} className="text-text-tertiary" />
         <span className="text-xs text-text-tertiary font-medium">Status:</span>
-        {['all', 'pending', 'approved', 'rejected', 'resolved'].map(s => (
+        {(activeTab === 'myFeedback'
+          ? ['all', 'pending', 'approved', 'rejected', 'changes_requested']
+          : ['all', 'pending', 'approved', 'rejected', 'resolved']
+        ).map(s => (
           <button key={s} onClick={() => setStatusFilter(s)}
             className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${statusFilter === s ? 'bg-primary text-white border-primary' : 'border-border text-text-secondary hover:bg-surface'}`}>
-            {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+            {s === 'all'
+              ? 'All'
+              : s === 'changes_requested'
+                ? 'Changes Requested'
+                : s.charAt(0).toUpperCase() + s.slice(1)}
           </button>
         ))}
+        {activeTab === 'myFeedback' && canViewTeamFeedback && (
+          <span className="ml-3 inline-flex items-center gap-1 border border-border rounded-md p-0.5">
+            {[
+              { id: 'mine', label: 'Mine' },
+              { id: 'team', label: 'My Team' },
+              ...(canManage ? [{ id: 'all', label: 'Org-wide' }] : []),
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setFeedbackScope(opt.id)}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${feedbackScope === opt.id ? 'bg-primary text-white' : 'text-text-secondary hover:bg-surface'}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </span>
+        )}
       </div>
 
       {loading ? (
@@ -269,6 +329,121 @@ export default function TasksPage() {
                 </div>
               </div>
             ))
+          )}
+
+          {/* ═══ MY FEEDBACK TAB ═══ */}
+          {activeTab === 'myFeedback' && (
+            filteredMyFeedback.length === 0 ? (
+              <EmptyState icon={Inbox} message="No feedback submitted yet" />
+            ) : filteredMyFeedback.map(item => {
+              const taskAvailable = !!item.task && !item.task.isArchived;
+              return (
+                <div key={item.id} className="bg-white rounded-xl border border-border p-4 hover:shadow-sm transition-shadow">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <h3 className="text-sm font-semibold text-text-primary truncate">
+                          {item.task ? (
+                            <button
+                              onClick={() => taskAvailable && openTask(item.task.id, item.task.boardId)}
+                              disabled={!taskAvailable}
+                              className={`text-left ${taskAvailable ? 'hover:text-primary hover:underline cursor-pointer' : 'text-text-tertiary cursor-not-allowed'} transition-colors`}
+                              title={!taskAvailable ? 'Task is archived or unavailable' : ''}
+                            >
+                              {item.task.title}
+                              {item.task.isArchived && <span className="ml-2 text-[10px] uppercase text-text-tertiary">(archived)</span>}
+                            </button>
+                          ) : (
+                            <span className="text-text-tertiary italic">(Task deleted)</span>
+                          )}
+                        </h3>
+                        <StatusBadge status={item.status} />
+                        <span className="text-[10px] text-text-tertiary font-mono">
+                          #{(item.taskId || '').slice(0, 8)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-text-tertiary mb-2 flex-wrap">
+                        {item.task?.board && (
+                          <span className="flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: item.task.board.color || '#0073ea' }} />
+                            {item.task.board.name}
+                          </span>
+                        )}
+                        <span className="flex items-center gap-1">
+                          <Avatar name={item.submittedBy.name} size="xs" />
+                          {item.submittedBy.name}
+                        </span>
+                        <span title={item.submittedAt ? new Date(item.submittedAt).toLocaleString() : ''}>
+                          Submitted {item.submittedAt ? formatDistanceToNow(new Date(item.submittedAt), { addSuffix: true }) : 'recently'}
+                        </span>
+                        {item.actionTakenAt && (
+                          <span title={new Date(item.actionTakenAt).toLocaleString()}>
+                            · Last action {formatDistanceToNow(new Date(item.actionTakenAt), { addSuffix: true })}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Stage / current approver line */}
+                      <div className="flex items-center gap-2 text-[11px] text-text-secondary mb-2">
+                        <span className="font-semibold text-text-tertiary uppercase tracking-wide text-[10px]">Stage:</span>
+                        <span className="font-medium">{item.stageLabel}</span>
+                        {item.currentApprover && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface rounded">
+                            <Avatar name={item.currentApprover.name} size="xs" />
+                            <span>{item.currentApprover.name}</span>
+                            {item.currentApprover.role && (
+                              <span className="text-text-tertiary">· {item.currentApprover.role.replace('_', ' ')}</span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Submitted comment */}
+                      {item.comment && (
+                        <p className="text-xs text-text-secondary bg-surface/60 px-2.5 py-1.5 rounded-md border-l-2 border-primary/30 italic mb-2">
+                          "{item.comment}"
+                        </p>
+                      )}
+
+                      {/* Timeline (last 4 entries) — submitter row + decisive actions */}
+                      {item.timeline?.length > 1 && (
+                        <div className="mt-2 space-y-1">
+                          {item.timeline
+                            .filter((t) => t.level > 0)
+                            .slice(-4)
+                            .map((entry, i) => (
+                              <div key={`${entry.level}-${i}`} className="text-[11px]">
+                                <p className="text-text-tertiary">
+                                  <span className="font-medium text-text-secondary">L{entry.level} · {entry.userName}</span>
+                                  {' — '}
+                                  <span className={`font-semibold ${
+                                    entry.status === 'approved' ? 'text-green-600'
+                                      : entry.status === 'rejected' ? 'text-red-600'
+                                      : entry.status === 'changes_requested' ? 'text-orange-600'
+                                      : 'text-text-tertiary'
+                                  }`}>
+                                    {entry.status === 'pending' ? 'pending' : entry.status.replace('_', ' ')}
+                                  </span>
+                                  {entry.actionAt && (
+                                    <span className="text-text-tertiary ml-1">
+                                      · {new Date(entry.actionAt).toLocaleString()}
+                                    </span>
+                                  )}
+                                </p>
+                                {entry.comment && (
+                                  <p className="text-[11px] text-text-secondary bg-surface/40 px-2 py-1 rounded mt-0.5 ml-3 italic">
+                                    "{entry.comment}"
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
           )}
 
           {/* ═══ EXTENSIONS TAB ═══ */}

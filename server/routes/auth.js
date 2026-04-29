@@ -103,7 +103,9 @@ router.get('/me/permissions', authenticate, async (req, res) => {
       data: {
         permissions: legacyPerms,
         granularPermissions: result.permissions,
+        basePermissions: result.basePermissions,
         overrides: result.overrides,
+        denials: result.denials,
         grants: result.grants,
         role: result.role,
         isSuperAdmin: result.isSuperAdmin,

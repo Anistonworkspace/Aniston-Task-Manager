@@ -189,6 +189,16 @@ export default function BoardPage() {
   useSocket('tasks:reordered', () => loadTasks());
   useSocket('board:updated', (data) => { if (data?.board?.id === boardId) setBoard(data.board); });
 
+  // Approval flow updates — patches just the approvalFlows array on the affected
+  // task so the multi-step indicator on TaskRow re-renders without refetching.
+  // Also mirrors the patch into selectedTask so the TaskModal's ApprovalSection
+  // tab refreshes live (selectedTask is its own state, not derived from tasks).
+  useSocket('task:approval-updated', (data) => {
+    if (!data?.taskId || !Array.isArray(data?.flows)) return;
+    setTasks(prev => prev.map(t => t.id === data.taskId ? { ...t, approvalFlows: data.flows } : t));
+    setSelectedTask(prev => (prev && prev.id === data.taskId ? { ...prev, approvalFlows: data.flows } : prev));
+  });
+
   // Receipt events: server emits only for mutations (delivered/seen). The
   // payload targets the task's creator — ignore if the current viewer isn't
   // the assigner (they'd have no receipt row anyway).

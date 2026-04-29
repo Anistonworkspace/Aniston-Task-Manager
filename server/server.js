@@ -395,6 +395,25 @@ const start = async () => {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: task_approval_flows.stage column ──────────
+    // The `stage` column groups parallel approvers into a single stage so the
+    // final stage (Manager + Admin + Super Admin) acts as one any-of step
+    // rather than three sequential levels. Backfill stage = level for legacy
+    // rows so existing chains keep working unchanged.
+    try {
+      const [tafTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'task_approval_flows'`
+      );
+      if (tafTables.length > 0) {
+        await sequelize.query(`ALTER TABLE task_approval_flows ADD COLUMN IF NOT EXISTS stage INTEGER`);
+        await sequelize.query(`UPDATE task_approval_flows SET stage = level WHERE stage IS NULL`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_task_stage_status_idx ON task_approval_flows ("taskId", stage, status)`);
+        console.log('[Server] task_approval_flows.stage column ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] task_approval_flows.stage migration warning:', e.message?.slice(0, 120));
+    }
+
     // ── Auto-migration: permission_grants schema upgrades (008) ──
     // Adds action-based permission columns required by permissionEngine.js
     try {
@@ -570,6 +589,19 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] BoardMembers autoAdded migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Data backfill: progress=100 for tasks already marked done ──
+    // Idempotent — only touches rows that are out-of-sync with the new
+    // "completed ⇒ progress 100" invariant enforced by the controller.
+    try {
+      const [, meta] = await sequelize.query(
+        `UPDATE tasks SET progress = 100 WHERE status = 'done' AND (progress IS NULL OR progress < 100)`
+      );
+      const updated = meta?.rowCount ?? 0;
+      if (updated > 0) console.log(`[Server] Backfilled progress=100 on ${updated} done tasks.`);
+    } catch (e) {
+      console.warn('[Server] Done-task progress backfill warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: Add lang column to notes table ──

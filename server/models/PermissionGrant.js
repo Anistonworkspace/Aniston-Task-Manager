@@ -49,6 +49,13 @@ const PermissionGrant = sequelize.define(
       defaultValue: true,
       comment: 'true = this is an override grant beyond base role',
     },
+    effect: {
+      type: DataTypes.STRING(10),
+      allowNull: false,
+      defaultValue: 'grant',
+      validate: { isIn: [['grant', 'deny']] },
+      comment: "'grant' adds permission. 'deny' removes it (wins over role default and grant).",
+    },
     grantedBy: {
       type: DataTypes.UUID,
       allowNull: false,
@@ -100,6 +107,8 @@ const PermissionGrant = sequelize.define(
       { fields: ['action'] },
       { fields: ['resourceType', 'action'] },
       { fields: ['userId', 'resourceType', 'action'] },
+      { fields: ['effect'] },
+      { fields: ['userId', 'resourceType', 'action', 'effect'] },
     ],
   }
 );

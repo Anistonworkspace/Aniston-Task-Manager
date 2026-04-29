@@ -6,6 +6,7 @@ const {
   computeEffectivePermissions,
   canGrantPermission,
   getPermissionMetadata,
+  VALID_EFFECTS,
 } = require('../services/permissionEngine');
 const {
   RESOURCES,
@@ -41,13 +42,30 @@ exports.getPermissions = async (req, res) => {
   }
 };
 
-// POST /api/permissions — grant permission (new action-based system)
+// POST /api/permissions — grant or deny a permission (action-based system)
+//
+// Body:
+//   userId        UUID, required
+//   resourceType  string from permissionMatrix.RESOURCES, required
+//   action        string (preferred) OR permissionLevel (legacy), one required
+//   effect        'grant' | 'deny' (default: 'grant')
+//   resourceId    UUID, optional — scope to a specific resource
+//   scope         'global' | 'workspace' | 'board' (default: 'global')
+//   expiresAt     ISO date, optional — temporary grant
+//   reason, notes optional metadata
+//
+// Precedence handled by permissionEngine:
+//   deny override > grant override > role default > nothing
 exports.grantPermission = async (req, res) => {
   try {
-    const { userId, resourceType, resourceId, action, permissionLevel, expiresAt, reason, notes, scope } = req.body;
+    const {
+      userId, resourceType, resourceId, action, permissionLevel,
+      effect, expiresAt, reason, notes, scope,
+    } = req.body;
 
-    // Determine action: use new 'action' field, fall back to legacy 'permissionLevel'
     const grantAction = action || permissionLevel;
+    const grantEffect = effect || 'grant';
+
     if (!userId || !resourceType || !grantAction) {
       return res.status(400).json({
         success: false,
@@ -55,7 +73,13 @@ exports.grantPermission = async (req, res) => {
       });
     }
 
-    // Validate resource type
+    if (!VALID_EFFECTS.includes(grantEffect)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid effect '${grantEffect}'. Must be one of: ${VALID_EFFECTS.join(', ')}`,
+      });
+    }
+
     if (!RESOURCES[resourceType]) {
       return res.status(400).json({
         success: false,
@@ -63,7 +87,6 @@ exports.grantPermission = async (req, res) => {
       });
     }
 
-    // Validate action for this resource (only for new action-based grants)
     if (action) {
       const validActions = RESOURCE_ACTIONS[resourceType] || [];
       if (!validActions.includes(action)) {
@@ -74,43 +97,46 @@ exports.grantPermission = async (req, res) => {
       }
     }
 
-    // Check target user exists
     const targetUser = await User.findByPk(userId);
     if (!targetUser) {
       return res.status(404).json({ success: false, message: 'Target user not found.' });
     }
 
-    // Prevent granting to super admin (they already have everything)
+    // Safety rail: cannot deny or grant against the super admin. Their
+    // privileges are not subject to override rules.
     if (targetUser.isSuperAdmin) {
       return res.status(400).json({
         success: false,
-        message: 'Super admin already has full access. No grants needed.',
+        message: 'Super admin already has full access and cannot be overridden.',
       });
     }
 
-    // Check if this is already a base permission for the user's role
-    if (action && isBasePermission(targetUser.role, resourceType, action)) {
+    // For GRANT only: skip if already a base permission. For DENY: allow it
+    // — the whole point of deny is to remove a base permission for one user.
+    if (grantEffect === 'grant' && action && isBasePermission(targetUser.role, resourceType, action)) {
       return res.status(400).json({
         success: false,
-        message: `'${action}' on '${resourceType}' is already included in the '${targetUser.role}' base role. No override needed.`,
+        message: `'${action}' on '${resourceType}' is already included in the '${targetUser.role}' base role. No grant override needed.`,
         isBasePermission: true,
       });
     }
 
-    // Check if granter has authority to grant this permission
-    const grantCheck = await canGrantPermission(req.user, resourceType, action || 'manage');
+    // Authority check — granter must have the right to issue this effect.
+    const grantCheck = await canGrantPermission(req.user, resourceType, action || 'manage', grantEffect);
     if (!grantCheck.allowed) {
       return res.status(403).json({
         success: false,
-        message: grantCheck.reason || 'You do not have authority to grant this permission.',
+        message: grantCheck.reason || 'You do not have authority to issue this permission override.',
       });
     }
 
-    // Check for existing duplicate active grant
+    // Existing override for the same (userId, resourceType, resourceId, action,
+    // effect) tuple is updated in place rather than duplicated.
     const existingWhere = {
       userId,
       resourceType,
       resourceId: resourceId || null,
+      effect: grantEffect,
       isActive: true,
     };
     if (action) existingWhere.action = action;
@@ -118,7 +144,6 @@ exports.grantPermission = async (req, res) => {
     const existing = await PermissionGrant.findOne({ where: existingWhere });
 
     if (existing) {
-      // Update existing grant
       await existing.update({
         expiresAt: expiresAt || null,
         reason: reason || existing.reason,
@@ -126,23 +151,23 @@ exports.grantPermission = async (req, res) => {
         scope: scope || existing.scope,
       });
       logActivity({
-        action: 'permission_updated',
-        description: `${req.user.name} updated ${action || permissionLevel} permission on ${resourceType} for ${targetUser.name}`,
+        action: grantEffect === 'deny' ? 'permission_denied_updated' : 'permission_updated',
+        description: `${req.user.name} updated ${grantEffect} of '${grantAction}' on '${resourceType}' for ${targetUser.name}`,
         entityType: 'permission',
         entityId: existing.id,
         userId: req.user.id,
-        meta: { targetUserId: userId, resourceType, resourceId, action: grantAction },
+        meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, effect: grantEffect },
       });
       return res.json({ success: true, data: { permission: existing }, updated: true });
     }
 
-    // Create new grant
     const grant = await PermissionGrant.create({
       userId,
       resourceType,
       resourceId: resourceId || null,
       action: action || null,
       permissionLevel: action ? null : permissionLevel,
+      effect: grantEffect,
       scope: scope || 'global',
       isOverride: true,
       grantedBy: req.user.id,
@@ -152,12 +177,12 @@ exports.grantPermission = async (req, res) => {
     });
 
     logActivity({
-      action: 'permission_granted',
-      description: `${req.user.name} granted '${grantAction}' on '${resourceType}' to ${targetUser.name}`,
+      action: grantEffect === 'deny' ? 'permission_denied' : 'permission_granted',
+      description: `${req.user.name} ${grantEffect === 'deny' ? 'denied' : 'granted'} '${grantAction}' on '${resourceType}' for ${targetUser.name}`,
       entityType: 'permission',
       entityId: grant.id,
       userId: req.user.id,
-      meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, scope: scope || 'global' },
+      meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, effect: grantEffect, scope: scope || 'global' },
     });
 
     res.status(201).json({ success: true, data: { permission: grant } });
@@ -223,12 +248,20 @@ exports.bulkGrantPermissions = async (req, res) => {
   }
 };
 
-// POST /api/permissions/multi — multi-resource multi-action grant in one operation
+// POST /api/permissions/multi — multi-resource × multi-action override (grant or deny)
 exports.multiGrant = async (req, res) => {
   const { sequelize } = require('../config/db');
   const t = await sequelize.transaction();
   try {
-    const { userId, resources, actions, scope, expiresAt, reason } = req.body;
+    const { userId, resources, actions, scope, expiresAt, reason, effect } = req.body;
+    const grantEffect = effect || 'grant';
+    if (!VALID_EFFECTS.includes(grantEffect)) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Invalid effect '${grantEffect}'. Must be one of: ${VALID_EFFECTS.join(', ')}`,
+      });
+    }
 
     // Validate required fields
     if (!userId) {
@@ -279,53 +312,51 @@ exports.multiGrant = async (req, res) => {
     for (const resource of resourceList) {
       const validActions = RESOURCE_ACTIONS[resource] || [];
 
-      // Check granter authority for this resource (once per resource)
-      const grantCheck = await canGrantPermission(req.user, resource, 'manage');
+      // Check granter authority for this resource (once per resource).
+      const grantCheck = await canGrantPermission(req.user, resource, 'manage', grantEffect);
       if (!grantCheck.allowed) {
         errors.push({ resource, reason: grantCheck.reason || 'No authority to grant.' });
         continue;
       }
 
       for (const action of actionList) {
-        // Skip actions not valid for this resource
         if (!validActions.includes(action)) {
           skipped.push({ resource, action, reason: `'${action}' is not a valid action for '${resource}'` });
           continue;
         }
 
-        // Skip if already a base permission
-        if (isBasePermission(targetUser.role, resource, action)) {
+        // For GRANT: skip if already a base permission. For DENY: do NOT skip
+        // — that's the explicit purpose of a deny override.
+        if (grantEffect === 'grant' && isBasePermission(targetUser.role, resource, action)) {
           skipped.push({ resource, action, reason: `Already included in '${targetUser.role}' base role` });
           continue;
         }
 
-        // Check for existing active grant
         const existing = await PermissionGrant.findOne({
-          where: { userId, resourceType: resource, action, isActive: true },
+          where: { userId, resourceType: resource, action, effect: grantEffect, isActive: true },
           transaction: t,
         });
 
         if (existing) {
-          // Update expiry/reason if provided
           if (expiresAt || reason) {
             await existing.update({
               expiresAt: expiresAt || existing.expiresAt,
               reason: reason || existing.reason,
               scope: scope || existing.scope,
             }, { transaction: t });
-            updated.push({ resource, action, id: existing.id });
+            updated.push({ resource, action, id: existing.id, effect: grantEffect });
           } else {
-            skipped.push({ resource, action, reason: 'Already granted' });
+            skipped.push({ resource, action, reason: `Already ${grantEffect}ed` });
           }
           continue;
         }
 
-        // Create new grant
         const grant = await PermissionGrant.create({
           userId,
           resourceType: resource,
           action,
           permissionLevel: null,
+          effect: grantEffect,
           scope: scope || 'global',
           isOverride: true,
           grantedBy: req.user.id,
@@ -333,7 +364,7 @@ exports.multiGrant = async (req, res) => {
           reason: reason || null,
         }, { transaction: t });
 
-        created.push({ resource, action, id: grant.id });
+        created.push({ resource, action, id: grant.id, effect: grantEffect });
       }
     }
 
@@ -342,9 +373,10 @@ exports.multiGrant = async (req, res) => {
     // Log activity
     const totalProcessed = created.length + updated.length;
     if (totalProcessed > 0) {
+      const verb = grantEffect === 'deny' ? 'denied' : 'granted';
       logActivity({
-        action: 'permission_multi_grant',
-        description: `${req.user.name} granted ${totalProcessed} permission(s) to ${targetUser.name} (${created.length} new, ${updated.length} updated, ${skipped.length} skipped)`,
+        action: grantEffect === 'deny' ? 'permission_multi_deny' : 'permission_multi_grant',
+        description: `${req.user.name} ${verb} ${totalProcessed} permission(s) for ${targetUser.name} (${created.length} new, ${updated.length} updated, ${skipped.length} skipped)`,
         entityType: 'permission',
         entityId: null,
         userId: req.user.id,
@@ -353,6 +385,7 @@ exports.multiGrant = async (req, res) => {
           targetUserName: targetUser.name,
           resources: resourceList,
           actions: actionList,
+          effect: grantEffect,
           created: created.length,
           updated: updated.length,
           skipped: skipped.length,
@@ -458,6 +491,7 @@ exports.getEffective = async (req, res) => {
           permissions: result.permissions,
           basePermissions: result.basePermissions,
           overrides: result.overrides,
+          denials: result.denials,
           grants: result.grants,
           role: result.role,
           isSuperAdmin: result.isSuperAdmin,
@@ -522,6 +556,7 @@ exports.getPermissionHistory = async (req, res) => {
           resourceType: g.resourceType,
           action: g.action,
           permissionLevel: g.permissionLevel,
+          effect: g.effect || 'grant',
           scope: g.scope,
           isActive: g.isActive,
           grantedBy: g.granter?.name,

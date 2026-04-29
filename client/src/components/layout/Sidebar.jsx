@@ -84,11 +84,12 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const [wsActionMenu, setWsActionMenu] = useState(null);
+  const [boardActionMenu, setBoardActionMenu] = useState(null);
   const [renamingBoard, setRenamingBoard] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [renamingWorkspace, setRenamingWorkspace] = useState(null);
   const [wsRenameValue, setWsRenameValue] = useState('');
-  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [sidebarWidth, setSidebarWidth] = useState(220);
   const [dragBoardId, setDragBoardId] = useState(null);
   const [dragOverWsId, setDragOverWsId] = useState(null);
   const resizing = useRef(false);
@@ -209,12 +210,14 @@ export default function Sidebar({ collapsed, onToggle }) {
   );
 
   function renderBoardItem(board) {
+    const menuOpen = boardActionMenu === board.id;
+    const isFav = favorites.includes(board.id);
     return (
       <div key={board.id}
         draggable
         onDragStart={(e) => { setDragBoardId(board.id); e.dataTransfer.effectAllowed = 'move'; }}
         onDragEnd={() => { setDragBoardId(null); setDragOverWsId(null); }}
-        className={`group flex items-center ${dragBoardId === board.id ? 'opacity-40' : ''}`}>
+        className={`group relative flex items-center ${dragBoardId === board.id ? 'opacity-40' : ''}`}>
         {renamingBoard === board.id ? (
           <div className="flex-1 px-2 py-1">
             <input ref={renameInputRef} type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)}
@@ -227,64 +230,79 @@ export default function Sidebar({ collapsed, onToggle }) {
             <button onClick={() => navigate(`/boards/${board.id}`)}
               className={`sidebar-item flex-1 text-[13px] ${isBoardActive(board.id) ? 'sidebar-item-active' : ''}`}>
               <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: board.color || '#579bfc' }} />
-              <span className="truncate flex-1 text-left">{board.name}</span>
+              <span className={`truncate flex-1 text-left transition-[padding] duration-150 ${menuOpen ? 'pr-5' : 'group-hover:pr-5'}`}>{board.name}</span>
             </button>
-            <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity mr-1">
-              <button onClick={(e) => { e.stopPropagation(); startRename(board); }}
-                className="p-0.5 rounded text-sidebar-text/30 hover:text-sidebar-accent transition-colors" title="Rename">
-                <Edit3 size={11} />
-              </button>
-              <button onClick={(e) => toggleFavorite(e, board.id)}
-                className="p-0.5 rounded text-sidebar-text/30 hover:text-amber-400 transition-colors" title="Favorite">
-                {favorites.includes(board.id) ? <Star size={11} className="fill-amber-400 text-amber-400" /> : <StarOff size={11} />}
-              </button>
-            </div>
+            {/* 3-dot trigger — RIGHT side of the title row (ChatGPT-style). The
+                title's pr-5 reserves space so it truncates before the icon. */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setBoardActionMenu(menuOpen ? null : board.id); }}
+              className={`absolute right-3 top-1/2 -translate-y-1/2 p-0.5 rounded text-sidebar-text/60 hover:text-sidebar-text-active hover:bg-sidebar-hover transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              title="Board actions">
+              <MoreHorizontal size={12} />
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setBoardActionMenu(null)} />
+                <div className="absolute right-2 top-full mt-0.5 z-50 w-32 bg-white dark:bg-[#1E1F23] rounded-lg shadow-dropdown border border-border py-1 dropdown-enter">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setBoardActionMenu(null); startRename(board); }}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100 transition-colors">
+                    <Edit3 size={12} /> Edit
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setBoardActionMenu(null); toggleFavorite(e, board.id); }}
+                    className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100 transition-colors">
+                    {isFav ? <Star size={12} className="fill-amber-400 text-amber-400" /> : <StarOff size={12} />}
+                    {isFav ? 'Unstar' : 'Star'}
+                  </button>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
     );
   }
 
-  if (collapsed) {
-    return (
-      <div className="w-[52px] bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col items-center py-3 gap-1 flex-shrink-0 border-r border-sidebar-border max-md:hidden" style={{ transition: 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}>
-        <button onClick={onToggle} className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center mb-2 shadow-sm">
-          <FolderKanban size={15} className="text-white" />
+  // Collapsed-mode inner content (icons-only). Rendered inside the same
+  // outer container as the expanded view so the width transition is smooth.
+  const collapsedInner = (
+    <>
+      <button onClick={onToggle} className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center mb-2 shadow-sm">
+        <FolderKanban size={15} className="text-white" />
+      </button>
+      <div className="w-5 border-t border-sidebar-border my-1" />
+      {[
+        { icon: Home, path: '/', label: 'Home' },
+        { icon: User, path: '/my-work', label: 'My Work' },
+        { icon: Clock, path: '/time-plan', label: 'Time Plan' },
+        { icon: CalendarDays, path: '/meetings', label: 'Meetings' },
+      ].map(item => (
+        <button key={item.path} onClick={() => navigate(item.path)}
+          className={`p-2 rounded-md transition-all duration-150 ${isActive(item.path) ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
+          title={item.label}>
+          <item.icon size={18} strokeWidth={1.8} />
         </button>
-        <div className="w-5 border-t border-sidebar-border my-1" />
-        {[
-          { icon: Home, path: '/', label: 'Home' },
-          { icon: User, path: '/my-work', label: 'My Work' },
-          { icon: Clock, path: '/time-plan', label: 'Time Plan' },
-          { icon: CalendarDays, path: '/meetings', label: 'Meetings' },
-        ].map(item => (
-          <button key={item.path} onClick={() => navigate(item.path)}
-            className={`p-2 rounded-md transition-all duration-150 ${isActive(item.path) ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
-            title={item.label}>
-            <item.icon size={18} strokeWidth={1.8} />
+      ))}
+      {(canManage || !!granularPermissions['dashboard.view']) && (
+        <>
+          <div className="w-5 border-t border-sidebar-border my-1" />
+          <button onClick={() => navigate('/dashboard')}
+            className={`p-2 rounded-md transition-all duration-150 ${isActive('/dashboard') ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
+            title="Dashboard">
+            <BarChart3 size={18} strokeWidth={1.8} />
           </button>
-        ))}
-        {(canManage || !!granularPermissions['dashboard.view']) && (
-          <>
-            <div className="w-5 border-t border-sidebar-border my-1" />
-            <button onClick={() => navigate('/dashboard')}
-              className={`p-2 rounded-md transition-all duration-150 ${isActive('/dashboard') ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
-              title="Dashboard">
-              <BarChart3 size={18} strokeWidth={1.8} />
-            </button>
-          </>
-        )}
-        <div className="mt-auto">
-          <button onClick={() => setShowProfileModal(true)}
-            className="w-7 h-7 rounded-full bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center text-white text-[10px] font-semibold"
-            title="Profile">
-            {user?.name?.charAt(0)?.toUpperCase() || 'U'}
-          </button>
-        </div>
-        {showProfileModal && <ProfileModal onClose={() => setShowProfileModal(false)} />}
+        </>
+      )}
+      <div className="mt-auto">
+        <button onClick={() => setShowProfileModal(true)}
+          className="w-7 h-7 rounded-full bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center text-white text-[10px] font-semibold"
+          title="Profile">
+          {user?.name?.charAt(0)?.toUpperCase() || 'U'}
+        </button>
       </div>
-    );
-  }
+    </>
+  );
 
   return (
     <>
@@ -293,11 +311,13 @@ export default function Sidebar({ collapsed, onToggle }) {
         className={`fixed inset-0 bg-black/40 z-40 md:hidden transition-opacity duration-200 ${collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
         onClick={onToggle}
       />
-      <div data-tour="sidebar" style={{ width: sidebarWidth, transition: resizing.current ? 'none' : 'width 0.2s cubic-bezier(0.16, 1, 0.3, 1)' }}
-        className={`bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none
+      <div data-tour="sidebar" style={{ width: collapsed ? 52 : sidebarWidth, transition: resizing.current ? 'none' : 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)' }}
+        className={`bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none overflow-hidden
+          ${collapsed ? 'items-center py-3 gap-1' : ''}
           max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:shadow-2xl
           ${collapsed ? 'max-md:-translate-x-full' : 'max-md:translate-x-0'}
           max-md:transition-transform max-md:duration-200`}>
+        {collapsed ? collapsedInner : (<>
 
         {/* === FIXED TOP: Logo only === */}
         <div className="flex-shrink-0">
@@ -344,17 +364,19 @@ export default function Sidebar({ collapsed, onToggle }) {
             </>
           )}
 
-          {(isStrictAdmin || isSuperAdmin) && (
+          {(isStrictAdmin || isSuperAdmin || !!granularPermissions['admin_settings.view'] || !!granularPermissions['integrations.view'] || !!granularPermissions['feedback.view']) && (
             <>
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
-                {(isStrictAdmin || isSuperAdmin) && (
+                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['admin_settings.view']) && (
                   <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
                 )}
-                {(isStrictAdmin || isSuperAdmin) && (
+                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['integrations.view']) && (
                   <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
                 )}
-                {(isStrictAdmin || isSuperAdmin) && (
+                {/* Feedback shown when granular permission allows (manager has it
+                    by default, members get it via grant override). */}
+                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['feedback.view']) && (
                   <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
                 )}
               </nav>
@@ -564,9 +586,12 @@ export default function Sidebar({ collapsed, onToggle }) {
           </button>
         </div>
 
-        {/* Resize Handle */}
-        <div onMouseDown={handleMouseDown}
-          className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-sidebar-accent/20 transition-colors z-10" />
+        </>)}
+        {/* Resize Handle — only meaningful when expanded */}
+        {!collapsed && (
+          <div onMouseDown={handleMouseDown}
+            className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-sidebar-accent/20 transition-colors z-10" />
+        )}
       </div>
 
       {/* Workspace 3-dot menu */}

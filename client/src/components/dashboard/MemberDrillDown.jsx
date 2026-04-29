@@ -4,6 +4,7 @@ import { formatDistanceToNow, parseISO } from 'date-fns';
 import api from '../../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
 import Avatar from '../common/Avatar';
+import DetailModalShell from '../common/DetailModalShell';
 
 export default function MemberDrillDown({ userId, boardId, onClose }) {
   const [data, setData] = useState(null);
@@ -84,12 +85,11 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
 
   if (loading || !data) {
     return (
-      <div className="fixed inset-0 z-50 flex" onClick={onClose}>
-        <div className="flex-1" />
-        <div className="w-full max-w-[550px] bg-white shadow-2xl h-full flex items-center justify-center animate-slide-in-right" onClick={e => e.stopPropagation()}>
+      <DetailModalShell onClose={onClose} ariaLabel="Member tasks" size="narrow">
+        <div className="flex items-center justify-center min-h-[260px]">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
         </div>
-      </div>
+      </DetailModalShell>
     );
   }
 
@@ -111,22 +111,22 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
     { id: 'overdue', label: 'Overdue', count: summary.overdue, color: '#e2445c' },
   ];
 
+  const memberTitleId = `member-drilldown-title-${userId}`;
+
   return (
-    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
-      <div className="flex-1 bg-black/20" />
-      <div className="w-full max-w-[550px] bg-white shadow-2xl h-full flex flex-col animate-slide-in-right" onClick={e => e.stopPropagation()}>
+    <DetailModalShell onClose={onClose} ariaLabelledBy={memberTitleId} size="narrow">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-border">
+        <div className="px-5 py-4 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-3">
               <Avatar name={member.name} size="lg" />
               <div>
-                <h2 className="text-lg font-bold text-text-primary">{member.name}</h2>
+                <h2 id={memberTitleId} className="text-lg font-bold text-text-primary">{member.name}</h2>
                 <p className="text-xs text-text-tertiary">{member.designation || member.role} {member.department ? `- ${member.department}` : ''}</p>
                 <p className="text-xs text-text-tertiary">{member.email}</p>
               </div>
             </div>
-            <button onClick={onClose} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={onClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
           </div>
 
           {/* Mini Stats */}
@@ -158,7 +158,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
         </div>
 
         {/* Filter Chips */}
-        <div className="px-5 py-2 border-b border-border flex items-center gap-1.5 overflow-x-auto">
+        <div className="px-5 py-2 border-b border-border flex items-center gap-1.5 overflow-x-auto flex-shrink-0">
           {statusFilters.map(f => (
             <button key={f.id} onClick={() => setActiveFilter(f.id)}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
@@ -171,7 +171,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
         </div>
 
         {/* Add Task */}
-        <div className="px-5 py-2 border-b border-border">
+        <div className="px-5 py-2 border-b border-border flex-shrink-0">
           {addingTask ? (
             <div className="flex items-center gap-2">
               {!boardId && (
@@ -264,7 +264,6 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </DetailModalShell>
   );
 }

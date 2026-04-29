@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { GripVertical, ListChecks, MessageSquare, HelpCircle, Archive } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import StatusCell from './StatusCell';
+import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
+import ApprovalStepIndicator from './ApprovalStepIndicator';
 import PriorityCell from './PriorityCell';
 import PersonCell from './PersonCell';
 import DateCell from './DateCell';
@@ -25,16 +27,21 @@ const TaskRow = React.memo(function TaskRow({
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== 'done';
   const daysOverdue = isOverdue ? Math.ceil((new Date() - new Date(task.dueDate)) / (1000 * 60 * 60 * 24)) : 0;
 
-  const { user, isManager, isAdmin, isAssistantManager } = useAuth();
+  const { user, isManager, isAdmin, isAssistantManager, isSuperAdmin, granularPermissions } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
+
+  // True if the actor cannot assign tasks to OTHERS (default for members; also
+  // true for managers/asst-mgrs that have an admin DENY on tasks.assign_others).
+  // Backend remains the source of truth — this just hides invalid options.
+  const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
 
   // Row background: selected wins over overdue wins over default. Overdue uses
   // a solid subtle red tint (not alpha) so text stays readable and the sticky
   // task-title column inherits an opaque color instead of a washed-out one.
   const rowBg = selected
-    ? 'bg-[#e6f0ff] hover:bg-[#dbeaff]'
+    ? 'bg-[#e6f0ff] hover:bg-[#dbeaff] dark:bg-[#1a2942] dark:hover:bg-[#1f3253]'
     : isOverdue
-      ? 'bg-[#fff5f6] hover:bg-[#ffeaee]'
+      ? 'bg-[#fff5f6] hover:bg-[#ffeaee] dark:bg-[#352024] dark:hover:bg-[#3f2730]'
       : 'bg-white hover:bg-[#f5f6f8]';
   // Strict RBAC: Only Admin/Manager/AssistantManager can edit all fields. Members restricted.
   const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
@@ -52,17 +59,67 @@ const TaskRow = React.memo(function TaskRow({
   );
   const canEditCustomFields = !isApproved && (canEditAllFields || isOwnTask);
 
+  // Bottom-sheet approval modal — opens when an assignee marks their own task
+  // 'done' to collect a comment + optional attachment before submitting.
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+
+  // Intercept rule: when the actor owns the task and it isn't already in
+  // approval, a "done" pick triggers the modal instead of a direct status
+  // update. Backend auto-approves if the actor has no senior reviewer (e.g.
+  // super admin), so managerial roles see at most one click of friction.
+  const shouldInterceptDone = (val) =>
+    val === 'done'
+    && isOwnTask
+    && task.approvalStatus !== 'pending_approval'
+    && task.approvalStatus !== 'approved';
+
+  const handleStatusChange = (val) => {
+    if (shouldInterceptDone(val)) {
+      setShowApprovalModal(true);
+      return;
+    }
+    onUpdate(val === 'done' ? { status: val, progress: 100 } : { status: val });
+  };
+
   function renderCell(col) {
     const customVal = task.customFields?.[col.id];
     const customOnChange = canEditCustomFields
       ? val => onUpdate({ customFields: { ...task.customFields, [col.id]: val } })
       : undefined;
     switch (col.type) {
-      case 'status': return <StatusCell value={task.status} onChange={canEditStatus ? (val => onUpdate({ status: val })) : undefined} taskStatuses={task.statusConfig} boardStatuses={boardStatuses} onSaveTaskStatuses={canEditAllFields ? (cfg => onUpdate({ statusConfig: cfg })) : undefined} canConfigureStatuses={canEditAllFields} approvalStatus={task.approvalStatus} isBlocked={isBlockedByDependency} />;
-      case 'person': return <PersonCell value={task.assignedTo || task.assignee} owners={task.owners || []} members={members} taskAssignees={task.taskAssignees || []} onChange={canEditAllFields ? (val => onUpdate({ assignedTo: val })) : undefined} onOwnersChange={canEditAllFields ? (ids => onUpdate({ ownerIds: ids })) : undefined} />;
+      case 'status': return (
+        <div className="flex items-center gap-1.5 w-full">
+          <StatusCell value={task.status} onChange={canEditStatus ? handleStatusChange : undefined} taskStatuses={task.statusConfig} boardStatuses={boardStatuses} onSaveTaskStatuses={canEditAllFields ? (cfg => onUpdate({ statusConfig: cfg })) : undefined} canConfigureStatuses={canEditAllFields} approvalStatus={task.approvalStatus} isBlocked={isBlockedByDependency} />
+          {/* Approval pip indicator — only renders if the task has any chain rows.
+              Rendered next to the Status pill (NOT replacing it) per the
+              no-DONE-replacement rule from project setup. */}
+          <ApprovalStepIndicator flows={task.approvalFlows} approvalStatus={task.approvalStatus} />
+        </div>
+      );
+      case 'person': {
+        // The picker is editable when:
+        //   - the actor has full edit on this task (admin/manager/asst-mgr), OR
+        //   - the actor owns the task (so a member can self-assign).
+        const personEditable = canEditAllFields || isOwnTask;
+        // If the actor can't assign others, lock the picker to current user.
+        const lockToSelf = !canAssignOthers;
+        return (
+          <PersonCell
+            value={task.assignedTo || task.assignee}
+            owners={task.owners || []}
+            members={members}
+            taskAssignees={task.taskAssignees || []}
+            dueDate={task.dueDate}
+            onChange={personEditable ? (val => onUpdate({ assignedTo: val })) : undefined}
+            onOwnersChange={personEditable ? (ids => onUpdate({ ownerIds: ids })) : undefined}
+            assignSelfOnly={lockToSelf}
+            currentUserId={user?.id}
+          />
+        );
+      }
       case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
-      case 'progress': return <ProgressCell value={task.progress || 0} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
+      case 'progress': return <ProgressCell value={task.progress || 0} status={task.status} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
       case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;
       case 'text': return <TextCell value={customVal || ''} onChange={customOnChange} />;
       case 'number': return <NumberCell value={customVal} onChange={customOnChange} />;
@@ -73,6 +130,7 @@ const TaskRow = React.memo(function TaskRow({
   }
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
@@ -110,7 +168,7 @@ const TaskRow = React.memo(function TaskRow({
               </span>
             )}
             {isOverdue && daysOverdue > 3 && (
-              <span className="text-[10px] font-semibold text-[#e2445c] bg-[#fde8ec] px-1.5 py-0.5 rounded">{daysOverdue}d</span>
+              <span className="text-[10px] font-semibold text-[#e2445c] bg-[#fde8ec] dark:text-[#fda4af] dark:bg-[#4a2330] px-1.5 py-0.5 rounded">{daysOverdue}d</span>
             )}
           </div>
         </div>
@@ -136,6 +194,19 @@ const TaskRow = React.memo(function TaskRow({
         )}
       </div>
     </motion.div>
+
+    {showApprovalModal && (
+      <MarkDoneApprovalModal
+        task={task}
+        onClose={() => setShowApprovalModal(false)}
+        // The controller emits `task:updated` over the socket on submit, so the
+        // parent BoardPage's socket listener picks up the new approvalStatus —
+        // no client-side optimistic patch needed (and approvalStatus isn't a
+        // PATCH-allowed field via /api/tasks anyway).
+        onSubmitted={() => {}}
+      />
+    )}
+    </>
   );
 });
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Calendar as CalIcon, Table, Search, ChevronLeft, ChevronRight, Plus, Settings,
-  Send, Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot,
+  Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot,
 } from 'lucide-react';
 import { SkeletonTable } from '../components/common/Skeleton';
 import {
@@ -13,7 +13,6 @@ import { useAuth } from '../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import api from '../services/api';
 import Avatar from '../components/common/Avatar';
-import DelegateTaskModal from '../components/task/DelegateTaskModal';
 import useSocket from '../hooks/useSocket';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
@@ -27,14 +26,12 @@ export default function MyWorkPage() {
   const [viewTab, setViewTab] = useState('table');
   const [searchQuery, setSearchQuery] = useState('');
   const [calMonth, setCalMonth] = useState(new Date());
-  const [delegateTask, setDelegateTask] = useState(null);
 
   useEffect(() => { loadTasks(); }, []);
 
   // Live updates
   useSocket('task:created', () => loadTasks());
   useSocket('task:updated', () => loadTasks());
-  useSocket('task:delegated', () => loadTasks());
   useSocket('task:unblocked', () => loadTasks());
 
   async function loadTasks() {
@@ -177,13 +174,12 @@ export default function MyWorkPage() {
                     </div>
                     <div className="bg-white rounded-lg border border-border overflow-hidden">
                       {/* Header */}
-                      <div className="grid grid-cols-[1fr_100px_110px_90px_90px_70px] gap-0 text-[10px] font-semibold text-text-secondary uppercase tracking-wider border-b border-border bg-surface/30">
+                      <div className="grid grid-cols-[1fr_100px_110px_90px_90px] gap-0 text-[10px] font-semibold text-text-secondary uppercase tracking-wider border-b border-border bg-surface/30">
                         <div className="px-3 py-2">Task</div>
                         <div className="px-2 py-2 text-center">Status</div>
                         <div className="px-2 py-2 text-center">Board</div>
                         <div className="px-2 py-2 text-center">Priority</div>
                         <div className="px-2 py-2 text-center">Due</div>
-                        <div className="px-2 py-2 text-center">Action</div>
                       </div>
                       {group.tasks.map(task => {
                         const statusCfg = STATUS_CONFIG[task.status] || STATUS_CONFIG.not_started;
@@ -191,7 +187,7 @@ export default function MyWorkPage() {
                         const isOverdue = task.dueDate && isPast(parseISO(task.dueDate)) && task.status !== 'done';
                         return (
                           <div key={task.id}
-                            className={`grid grid-cols-[1fr_100px_110px_90px_90px_70px] gap-0 border-b border-border last:border-b-0 hover:bg-surface/30 cursor-pointer transition-colors ${task.status === 'done' ? 'opacity-50' : ''}`}>
+                            className={`grid grid-cols-[1fr_100px_110px_90px_90px] gap-0 border-b border-border last:border-b-0 hover:bg-surface/30 cursor-pointer transition-colors ${task.status === 'done' ? 'opacity-50' : ''}`}>
                             {/* Task */}
                             <div className="px-3 py-2.5 flex items-center gap-2 min-w-0" onClick={() => task.boardId && navigate(`/boards/${task.boardId}`)}>
                               <span className="text-sm font-medium text-text-primary truncate">{task.title}</span>
@@ -226,15 +222,6 @@ export default function MyWorkPage() {
                                   {format(parseISO(task.dueDate), 'MMM d')}
                                 </span>
                               ) : <span className="text-text-tertiary text-xs">—</span>}
-                            </div>
-                            {/* Action */}
-                            <div className="px-2 py-2 flex items-center justify-center">
-                              {task.status !== 'done' && (
-                                <button onClick={(e) => { e.stopPropagation(); setDelegateTask(task); }}
-                                  className="p-1 rounded hover:bg-primary/5 text-text-tertiary hover:text-primary transition-colors" title="Delegate">
-                                  <Send size={13} />
-                                </button>
-                              )}
                             </div>
                           </div>
                         );
@@ -286,14 +273,6 @@ export default function MyWorkPage() {
         )}
       </div>
 
-      {/* Delegate Modal */}
-      {delegateTask && (
-        <DelegateTaskModal
-          task={delegateTask}
-          onClose={() => setDelegateTask(null)}
-          onDelegated={() => { setDelegateTask(null); loadTasks(); }}
-        />
-      )}
     </div>
   );
 }

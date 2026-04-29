@@ -22,18 +22,39 @@ import ConflictWarning from './ConflictWarning';
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
 import useSocket from '../../hooks/useSocket';
+import DetailModalShell from '../common/DetailModalShell';
+import { useToast } from '../common/Toast';
+import MarkDoneApprovalModal from './MarkDoneApprovalModal';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
-  const { user, canManage, isMember, isManager, isAdmin } = useAuth();
+  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  const { error: toastError } = useToast();
   const isApproved = task?.approvalStatus === 'approved';
   // Approved tasks are fully read-only for members. Admin/manager can still edit.
   const canEditAllFields = !isApproved && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
+
+  // Whether the actor can assign tasks to OTHER users. When false, the
+  // assignee/supervisor pickers must be locked to self only and supervisors
+  // are hidden. Backend (assign_others permission) is the source of truth.
+  const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+
+  // Members editing their own tasks: allowed for the field-level whitelist
+  // (description, due date, priority, progress, etc.) — mirrors the backend
+  // whitelist in server/middleware/taskPermissions.js (`edit` action).
+  const isOwnTask = !!user?.id && (
+    task?.assignedTo === user.id ||
+    task?.createdBy === user.id ||
+    (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => (ta.userId || ta.user?.id) === user.id))
+  );
+  const canEditOwnFields = !isApproved && (canEditAllFields || (isMember && isOwnTask));
+
   const canEditTitle = !isApproved && (canEditAllFields || (isMember && task?.assignedTo === user?.id));
   const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
   const canEditStatus = !isApproved && !isBlockedByDependency;
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
   const [status, setStatus] = useState(task?.status || 'not_started');
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [priority, setPriority] = useState(task?.priority || 'medium');
   const [assignee, setAssignee] = useState(task?.assignedTo || null);
   // Multi-assignee + supervisor state from task_assignees
@@ -173,7 +194,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     if (title !== task.title) save({ title });
   }
   function handleDescBlur() { if (description !== task.description) save({ description }); }
+  // Intercept "done" picks for owners of the task — opens the approval bottom
+  // sheet instead of directly transitioning. Mirror of the rule in TaskRow so
+  // the UX is identical whether the user clicks Done in the table or the modal.
+  const isTaskOwner = !!user?.id && (
+    task?.assignedTo === user.id
+    || task?.createdBy === user.id
+    || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
+  );
+  const shouldInterceptDone = (val) =>
+    val === 'done'
+    && isTaskOwner
+    && task?.approvalStatus !== 'pending_approval'
+    && task?.approvalStatus !== 'approved';
+
   async function handleStatusChange(val) {
+    if (shouldInterceptDone(val)) {
+      setShowStatusDrop(false);
+      setShowApprovalModal(true);
+      return;
+    }
     setStatus(val);
     setShowStatusDrop(false);
     // Auto-fill startDate locally when moving to an active status (mirrors backend logic)
@@ -182,7 +222,11 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       const today = new Date().toISOString().slice(0, 10);
       setStartDate(today);
     }
-    save({ status: val });
+    // Completion forces progress to 100 — mirror the server invariant locally so
+    // the slider/progress bar updates immediately without waiting for the response.
+    const updates = { status: val };
+    if (val === 'done') updates.progress = 100;
+    save(updates);
   }
   function handlePriorityChange(val) { setPriority(val); setShowPriorityDrop(false); save({ priority: val }); }
   async function saveTaskMembers(assignees, supervisors) {
@@ -201,7 +245,23 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
+  function ensureDueDateForAssignment() {
+    if (!dueDate) {
+      toastError('Please set a due date before assigning this task.');
+      return false;
+    }
+    return true;
+  }
+
   function toggleAssignee(uid) {
+    const isAdding = !selectedAssignees.includes(uid);
+    // Hard guard: client can only toggle self if it lacks assign_others. The
+    // server still enforces this — this just keeps the UI honest.
+    if (isAdding && !canAssignOthers && uid !== user?.id) {
+      toastError('You do not have permission to assign tasks to other users.');
+      return;
+    }
+    if (isAdding && !ensureDueDateForAssignment()) return;
     setSelectedAssignees(prev => {
       const next = prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid];
       saveTaskMembers(next, selectedSupervisors);
@@ -210,6 +270,12 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   }
 
   function toggleSupervisor(uid) {
+    const isAdding = !selectedSupervisors.includes(uid);
+    if (isAdding && !canAssignOthers) {
+      toastError('You do not have permission to assign supervisors.');
+      return;
+    }
+    if (isAdding && !ensureDueDateForAssignment()) return;
     setSelectedSupervisors(prev => {
       const next = prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid];
       saveTaskMembers(selectedAssignees, next);
@@ -330,12 +396,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     { id: 'activity', label: 'Activity', icon: Activity },
   ];
 
+  const titleElementId = `task-modal-title-${task?.id || 'new'}`;
+
   return (
-    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
-      <div className="flex-1" />
-      <div className="w-full max-w-[600px] bg-white shadow-2xl h-full flex flex-col animate-slide-in-right" onClick={(e) => e.stopPropagation()}>
+    <>
+      <DetailModalShell onClose={onClose} ariaLabelledBy={titleElementId} size="workspace" placement="bottom">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-border">
+        <div className="flex items-center justify-between px-6 py-3 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xs text-text-secondary">Task</span>
             {saveStatus === 'saving' && <span className="text-[10px] text-blue-500 font-medium animate-pulse">Saving...</span>}
@@ -358,7 +425,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 <Calendar size={13} /> Extend
               </button>
             )}
-            <button onClick={onClose} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={onClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
           </div>
         </div>
 
@@ -366,10 +433,10 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {/* Title */}
           {canEditTitle ? (
-            <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={handleTitleBlur}
-              className="text-xl font-bold text-text-primary border-none outline-none w-full mb-4 placeholder:text-text-tertiary" placeholder="Task title" />
+            <input id={titleElementId} type="text" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={handleTitleBlur}
+              className="text-xl font-bold text-text-primary border-none outline-none w-full mb-4 placeholder:text-text-tertiary bg-transparent" placeholder="Task title" />
           ) : (
-            <h2 className="text-xl font-bold text-text-primary mb-4">{title}</h2>
+            <h2 id={titleElementId} className="text-xl font-bold text-text-primary mb-4">{title}</h2>
           )}
 
           {/* Watcher + Approval + Recurrence */}
@@ -405,10 +472,15 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             // Refresh dependency role (task may no longer be a receiver after removal)
             loadDependencyRole();
           }} />
-          <button onClick={() => setShowDepSelector(true)}
-            className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors mb-3">
-            <Link2 size={13} /> Add Dependency
-          </button>
+          {/* Completed tasks can show existing dependencies (read-only) but
+              can't accept new ones — adding work to a done task makes no sense
+              and is rejected by the backend. */}
+          {status !== 'done' && (
+            <button onClick={() => setShowDepSelector(true)}
+              className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors mb-3">
+              <Link2 size={13} /> Add Dependency
+            </button>
+          )}
 
           {/* Fields Grid */}
           <div className="grid grid-cols-[100px_1fr] gap-y-3 gap-x-4 mb-6">
@@ -440,7 +512,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             {/* Priority */}
             <span className="text-sm text-text-secondary flex items-center">Priority</span>
             <div className="relative">
-              {canEditAllFields ? (
+              {canEditOwnFields ? (
                 <>
                   <button onClick={() => setShowPriorityDrop(!showPriorityDrop)} className="status-pill" style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}>
                     {priorityCfg ? priorityCfg.label : 'None'}
@@ -461,7 +533,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             {/* Assignees (multi-select) */}
             <span className="text-sm text-text-secondary flex items-center gap-1"><Users size={14} /> Assign To</span>
             <div className="relative">
-              {canEditAllFields ? (
+              {(canEditAllFields || (canEditOwnFields)) ? (
                 <>
                   <button onClick={() => { setShowAssigneesPicker(!showAssigneesPicker); setShowSupervisorsPicker(false); setAssigneeSearch(''); }}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border hover:border-primary/30 transition-colors flex-wrap min-h-[34px]">
@@ -469,27 +541,40 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                       selectedAssignees.map(uid => {
                         const m = members.find(mm => (mm.id || mm.user?.id) === uid);
                         const n = m?.name || m?.user?.name || 'Unknown';
+                        const removable = canAssignOthers || uid === user?.id;
                         return (
                           <span key={uid} className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs px-2 py-0.5 rounded-full">
                             <Avatar name={n} size="xs" />
                             <span className="max-w-[80px] truncate">{n}</span>
-                            <button onClick={(e) => { e.stopPropagation(); toggleAssignee(uid); }} className="hover:text-danger"><X size={10} /></button>
+                            {removable && (
+                              <button onClick={(e) => { e.stopPropagation(); toggleAssignee(uid); }} className="hover:text-danger"><X size={10} /></button>
+                            )}
                           </span>
                         );
                       })
                     ) : (
-                      <span className="text-sm text-text-tertiary">Select assignees...</span>
+                      <span className="text-sm text-text-tertiary">{canAssignOthers ? 'Select assignees...' : 'Assign to me'}</span>
                     )}
                   </button>
                   {showAssigneesPicker && (
                     <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border z-50 min-w-[240px] max-h-[260px] overflow-hidden dropdown-enter">
-                      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-                        <Search size={13} className="text-text-tertiary" />
-                        <input type="text" value={assigneeSearch} onChange={e => setAssigneeSearch(e.target.value)}
-                          placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full" onClick={e => e.stopPropagation()} autoFocus />
-                      </div>
+                      {!canAssignOthers && (
+                        <div className="px-3 py-1.5 bg-amber-50 text-[10px] text-amber-700 border-b border-amber-100 flex items-center gap-1.5">
+                          <Lock size={10} /> You can only assign tasks to yourself.
+                        </div>
+                      )}
+                      {canAssignOthers && (
+                        <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+                          <Search size={13} className="text-text-tertiary" />
+                          <input type="text" value={assigneeSearch} onChange={e => setAssigneeSearch(e.target.value)}
+                            placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full" onClick={e => e.stopPropagation()} autoFocus />
+                        </div>
+                      )}
                       <div className="max-h-[200px] overflow-y-auto py-1">
-                        {members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(assigneeSearch.toLowerCase())).map(m => {
+                        {(canAssignOthers
+                          ? members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(assigneeSearch.toLowerCase()))
+                          : members.filter(m => (m.id || m.user?.id) === user?.id)
+                        ).map(m => {
                           const mId = m.id || m.user?.id;
                           const mName = m.name || m.user?.name || 'Unknown';
                           const isChecked = selectedAssignees.includes(mId);
@@ -519,7 +604,8 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
               )}
             </div>
 
-            {/* Supervisors (multi-select) */}
+            {/* Supervisors (multi-select) — only shown when actor can assign others. */}
+            {canAssignOthers && (<>
             <span className="text-sm text-text-secondary flex items-center gap-1"><Eye size={14} /> Supervisors</span>
             <div className="relative">
               {canEditAllFields ? (
@@ -579,10 +665,11 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 </div>
               )}
             </div>
+            </>)}
 
             {/* Due Date */}
             <span className="text-sm text-text-secondary flex items-center">Due date</span>
-            {canEditAllFields ? (
+            {canEditOwnFields ? (
               <input type="date" value={dueDate} onChange={(e) => handleDateChange('dueDate', e.target.value)}
                 className="text-sm px-3 py-1.5 border border-border rounded-md focus:outline-none focus:border-primary w-fit" />
             ) : (
@@ -850,9 +937,9 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
           {activeTab === 'updates' && <WorkLogSection taskId={task.id} />}
           {activeTab === 'activity' && <ActivityFeed taskId={task.id} />}
         </div>
-      </div>
+      </DetailModalShell>
 
-      {/* Dependency Selector */}
+      {/* Dependency Selector — sibling so it owns its own backdrop/escape */}
       {showDepSelector && (
         <DependencySelector
           taskId={task.id}
@@ -886,6 +973,21 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       {showHelpRequest && (
         <HelpRequestModal task={task} onClose={() => setShowHelpRequest(false)} />
       )}
-    </div>
+
+      {/* Approval bottom sheet — intercepts a "Done" pick from this modal's
+          status dropdown. Submits via /task-extras/:id/submit-approval and the
+          parent BoardPage's socket listener picks up the resulting task:updated. */}
+      {showApprovalModal && (
+        <MarkDoneApprovalModal
+          task={task}
+          onClose={() => setShowApprovalModal(false)}
+          onSubmitted={(updated) => {
+            // Local mirror of the new approvalStatus so the UI updates
+            // immediately, without waiting for the socket round-trip.
+            if (updated && onUpdate) onUpdate(updated);
+          }}
+        />
+      )}
+    </>
   );
 }

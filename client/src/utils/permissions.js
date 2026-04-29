@@ -50,7 +50,8 @@ export const ACTIONS = {
   create:            { label: 'Create',               description: 'Create new records' },
   edit:              { label: 'Edit',                 description: 'Edit/update records' },
   delete:            { label: 'Delete',               description: 'Delete/archive records' },
-  assign:            { label: 'Assign',               description: 'Assign to users' },
+  assign:            { label: 'Assign Self',          description: 'Assign self as owner/assignee' },
+  assign_others:     { label: 'Assign Others',        description: 'Assign tasks to other users' },
   approve:           { label: 'Approve/Reject',       description: 'Approve or reject requests' },
   export:            { label: 'Export',               description: 'Export/download data' },
   manage:            { label: 'Manage',               description: 'Full management access' },
@@ -68,7 +69,7 @@ export const RESOURCE_ACTIONS = {
   admin_settings:   ['view', 'manage'],
   workspaces:       ['view', 'create', 'edit', 'delete', 'manage_members'],
   boards:           ['view', 'create', 'edit', 'delete', 'manage_members', 'manage_settings', 'export'],
-  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'change_status', 'comment', 'upload', 'approve'],
+  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'change_status', 'comment', 'upload', 'approve'],
   subtasks:         ['view', 'create', 'edit', 'delete'],
   task_comments:    ['view', 'create', 'edit', 'delete'],
   task_files:       ['view', 'upload', 'delete'],
@@ -101,7 +102,9 @@ const PERMISSIONS = {
   create_board:        ['manager', 'admin'],
   edit_board:          ['manager', 'admin'],
   delete_board:        ['manager', 'admin'],
-  create_task:         ['assistant_manager', 'manager', 'admin'],
+  // All roles can create their own tasks. Assigning OTHERS is gated separately
+  // via assign_members / tasks.assign_others below.
+  create_task:         ['member', 'assistant_manager', 'manager', 'admin'],
   assign_members:      ['assistant_manager', 'manager', 'admin'],
   edit_others_tasks:   ['manager', 'admin'],
   manage_settings:     ['manager', 'admin'],
@@ -190,6 +193,10 @@ export function canUser(userRole, action, isSuperAdmin = false, grants = [], eff
 /**
  * New granular permission check. Preferred for new code.
  *
+ * Server's effective permissions already reflect deny overrides (deny wins
+ * over base + grant). So a `false` here means either the role doesn't have it
+ * or an admin denied it explicitly.
+ *
  * @param {string} resource - Resource key (e.g. 'boards', 'tasks')
  * @param {string} action - Action key (e.g. 'view', 'create', 'edit')
  * @param {boolean} isSuperAdmin
@@ -199,6 +206,14 @@ export function canUser(userRole, action, isSuperAdmin = false, grants = [], eff
 export function hasGranularPermission(resource, action, isSuperAdmin = false, granularPermissions = {}) {
   if (isSuperAdmin) return true;
   return !!granularPermissions[`${resource}.${action}`];
+}
+
+/**
+ * Convenience: can this user assign tasks to OTHER users? Returns false if
+ * either the role doesn't have it or an admin denied it.
+ */
+export function canAssignOthers(isSuperAdmin = false, granularPermissions = {}) {
+  return hasGranularPermission('tasks', 'assign_others', isSuperAdmin, granularPermissions);
 }
 
 /**

@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { authenticate, managerOrAdmin, requireRole } = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const { attachTaskPermissions, canViewTask } = require('../middleware/taskPermissions');
 const { requirePermission } = require('../middleware/permissions');
 const {
@@ -42,10 +42,11 @@ router.get('/schedule-summary', scheduleSummary);
 // ─── PUT /api/tasks/reorder (all authenticated users) ────────
 router.put('/reorder', reorderTasks);
 
-// ─── PUT /api/tasks/bulk (assistant_manager/manager/admin) ───
+// ─── PUT /api/tasks/bulk (anyone with tasks.edit; per-task permission still
+//     enforced inside the controller for any assignment changes). ──────────
 router.put(
   '/bulk',
-  requireRole('assistant_manager', 'manager', 'admin'),
+  requirePermission('tasks', 'edit'),
   [
     body('taskIds')
       .isArray({ min: 1 }).withMessage('taskIds must be a non-empty array'),
@@ -55,10 +56,12 @@ router.put(
   bulkUpdateTasks
 );
 
-// ─── POST /api/tasks (admin, manager, assistant_manager only) ──
+// ─── POST /api/tasks (anyone with tasks.create — including members for self) ──
+//   Members get tasks.create=true by default; the controller enforces that
+//   they can only assign themselves unless tasks.assign_others is granted.
 router.post(
   '/',
-  requireRole('assistant_manager', 'manager', 'admin'),
+  requirePermission('tasks', 'create'),
   [
     body('title')
       .trim()
@@ -113,10 +116,12 @@ router.post(
   recordReceipt
 );
 
-// ─── PUT /api/tasks/:id/members (requires tasks.assign permission) ────────
+// ─── PUT /api/tasks/:id/members (requires tasks.assign_others) ────────────
+//   Adding/removing OTHERS as assignees/supervisors is a privileged action;
+//   the route gate uses assign_others. (Self-assign goes through PUT /:id.)
 router.put(
   '/:id/members',
-  requirePermission('tasks', 'assign'),
+  requirePermission('tasks', 'assign_others'),
   [
     body('assignees').optional().isArray().withMessage('assignees must be an array'),
     body('supervisors').optional().isArray().withMessage('supervisors must be an array'),
@@ -157,16 +162,18 @@ router.put(
   updateTask
 );
 
-// ─── DELETE /api/tasks/:id (assistant_manager/manager/admin) ──
-router.delete('/:id', requireRole('assistant_manager', 'manager', 'admin'), deleteTask);
+// ─── DELETE /api/tasks/:id (requires tasks.delete) ──
+//   Members do not get tasks.delete by default (they can only archive their
+//   own tasks via the controller's per-task action check).
+router.delete('/:id', requirePermission('tasks', 'delete'), deleteTask);
 
-// ─── POST /api/tasks/:id/duplicate (assistant_manager+ only) ──
-router.post('/:id/duplicate', requireRole('assistant_manager', 'manager', 'admin'), duplicateTask);
+// ─── POST /api/tasks/:id/duplicate (requires tasks.create) ──
+router.post('/:id/duplicate', requirePermission('tasks', 'create'), duplicateTask);
 
-// ─── PUT /api/tasks/:id/move (assistant_manager/manager/admin) ──
+// ─── PUT /api/tasks/:id/move (requires tasks.edit; per-task check inside) ──
 router.put(
   '/:id/move',
-  requireRole('assistant_manager', 'manager', 'admin'),
+  requirePermission('tasks', 'edit'),
   [
     body('groupId')
       .optional()

@@ -29,6 +29,7 @@ const IntegrationConfig = require('./IntegrationConfig');
 const TaskOwner = require('./TaskOwner');
 const TaskAssignee = require('./TaskAssignee');
 const TaskReminder = require('./TaskReminder');
+const TaskApprovalFlow = require('./TaskApprovalFlow');
 const Note = require('./Note');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
@@ -322,6 +323,15 @@ User.hasMany(TaskAssignee, { foreignKey: 'userId', as: 'taskAssignments' });
 Task.hasMany(TaskReminder, { foreignKey: 'taskId', as: 'reminders', onDelete: 'CASCADE' });
 TaskReminder.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
 
+// ─── Task <-> TaskApprovalFlow (normalized approval chain) ──
+// `approvalFlows` is ordered by level ASC at query time. User FK is SET NULL
+// so the row survives if an approver is later deleted; userName/role snapshots
+// preserve the timeline display.
+Task.hasMany(TaskApprovalFlow, { foreignKey: 'taskId', as: 'approvalFlows', onDelete: 'CASCADE' });
+TaskApprovalFlow.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
+TaskApprovalFlow.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'SET NULL' });
+User.hasMany(TaskApprovalFlow, { foreignKey: 'userId', as: 'approvalSteps' });
+
 // ─── DirectorPlan <-> User ──────────────────────────────────
 DirectorPlan.belongsTo(User, { foreignKey: 'directorId', as: 'director', onDelete: 'CASCADE' });
 DirectorPlan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
@@ -358,6 +368,7 @@ module.exports = {
   TaskOwner,
   TaskAssignee,
   TaskReminder,
+  TaskApprovalFlow,
   Note,
   Feedback,
   AIConfig,

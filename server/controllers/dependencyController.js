@@ -74,12 +74,21 @@ const createDependency = async (req, res) => {
 
     // Verify both tasks exist
     const [task, blockerTask] = await Promise.all([
-      Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId'] }),
+      Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId', 'status'] }),
       Task.findByPk(dependsOnTaskId, { attributes: ['id', 'title'] }),
     ]);
 
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
     if (!blockerTask) return res.status(404).json({ success: false, message: 'Blocker task not found.' });
+
+    // Completed tasks are immutable for dependency relationships — adding work
+    // to something already done would silently re-open it.
+    if (task.status === 'done') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot add a dependency to a completed task. Reopen the task first.',
+      });
+    }
 
     const dep = await depService.createDependency({
       taskId,
@@ -314,9 +323,18 @@ const assignDependency = async (req, res) => {
     }
 
     // Verify current task exists
-    const currentTask = await Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId'] });
+    const currentTask = await Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId', 'status'] });
     if (!currentTask) {
       return res.status(404).json({ success: false, message: 'Task not found.' });
+    }
+
+    // Mirror the createDependency rule — once a task is done, no new
+    // dependencies can be assigned out of it.
+    if (currentTask.status === 'done') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot add a dependency to a completed task. Reopen the task first.',
+      });
     }
 
     // Verify target user exists

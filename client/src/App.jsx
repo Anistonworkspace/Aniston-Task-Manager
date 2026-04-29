@@ -150,7 +150,9 @@ export default function App() {
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
-          <Route path="feedback" element={<StrictAdminRoute requiredPermission="feedback.manage"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></StrictAdminRoute>} />
+          {/* Feedback: enter with feedback.view (managers + granted members);
+              page itself hides manage actions unless feedback.manage holds. */}
+          <Route path="feedback" element={<StrictAdminRoute requiredPermission="feedback.view"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></StrictAdminRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

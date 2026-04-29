@@ -737,22 +737,29 @@ const microsoftCallback = async (req, res) => {
 
     const { access_token, refresh_token, expires_in, id_token } = tokenRes.data;
 
-    // Decode id_token to get user info
-    let email, name, oid;
+    // Decode id_token claims. NOTE: signature is not verified here because the token
+    // was just received over a TLS-secured server-to-server token-exchange call; Microsoft
+    // is the only party that could have produced it. We still validate iss/aud below.
+    // For defense-in-depth a future change can verify the JWT signature via JWKS.
+    let email, name, oid, iss, aud;
     if (id_token) {
       const payload = JSON.parse(Buffer.from(id_token.split('.')[1], 'base64').toString());
       email = (payload.email || payload.preferred_username || '').toLowerCase();
       name = payload.name || '';
-      oid = payload.oid || payload.sub || '';
+      // Prefer the Azure AD object id (oid). NEVER fall back to `sub` — `sub` is
+      // application-scoped and is not a stable cross-app identifier.
+      oid = payload.oid || '';
+      iss = payload.iss || '';
+      aud = payload.aud || '';
     }
 
-    // Fallback: fetch profile from Graph API
-    if (!email) {
+    // Fallback: fetch profile from Graph API (only if id_token didn't give us email/oid).
+    if (!email || !oid) {
       try {
         const profileRes = await axios.get('https://graph.microsoft.com/v1.0/me', {
           headers: { Authorization: `Bearer ${access_token}` },
         });
-        email = (profileRes.data.mail || profileRes.data.userPrincipalName || '').toLowerCase();
+        email = email || (profileRes.data.mail || profileRes.data.userPrincipalName || '').toLowerCase();
         name = name || profileRes.data.displayName || '';
         oid = oid || profileRes.data.id || '';
       } catch (profileErr) {
@@ -765,18 +772,106 @@ const microsoftCallback = async (req, res) => {
       return res.redirect(`${CLIENT_URL}/login?sso=error&msg=no_email`);
     }
 
-    // Find user by email or teamsUserId
-    let user = await User.findOne({
-      where: {
-        [Op.or]: [
-          { email },
-          ...(oid ? [{ teamsUserId: oid }] : []),
-        ],
-      },
-    });
+    // Validate id_token issuer + audience. This catches a token produced for a
+    // different app or, in single-tenant mode, a different tenant.
+    if (id_token && config.clientId) {
+      if (aud && aud !== config.clientId) {
+        console.error('[Auth] SSO rejected: id_token audience does not match client id.');
+        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
+      }
+      // For single-tenant deployments (tenantId is a real GUID, not 'common'/'organizations'/'consumers'),
+      // pin the issuer to that tenant. Multi-tenant deployments accept any verified Microsoft issuer.
+      const tid = config.tenantId;
+      const isSingleTenant = tid && !['common', 'organizations', 'consumers'].includes(tid);
+      if (isSingleTenant && iss) {
+        const expectedIssuers = [
+          `https://login.microsoftonline.com/${tid}/v2.0`,
+          `https://sts.windows.net/${tid}/`,
+        ];
+        if (!expectedIssuers.includes(iss)) {
+          console.error(`[Auth] SSO rejected: unexpected id_token issuer (got=${iss}).`);
+          return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
+        }
+      }
+    }
+
+    // ---- Resolve the local user DETERMINISTICALLY ----
+    // The previous implementation used `Op.or` between email and teamsUserId, which
+    // returned the wrong row whenever two users matched (e.g. a stale duplicated
+    // teamsUserId). We now resolve OID-first, then email, with explicit conflict
+    // detection at every step. We use findAll (not findOne) so duplicates surface
+    // instead of being silently swallowed.
+    let user = null;
+    let matchedBy = null;
+
+    // Step 1 — OID lookup (Microsoft object id is the stable, primary identifier).
+    if (oid) {
+      const oidMatches = await User.findAll({ where: { teamsUserId: oid } });
+      if (oidMatches.length > 1) {
+        console.error(
+          `[Auth] SSO security error: ${oidMatches.length} users share teamsUserId for ` +
+            `incoming email=${email}. User ids=[${oidMatches.map((u) => u.id).join(',')}].`
+        );
+        return res.redirect(
+          `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
+            'Account conflict detected — multiple users are linked to this Microsoft identity. Contact your administrator.'
+          )}`
+        );
+      }
+      if (oidMatches.length === 1) {
+        const candidate = oidMatches[0];
+        // The OID-matched user's email should match the SSO email. If it doesn't,
+        // the teamsUserId on this row is stale/wrong — refuse to log in.
+        if ((candidate.email || '').toLowerCase() !== email) {
+          console.error(
+            `[Auth] SSO security error: OID matched user ${candidate.id} but email differs ` +
+              `(db=${candidate.email}, sso=${email}). Refusing login.`
+          );
+          return res.redirect(
+            `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
+              'Account conflict detected — Microsoft identity does not match this account. Contact your administrator.'
+            )}`
+          );
+        }
+        user = candidate;
+        matchedBy = 'oid';
+      }
+    }
+
+    // Step 2 — Email lookup as a fallback for first-time linking.
+    if (!user) {
+      const emailMatches = await User.findAll({ where: { email } });
+      if (emailMatches.length > 1) {
+        console.error(`[Auth] SSO security error: duplicate emails detected for ${email}.`);
+        return res.redirect(
+          `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
+            'Account conflict detected — multiple users have this email. Contact your administrator.'
+          )}`
+        );
+      }
+      if (emailMatches.length === 1) {
+        const candidate = emailMatches[0];
+        // If the candidate is already linked to a DIFFERENT Microsoft identity,
+        // refuse — this prevents silently overwriting an existing link.
+        if (candidate.teamsUserId && oid && candidate.teamsUserId !== oid) {
+          console.error(
+            `[Auth] SSO security error: email ${email} is already linked to a different ` +
+              `Microsoft identity (db=${candidate.teamsUserId.slice(0, 6)}…, sso=${oid.slice(0, 6)}…).`
+          );
+          return res.redirect(
+            `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
+              'This account is linked to a different Microsoft identity. Contact your administrator.'
+            )}`
+          );
+        }
+        user = candidate;
+        matchedBy = 'email';
+      }
+    }
 
     if (user) {
-      // Update teams tokens and teamsUserId
+      // Update teams tokens. Only set teamsUserId when not already set, and only when
+      // we have an OID — never blindly overwrite an existing link.
       const updates = {
         teamsAccessToken: access_token,
         teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
@@ -798,7 +893,8 @@ const microsoftCallback = async (req, res) => {
         return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account request was rejected.')}`);
       }
     } else {
-      // Auto-create new user
+      // No user matched — auto-create. Always role='member'; role is NEVER taken
+      // from the Microsoft profile.
       user = await User.create({
         name: name || email.split('@')[0],
         email,
@@ -812,7 +908,10 @@ const microsoftCallback = async (req, res) => {
         isActive: true,
         accountStatus: 'approved',
       });
+      matchedBy = 'created';
     }
+
+    console.log(`[Auth] SSO login resolved: user=${user.id} email=${user.email} matchedBy=${matchedBy}`);
 
     // Generate app JWT tokens
     const token = generateToken(user.id);

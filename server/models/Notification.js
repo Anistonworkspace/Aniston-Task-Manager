@@ -18,7 +18,15 @@ const Notification = sequelize.define(
         'task_updated',
         'comment_added',
         'due_date',
-        'mention'
+        'mention',
+        // Phase 4: approval workflow events. Live in DB enum already (see
+        // add-approval-notification-types.js) — listing them here so model-
+        // level Notification.create() doesn't reject the value.
+        'approval_submitted',
+        'approval_approved',
+        'approval_rejected',
+        'approval_changes_requested',
+        'approval_completed'
       ),
       allowNull: false,
     },
