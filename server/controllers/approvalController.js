@@ -38,6 +38,45 @@ function appendChainAudit(task, entry) {
   ];
 }
 
+// Self-task detection. A task is "self-assigned" — and therefore not subject to
+// hierarchical approval — when the only assignees are the task's creator. The
+// caller must ALSO be that same user; otherwise this is somebody else acting on
+// the creator's task and approval still applies.
+//
+// Multi-assignee handling (per spec):
+//   - "self only" → the creator AND every entry in task_assignees (role=assignee)
+//     resolves to the same user id as task.createdBy
+//   - any other-user assignee → approval required
+//   - unassigned task with the creator submitting → treat as self (no one to route to)
+async function isSelfAssignedTask(task, actorId, transaction) {
+  if (!task || !actorId) return false;
+  if (task.createdBy !== actorId) return false;
+
+  const assigneeIds = new Set();
+  if (task.assignedTo) assigneeIds.add(task.assignedTo);
+
+  // Multi-assignee table — only role='assignee' rows count as "owners" for
+  // approval purposes; supervisors are watchers, not assignees.
+  try {
+    const TaskAssignee = require('../models').TaskAssignee;
+    if (TaskAssignee) {
+      const rows = await TaskAssignee.findAll({
+        where: { taskId: task.id, role: 'assignee' },
+        attributes: ['userId'],
+        transaction,
+        raw: true,
+      });
+      for (const r of rows) if (r.userId) assigneeIds.add(r.userId);
+    }
+  } catch (_) {
+    // Table may not exist on legacy installs — fall back to assignedTo only.
+  }
+
+  if (assigneeIds.size === 0) return true; // unassigned, creator acting → self
+  for (const id of assigneeIds) if (id !== task.createdBy) return false;
+  return true;
+}
+
 // Detect schema-mismatch errors from Postgres (undefined column 42703, undefined
 // table 42P01). When a deploy ships backend code that references a column the
 // production DB doesn't have, the bare "Failed to ..." toast hides the cause.
@@ -177,6 +216,21 @@ exports.submitForApproval = async (req, res) => {
       return res.status(409).json({
         success: false,
         message: 'Task is already pending approval.',
+      });
+    }
+
+    // Self-task short-circuit — a creator marking their own self-assigned task
+    // done has nobody to route approval to. Skip chain creation entirely; the
+    // frontend's intercept normally prevents this endpoint from being hit at
+    // all for self-tasks, but this is the defensive backend guard for direct
+    // API calls and edge cases like reassignment-to-self mid-flight.
+    if (await isSelfAssignedTask(task, req.user.id, t)) {
+      await t.commit();
+      return res.json({
+        success: true,
+        approvalSkipped: true,
+        message: 'Self-task — no approval required.',
+        data: { task, approvalFlows: [] },
       });
     }
 
@@ -369,6 +423,24 @@ async function processApprovalAction(req, res, opts) {
       });
     }
     const currentStage = stageOf(pendingStageRows[0]);
+
+    // Self-approval guard. The submitter is recorded at level 0 of the
+    // approval chain; they must never be able to act on their own submission.
+    // Today this is implicitly prevented because approvalChainService excludes
+    // the submitter from approver positions, but a regression there would
+    // silently turn into a self-approval bug — so we enforce it explicitly.
+    const submitterRow = await TaskApprovalFlow.findOne({
+      where: { taskId: task.id, level: 0 },
+      attributes: ['userId'],
+      transaction: t,
+    });
+    if (submitterRow && String(submitterRow.userId) === String(req.user.id)) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'You cannot act on a task you submitted for approval.',
+      });
+    }
 
     // Authorization: the actor must hold a pending row.
     //   - In the current stage: full action set (approve / reject / request_changes).

@@ -74,11 +74,20 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Restrict access to admin and manager users (manager has same access as admin).
+ * Restrict access to admin and super admin users only.
+ *
+ * Historically this middleware also let managers through (the old comment
+ * read "manager has same access as admin"), which created a P0 escalation
+ * surface: every route guarded by adminOnly was implicitly manager-or-admin.
+ * As of CP-1 (org-chart hardening) it is strict — the name finally matches
+ * the behavior. Routes that intentionally want both admins and managers
+ * should import `managerOrAdmin` (or `adminOrManager`, an alias added below
+ * for forward compatibility).
+ *
  * Must be used AFTER the authenticate middleware.
  */
 const adminOnly = (req, res, next) => {
-  if (!req.user || !['admin', 'manager'].includes(req.user.role)) {
+  if (!req.user || (req.user.role !== 'admin' && !req.user.isSuperAdmin)) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Admin privileges required.',
@@ -88,8 +97,8 @@ const adminOnly = (req, res, next) => {
 };
 
 /**
- * Restrict access to managers and admins only (NOT assistant_manager).
- * Manager has same access as admin. Assistant manager is excluded.
+ * Restrict access to managers, admins, and super admins.
+ * Assistant managers are explicitly excluded.
  * Must be used AFTER the authenticate middleware.
  */
 const managerOrAdmin = (req, res, next) => {
@@ -101,6 +110,10 @@ const managerOrAdmin = (req, res, next) => {
   }
   next();
 };
+
+// Forward-compatible alias. New routes that genuinely want both admins and
+// managers should prefer this name — it reads correctly at the route file.
+const adminOrManager = managerOrAdmin;
 
 /**
  * Restrict access to assistant managers and super admins only (director plan management).
@@ -285,4 +298,12 @@ const strictAdminOnly = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly, strictAdminOnly, requireRole };
+module.exports = {
+  authenticate,
+  adminOnly,
+  adminOrManager,
+  managerOrAdmin,
+  assistantManagerOnly,
+  strictAdminOnly,
+  requireRole,
+};

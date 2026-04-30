@@ -2,6 +2,7 @@ const { User } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
+const hierarchy = require('../services/hierarchyService');
 
 /**
  * POST /api/users
@@ -96,7 +97,19 @@ const getAllUsersAdmin = async (req, res) => {
 
 /**
  * PUT /api/users/:id
- * Admin updates a user's details (name, email, role, department, designation, isActive).
+ *
+ * Edit a user's profile and (for full-scope actors only) their identity
+ * fields. Authorization is delegated to hierarchyService.canManageUser, which
+ * returns one of three positive scopes:
+ *
+ *   - 'full'        : super admin, or admin (cannot touch super admins)
+ *   - 'branch_safe' : manager / assistant manager, target inside own subtree
+ *   - 'self'        : actor editing their own record
+ *
+ * Sensitive fields (role, hierarchyLevel, isActive, accountStatus, email,
+ * isSuperAdmin) are filtered to 'full' scope only — and isSuperAdmin
+ * additionally requires the actor itself to be a super admin. This closes the
+ * P0 escalation where a manager could set role: 'admin' on any peer.
  */
 const updateUser = async (req, res) => {
   try {
@@ -110,43 +123,105 @@ const updateUser = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
-    // Prevent editing own role
-    if (req.params.id === req.user.id && req.body.role && req.body.role !== req.user.role) {
-      return res.status(403).json({ success: false, message: 'You cannot change your own role.' });
+    const sameUser = String(req.params.id) === String(req.user.id);
+
+    // Self role / hierarchy / super-admin / active flag changes are blocked
+    // unconditionally — even for super admins. Promotion/demotion of self
+    // belongs in a separate, audited flow.
+    if (sameUser) {
+      const selfBlocked = ['role', 'hierarchyLevel', 'isSuperAdmin', 'isActive', 'accountStatus'];
+      for (const f of selfBlocked) {
+        if (req.body[f] !== undefined && req.body[f] !== user[f]) {
+          return res.status(403).json({
+            success: false,
+            message: `You cannot change your own ${f}.`,
+          });
+        }
+      }
     }
 
-    const allowedFields = ['name', 'email', 'role', 'department', 'designation', 'departmentId', 'isActive', 'hierarchyLevel'];
-    // Only superadmins can toggle isSuperAdmin on other users
-    if (req.user.isSuperAdmin) {
-      allowedFields.push('isSuperAdmin');
+    const auth = await hierarchy.canManageUser(req.user, user);
+    if (!auth.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: auth.reason || 'You do not have permission to edit this user.',
+      });
     }
+
+    // Build the allowlist from the resolved scope.
+    let permitted;
+    if (auth.scope === 'full') {
+      permitted = new Set(hierarchy.FULL_SCOPE_USER_FIELDS);
+      if (req.user.isSuperAdmin) {
+        for (const f of hierarchy.SUPER_ADMIN_ONLY_FIELDS) permitted.add(f);
+      }
+    } else if (auth.scope === 'branch_safe' || auth.scope === 'self') {
+      permitted = new Set(hierarchy.BRANCH_SAFE_USER_FIELDS);
+    } else {
+      // Should be unreachable because auth.allowed gated above, but defensive.
+      return res.status(403).json({ success: false, message: 'You do not have permission to edit this user.' });
+    }
+
+    // Detect attempts to change forbidden fields so the caller learns *why*
+    // — silently dropping fields is confusing.
+    const forbiddenAttempts = [];
+    for (const field of Object.keys(req.body)) {
+      if (
+        ['name', 'email', 'role', 'department', 'designation', 'departmentId', 'isActive', 'hierarchyLevel', 'isSuperAdmin', 'accountStatus', 'avatar', 'title'].includes(field) &&
+        !permitted.has(field) &&
+        req.body[field] !== undefined &&
+        req.body[field] !== user[field]
+      ) {
+        forbiddenAttempts.push(field);
+      }
+    }
+    if (forbiddenAttempts.length > 0) {
+      return res.status(403).json({
+        success: false,
+        message: `You cannot change the following field(s) on this user: ${forbiddenAttempts.join(', ')}.`,
+        forbiddenFields: forbiddenAttempts,
+      });
+    }
+
     const updates = {};
-    for (const field of allowedFields) {
+    for (const field of permitted) {
       if (req.body[field] !== undefined) {
-        updates[field] = field === 'email' ? req.body[field].toLowerCase() : req.body[field];
+        updates[field] = field === 'email'
+          ? String(req.body[field]).toLowerCase()
+          : req.body[field];
       }
     }
 
-    // Check email uniqueness if changing
-    if (updates.email && updates.email.toLowerCase() !== user.email.toLowerCase()) {
-      const existing = await User.findOne({ where: { email: updates.email.toLowerCase(), id: { [Op.ne]: user.id } } });
+    // Email uniqueness (only relevant when 'email' is in the permitted set).
+    if (updates.email && updates.email !== user.email.toLowerCase()) {
+      const existing = await User.findOne({
+        where: { email: updates.email, id: { [Op.ne]: user.id } },
+      });
       if (existing) {
-        return res.status(409).json({ success: false, message: 'Email already in use by another user.' });
+        return res.status(409).json({
+          success: false,
+          message: 'Email already in use by another user.',
+        });
       }
     }
 
-    // Safe demotion: if role is being downgraded and user has direct reports,
-    // reassign those reports to this user's own manager (bubble up)
+    // Safe demotion: when a manager-class role is dropped to 'member' and
+    // they had direct reports, bubble those reports up to the demoted user's
+    // own manager so children don't get orphaned. This only fires on 'full'
+    // scope changes (managers/assistants cannot reach this code path because
+    // 'role' isn't in their permitted set).
     if (updates.role && updates.role !== user.role) {
       const wasManager = ['admin', 'manager', 'assistant_manager'].includes(user.role);
       const isNowLower = updates.role === 'member';
       if (wasManager && isNowLower) {
-        const directReports = await User.findAll({ where: { managerId: user.id, isActive: true }, attributes: ['id'] });
+        const directReports = await User.findAll({
+          where: { managerId: user.id, isActive: true },
+          attributes: ['id'],
+        });
         if (directReports.length > 0) {
-          // Reassign direct reports to the demoted user's own manager (or null if no manager)
           await User.update(
             { managerId: user.managerId || null },
-            { where: { managerId: user.id } }
+            { where: { managerId: user.id } },
           );
         }
       }
@@ -160,13 +235,13 @@ const updateUser = async (req, res) => {
       entityType: 'user',
       entityId: user.id,
       userId: req.user.id,
-      meta: { fields: Object.keys(updates) },
+      meta: { fields: Object.keys(updates), scope: auth.scope },
     });
 
     res.json({
       success: true,
       message: 'User updated successfully.',
-      data: { user: user.toJSON() },
+      data: { user: user.toJSON(), scope: auth.scope },
     });
   } catch (error) {
     console.error('[User] Update error:', error);
@@ -209,8 +284,12 @@ const resetPassword = async (req, res) => {
 };
 
 /**
- * PUT /api/users/:id/deactivate
- * Admin toggles user active status.
+ * PUT /api/users/:id/toggle-status
+ *
+ * Activate / deactivate a user. Requires full-scope authority on the target —
+ * i.e. only admins / super admins can call this. Managers and assistant
+ * managers are blocked even if the route middleware lets them in (defence in
+ * depth against misnamed middleware).
  */
 const toggleUserStatus = async (req, res) => {
   try {
@@ -221,6 +300,14 @@ const toggleUserStatus = async (req, res) => {
 
     if (req.params.id === req.user.id) {
       return res.status(403).json({ success: false, message: 'You cannot deactivate your own account.' });
+    }
+
+    const auth = await hierarchy.canManageUser(req.user, user);
+    if (!auth.allowed || auth.scope !== 'full') {
+      return res.status(403).json({
+        success: false,
+        message: auth.reason || 'Only admins or super admins can change account status.',
+      });
     }
 
     const newStatus = !user.isActive;
@@ -288,7 +375,12 @@ const getMyTeam = async (req, res) => {
 
 /**
  * DELETE /api/users/:id
- * Permanently delete a user account.
+ *
+ * Permanently delete a user account. Restricted to full-scope authority and
+ * gated additionally by:
+ *   - actor cannot delete self
+ *   - admins cannot delete other admins (only super admins can)
+ *   - nobody (including super admins) can delete a super admin via this route
  */
 const deleteUser = async (req, res) => {
   try {
@@ -297,11 +389,39 @@ const deleteUser = async (req, res) => {
     if (user.id === req.user.id) {
       return res.status(400).json({ success: false, message: 'Cannot delete your own account.' });
     }
-    if (user.role === 'admin' && req.user.role === 'admin') {
-      return res.status(400).json({ success: false, message: 'Cannot delete another admin account.' });
+
+    const auth = await hierarchy.canManageUser(req.user, user);
+    if (!auth.allowed || auth.scope !== 'full') {
+      return res.status(403).json({
+        success: false,
+        message: auth.reason || 'Only admins or super admins can delete user accounts.',
+      });
     }
+
+    if (user.isSuperAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Super admin accounts cannot be deleted via this endpoint.',
+      });
+    }
+    if (user.role === 'admin' && req.user.role === 'admin' && !req.user.isSuperAdmin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Admins cannot delete other admin accounts. A super admin must perform this action.',
+      });
+    }
+
     const userName = user.name;
     await user.destroy();
+
+    logActivity({
+      action: 'user_deleted',
+      description: `${req.user.name} permanently deleted user "${userName}"`,
+      entityType: 'user',
+      entityId: user.id,
+      userId: req.user.id,
+    });
+
     res.json({ success: true, message: `${userName}'s account has been permanently deleted.` });
   } catch (error) {
     console.error('[User] Delete error:', error);

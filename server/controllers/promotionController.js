@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const { PromotionHistory, User, Notification, HierarchyLevel, ManagerRelation } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
+const hierarchy = require('../services/hierarchyService');
 
 // POST /api/promotions — promote a user
 exports.promoteUser = async (req, res) => {
@@ -174,74 +175,58 @@ exports.getOrgChart = async (req, res) => {
   }
 };
 
-// PUT /api/promotions/update-manager — change reporting structure
+// PUT /api/promotions/update-manager — change or remove reporting structure
+//
+// Body: { userId, managerId }   (managerId === null/'' → make root)
+//
+// Delegates to hierarchyService.setPrimaryManager / removePrimaryManager,
+// which handle:
+//   - branch-scope authorization (manager only inside own subtree)
+//   - cycle detection across both User.managerId and manager_relations
+//   - transactional update of BOTH the User row and the junction table
+//   - subtree preservation (employee's own children stay attached)
 exports.updateManager = async (req, res) => {
   try {
-    const { userId, managerId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: 'userId is required.' });
-
-    // Prevent self-assignment
-    if (managerId && managerId === userId) {
-      return res.status(400).json({ success: false, message: 'Invalid manager assignment: a user cannot be their own manager.' });
+    const { userId, managerId: rawManagerId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'userId is required.' });
     }
+    // Treat empty-string as null (frontend sometimes posts '' to mean "remove").
+    const managerId = rawManagerId === '' || rawManagerId === undefined ? null : rawManagerId;
 
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
-    // Circular hierarchy detection — walk up from proposed manager to ensure userId is not an ancestor
-    if (managerId) {
-      const manager = await User.findByPk(managerId);
-      if (!manager) return res.status(404).json({ success: false, message: 'Manager not found.' });
-
-      let currentId = manager.managerId;
-      const visited = new Set([userId, managerId]);
-      while (currentId) {
-        if (currentId === userId) {
-          return res.status(400).json({ success: false, message: 'Invalid manager assignment: circular hierarchy detected.' });
-        }
-        if (visited.has(currentId)) break; // already checked or cycle in existing data
-        visited.add(currentId);
-        const ancestor = await User.findByPk(currentId, { attributes: ['id', 'managerId'] });
-        if (!ancestor) break;
-        currentId = ancestor.managerId;
-      }
-    }
-
-    const previousManagerId = user.managerId;
-    await user.update({ managerId: managerId || null });
-
-    // Sync junction table: update or create the primary relation
-    if (managerId) {
-      // Clear any existing primary flag for this employee
-      await ManagerRelation.update({ isPrimary: false }, { where: { employeeId: userId, isPrimary: true } });
-      // Upsert the new primary relation
-      const [rel] = await ManagerRelation.findOrCreate({
-        where: { employeeId: userId, managerId },
-        defaults: { relationType: 'primary', isPrimary: true },
-      });
-      if (!rel.isPrimary) await rel.update({ isPrimary: true, relationType: 'primary' });
+    let result;
+    let action;
+    if (managerId === null) {
+      result = await hierarchy.removePrimaryManager(userId, req.user);
+      action = 'manager_removed';
     } else {
-      // Removing primary manager — clear primary flag (keep secondary relations)
-      await ManagerRelation.update({ isPrimary: false }, { where: { employeeId: userId, isPrimary: true } });
-      // Remove the old primary relation record if it was a primary-only relation
-      if (previousManagerId) {
-        const oldRel = await ManagerRelation.findOne({ where: { employeeId: userId, managerId: previousManagerId } });
-        if (oldRel && oldRel.relationType === 'primary') await oldRel.destroy();
-      }
+      result = await hierarchy.setPrimaryManager(userId, managerId, req.user);
+      action = 'manager_updated';
     }
 
-    // Activity logging
     logActivity({
-      action: 'manager_updated',
-      description: `${req.user.name} changed ${user.name}'s manager`,
+      action,
+      description: managerId === null
+        ? `${req.user.name} removed ${user.name}'s primary manager (made root)`
+        : `${req.user.name} changed ${user.name}'s primary manager`,
       entityType: 'user',
       entityId: userId,
       userId: req.user.id,
-      meta: { previousManagerId, newManagerId: managerId || null },
+      meta: {
+        previousManagerId: result.previousManagerId,
+        newManagerId: managerId,
+        ...(result.removedRelationCount !== undefined && { removedRelationCount: result.removedRelationCount }),
+      },
     });
 
-    res.json({ success: true, data: { user } });
+    res.json({ success: true, data: { user: result.employee } });
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
     console.error('[UpdateManager] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to update manager.' });
   }

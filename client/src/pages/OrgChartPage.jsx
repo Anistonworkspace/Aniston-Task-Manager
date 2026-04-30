@@ -2,12 +2,30 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../components/common/Toast';
 import {
   Users, ChevronDown, ArrowUp, User, Edit2, X, History, Shield, Search,
   GitBranch, Crown, Settings2, Layers, Building2, GripVertical,
   ChevronUp, Plus, Palette, Trash2, ZoomIn, ZoomOut, Maximize2, RotateCcw, Save,
   UserCog, ExternalLink, ChevronRight, Move
 } from 'lucide-react';
+
+/**
+ * Returns true if the employee has a primary manager from EITHER source:
+ *   - User.managerId (legacy/cache)
+ *   - manager_relations row with isPrimary=true (canonical multi-manager)
+ *
+ * Treating either source as authoritative for the "Remove Primary Manager"
+ * affordance prevents a long-standing bug where the side-panel button (and
+ * drop-to-root zone) silently disabled themselves when User.managerId had
+ * drifted to null but the junction table still held a primary row.
+ */
+function hasPrimaryManager(employee) {
+  if (!employee) return false;
+  if (employee.managerId) return true;
+  const rels = employee.managerRelations || [];
+  return rels.some((r) => r && r.isPrimary === true);
+}
 
 const ROLE_COLORS = {
   admin: { color: '#e2445c', bg: '#fef2f2' },
@@ -456,12 +474,13 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
             </button>
             <button onClick={() => onChangeManager(employee)}
               className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-emerald-50 text-emerald-600 text-[12px] font-medium rounded-lg hover:bg-emerald-100 transition-colors border border-emerald-100">
-              <UserCog size={13} /> {employee.managerId ? 'Change Primary Manager' : 'Assign Manager'}
+              <UserCog size={13} /> {hasPrimaryManager(employee) ? 'Change Primary Manager' : 'Assign Manager'}
             </button>
-            {employee.managerId && (
+            {hasPrimaryManager(employee) && (
               <button onClick={() => onRemoveManager(employee)}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-red-50 text-red-500 text-[12px] font-medium rounded-lg hover:bg-red-100 transition-colors border border-red-100">
-                <X size={13} /> Remove Primary Manager
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-red-50 text-red-500 text-[12px] font-medium rounded-lg hover:bg-red-100 transition-colors border border-red-100"
+                title="Remove this user's primary manager (make them a root node). Their own subtree stays attached.">
+                <X size={13} /> Remove Primary Manager (Make Root)
               </button>
             )}
           </div>
@@ -478,6 +497,7 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
 // ═══ MAIN PAGE ═══
 export default function OrgChartPage() {
   const { canManage, isAdmin } = useAuth();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [orgChart, setOrgChart] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [hierarchyLevels, setHierarchyLevels] = useState([]);
@@ -626,17 +646,23 @@ export default function OrgChartPage() {
     setDragNode(null);
   }
 
-  // Drag-to-root: drop a card on the root zone to remove manager
+  // Drag-to-root: drop a card on the root zone to remove manager.
+  // Accepts the drop if the dragged employee has a primary manager from
+  // either source (User.managerId OR manager_relations.isPrimary). The
+  // backend wipes BOTH atomically and preserves the employee's own subtree.
   async function onDropToRoot() {
-    if (!dragNode || !dragNode.managerId) { setDragNode(null); return; }
-    const confirmed = confirm(`Remove manager from "${dragNode.name}"?\n\n${dragNode.name} will become a root-level employee.`);
+    const draggedName = dragNode?.name;
+    const draggedId = dragNode?.id;
+    if (!dragNode || !hasPrimaryManager(dragNode)) { setDragNode(null); return; }
+    const confirmed = confirm(`Remove primary manager from "${draggedName}"?\n\n"${draggedName}" will become a root-level employee. Their own direct reports remain attached to them.`);
     if (!confirmed) { setDragNode(null); return; }
     try {
-      await api.put('/promotions/update-manager', { userId: dragNode.id, managerId: null });
+      await api.put('/promotions/update-manager', { userId: draggedId, managerId: null });
       await fetchData();
+      toastSuccess(`"${draggedName}" is now a root-level employee.`);
     } catch (err) {
       console.error('[OrgChart] Drop-to-root failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to remove manager');
+      toastError(err.response?.data?.message || 'Failed to remove manager');
     }
     setDragNode(null);
   }
@@ -699,27 +725,34 @@ export default function OrgChartPage() {
   }
 
   async function handleRemoveManager(employee) {
-    if (!employee?.managerId) return;
-    const confirmed = confirm(`Remove manager from "${employee.name}"?\n\n${employee.name} will become a root-level employee.`);
+    if (!employee || !hasPrimaryManager(employee)) {
+      toastError(`"${employee?.name || 'This user'}" does not have a primary manager to remove.`);
+      return;
+    }
+    const confirmed = confirm(`Remove primary manager from "${employee.name}"?\n\n"${employee.name}" will become a root-level employee. Their own direct reports remain attached to them.`);
     if (!confirmed) return;
     try {
       await api.put('/promotions/update-manager', { userId: employee.id, managerId: null });
       await fetchData();
+      toastSuccess(`Removed primary manager. "${employee.name}" is now a root-level employee.`);
     } catch (err) {
       console.error('[OrgChart] Remove manager failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to remove manager');
+      toastError(err.response?.data?.message || 'Failed to remove manager');
     }
   }
 
   async function handleChangeManager() {
     try {
-      const res = await api.put('/promotions/update-manager', { userId: showChangeManager.id, managerId: selectedManager || null });
-      console.log('[OrgChart] Manager changed:', res.data);
+      const newManagerId = selectedManager || null;
+      await api.put('/promotions/update-manager', { userId: showChangeManager.id, managerId: newManagerId });
       setShowChangeManager(null); setSelectedManager('');
       await fetchData();
+      toastSuccess(newManagerId
+        ? `Updated primary manager for "${showChangeManager.name}".`
+        : `"${showChangeManager.name}" is now a root-level employee.`);
     } catch (err) {
       console.error('[OrgChart] Manager change failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to update manager');
+      toastError(err.response?.data?.message || 'Failed to update manager');
     }
   }
 
