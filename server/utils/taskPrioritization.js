@@ -235,8 +235,17 @@ const STATUS_GROUP_MAP = {
 /**
  * Find the best matching board group for a given task status.
  *
+ * Resolution order:
+ *   1. Explicit per-group mapping (`group.mappedStatus`) — set by the user in
+ *      board settings. Wins over everything so custom group titles like
+ *      "Backlog" or "Sprint 7" still work without title gymnastics.
+ *   2. Group id equals the status key (e.g. status 'done' → group id 'done').
+ *   3. Title regex match against `STATUS_GROUP_MAP`.
+ *   4. First group, but only for "starting" statuses (not_started, etc.) so
+ *      arbitrary unknown statuses don't accidentally pull tasks back to column 1.
+ *
  * @param {string} status - The task status value (e.g., 'done', 'working_on_it')
- * @param {Array} groups  - Board groups array: [{ id, title, color, position }]
+ * @param {Array} groups  - Board groups array: [{ id, title, color, position, mappedStatus? }]
  * @returns {string|null} The matching group id, or null if no match found
  */
 function findGroupForStatus(status, groups) {
@@ -244,18 +253,26 @@ function findGroupForStatus(status, groups) {
 
   const key = String(status).toLowerCase().trim();
 
-  // 1. Exact match: group id matches the status key directly
+  // 1. Explicit mappedStatus on a group (case-insensitive). User-defined and
+  //    authoritative — this is what monday.com / ClickUp do internally.
+  const explicit = groups.find(g => {
+    const m = g && g.mappedStatus;
+    return m && String(m).toLowerCase().trim() === key;
+  });
+  if (explicit) return explicit.id;
+
+  // 2. Exact match: group id matches the status key directly
   const exactMatch = groups.find(g => g.id === key);
   if (exactMatch) return exactMatch.id;
 
-  // 2. Pattern match: use the status-to-group regex map
+  // 3. Pattern match: use the status-to-group regex map
   const pattern = STATUS_GROUP_MAP[key];
   if (pattern) {
     const match = groups.find(g => pattern.test(g.title || g.name || ''));
     if (match) return match.id;
   }
 
-  // 3. For not-started/unknown statuses, fall back to the first group
+  // 4. For not-started/unknown statuses, fall back to the first group
   if (key === 'not_started' || key === 'pending' || key === 'ready_to_start') {
     return groups[0]?.id || null;
   }

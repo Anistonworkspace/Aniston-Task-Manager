@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const SIZE_CLASS = {
@@ -6,19 +6,27 @@ const SIZE_CLASS = {
   wide: 'sm:max-w-[1024px]',
   narrow: 'sm:max-w-[640px]',
   workspace: 'sm:w-[82vw] sm:max-w-[1240px]',
+  // monday.com-style slide-up sheet: exactly 70vw, no max cap.
+  sheet: 'sm:w-[70vw] sm:max-w-[70vw]',
 };
 
 // Outer flex container alignment per placement.
 const PLACEMENT_CONTAINER = {
   center: 'items-center justify-center p-3 sm:p-6',
   bottom: 'items-end justify-center p-3 sm:px-6 sm:pb-6 sm:pt-12',
+  // bottom-sheet has no padding so the panel touches the viewport bottom edge.
+  'bottom-sheet': 'items-end justify-center',
 };
 
-// Panel-side styles per placement (height ceiling, animation hook).
+// Panel-side styles per placement (height ceiling, animation hook, corner rounding).
 const PLACEMENT_PANEL = {
-  center: 'max-h-[90vh] sm:max-h-[88vh] detail-modal-panel-center',
-  bottom: 'max-h-[calc(100vh-24px)] sm:max-h-[calc(100vh-72px)] detail-modal-panel-bottom',
+  center: 'max-h-[90vh] sm:max-h-[88vh] rounded-xl detail-modal-panel-center',
+  bottom: 'max-h-[calc(100vh-24px)] sm:max-h-[calc(100vh-72px)] rounded-xl detail-modal-panel-bottom',
+  // Tall sheet attached to bottom edge: rounded only on top, flat at bottom.
+  'bottom-sheet': 'h-[calc(100vh-32px)] sm:h-[calc(100vh-48px)] rounded-t-xl rounded-b-none border-b-0 detail-modal-panel-bottom-sheet',
 };
+
+const EXIT_ANIMATION_MS = 240;
 
 const FOCUSABLE = [
   'a[href]',
@@ -48,13 +56,46 @@ export default function DetailModalShell({
   placement = 'center',
   closeOnBackdrop = true,
   className = '',
+  closeRef,
   children,
 }) {
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
   const onCloseRef = useRef(onClose);
+  const [isClosing, setIsClosing] = useState(false);
+  const isClosingRef = useRef(false);
+  const exitTimerRef = useRef(null);
+
+  // Bottom-sheet is the only placement that ships with an exit animation.
+  // For the others a synchronous close still feels right, so they bypass it.
+  const supportsExitAnimation = placement === 'bottom-sheet';
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  const requestClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    if (!supportsExitAnimation) {
+      onCloseRef.current?.();
+      return;
+    }
+    isClosingRef.current = true;
+    setIsClosing(true);
+    exitTimerRef.current = setTimeout(() => {
+      onCloseRef.current?.();
+    }, EXIT_ANIMATION_MS);
+  }, [supportsExitAnimation]);
+
+  // Expose requestClose to consumers so close buttons inside the panel can
+  // trigger the slide-down before the parent unmounts the shell.
+  useEffect(() => {
+    if (!closeRef) return undefined;
+    closeRef.current = requestClose;
+    return () => { if (closeRef) closeRef.current = null; };
+  }, [closeRef, requestClose]);
+
+  useEffect(() => {
+    return () => { if (exitTimerRef.current) clearTimeout(exitTimerRef.current); };
+  }, []);
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement;
@@ -64,7 +105,7 @@ export default function DetailModalShell({
     const onKey = (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onCloseRef.current?.();
+        requestClose();
         return;
       }
       if (e.key === 'Tab' && dialogRef.current) {
@@ -107,16 +148,17 @@ export default function DetailModalShell({
 
   const handleBackdropMouseDown = useCallback((e) => {
     if (!closeOnBackdrop) return;
-    if (e.target === e.currentTarget) onCloseRef.current?.();
-  }, [closeOnBackdrop]);
+    if (e.target === e.currentTarget) requestClose();
+  }, [closeOnBackdrop, requestClose]);
 
   const sizeClass = SIZE_CLASS[size] || SIZE_CLASS.default;
   const containerClass = PLACEMENT_CONTAINER[placement] || PLACEMENT_CONTAINER.center;
   const panelPlacementClass = PLACEMENT_PANEL[placement] || PLACEMENT_PANEL.center;
+  const closingClass = isClosing ? 'is-closing' : '';
 
   return createPortal(
     <div
-      className={`detail-modal-backdrop fixed inset-0 z-[100] flex ${containerClass}`}
+      className={`detail-modal-backdrop fixed inset-0 z-[100] flex ${containerClass} ${closingClass}`}
       onMouseDown={handleBackdropMouseDown}
       role="presentation"
     >
@@ -127,7 +169,7 @@ export default function DetailModalShell({
         aria-label={ariaLabelledBy ? undefined : ariaLabel}
         aria-labelledby={ariaLabelledBy}
         tabIndex={-1}
-        className={`detail-modal-panel relative bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl border border-border w-full ${sizeClass} ${panelPlacementClass} flex flex-col overflow-hidden focus:outline-none ${className}`}
+        className={`detail-modal-panel relative bg-white dark:bg-[#1E1F23] shadow-2xl border border-border w-full ${sizeClass} ${panelPlacementClass} ${closingClass} flex flex-col overflow-hidden focus:outline-none ${className}`}
       >
         {children}
       </div>

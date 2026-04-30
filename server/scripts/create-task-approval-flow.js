@@ -27,6 +27,7 @@ const CREATE_SQL = `
     "userName"     VARCHAR(255),
     role           VARCHAR(50),
     level          INTEGER NOT NULL,
+    stage          INTEGER,
     status         VARCHAR(30) NOT NULL DEFAULT 'pending',
     comment        TEXT,
     "attachmentUrl" TEXT,
@@ -36,6 +37,13 @@ const CREATE_SQL = `
   );
 `;
 
+// For installs that pre-date the parallel-stage rework: ADD COLUMN IF NOT EXISTS
+// is what actually upgrades them, since CREATE TABLE IF NOT EXISTS no-ops on an
+// existing table. Safe to run repeatedly. Mirrored in migrate-task-approval-flow-stage.js.
+const ADDITIVE_COLUMNS_SQL = [
+  `ALTER TABLE task_approval_flows ADD COLUMN IF NOT EXISTS stage INTEGER;`,
+];
+
 // Indexes are wrapped in IF NOT EXISTS so the script is safely re-runnable.
 const INDEX_SQL = [
   `CREATE UNIQUE INDEX IF NOT EXISTS task_approval_flows_task_level_unique
@@ -44,6 +52,8 @@ const INDEX_SQL = [
      ON task_approval_flows ("taskId", status);`,
   `CREATE INDEX IF NOT EXISTS task_approval_flows_user_status_idx
      ON task_approval_flows ("userId", status);`,
+  `CREATE INDEX IF NOT EXISTS task_approval_flows_task_stage_status_idx
+     ON task_approval_flows ("taskId", stage, status);`,
 ];
 
 const DROP_SQL = `DROP TABLE IF EXISTS task_approval_flows CASCADE;`;
@@ -65,6 +75,11 @@ const DROP_SQL = `DROP TABLE IF EXISTS task_approval_flows CASCADE;`;
 
     await sequelize.query(CREATE_SQL);
     console.log('[approval-flow-ddl] task_approval_flows table ensured.');
+
+    for (const sql of ADDITIVE_COLUMNS_SQL) {
+      await sequelize.query(sql);
+    }
+    console.log('[approval-flow-ddl] Additive columns ensured (stage).');
 
     for (const sql of INDEX_SQL) {
       await sequelize.query(sql);

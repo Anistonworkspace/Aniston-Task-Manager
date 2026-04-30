@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Plus, CheckCircle2, Clock, AlertTriangle, ListChecks, MessageSquare, ChevronRight } from 'lucide-react';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import api from '../../services/api';
@@ -16,6 +16,11 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
   const [boards, setBoards] = useState([]);
   const [commentTaskId, setCommentTaskId] = useState(null);
   const [commentText, setCommentText] = useState('');
+  // Ref the shell populates with its animated `requestClose` so the X button
+  // plays the slide-down exit before the parent unmounts us — same pattern
+  // used by the Board's TaskModal.
+  const shellCloseRef = useRef(null);
+  const handleClose = () => (shellCloseRef.current ? shellCloseRef.current() : onClose());
 
   useEffect(() => {
     loadMemberData();
@@ -85,7 +90,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
 
   if (loading || !data) {
     return (
-      <DetailModalShell onClose={onClose} ariaLabel="Member tasks" size="narrow">
+      <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabel="Member tasks" size="sheet" placement="bottom-sheet">
         <div className="flex items-center justify-center min-h-[260px]">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
         </div>
@@ -114,7 +119,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
   const memberTitleId = `member-drilldown-title-${userId}`;
 
   return (
-    <DetailModalShell onClose={onClose} ariaLabelledBy={memberTitleId} size="narrow">
+    <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={memberTitleId} size="sheet" placement="bottom-sheet">
         {/* Header */}
         <div className="px-5 py-4 border-b border-border flex-shrink-0">
           <div className="flex items-center justify-between mb-3">
@@ -126,7 +131,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
                 <p className="text-xs text-text-tertiary">{member.email}</p>
               </div>
             </div>
-            <button onClick={onClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={handleClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
           </div>
 
           {/* Mini Stats */}

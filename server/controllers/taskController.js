@@ -607,7 +607,9 @@ const updateTask = async (req, res) => {
 
     const task = await Task.findByPk(req.params.id, {
       include: [
-        { model: Board, as: 'board', attributes: ['id', 'name', 'columns'] },
+        // `groups` is needed by the status→group auto-move below; without it the
+        // sync silently no-ops because Array.isArray(undefined) is false.
+        { model: Board, as: 'board', attributes: ['id', 'name', 'columns', 'groups'] },
         { model: User, as: 'creator', attributes: ['id', 'role'] },
         { model: TaskAssignee, as: 'taskAssignees' },
       ],
@@ -789,9 +791,16 @@ const updateTask = async (req, res) => {
     await task.update(updates);
 
     // ── Auto-group assignment: move task to matching group when status changes ──
-    if (updates.status && updates.status !== previousStatus) {
+    // Skipped when the same request also sets groupId explicitly (e.g. drag-drop
+    // that intentionally lands the task in a chosen group) — the caller's choice wins.
+    if (updates.status && updates.status !== previousStatus && updates.groupId === undefined) {
       try {
-        const board = task.board || await Board.findByPk(task.boardId, { attributes: ['id', 'groups'] });
+        // task.board may not have `groups` if a future include change drops it;
+        // fall back to a fresh fetch so the sync can't silently no-op again.
+        let board = task.board;
+        if (!board || !Array.isArray(board.groups)) {
+          board = await Board.findByPk(task.boardId, { attributes: ['id', 'groups'] });
+        }
         if (board && Array.isArray(board.groups) && board.groups.length > 0) {
           const targetGroupId = findGroupForStatus(updates.status, board.groups);
           if (targetGroupId && targetGroupId !== task.groupId) {

@@ -29,6 +29,11 @@ import MarkDoneApprovalModal from './MarkDoneApprovalModal';
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
   const { error: toastError } = useToast();
+  // Ref the shell populates with its animated `requestClose` so the X button
+  // (and programmatic closes after delete/duplicate) play the slide-down exit
+  // before the parent unmounts us.
+  const shellCloseRef = useRef(null);
+  const handleClose = () => (shellCloseRef.current ? shellCloseRef.current() : onClose());
   const isApproved = task?.approvalStatus === 'approved';
   // Approved tasks are fully read-only for members. Admin/manager can still edit.
   const canEditAllFields = !isApproved && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
@@ -362,7 +367,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   async function handleDelete() {
     if (!confirm('Delete this task?')) return;
-    try { await api.delete(`/tasks/${task.id}`); if (onDelete) onDelete(task.id); onClose(); }
+    try { await api.delete(`/tasks/${task.id}`); if (onDelete) onDelete(task.id); handleClose(); }
     catch (err) { console.error('Failed to delete:', err); }
   }
 
@@ -371,7 +376,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       const res = await api.post(`/tasks/${task.id}/duplicate`, { includeSubtasks: true });
       const newTask = res.data?.task || res.data?.data?.task;
       if (onUpdate && newTask) onUpdate(newTask);
-      onClose();
+      handleClose();
     } catch (err) { console.error('Failed to duplicate:', err); }
   }
 
@@ -400,7 +405,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   return (
     <>
-      <DetailModalShell onClose={onClose} ariaLabelledBy={titleElementId} size="workspace" placement="bottom">
+      <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={titleElementId} size="sheet" placement="bottom-sheet">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-2">
@@ -425,7 +430,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 <Calendar size={13} /> Extend
               </button>
             )}
-            <button onClick={onClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={handleClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
           </div>
         </div>
 

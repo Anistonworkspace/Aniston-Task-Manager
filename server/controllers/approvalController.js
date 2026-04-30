@@ -38,6 +38,35 @@ function appendChainAudit(task, entry) {
   ];
 }
 
+// Detect schema-mismatch errors from Postgres (undefined column 42703, undefined
+// table 42P01). When a deploy ships backend code that references a column the
+// production DB doesn't have, the bare "Failed to ..." toast hides the cause.
+// This helper returns a 503-style payload with an admin-actionable hint and
+// keeps the underlying error string only in dev so prod responses don't leak schema.
+function buildErrorResponse(err, defaultMessage) {
+  const pgCode = err?.parent?.code || err?.original?.code;
+  const isSchemaMismatch = pgCode === '42703' || pgCode === '42P01';
+  if (isSchemaMismatch) {
+    return {
+      status: 503,
+      body: {
+        success: false,
+        message: 'Server database schema is out of date. Please ask an administrator to run the latest migrations (server/scripts/migrate-task-approval-flow-stage.js).',
+        code: 'schema_mismatch',
+        ...(process.env.NODE_ENV !== 'production' ? { detail: err.message } : {}),
+      },
+    };
+  }
+  return {
+    status: 500,
+    body: {
+      success: false,
+      message: defaultMessage,
+      ...(process.env.NODE_ENV !== 'production' ? { detail: err?.message } : {}),
+    },
+  };
+}
+
 // Effective stage for a row. Backward-compat shim: rows created before the
 // `stage` column existed have stage=NULL; treat those as stage = level so the
 // legacy sequential semantics still hold for old chains.
@@ -254,7 +283,8 @@ exports.submitForApproval = async (req, res) => {
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('[Approval] submitForApproval error:', err);
-    res.status(500).json({ success: false, message: 'Failed to submit for approval.' });
+    const { status, body } = buildErrorResponse(err, 'Failed to submit for approval.');
+    res.status(status).json(body);
   }
 };
 
@@ -573,7 +603,8 @@ async function processApprovalAction(req, res, opts) {
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error(`[Approval] ${opts.action} error:`, err);
-    res.status(500).json({ success: false, message: `Failed to ${opts.action.replace('_', ' ')}.` });
+    const { status, body } = buildErrorResponse(err, `Failed to ${opts.action.replace('_', ' ')}.`);
+    res.status(status).json(body);
   }
 }
 

@@ -268,6 +268,53 @@ describe('findGroupForStatus', () => {
   test('returns null for unrecognized status with no match', () => {
     expect(findGroupForStatus('custom_weird_status', defaultGroups)).toBeNull();
   });
+
+  // ─── Explicit mappedStatus ────────────────────────────────────────────────
+  // Group authors can declare `mappedStatus` to bind a group to a specific
+  // status value. This wins over id/title heuristics so domain-specific group
+  // names ("Sprint 7", "QA-Round-2") still pull tasks correctly.
+
+  test('explicit mappedStatus wins over id match', () => {
+    const groups = [
+      { id: 'done', title: 'Done' },                          // would match by id
+      { id: 'archive', title: 'Archive', mappedStatus: 'done' }, // explicit override
+    ];
+    expect(findGroupForStatus('done', groups)).toBe('archive');
+  });
+
+  test('explicit mappedStatus wins over title regex', () => {
+    const groups = [
+      { id: 'g1', title: 'Completed' },                        // would match by regex
+      { id: 'g2', title: 'Wrap-Up', mappedStatus: 'done' },    // explicit
+    ];
+    expect(findGroupForStatus('done', groups)).toBe('g2');
+  });
+
+  test('mappedStatus matches case-insensitively', () => {
+    const groups = [
+      { id: 'g1', title: 'In Flight', mappedStatus: 'WORKING_ON_IT' },
+    ];
+    expect(findGroupForStatus('working_on_it', groups)).toBe('g1');
+  });
+
+  test('mappedStatus on custom-titled group still maps correctly', () => {
+    const groups = [
+      { id: 'g1', title: 'Sprint Backlog', mappedStatus: 'not_started' },
+      { id: 'g2', title: 'Active Work', mappedStatus: 'working_on_it' },
+      { id: 'g3', title: 'Shipped', mappedStatus: 'done' },
+    ];
+    expect(findGroupForStatus('not_started', groups)).toBe('g1');
+    expect(findGroupForStatus('working_on_it', groups)).toBe('g2');
+    expect(findGroupForStatus('done', groups)).toBe('g3');
+  });
+
+  test('falsy mappedStatus is ignored (falls through to id/regex)', () => {
+    const groups = [
+      { id: 'done', title: 'Done', mappedStatus: '' },
+      { id: 'g2', title: 'Other', mappedStatus: null },
+    ];
+    expect(findGroupForStatus('done', groups)).toBe('done');
+  });
 });
 
 // ─── buildPendingPriorityOrder ─────────────────────────────────────────────
