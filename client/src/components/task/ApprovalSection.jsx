@@ -116,9 +116,26 @@ export default function ApprovalSection({ task, onUpdate }) {
     || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some((ta) => (ta.userId || ta.user?.id) === user?.id))
   );
   const isOriginalSubmitter = !!user?.id && submitterId === user?.id;
+
+  // Self-task detection — same rule as the backend isSelfAssignedTask guard.
+  // For self-tasks, render a "Personal task" hint INSTEAD of the empty state
+  // and suppress the Resubmit button (no chain needed, ever).
+  const taskAllAssigneeIds = (() => {
+    const ids = new Set();
+    if (task?.assignedTo) ids.add(task.assignedTo);
+    for (const ta of (task?.taskAssignees || [])) {
+      const id = ta.userId || ta.user?.id;
+      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
+    }
+    return ids;
+  })();
+  const isSelfTask = !!user?.id
+    && task?.createdBy === user?.id
+    && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
+
   const canResubmit =
     ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
-    || (!approvalStatus && isOwner);
+    || (!approvalStatus && isOwner && !isSelfTask);
 
   function openActionPanel(action) {
     setShowActionPanel(action);
@@ -179,8 +196,19 @@ export default function ApprovalSection({ task, onUpdate }) {
         )}
       </div>
 
-      {/* Empty state — no flow yet */}
-      {flows.length === 0 && (
+      {/* Empty state — no flow yet. Self-tasks get a different message: no
+          approval chain is ever needed for a personal task. Non-self tasks
+          show the standard "mark Done to start approval" hint. */}
+      {flows.length === 0 && isSelfTask && (
+        <div className="flex items-start gap-2 text-[11px] text-zinc-600 dark:text-zinc-300 mb-3 p-2.5 rounded-md bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-700/60">
+          <Check size={12} className="text-emerald-500 mt-0.5 flex-shrink-0" />
+          <div>
+            <div className="font-medium text-zinc-700 dark:text-zinc-200">Personal task — no approval needed</div>
+            <div className="text-zinc-500 dark:text-zinc-400 mt-0.5">Mark Done from the status column to complete it directly.</div>
+          </div>
+        </div>
+      )}
+      {flows.length === 0 && !isSelfTask && (
         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-3">
           Mark this task <span className="font-medium text-zinc-700 dark:text-zinc-200">Done</span> from the status column to start an approval chain, or use the button below.
         </div>
