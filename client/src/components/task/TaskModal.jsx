@@ -207,9 +207,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     || task?.createdBy === user.id
     || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
   );
+  // Self-task detection — same rule as the backend isSelfAssignedTask guard:
+  // creator is the only assignee AND the actor is that creator. Self-tasks
+  // bypass approval entirely (mark Done directly, no modal, no chain rows).
+  const taskAllAssigneeIds = (() => {
+    const ids = new Set();
+    if (task?.assignedTo) ids.add(task.assignedTo);
+    for (const ta of (task?.taskAssignees || [])) {
+      const id = ta.userId || ta.user?.id;
+      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
+    }
+    return ids;
+  })();
+  const isSelfTask = !!user?.id
+    && task?.createdBy === user.id
+    && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
+
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isTaskOwner
+    && !isSelfTask
     && task?.approvalStatus !== 'pending_approval'
     && task?.approvalStatus !== 'approved';
 

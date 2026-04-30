@@ -157,6 +157,47 @@ const Task = sequelize.define(
       defaultValue: 0,
       validate: { min: 0, max: 100 },
     },
+    completedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Set when status transitions to "done"; cleared when it transitions away. Reporting-friendly timestamp.',
+    },
+    // ─── Daily Work / Recurring Task instance bookkeeping ─────────
+    // The legacy `recurrence` JSONB above remains for backward-compat. NEW
+    // recurring work uses RecurringTaskTemplate + the columns below. The DB
+    // partial unique index on (recurringTemplateId, occurrenceDate) is what
+    // guarantees idempotent generation.
+    recurringTemplateId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      defaultValue: null,
+      references: { model: 'recurring_task_templates', key: 'id' },
+      comment: 'Back-pointer to the RecurringTaskTemplate that produced this instance.',
+    },
+    occurrenceDate: {
+      type: DataTypes.DATEONLY,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Calendar date this instance is "for" (in the template timezone).',
+    },
+    isRecurringInstance: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      comment: 'Fast filter for recurring-instance views.',
+    },
+    missedEscalationSent: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      comment: 'Idempotency flag for missed-recurring-task escalation notifications.',
+    },
+    missedEscalationSentAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: null,
+    },
     isArchived: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,

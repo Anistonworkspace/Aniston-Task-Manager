@@ -63,13 +63,31 @@ const TaskRow = React.memo(function TaskRow({
   // 'done' to collect a comment + optional attachment before submitting.
   const [showApprovalModal, setShowApprovalModal] = useState(false);
 
-  // Intercept rule: when the actor owns the task and it isn't already in
-  // approval, a "done" pick triggers the modal instead of a direct status
-  // update. Backend auto-approves if the actor has no senior reviewer (e.g.
-  // super admin), so managerial roles see at most one click of friction.
+  // Self-task detection: a self-assigned task (creator is the only assignee
+  // AND the actor) is a personal task — no approval required, mark Done
+  // directly. Mirrors the backend isSelfAssignedTask guard so client-side
+  // never even shows the modal for self tasks.
+  const allAssigneeIds = (() => {
+    const ids = new Set();
+    if (task.assignedTo) ids.add(task.assignedTo);
+    for (const ta of (task.taskAssignees || [])) {
+      const id = ta.userId || ta.user?.id;
+      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
+    }
+    return ids;
+  })();
+  const isSelfTask = !!user?.id
+    && task.createdBy === user.id
+    && (allAssigneeIds.size === 0 || Array.from(allAssigneeIds).every((id) => id === task.createdBy));
+
+  // Intercept rule: when the actor owns the task, the task is NOT a personal
+  // self-task, and it isn't already in approval, a "done" pick triggers the
+  // modal instead of a direct status update. Backend auto-approves if the
+  // actor has no senior reviewer (e.g. super admin).
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isOwnTask
+    && !isSelfTask
     && task.approvalStatus !== 'pending_approval'
     && task.approvalStatus !== 'approved';
 

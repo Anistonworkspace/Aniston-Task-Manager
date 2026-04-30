@@ -30,6 +30,7 @@ const TaskOwner = require('./TaskOwner');
 const TaskAssignee = require('./TaskAssignee');
 const TaskReminder = require('./TaskReminder');
 const TaskApprovalFlow = require('./TaskApprovalFlow');
+const RecurringTaskTemplate = require('./RecurringTaskTemplate');
 const Note = require('./Note');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
@@ -336,6 +337,21 @@ User.hasMany(TaskApprovalFlow, { foreignKey: 'userId', as: 'approvalSteps' });
 DirectorPlan.belongsTo(User, { foreignKey: 'directorId', as: 'director', onDelete: 'CASCADE' });
 DirectorPlan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 
+// ─── RecurringTaskTemplate associations ─────────────────────
+// Templates own many generated Task instances. Instance.recurringTemplateId is
+// SET NULL on template hard-delete so historical instances survive (we soft-
+// archive by default — `archivedAt` on the template — but defense in depth).
+RecurringTaskTemplate.belongsTo(Board, { foreignKey: 'boardId', as: 'board', onDelete: 'CASCADE' });
+RecurringTaskTemplate.belongsTo(User, { foreignKey: 'assigneeId', as: 'assignee', onDelete: 'CASCADE' });
+RecurringTaskTemplate.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'CASCADE' });
+RecurringTaskTemplate.hasMany(Task, { foreignKey: 'recurringTemplateId', as: 'instances' });
+
+Board.hasMany(RecurringTaskTemplate, { foreignKey: 'boardId', as: 'recurringTemplates' });
+User.hasMany(RecurringTaskTemplate, { foreignKey: 'assigneeId', as: 'assignedRecurringTemplates' });
+User.hasMany(RecurringTaskTemplate, { foreignKey: 'createdBy', as: 'createdRecurringTemplates' });
+
+Task.belongsTo(RecurringTaskTemplate, { foreignKey: 'recurringTemplateId', as: 'recurringTemplate', onDelete: 'SET NULL' });
+
 module.exports = {
   sequelize,
   User,
@@ -369,6 +385,7 @@ module.exports = {
   TaskAssignee,
   TaskReminder,
   TaskApprovalFlow,
+  RecurringTaskTemplate,
   Note,
   Feedback,
   AIConfig,

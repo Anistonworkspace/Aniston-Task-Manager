@@ -26,7 +26,11 @@ const Notification = sequelize.define(
         'approval_approved',
         'approval_rejected',
         'approval_changes_requested',
-        'approval_completed'
+        'approval_completed',
+        // Daily Work / Recurring Task workflow. DB enum is extended by
+        // server/scripts/create-recurring-task-templates.js (ALTER TYPE ADD VALUE).
+        'recurring_generated',
+        'recurring_missed'
       ),
       allowNull: false,
     },
