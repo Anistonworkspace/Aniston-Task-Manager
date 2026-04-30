@@ -54,13 +54,15 @@ async function notifsFor(userId, taskId, sinceIso) {
     columns: [],
     groups: [{ id: 'new', title: 'New', color: '#888' }],
   });
+  // Creator differs from submitter so the self-task short-circuit doesn't
+  // skip approval (creator==assignee==actor would be a personal task).
   const task = await Task.create({
     title: 'Notif test task',
     boardId: board.id,
     groupId: 'new',
     status: 'working_on_it',
     priority: 'medium',
-    createdBy: MONIKA,
+    createdBy: SHIKHA,
     assignedTo: MONIKA,
     approvalChain: [],
   });

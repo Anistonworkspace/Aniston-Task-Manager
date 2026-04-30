@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { GripVertical, ListChecks, MessageSquare, HelpCircle, Archive } from 'lucide-react';
+import { GripVertical, ListChecks, MessageSquare, HelpCircle, Archive, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import StatusCell from './StatusCell';
 import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
@@ -180,6 +180,16 @@ const TaskRow = React.memo(function TaskRow({
           {task._receipt ? <TaskReceiptIcon receipt={task._receipt} /> : null}
           <span className="truncate flex-1">{task.title}</span>
           <div className="flex items-center gap-1 flex-shrink-0 text-[#c4c4c4]">
+            {/* Daily Work / Recurring instance marker — small icon with tooltip; full badge text
+                is in the modal header so we don't crowd the row. */}
+            {task.isRecurringInstance && (
+              <span
+                className="flex items-center gap-0.5 text-[10px] font-semibold text-purple-600 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 px-1.5 py-0.5 rounded"
+                title={`Daily Work — ${task.occurrenceDate || task.dueDate}`}
+              >
+                <RefreshCw size={10} />
+              </span>
+            )}
             {subtaskTotal > 0 && (
               <span className="flex items-center gap-0.5 text-[11px]" title={`${subtaskDone}/${subtaskTotal}`}>
                 <ListChecks size={12} className={subtaskDone === subtaskTotal ? 'text-[#00c875]' : ''} />

@@ -27,14 +27,16 @@ export default function PersonCell({
   const btnRef = useRef(null);
   const inputRef = useRef(null);
   const { error: toastError } = useToast();
-  // Removing assignees is always allowed; only adding requires a due date.
-  const requireDueDate = !dueDate;
-  function blockIfNoDueDate() {
-    if (requireDueDate) {
-      toastError('Please set a due date before assigning this task.');
-      return true;
-    }
-    return false;
+  // Removing assignees is always allowed; only adding a *non-self* assignee
+  // requires a due date. Self-only assignment (members claiming their own
+  // task) is exempt — mirrors the backend rule in taskController.js.
+  function blockIfNoDueDate(targetIds = []) {
+    if (dueDate) return false;
+    const ids = (Array.isArray(targetIds) ? targetIds : [targetIds]).filter(Boolean);
+    const hasOther = ids.some((id) => id !== currentUserId);
+    if (!hasOther) return false;
+    toastError('Please set a due date before assigning this task to another user.');
+    return true;
   }
 
   // Derive assignees and supervisors from taskAssignees
@@ -86,7 +88,7 @@ export default function PersonCell({
   function handleMultiToggle(mId) {
     setSelectedOwnerIds(prev => {
       const isAdding = !prev.includes(mId);
-      if (isAdding && blockIfNoDueDate()) return prev;
+      if (isAdding && blockIfNoDueDate([mId])) return prev;
       if (!isAdding) return prev.filter(id => id !== mId);
       return [...prev, mId];
     });
@@ -95,7 +97,7 @@ export default function PersonCell({
   function handleMultiSave() {
     // Only block if the user is trying to leave anyone assigned. An empty
     // selection means "remove all", which is allowed even with no due date.
-    if (selectedOwnerIds.length > 0 && blockIfNoDueDate()) return;
+    if (selectedOwnerIds.length > 0 && blockIfNoDueDate(selectedOwnerIds)) return;
     if (onOwnersChange && selectedOwnerIds.length > 0) {
       onOwnersChange(selectedOwnerIds);
     } else if (onOwnersChange && selectedOwnerIds.length === 0) {
@@ -213,7 +215,7 @@ export default function PersonCell({
 
             const isSelected = mId === (value?.id || value);
             return (
-              <button key={mId} onClick={(e) => { e.stopPropagation(); if (blockIfNoDueDate()) return; onChange?.(mId); setOpen(false); setSearch(''); }}
+              <button key={mId} onClick={(e) => { e.stopPropagation(); if (blockIfNoDueDate([mId])) return; onChange?.(mId); setOpen(false); setSearch(''); }}
                 className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isSelected ? 'bg-primary-50' : ''}`}>
                 <Avatar name={mName} image={mAvatar} size="xs" />
                 <div className="flex-1 min-w-0 text-left">

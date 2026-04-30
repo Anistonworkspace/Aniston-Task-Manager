@@ -47,13 +47,16 @@ function assert(cond, msg) {
     columns: [],
     groups: [{ id: 'new', title: 'New', color: '#888' }],
   });
+  // Creator MUST differ from assignee, otherwise the self-task guard
+  // (Section: "Self-task" — creator==only-assignee==actor) correctly skips
+  // approval and these tests would no-op. Shikha creates, monika gets it.
   const task = await Task.create({
     title: 'Approval flow test task',
     boardId: board.id,
     groupId: 'new',
     status: 'working_on_it',
     priority: 'medium',
-    createdBy: MONIKA,
+    createdBy: SHIKHA,
     assignedTo: MONIKA,
     approvalChain: [],
   });
@@ -260,6 +263,60 @@ function assert(cond, msg) {
       res
     );
     assert(res._status === 403, `non-current reject -> 403 (got ${res._status})`);
+
+    console.log('\nTEST 16: SELF-TASK — submitForApproval short-circuits, no chain rows created');
+    // A task whose creator is also the (only) assignee, where the same user
+    // submits, must NOT create any approval rows. The endpoint should return
+    // success with approvalSkipped=true.
+    const selfTaskBoard = await Board.create({
+      name: '__SELF_TASK_TEST__',
+      color: '#000000',
+      createdBy: MONIKA,
+      columns: [],
+      groups: [{ id: 'new', title: 'New', color: '#888' }],
+    });
+    const selfTask = await Task.create({
+      title: 'self task — should skip approval',
+      boardId: selfTaskBoard.id,
+      groupId: 'new',
+      status: 'working_on_it',
+      priority: 'medium',
+      createdBy: MONIKA,         // Monika creates
+      assignedTo: MONIKA,        // ...and assigns to herself
+      approvalChain: [],
+    });
+    res = mockRes();
+    await ctrl.submitForApproval(
+      { params: { id: selfTask.id }, body: { comment: 'self submit' }, user: monika },
+      res
+    );
+    assert(res._status === 200, `self-task submit returns 200 (got ${res._status})`);
+    assert(res._body?.approvalSkipped === true, 'response includes approvalSkipped=true');
+    const selfRows = await TaskApprovalFlow.findAll({ where: { taskId: selfTask.id }, raw: true });
+    assert(selfRows.length === 0, `no chain rows created for self-task (got ${selfRows.length})`);
+    const selfTaskAfter = await Task.findByPk(selfTask.id);
+    assert(selfTaskAfter.approvalStatus === null, `approvalStatus stays null for self-task (got ${selfTaskAfter.approvalStatus})`);
+
+    console.log('\nTEST 17: NOT a self-task — different creator → approval still triggers');
+    // Monika created her own task above, but Shikha-as-actor on Monika's task
+    // should still create an approval chain (she's not the creator).
+    res = mockRes();
+    await ctrl.submitForApproval(
+      { params: { id: selfTask.id }, body: { comment: 'shikha attempts' }, user: shikha },
+      res
+    );
+    // Shikha is not the assignee — but the spec doesn't require assignee-only
+    // submission. The check is "self-task" (creator == single assignee == actor).
+    // Shikha is none of those, so the self-skip does NOT apply. The submit
+    // proceeds normally, walking shikha's manager chain.
+    assert(res._status === 200, `non-self-task submit OK (got ${res._status})`);
+    const shikhaRows = await TaskApprovalFlow.findAll({ where: { taskId: selfTask.id }, raw: true });
+    assert(shikhaRows.length > 0, `chain rows created for non-self submission (got ${shikhaRows.length})`);
+
+    // Cleanup
+    await TaskApprovalFlow.destroy({ where: { taskId: selfTask.id } });
+    await Task.destroy({ where: { id: selfTask.id }, force: true });
+    await Board.destroy({ where: { id: selfTaskBoard.id }, force: true });
 
     if (failures === 0) {
       console.log('\n========== ALL TESTS PASSED ==========');

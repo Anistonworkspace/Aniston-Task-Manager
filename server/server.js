@@ -61,6 +61,7 @@ const feedbackRoutes = require('./routes/feedback');
 const aiRoutes = require('./routes/ai');
 const transcriptionRoutes = require('./routes/transcriptionProviders');
 const apiKeyRoutes = require('./routes/apiKeys');
+const recurringTaskRoutes = require('./routes/recurringTasks');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -226,6 +227,7 @@ app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/transcription', transcriptionRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/recurring-tasks', recurringTaskRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
 const { authenticate: mrAuth, managerOrAdmin: mrMgr } = require('./middleware/auth');
@@ -731,6 +733,16 @@ const start = async () => {
       // Start Microsoft calendar sync retry job (every 15 min)
       const { startCalendarSyncRetryJob } = require('./jobs/calendarSyncRetryJob');
       startCalendarSyncRetryJob();
+
+      // ─── Daily Work / Recurring Work jobs (Phase B) ─────────────────────
+      // Distinct from the legacy `recurringTaskJob` (Task.recurrence JSONB)
+      // which still runs at :15. These two jobs drive the new
+      // RecurringTaskTemplate + generated-instance design.
+      const { startRecurringTemplateGenerationJob } = require('./jobs/recurringTemplateGenerationJob');
+      startRecurringTemplateGenerationJob();
+
+      const { startMissedRecurringTaskJob } = require('./jobs/missedRecurringTaskJob');
+      startMissedRecurringTaskJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

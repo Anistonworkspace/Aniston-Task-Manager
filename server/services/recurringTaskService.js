@@ -1,0 +1,563 @@
+/**
+ * Recurring Task Service — generation engine for the Daily Work / Recurring Work
+ * workflow.
+ *
+ * Responsibilities:
+ *   1. Compute a template's NEXT eligible occurrence date in its local timezone
+ *      based on frequency (daily / weekdays / weekly / monthly / custom).
+ *   2. Generate a concrete Task instance for a given (template, occurrenceDate)
+ *      pair — idempotent, transactional, safe under concurrent invocation.
+ *   3. Advance template bookkeeping (lastGeneratedDate, nextRunAt) atomically.
+ *
+ * IMPORTANT — idempotency contract:
+ *   The DB partial unique index `tasks_recurring_template_occurrence_unique`
+ *   on (recurringTemplateId, occurrenceDate) WHERE recurringTemplateId IS NOT
+ *   NULL is THE source of truth. Two concurrent calls to generateInstance for
+ *   the same (template, occurrenceDate) are guaranteed to produce exactly one
+ *   row — the second call's INSERT raises SequelizeUniqueConstraintError which
+ *   we catch and convert into a "skipped (already exists)" result.
+ *
+ * Timezone handling:
+ *   We never trust the host's local timezone. Every date computation goes
+ *   through the template's `timezone` field (IANA name, e.g. "Asia/Kolkata",
+ *   default "UTC"). Native `Intl.DateTimeFormat` is used to extract Y/M/D/H/M
+ *   in the target zone — no luxon/moment dependency required.
+ */
+
+const { Op } = require('sequelize');
+const { sequelize } = require('../config/db');
+const {
+  Task,
+  RecurringTaskTemplate,
+  TaskAssignee,
+  Board,
+  User,
+} = require('../models');
+const { sendNotification } = require('./notificationService');
+const { logActivity } = require('./activityService');
+const logger = require('../utils/logger');
+
+// ─── Timezone-safe date helpers ─────────────────────────────────────────────
+
+/**
+ * Return { year, month, day, weekday, hour, minute } for `date` rendered in
+ * the IANA `timezone`. Pure: does not mutate `date`. Falls back to UTC if the
+ * timezone string is invalid.
+ *
+ * Weekday is 0=Sunday … 6=Saturday (ISO-style would be 1=Monday, but we use the
+ * JS getDay() convention because it matches `template.weekdays` semantics
+ * established by the schema).
+ */
+function partsInZone(date, timezone) {
+  let tz = timezone || 'UTC';
+  try {
+    // Touch the formatter once to validate the zone; if invalid, this throws.
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+  } catch (e) {
+    tz = 'UTC';
+  }
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    weekday: 'short',
+  });
+  const lookup = {};
+  for (const part of fmt.formatToParts(date)) {
+    lookup[part.type] = part.value;
+  }
+  // Intl reports hour=24 for midnight in some locales — normalise to 0.
+  let hour = parseInt(lookup.hour, 10);
+  if (hour === 24) hour = 0;
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    year: parseInt(lookup.year, 10),
+    month: parseInt(lookup.month, 10),
+    day: parseInt(lookup.day, 10),
+    hour,
+    minute: parseInt(lookup.minute, 10),
+    weekday: weekdayMap[lookup.weekday] ?? 0,
+  };
+}
+
+/** Format a Y/M/D as "YYYY-MM-DD" (DATEONLY-compatible). */
+function formatDateOnly(year, month, day) {
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return `${year}-${m}-${d}`;
+}
+
+/**
+ * Convert a wall-clock moment in `timezone` (year/month/day at hh:mm:ss) into
+ * a UTC Date instance.
+ *
+ * Algorithm:
+ *   1. Pretend the requested wall clock IS UTC → ts0.
+ *   2. Ask Intl what `timezone` says at ts0; the gap between the requested
+ *      wall clock and the rendered wall clock IS the timezone offset.
+ *   3. Subtract that offset from ts0 — done in one shot for non-DST cases.
+ *   4. DST safety: re-render at the result; if the rendered wall clock
+ *      doesn't match the request (DST flip moved us across a discontinuity),
+ *      recompute using the offset at the result and apply once more.
+ *
+ * Returning a wall-clock time that doesn't exist (the spring-forward gap) or
+ * is ambiguous (the fall-back overlap) is left to the caller — for our use
+ * case (00:05 in tz, plus user-chosen due times) those edge cases are
+ * exceptional and the result is "best effort consistent with the rendered
+ * wall clock".
+ */
+function zonedTimeToUtc(year, month, day, hour, minute, second, timezone) {
+  const tz = timezone || 'UTC';
+  const sec = second || 0;
+  const ts0 = Date.UTC(year, month - 1, day, hour, minute, sec, 0);
+
+  const p0 = partsInZone(new Date(ts0), tz);
+  const offset0 = Date.UTC(p0.year, p0.month - 1, p0.day, p0.hour, p0.minute, sec, 0) - ts0;
+  let result = ts0 - offset0;
+
+  // DST refinement — only kicks in when the offset at ts0 differs from the
+  // offset at result (twice-yearly transitions in zones that observe DST).
+  const p1 = partsInZone(new Date(result), tz);
+  if (p1.hour !== hour || p1.minute !== minute || p1.day !== day) {
+    const offset1 = Date.UTC(p1.year, p1.month - 1, p1.day, p1.hour, p1.minute, sec, 0) - result;
+    result = ts0 - offset1;
+  }
+  return new Date(result);
+}
+
+/** Parse "HH:mm[:ss]" → { hour, minute, second }. Defensive against null. */
+function parseDueTime(dueTime) {
+  if (!dueTime) return { hour: 18, minute: 0, second: 0 };
+  // Postgres TIME comes back as "HH:mm:ss"; controller input may be "HH:mm".
+  const m = String(dueTime).match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!m) return { hour: 18, minute: 0, second: 0 };
+  return {
+    hour: Math.min(23, parseInt(m[1], 10) || 0),
+    minute: Math.min(59, parseInt(m[2], 10) || 0),
+    second: m[3] ? Math.min(59, parseInt(m[3], 10) || 0) : 0,
+  };
+}
+
+/** Last day of (year, month). month is 1-12. */
+function lastDayOfMonth(year, month) {
+  // new Date(y, m, 0) returns the last day of month (m). m is 1-12 here, JS is
+  // 0-11 internally, so passing m directly + day 0 lands on month-1's last day.
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/** Add `days` to a Y/M/D triple, returning a new Y/M/D triple. */
+function addDays(year, month, day, days) {
+  const ts = Date.UTC(year, month - 1, day) + days * 24 * 60 * 60 * 1000;
+  const d = new Date(ts);
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+/**
+ * Does this template generate an instance for the calendar date represented by
+ * { year, month, day, weekday } in its own timezone?
+ *
+ * - daily         → always yes
+ * - weekdays      → Mon–Fri (weekday in 1..5)
+ * - weekly        → weekday must appear in template.weekdays array
+ * - monthly       → day must equal template.dayOfMonth, OR (dayOfMonth > last
+ *                   day of month AND day is the last day) — handles 31st on Feb
+ * - custom        → same semantics as `weekly`
+ */
+function isOccurrenceEligible(template, parts) {
+  switch (template.frequency) {
+    case 'daily':
+      return true;
+    case 'weekdays':
+      return parts.weekday >= 1 && parts.weekday <= 5;
+    case 'weekly':
+    case 'custom': {
+      const list = Array.isArray(template.weekdays) ? template.weekdays : [];
+      if (list.length === 0) return false;
+      return list.includes(parts.weekday);
+    }
+    case 'monthly': {
+      const target = parseInt(template.dayOfMonth, 10);
+      if (!target || target < 1 || target > 31) return false;
+      const lastDay = lastDayOfMonth(parts.year, parts.month);
+      const effective = Math.min(target, lastDay);
+      return parts.day === effective;
+    }
+    default:
+      return false;
+  }
+}
+
+// ─── Public: occurrence-date / nextRunAt math ───────────────────────────────
+
+/**
+ * Compute the next eligible occurrenceDate (YYYY-MM-DD) for `template`,
+ * starting from `fromDate` (default: now). "Next" means the earliest date >=
+ * `fromDate` (in template tz) that satisfies the frequency rule and falls
+ * within [startDate, endDate].
+ *
+ * Returns null if no such date exists (e.g. endDate already past).
+ *
+ * Bound: searches at most 366 days ahead (safety net for misconfigured custom
+ * recurrences with empty weekday arrays — those return null harmlessly).
+ */
+function nextOccurrenceDate(template, fromDate = new Date()) {
+  const tz = template.timezone || 'UTC';
+  const startStr = String(template.startDate);
+  const endStr = template.endDate ? String(template.endDate) : null;
+
+  // Anchor: max(fromDate today in tz, template.startDate).
+  const todayParts = partsInZone(fromDate, tz);
+  let cur = { year: todayParts.year, month: todayParts.month, day: todayParts.day };
+  const curStr = formatDateOnly(cur.year, cur.month, cur.day);
+  if (curStr < startStr) {
+    const [y, m, d] = startStr.split('-').map(Number);
+    cur = { year: y, month: m, day: d };
+  }
+
+  for (let i = 0; i < 366; i += 1) {
+    const dateStr = formatDateOnly(cur.year, cur.month, cur.day);
+    if (endStr && dateStr > endStr) return null;
+
+    // Use noon-UTC of the candidate date as a cheap weekday probe in the
+    // template tz — same calendar day in any reasonable zone.
+    const probe = new Date(Date.UTC(cur.year, cur.month - 1, cur.day, 12, 0, 0));
+    const parts = partsInZone(probe, tz);
+    const candidate = { ...parts, year: cur.year, month: cur.month, day: cur.day };
+    if (isOccurrenceEligible(template, candidate)) return dateStr;
+
+    cur = addDays(cur.year, cur.month, cur.day, 1);
+  }
+  return null;
+}
+
+/**
+ * For an `occurrenceDate` string ("YYYY-MM-DD"), compute the UTC timestamp at
+ * which the cron should generate this instance (i.e. 00:05 in the template
+ * timezone on that date).
+ *
+ * Returning a UTC Date allows the cron job to do a simple `nextRunAt <= now`
+ * comparison without ever dealing with timezone arithmetic again.
+ */
+function generationRunAtUtc(occurrenceDate, timezone) {
+  const [y, m, d] = String(occurrenceDate).split('-').map(Number);
+  return zonedTimeToUtc(y, m, d, 0, 5, 0, timezone || 'UTC');
+}
+
+/**
+ * For an `occurrenceDate` + the template's `dueTime`, compute the actual
+ * deadline UTC timestamp. Used by the missed-escalation job.
+ */
+function dueAtUtc(occurrenceDate, dueTime, timezone) {
+  const [y, m, d] = String(occurrenceDate).split('-').map(Number);
+  const t = parseDueTime(dueTime);
+  return zonedTimeToUtc(y, m, d, t.hour, t.minute, t.second, timezone || 'UTC');
+}
+
+/**
+ * Recompute and persist the template's nextRunAt based on its current state.
+ * Called after a successful generation, after pause/resume, and after edits.
+ *
+ * If the template has no future eligible date (passed endDate, or invalid
+ * config), nextRunAt is set to null — the cron will simply ignore the row.
+ */
+async function recomputeNextRunAt(template, options = {}) {
+  const fromDate = options.fromDate || new Date();
+  // The next *future* occurrence is anchored to "tomorrow in tz" if today's
+  // already been generated (lastGeneratedDate matches today), otherwise to
+  // today. Concretely: we pick max(today, lastGeneratedDate+1) as the search
+  // anchor, then nextOccurrenceDate finds the first eligible date >= anchor.
+  const tz = template.timezone || 'UTC';
+  const todayParts = partsInZone(fromDate, tz);
+  let anchor = { year: todayParts.year, month: todayParts.month, day: todayParts.day };
+
+  if (template.lastGeneratedDate) {
+    const [ly, lm, ld] = String(template.lastGeneratedDate).split('-').map(Number);
+    const tomorrow = addDays(ly, lm, ld, 1);
+    const anchorStr = formatDateOnly(anchor.year, anchor.month, anchor.day);
+    const tomorrowStr = formatDateOnly(tomorrow.year, tomorrow.month, tomorrow.day);
+    if (tomorrowStr > anchorStr) anchor = tomorrow;
+  }
+
+  // Build a probe date in UTC that, when rendered in tz, lands on `anchor`.
+  // Using noon avoids DST edge cases at the day boundary.
+  const probe = zonedTimeToUtc(anchor.year, anchor.month, anchor.day, 12, 0, 0, tz);
+  const occurrenceDate = nextOccurrenceDate(template, probe);
+
+  if (!occurrenceDate) {
+    if (template.nextRunAt !== null) {
+      await template.update({ nextRunAt: null }, { transaction: options.transaction });
+    }
+    return null;
+  }
+
+  const nextRunAt = generationRunAtUtc(occurrenceDate, tz);
+  await template.update({ nextRunAt }, { transaction: options.transaction });
+  return { occurrenceDate, nextRunAt };
+}
+
+// ─── Public: instance generation ────────────────────────────────────────────
+
+/**
+ * Idempotently generate a Task instance for the given (template, occurrenceDate).
+ *
+ * Returns one of:
+ *   { ok: true, created: true, task }     — instance created this call
+ *   { ok: true, created: false, task }    — instance already existed (no-op)
+ *   { ok: false, reason: '...' }          — pre-condition failed (e.g. paused)
+ *
+ * Wrapped in a transaction. If a unique-violation is raised on the Task insert
+ * (concurrent worker won the race), we re-fetch the existing row and return it
+ * with created=false. Either way, the caller MUST update the template's
+ * lastGeneratedDate / nextRunAt afterward — that's the cron job's job, not
+ * this function's — so the same template+date isn't reconsidered every minute.
+ */
+async function generateInstance(template, occurrenceDate, options = {}) {
+  if (!template) return { ok: false, reason: 'Template missing.' };
+  if (!template.isActive) return { ok: false, reason: 'Template is paused.' };
+  if (template.archivedAt) return { ok: false, reason: 'Template is archived.' };
+  if (!occurrenceDate) return { ok: false, reason: 'occurrenceDate missing.' };
+
+  // Date-window guard: caller may have computed a date outside [start, end].
+  if (String(occurrenceDate) < String(template.startDate)) {
+    return { ok: false, reason: 'occurrenceDate is before template.startDate.' };
+  }
+  if (template.endDate && String(occurrenceDate) > String(template.endDate)) {
+    return { ok: false, reason: 'occurrenceDate is after template.endDate.' };
+  }
+
+  const externalTx = options.transaction;
+  const t = externalTx || (await sequelize.transaction());
+
+  try {
+    // Fast path: row already exists. Avoids touching the unique-violation path
+    // when we can. Critical because Sequelize's unique-violation also rolls
+    // back the entire transaction — we'd lose any sibling work in the same tx.
+    const existing = await Task.findOne({
+      where: {
+        recurringTemplateId: template.id,
+        occurrenceDate,
+      },
+      transaction: t,
+    });
+    if (existing) {
+      if (!externalTx) await t.commit();
+      return { ok: true, created: false, task: existing };
+    }
+
+    // Insert. The partial unique index on (recurringTemplateId, occurrenceDate)
+    // is the last line of defense against races between fast-path read and
+    // this insert.
+    let task;
+    try {
+      task = await Task.create(
+        {
+          title: template.title,
+          description: template.description || '',
+          status: 'not_started',
+          priority: template.priority,
+          groupId: template.groupId || 'new',
+          dueDate: occurrenceDate,
+          progress: 0,
+          isArchived: false,
+          boardId: template.boardId,
+          assignedTo: template.assigneeId,
+          createdBy: template.createdBy,
+          recurringTemplateId: template.id,
+          occurrenceDate,
+          isRecurringInstance: true,
+          missedEscalationSent: false,
+        },
+        { transaction: t }
+      );
+    } catch (err) {
+      // Unique-violation = concurrent insert won the race. Re-fetch and treat
+      // as "already existed". Anything else is a real error.
+      const isUniqueViolation = err.name === 'SequelizeUniqueConstraintError'
+        || /unique/i.test(err.message)
+        || /duplicate key/i.test(err?.parent?.message || '');
+      if (!isUniqueViolation) throw err;
+      if (!externalTx) {
+        // Sequelize aborted this tx on the constraint failure. Open a fresh
+        // mini-tx to fetch the canonical row.
+        await t.rollback();
+        const winner = await Task.findOne({
+          where: { recurringTemplateId: template.id, occurrenceDate },
+        });
+        return { ok: true, created: false, task: winner };
+      }
+      // External tx: signal to caller that this generation is a no-op. Do NOT
+      // commit/rollback — caller owns lifecycle.
+      return { ok: true, created: false, task: null, raceLost: true };
+    }
+
+    // Mirror the assignee into task_assignees for parity with normal task
+    // creation (TaskModal, dashboard queries, etc. expect this row to exist).
+    try {
+      await TaskAssignee.create(
+        {
+          taskId: task.id,
+          userId: template.assigneeId,
+          role: 'assignee',
+        },
+        { transaction: t }
+      );
+    } catch (e) {
+      // Junction table may not exist on a very old install. Log and continue —
+      // assignedTo column on tasks is the legacy fallback that always works.
+      logger.warn('[recurringTaskService] task_assignees insert skipped', { msg: e.message });
+    }
+
+    if (!externalTx) await t.commit();
+
+    // Side-effects (notification + activity) happen OUTSIDE the tx so a
+    // notification failure can never roll back the generated instance.
+    await afterInstanceCreated(template, task);
+
+    return { ok: true, created: true, task };
+  } catch (err) {
+    if (!externalTx) {
+      try { await t.rollback(); } catch (_) { /* ignore double-rollback */ }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Side-effects to run AFTER the instance row is committed. Fire-and-forget;
+ * each individual side-effect is wrapped in its own try/catch so one failure
+ * doesn't suppress the others.
+ */
+async function afterInstanceCreated(template, task) {
+  // 1. In-app + push notification to the assignee.
+  try {
+    await sendNotification(
+      template.assigneeId,
+      'Daily Work assigned',
+      `Today's "${template.title}" is ready. Due ${task.dueDate} at ${formatDueTimeForHumans(template.dueTime)}.`,
+      'recurring_generated',
+      task.id
+    );
+  } catch (e) {
+    logger.warn('[recurringTaskService] notification failed', { templateId: template.id, taskId: task.id, msg: e.message });
+  }
+
+  // 2. Activity log (audit trail). Fire-and-forget per project convention.
+  try {
+    logActivity({
+      action: 'created',
+      description: `Generated recurring instance "${template.title}" for ${task.occurrenceDate}`,
+      entityType: 'task',
+      entityId: task.id,
+      taskId: task.id,
+      boardId: task.boardId,
+      userId: template.createdBy,
+      meta: { recurringTemplateId: template.id, occurrenceDate: task.occurrenceDate },
+    });
+  } catch (e) {
+    // logActivity is already fire-and-forget but defensive.
+  }
+}
+
+function formatDueTimeForHumans(dueTime) {
+  const t = parseDueTime(dueTime);
+  const ampm = t.hour >= 12 ? 'PM' : 'AM';
+  const h12 = ((t.hour + 11) % 12) + 1;
+  const mm = String(t.minute).padStart(2, '0');
+  return `${h12}:${mm} ${ampm}`;
+}
+
+// ─── Public: orchestrator used by the cron job ──────────────────────────────
+
+/**
+ * Process a single template:
+ *   1. Compute today's occurrenceDate in template tz.
+ *   2. If eligible and not already generated, call generateInstance.
+ *   3. Recompute nextRunAt for the next eligible day.
+ *
+ * Returns { templateId, generated, occurrenceDate, nextRunAt, error? } for
+ * structured logging. Never throws — errors are caught and surfaced in the
+ * return value.
+ */
+async function runTemplateOnce(template, options = {}) {
+  const fromDate = options.fromDate || new Date();
+  const tz = template.timezone || 'UTC';
+  const todayParts = partsInZone(fromDate, tz);
+  const todayStr = formatDateOnly(todayParts.year, todayParts.month, todayParts.day);
+
+  try {
+    // Skip if outside [startDate, endDate] window.
+    if (todayStr < String(template.startDate)) {
+      // Not yet started — schedule nextRunAt to startDate@00:05.
+      await recomputeNextRunAt(template, { fromDate });
+      return { templateId: template.id, generated: false, reason: 'before-start-date' };
+    }
+    if (template.endDate && todayStr > String(template.endDate)) {
+      await template.update({ nextRunAt: null });
+      return { templateId: template.id, generated: false, reason: 'after-end-date' };
+    }
+
+    const eligible = isOccurrenceEligible(template, {
+      ...todayParts,
+      year: todayParts.year,
+      month: todayParts.month,
+      day: todayParts.day,
+    });
+
+    let result = null;
+    if (eligible) {
+      result = await generateInstance(template, todayStr);
+      // Update lastGeneratedDate even if a duplicate already existed (raceLost
+      // OR fast-path-found). This keeps the template clock advancing and
+      // prevents the cron from rechecking the same date forever.
+      if (result.ok) {
+        const desiredLastGenerated = todayStr;
+        if (template.lastGeneratedDate !== desiredLastGenerated) {
+          await template.update({ lastGeneratedDate: desiredLastGenerated });
+        }
+      }
+    }
+
+    // Always recompute nextRunAt — covers (a) generated today, advance to
+    // tomorrow's eligible date, and (b) not eligible today, advance to next
+    // eligible date.
+    const next = await recomputeNextRunAt(template, { fromDate });
+
+    return {
+      templateId: template.id,
+      generated: !!(result && result.created),
+      alreadyExisted: !!(result && !result.created),
+      occurrenceDate: eligible ? todayStr : null,
+      nextRunAt: next ? next.nextRunAt : null,
+    };
+  } catch (err) {
+    logger.error('[recurringTaskService] runTemplateOnce failed', {
+      templateId: template.id,
+      msg: err.message,
+      stack: err.stack,
+    });
+    return { templateId: template.id, generated: false, error: err.message };
+  }
+}
+
+// ─── Exports ────────────────────────────────────────────────────────────────
+
+module.exports = {
+  // Time math
+  partsInZone,
+  formatDateOnly,
+  zonedTimeToUtc,
+  parseDueTime,
+  isOccurrenceEligible,
+  nextOccurrenceDate,
+  generationRunAtUtc,
+  dueAtUtc,
+
+  // Persistence
+  recomputeNextRunAt,
+  generateInstance,
+  runTemplateOnce,
+};

@@ -26,13 +26,14 @@ function mockRes() {
     columns: [],
     groups: [{ id: 'new', title: 'New', color: '#888' }],
   });
+  // Creator differs from submitter so self-task guard doesn't short-circuit.
   const task = await Task.create({
     title: 'race test',
     boardId: board.id,
     groupId: 'new',
     status: 'working_on_it',
     priority: 'medium',
-    createdBy: MONIKA,
+    createdBy: SHIKHA,
     assignedTo: MONIKA,
     approvalChain: [],
   });

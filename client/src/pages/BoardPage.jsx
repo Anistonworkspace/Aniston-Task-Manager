@@ -59,9 +59,13 @@ function NewTaskDropdown({ onNewGroup, onImport, onClose }) {
 export default function BoardPage() {
   const { id: boardId } = useParams();
   const navigate = useNavigate();
-  const { user, canManage, isSuperAdmin, permissionGrants, effectivePermissions } = useAuth();
+  const { user, canManage, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
   const canCreateTask = canUserFn(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
   const canEditBoard = canUserFn(user?.role, 'edit_board', isSuperAdmin, permissionGrants, effectivePermissions);
+  // Whether the actor can assign tasks to other users. When false, the inline
+  // "+ Add task" payload explicitly self-assigns so the task is created as a
+  // personal task without going through the "missing owner" path on the server.
+  const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
   const { pushAction } = useUndo();
   const { error: toastError, success: toastSuccess } = useToast();
   const [board, setBoard] = useState(null);
@@ -211,11 +215,18 @@ export default function BoardPage() {
 
   async function handleAddTask(groupId, title) {
     try {
-      const res = await api.post('/tasks', {
+      // Members (no `tasks.assign_others`) can only create personal tasks.
+      // Send an explicit self-assignee so the server doesn't have to infer it
+      // and so the resulting task is unambiguously owned by the creator.
+      const payload = {
         title, boardId, groupId,
         status: 'not_started', priority: 'medium',
         position: tasks.filter(t => t.groupId === groupId).length,
-      });
+      };
+      if (!canAssignOthers && user?.id) {
+        payload.assignedTo = [user.id];
+      }
+      const res = await api.post('/tasks', payload);
       const newTask = res.data.task || res.data;
       setTasks(prev => [...prev, newTask]);
       pushAction({

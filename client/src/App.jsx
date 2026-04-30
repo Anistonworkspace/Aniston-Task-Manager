@@ -34,6 +34,7 @@ const DirectorDashboardPage = lazy(() => import('./pages/DirectorDashboardPage')
 const AssistantManagerPlanPage = lazy(() => import('./pages/AssistantManagerPlanPage'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
+const RecurringWorkPage = lazy(() => import('./pages/RecurringWorkPage'));
 
 function PageLoader() {
   return (
@@ -150,6 +151,9 @@ export default function App() {
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
+          {/* All authenticated users can land here. Server-side filtering hides templates the user
+              shouldn't see (members → only their own; assistant managers → subtree). */}
+          <Route path="recurring-work" element={<Suspense fallback={<PageLoader />}><RecurringWorkPage /></Suspense>} />
           {/* Feedback: enter with feedback.view (managers + granted members);
               page itself hides manage actions unless feedback.manage holds. */}
           <Route path="feedback" element={<StrictAdminRoute requiredPermission="feedback.view"><Suspense fallback={<PageLoader />}><FeedbackPage /></Suspense></StrictAdminRoute>} />

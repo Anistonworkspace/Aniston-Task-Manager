@@ -6,7 +6,7 @@ import {
   FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
   Puzzle, Archive, Settings, Link2, GitBranch, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown, BookOpen,
-  Mic, MessageSquare
+  Mic, MessageSquare, RefreshCw
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -345,6 +345,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label="Tasks & Workflows" path="/tasks" tourId="nav-tasks" />
+            <NavItem icon={RefreshCw} label="Recurring Work" path="/recurring-work" tourId="nav-recurring-work" />
             <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
             <NavItem icon={Mic} label="Notes" path="/notes" tourId="nav-notes" />
             <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />

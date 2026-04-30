@@ -48,7 +48,7 @@ const Board = sequelize.define(
         // mappedStatus binds a group to a status value: when a task's status
         // changes, it is auto-moved to the group whose mappedStatus matches.
         // Optional — groups without a mapping fall back to title/regex inference.
-        { id: 'new', title: 'New', color: '#579bfc', position: 0, mappedStatus: 'not_started' },
+        { id: 'new', title: 'New Task', color: '#579bfc', position: 0, mappedStatus: 'not_started' },
         { id: 'in_progress', title: 'In Progress', color: '#fdab3d', position: 1, mappedStatus: 'working_on_it' },
         { id: 'done', title: 'Done', color: '#00c875', position: 2, mappedStatus: 'done' },
       ],

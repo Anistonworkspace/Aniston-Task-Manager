@@ -79,6 +79,25 @@ async function checkAssignmentAuthority(user, targetUserIds = []) {
   return { allowed: true };
 }
 
+/**
+ * Due-date gate helper.
+ *
+ * The product rule is "you can't put work on someone else's plate without a
+ * deadline." Self-only assignment (a member creating their own personal task,
+ * or self-adding to an existing task) is not "putting work on someone else"
+ * and therefore is not gated by this check. An empty assignee/supervisor set
+ * is also unrestricted (pure removals are always allowed).
+ *
+ * Returns true when the request needs a due date but doesn't have one.
+ */
+function needsDueDateForAssignment(actorId, assigneeIds = [], supervisorIds = [], dueDate) {
+  if (dueDate) return false;
+  const targets = [...(assigneeIds || []), ...(supervisorIds || [])].filter(Boolean);
+  if (targets.length === 0) return false;
+  // Only block when at least one target is NOT the actor (i.e. assigning others).
+  return targets.some((id) => id !== actorId);
+}
+
 // ── Table existence cache ────────────────────────────────────────────────
 // Checks once per process lifetime whether a table exists. Prevents every
 // query from crashing when a migration hasn't run on production yet.
@@ -214,11 +233,15 @@ const createTask = async (req, res) => {
       return res.status(authCheck.status).json({ success: false, message: authCheck.message });
     }
 
-    // Due-date gate stays — applies to self-assigns too.
-    if ((assigneeIds.length > 0 || supervisorIds.length > 0) && !dueDate) {
+    // Due-date gate. Only fires when at least one non-self target is being
+    // assigned. Self-only personal tasks (e.g. a member using "+ Add task" and
+    // getting auto-assigned by `restrictToSelf` above) are exempt — they
+    // would otherwise get "Please set a due date before assigning this task"
+    // even though the user never opted into assigning anyone.
+    if (needsDueDateForAssignment(req.user.id, assigneeIds, supervisorIds, dueDate)) {
       return res.status(400).json({
         success: false,
-        message: 'Please set a due date before assigning this task.',
+        message: 'Please set a due date before assigning this task to another user.',
       });
     }
 
@@ -250,6 +273,7 @@ const createTask = async (req, res) => {
       plannedEndTime: plannedEndTime || null,
       estimatedHours: estimatedHours != null ? estimatedHours : 0,
       progress: status === 'done' ? 100 : 0,
+      completedAt: status === 'done' ? new Date() : null,
       position: (maxPosition || 0) + 1,
       tags: tags || [],
       customFields: customFields || {},
@@ -730,6 +754,18 @@ const updateTask = async (req, res) => {
       if (task.progress !== 100) changes.progress = 100;
     }
 
+    // completedAt invariant: stamp on transition INTO 'done', clear on
+    // transition OUT of 'done'. We use `task.completedAt` as the prior state
+    // so that a no-op resave (status='done' twice) doesn't overwrite the
+    // original completion timestamp.
+    if (updates.status !== undefined && updates.status !== task.status) {
+      if (updates.status === 'done' && task.status !== 'done' && !task.completedAt) {
+        updates.completedAt = new Date();
+      } else if (updates.status !== 'done' && task.status === 'done') {
+        updates.completedAt = null;
+      }
+    }
+
     // Centralized assignment authority check — covers role default, grant
     // override, deny override, and hierarchy subtree (where applicable).
     const allAssignmentTargets = [
@@ -770,10 +806,13 @@ const updateTask = async (req, res) => {
       if (willHaveMembers) {
         // dueDate may be sent in this same payload — honor that as the effective value.
         const effectiveDueDate = updates.dueDate !== undefined ? updates.dueDate : task.dueDate;
-        if (!effectiveDueDate) {
+        // Self-only mutations (e.g. a member adding themselves as the lone
+        // assignee on their own task) skip the due-date gate; only assignments
+        // that put another user on the hook require a deadline.
+        if (needsDueDateForAssignment(req.user.id, nextAssigneeIds, nextSupervisorIds, effectiveDueDate)) {
           return res.status(400).json({
             success: false,
-            message: 'Please set a due date before assigning this task.',
+            message: 'Please set a due date before assigning this task to another user.',
           });
         }
       }
@@ -1389,6 +1428,15 @@ const bulkUpdateTasks = async (req, res) => {
     // Completion → progress 100 (mirrors single-update invariant).
     if (safeUpdates.status === 'done') {
       safeUpdates.progress = 100;
+      // Bulk path can't cheaply read each row's prior completedAt to preserve
+      // it on a no-op done-to-done. Acceptable trade-off: bulk-marking a
+      // batch as done resets completedAt to "now" for all of them. UI doesn't
+      // expose a bulk done-to-done re-stamp, so this is harmless in practice.
+      safeUpdates.completedAt = new Date();
+    } else if (safeUpdates.status !== undefined) {
+      // Bulk-setting to any non-done status clears completedAt so previously-
+      // done rows in the batch don't keep a stale completion timestamp.
+      safeUpdates.completedAt = null;
     }
 
     // Validate status against task-level then board config for all affected tasks
@@ -1405,11 +1453,11 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
-    // Due-date gate for bulk assignment. If the request assigns someone to
-    // every selected task, every selected task must have a due date (or one
-    // must be supplied in the same payload). Refuses early so we don't end up
-    // with a partial bulk write.
-    if (safeUpdates.assignedTo) {
+    // Due-date gate for bulk assignment. Skipped when the bulk action is a
+    // self-assignment (e.g. a member bulk-claiming their own backlog) since
+    // the gate exists to protect *other* people from undated work — assigning
+    // to yourself isn't putting work on someone else's plate.
+    if (safeUpdates.assignedTo && safeUpdates.assignedTo !== req.user.id) {
       const tasksMissingDue = await Task.findAll({
         where: { id: { [Op.in]: taskIds } },
         attributes: ['id', 'title', 'dueDate'],
@@ -1844,14 +1892,15 @@ const manageTaskMembers = async (req, res) => {
       }
     }
 
-    // Due-date gate: refuse to register any assignee/supervisor on a task that
-    // has no due date. Pure removals (sending empty arrays) are allowed.
-    const willHaveAssignees = Array.isArray(assignees) ? assignees.length > 0 : false;
-    const willHaveSupervisors = Array.isArray(supervisors) ? supervisors.length > 0 : false;
-    if ((willHaveAssignees || willHaveSupervisors) && !task.dueDate) {
+    // Due-date gate: refuse to register any non-self assignee/supervisor on a
+    // task that has no due date. Pure removals (empty arrays) and self-only
+    // assignment are allowed without a deadline.
+    const nextAssignees = Array.isArray(assignees) ? assignees.filter(Boolean) : [];
+    const nextSupervisors = Array.isArray(supervisors) ? supervisors.filter(Boolean) : [];
+    if (needsDueDateForAssignment(req.user.id, nextAssignees, nextSupervisors, task.dueDate)) {
       return res.status(400).json({
         success: false,
-        message: 'Please set a due date before assigning this task.',
+        message: 'Please set a due date before assigning this task to another user.',
       });
     }
 

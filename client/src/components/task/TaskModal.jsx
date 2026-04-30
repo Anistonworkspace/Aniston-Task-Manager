@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive, Search, Eye, Users, Check, Lock, Settings, Plus, Pencil, ChevronDown, ChevronRight } from 'lucide-react';
+import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive, Search, Eye, Users, Check, Lock, Settings, Plus, Pencil, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup, getTaskStatuses, getBoardStatuses, STATUS_PRESET_COLORS } from '../../utils/constants';
@@ -267,12 +267,14 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
-  function ensureDueDateForAssignment() {
-    if (!dueDate) {
-      toastError('Please set a due date before assigning this task.');
-      return false;
-    }
-    return true;
+  // Self-only assignment is exempt from the due-date gate (mirrors the
+  // backend rule in taskController.js — assigning *yourself* isn't putting
+  // work on another user's plate, so no deadline is required).
+  function ensureDueDateForAssignment(targetUid) {
+    if (dueDate) return true;
+    if (targetUid && targetUid === user?.id) return true;
+    toastError('Please set a due date before assigning this task to another user.');
+    return false;
   }
 
   function toggleAssignee(uid) {
@@ -283,7 +285,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       toastError('You do not have permission to assign tasks to other users.');
       return;
     }
-    if (isAdding && !ensureDueDateForAssignment()) return;
+    if (isAdding && !ensureDueDateForAssignment(uid)) return;
     setSelectedAssignees(prev => {
       const next = prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid];
       saveTaskMembers(next, selectedSupervisors);
@@ -297,7 +299,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       toastError('You do not have permission to assign supervisors.');
       return;
     }
-    if (isAdding && !ensureDueDateForAssignment()) return;
+    if (isAdding && !ensureDueDateForAssignment(uid)) return;
     setSelectedSupervisors(prev => {
       const next = prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid];
       saveTaskMembers(selectedAssignees, next);
@@ -434,6 +436,23 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
               <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple/10 text-purple">
                 <Zap size={9} /> Auto-assigned
               </span>
+            )}
+            {/* Daily Work / Recurring instance marker. Clicking takes the user
+                to the management page so they can see the template that
+                generated this instance. */}
+            {task?.isRecurringInstance && (
+              <button
+                type="button"
+                onClick={() => { window.location.href = '/recurring-work'; }}
+                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/30 transition-colors"
+                title={`Generated for ${task.occurrenceDate || task.dueDate} from a recurring template — click to manage.`}
+              >
+                <RefreshCw size={9} />
+                Daily Work
+                {task.occurrenceDate && (
+                  <span className="opacity-70">· {task.occurrenceDate}</span>
+                )}
+              </button>
             )}
           </div>
           <div className="flex items-center gap-1">
