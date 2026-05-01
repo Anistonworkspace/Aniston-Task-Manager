@@ -1,7 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, useMotionValue, useTransform, animate as fmAnimate } from 'framer-motion';
-import { ArrowLeft, Users, AlertTriangle, CheckCircle2, Clock, ListChecks, FileText, Activity, ChevronRight } from 'lucide-react';
+import {
+  ArrowLeft, Users, AlertTriangle, CheckCircle2, Clock, ListChecks, FileText,
+  Activity, ChevronRight, Search, Filter, ChevronDown, X, AlertCircle, Tag,
+  User as UserIcon, Calendar,
+} from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area } from 'recharts';
 import { formatDistanceToNow, parseISO, format } from 'date-fns';
 import api from '../services/api';
@@ -10,14 +14,35 @@ import Avatar from '../components/common/Avatar';
 import MemberDrillDown from '../components/dashboard/MemberDrillDown';
 import useSocket from '../hooks/useSocket';
 import { SkeletonDashboard } from '../components/common/Skeleton';
+import { useAuth } from '../context/AuthContext';
 
 export default function DashboardPage() {
   const { id: boardId } = useParams();
   const navigate = useNavigate();
+  const { user: currentUser } = useAuth();
   const [data, setData] = useState(null);
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedMember, setSelectedMember] = useState(null);
+
+  // Team Overview filter state — mirrors the Tasks-table toolbar on the
+  // Admin/Member/Manager dashboards but applies to per-member aggregates
+  // instead of individual tasks.
+  const [teamFilters, setTeamFilters] = useState({ statuses: [], priorities: [], member: '', search: '', smartView: '' });
+  const [showTeamFilters, setShowTeamFilters] = useState(false);
+  const [smartViewOpen, setSmartViewOpen] = useState(false);
+  const [memberOpen, setMemberOpen] = useState(false);
+  const smartViewRef = useRef(null);
+  const memberRef = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (smartViewRef.current && !smartViewRef.current.contains(e.target)) setSmartViewOpen(false);
+      if (memberRef.current && !memberRef.current.contains(e.target)) setMemberOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
 
   useEffect(() => {
     loadDashboard();
@@ -161,59 +186,390 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Team Overview */}
-      {memberStats.length > 0 && (
-        <div className="widget-card mb-6">
-          <h3 className="text-sm font-semibold mb-1 flex items-center gap-2">
-            <Users size={15} /> Team Overview
-          </h3>
-          <p className="text-xs text-text-tertiary mb-3">Click a member to view their tasks, add tasks, or leave comments</p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left py-2 px-3 text-text-secondary font-medium">Member</th>
-                  <th className="text-center py-2 px-2 text-text-secondary font-medium">Total</th>
-                  <th className="text-center py-2 px-2 text-text-secondary font-medium">Done</th>
-                  <th className="text-center py-2 px-2 text-text-secondary font-medium">Working</th>
-                  <th className="text-center py-2 px-2 text-text-secondary font-medium">Stuck</th>
-                  <th className="text-center py-2 px-2 text-text-secondary font-medium">Overdue</th>
-                  <th className="text-left py-2 px-3 text-text-secondary font-medium">Progress</th>
-                </tr>
-              </thead>
-              <tbody>
-                {memberStats.filter(m => m.id !== 'unassigned').map(member => {
-                  const pct = member.total > 0 ? Math.round((member.done / member.total) * 100) : 0;
-                  return (
-                    <tr key={member.id} onClick={() => setSelectedMember(member.id)} className="border-b border-border/50 hover:bg-primary/5 cursor-pointer transition-colors group">
-                      <td className="py-2.5 px-3">
-                        <div className="flex items-center gap-2">
-                          <Avatar name={member.name} size="sm" />
-                          <span className="font-medium text-text-primary group-hover:text-primary">{member.name}</span>
-                          <ChevronRight size={14} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </div>
-                      </td>
-                      <td className="text-center py-2 px-2 font-semibold">{member.total}</td>
-                      <td className="text-center py-2 px-2"><span className="text-success font-semibold">{member.done}</span></td>
-                      <td className="text-center py-2 px-2"><span className="text-warning font-semibold">{member.working}</span></td>
-                      <td className="text-center py-2 px-2"><span className={member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.stuck}</span></td>
-                      <td className="text-center py-2 px-2"><span className={member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.overdue}</span></td>
-                      <td className="py-2 px-3 w-[140px]">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#00c875' : '#0073ea' }} />
+      {/* Team Overview — grouped by department with org-hierarchy hover popover */}
+      {memberStats.length > 0 && (() => {
+        const NO_DEPT = 'No Department';
+        const lcSearch = teamFilters.search.trim().toLowerCase();
+
+        // Default behaviour matches what the page rendered before filters
+        // existed: hide the synthetic Unassigned bucket. Reveal it only when
+        // the user explicitly opts in via the member dropdown or the
+        // Unassigned smart view, otherwise it would clutter every Team
+        // Overview render.
+        const showsUnassigned = teamFilters.smartView === 'unassigned' || teamFilters.member === 'unassigned';
+
+        // Apply every active filter dimension. Each guard uses the
+        // per-member metadata from /dashboard/stats — no fabricated counts.
+        const filteredMembers = memberStats.filter(m => {
+          if (m.id === 'unassigned' && !showsUnassigned) return false;
+
+          if (teamFilters.member === 'unassigned' && m.id !== 'unassigned') return false;
+          if (teamFilters.member && teamFilters.member !== 'unassigned' && m.id !== teamFilters.member) return false;
+
+          switch (teamFilters.smartView) {
+            case 'overdue':       if (!(m.overdue > 0)) return false; break;
+            case 'due_today':     if (!(m.dueToday > 0)) return false; break;
+            case 'my_tasks':      if (!currentUser || m.id !== currentUser.id) return false; break;
+            case 'this_week':     if (!(m.dueThisWeek > 0)) return false; break;
+            case 'stuck':         if (!(m.stuck > 0)) return false; break;
+            case 'high_priority': {
+              const hi = (m.priorityCounts?.high || 0) + (m.priorityCounts?.critical || 0);
+              if (!(hi > 0)) return false;
+              break;
+            }
+            case 'unassigned':    if (m.id !== 'unassigned') return false; break;
+            default: break;
+          }
+
+          if (teamFilters.statuses.length > 0) {
+            const hit = teamFilters.statuses.some(s => (m.statusCounts?.[s] || 0) > 0);
+            if (!hit) return false;
+          }
+          if (teamFilters.priorities.length > 0) {
+            const hit = teamFilters.priorities.some(p => (m.priorityCounts?.[p] || 0) > 0);
+            if (!hit) return false;
+          }
+
+          if (lcSearch) {
+            const hay = [m.name, m.designation, m.role, m.department].filter(Boolean).join(' ').toLowerCase();
+            if (!hay.includes(lcSearch)) return false;
+          }
+          return true;
+        });
+
+        const byDept = filteredMembers.reduce((acc, m) => {
+          const key = (m.department && m.department.trim()) || NO_DEPT;
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(m);
+          return acc;
+        }, {});
+        const deptOrder = Object.keys(byDept).sort((a, b) => {
+          if (a === NO_DEPT) return 1;
+          if (b === NO_DEPT) return -1;
+          return a.localeCompare(b);
+        });
+
+        // Dropdown options derive from the unfiltered list so users can
+        // re-target the table without first clearing their selection.
+        const memberOptions = memberStats.filter(m => m.id !== 'unassigned');
+        const hasUnassigned = memberStats.some(m => m.id === 'unassigned');
+
+        const SMART_VIEWS = [
+          { id: 'overdue',       label: 'Overdue',       icon: AlertTriangle, color: '#e2445c' },
+          { id: 'due_today',     label: 'Due Today',     icon: Clock,         color: '#fdab3d' },
+          { id: 'my_tasks',      label: 'My Tasks',      icon: UserIcon,      color: '#0073ea' },
+          { id: 'this_week',     label: 'This Week',     icon: Calendar,      color: '#00c875' },
+          { id: 'stuck',         label: 'Stuck Tasks',   icon: AlertCircle,   color: '#e2445c' },
+          { id: 'high_priority', label: 'High Priority', icon: Tag,           color: '#e2445c' },
+          ...(hasUnassigned ? [{ id: 'unassigned', label: 'Unassigned', icon: Users, color: '#c4c4c4' }] : []),
+        ];
+        const activeSmart = SMART_VIEWS.find(v => v.id === teamFilters.smartView);
+
+        const chipsCount = teamFilters.statuses.length + teamFilters.priorities.length;
+        const activeFilterCount = chipsCount + (teamFilters.member ? 1 : 0) + (teamFilters.smartView ? 1 : 0);
+        const hasAnyFilter = activeFilterCount > 0 || !!teamFilters.search.trim();
+
+        function applySmartView(viewId) {
+          // Smart Views replace other filters to match the Tasks-table
+          // behaviour on the Admin Dashboard. Re-clicking the active view
+          // toggles it off rather than re-applying.
+          if (teamFilters.smartView === viewId) {
+            setTeamFilters(f => ({ ...f, smartView: '' }));
+          } else {
+            setTeamFilters({ statuses: [], priorities: [], member: '', search: '', smartView: viewId });
+          }
+          setSmartViewOpen(false);
+        }
+        function toggleStatus(s) {
+          setTeamFilters(f => ({
+            ...f,
+            statuses: f.statuses.includes(s) ? f.statuses.filter(x => x !== s) : [...f.statuses, s],
+            smartView: '',
+          }));
+        }
+        function togglePriority(p) {
+          setTeamFilters(f => ({
+            ...f,
+            priorities: f.priorities.includes(p) ? f.priorities.filter(x => x !== p) : [...f.priorities, p],
+            smartView: '',
+          }));
+        }
+        function clearAll() {
+          setTeamFilters({ statuses: [], priorities: [], member: '', search: '', smartView: '' });
+        }
+
+        return (
+          <div className="widget-card mb-6">
+            <h3 className="text-sm font-semibold mb-1 flex items-center gap-2">
+              <Users size={15} /> Team Overview
+            </h3>
+            <p className="text-xs text-text-tertiary mb-3">Grouped by department · hover a member to see their direct reports · click to view tasks</p>
+
+            {/* Filter toolbar — same controls as the Tasks table on My Dashboard,
+                applied to per-member aggregates. */}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <div className="relative" ref={memberRef}>
+                <button
+                  onClick={() => { setMemberOpen(o => !o); setSmartViewOpen(false); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:border-primary/40 bg-white transition-colors"
+                  title="Filter by member"
+                >
+                  <Users size={12} />
+                  <span className="truncate max-w-[140px]">
+                    {teamFilters.member === 'unassigned'
+                      ? 'Unassigned'
+                      : teamFilters.member
+                        ? (memberOptions.find(u => u.id === teamFilters.member)?.name || 'Selected')
+                        : 'All Members'}
+                  </span>
+                  <ChevronDown size={12} />
+                </button>
+                {memberOpen && (
+                  <div className="absolute top-full left-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-30 w-60 max-h-72 overflow-y-auto py-1">
+                    <button
+                      onClick={() => {
+                        setTeamFilters(f => ({ ...f, member: '', smartView: f.smartView === 'unassigned' ? '' : f.smartView }));
+                        setMemberOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-surface ${!teamFilters.member ? 'bg-primary/5 font-semibold' : ''}`}
+                    >
+                      All Members
+                    </button>
+                    {hasUnassigned && (
+                      <button
+                        onClick={() => { setTeamFilters(f => ({ ...f, member: 'unassigned', smartView: '' })); setMemberOpen(false); }}
+                        className={`w-full text-left px-3 py-2 text-xs hover:bg-surface ${teamFilters.member === 'unassigned' ? 'bg-primary/5 font-semibold' : ''}`}
+                      >
+                        Unassigned
+                      </button>
+                    )}
+                    {memberOptions.map(u => (
+                      <button
+                        key={u.id}
+                        onClick={() => { setTeamFilters(f => ({ ...f, member: u.id, smartView: '' })); setMemberOpen(false); }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface ${teamFilters.member === u.id ? 'bg-primary/5 font-semibold' : ''}`}
+                      >
+                        <Avatar name={u.name} size="xs" />
+                        <span className="truncate">{u.name}</span>
+                        {(u.designation || u.role) && (
+                          <span className="text-[9px] text-text-tertiary ml-auto truncate max-w-[80px]">{u.designation || u.role}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="relative" ref={smartViewRef}>
+                <button
+                  onClick={() => { setSmartViewOpen(o => !o); setMemberOpen(false); }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${activeSmart ? 'bg-primary text-white border-primary' : 'bg-surface border-border text-text-primary hover:border-primary/40'}`}
+                >
+                  <Filter size={13} />
+                  {activeSmart ? activeSmart.label : 'Smart Views'}
+                  <ChevronDown size={12} />
+                </button>
+                {smartViewOpen && (
+                  <div className="absolute top-full left-0 mt-1 bg-white border border-border rounded-lg shadow-xl z-30 w-48 py-1">
+                    {SMART_VIEWS.map(v => {
+                      const Icon = v.icon;
+                      return (
+                        <button
+                          key={v.id}
+                          onClick={() => applySmartView(v.id)}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface transition-colors ${teamFilters.smartView === v.id ? 'bg-primary/5 font-semibold' : ''}`}
+                        >
+                          <Icon size={13} style={{ color: v.color }} /> {v.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={() => setShowTeamFilters(s => !s)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${showTeamFilters || chipsCount > 0 ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border hover:border-primary/40 text-text-secondary'}`}
+              >
+                <Filter size={12} />
+                Filters
+                {chipsCount > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">{chipsCount}</span>
+                )}
+              </button>
+
+              <div className="relative ml-auto">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                <input
+                  type="text"
+                  placeholder="Search members..."
+                  value={teamFilters.search}
+                  onChange={e => setTeamFilters(f => ({ ...f, search: e.target.value }))}
+                  className="pl-8 pr-3 py-1.5 text-xs border border-border rounded-lg w-56 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                />
+              </div>
+
+              {hasAnyFilter && (
+                <button onClick={clearAll} className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium text-danger hover:bg-danger/5 transition-colors">
+                  <X size={12} /> Clear
+                </button>
+              )}
+            </div>
+
+            {showTeamFilters && (
+              <div className="mb-3 pt-3 border-t border-border space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Status</span>
+                  {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
+                    <button
+                      key={key}
+                      onClick={() => toggleStatus(key)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold transition-all border"
+                      style={{
+                        backgroundColor: teamFilters.statuses.includes(key) ? cfg.color : 'transparent',
+                        color: teamFilters.statuses.includes(key) ? '#fff' : cfg.color,
+                        borderColor: teamFilters.statuses.includes(key) ? cfg.color : '#e5e7eb',
+                      }}
+                    >
+                      {cfg.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider">Priority</span>
+                  {Object.entries(PRIORITY_CONFIG).map(([key, cfg]) => (
+                    <button
+                      key={key}
+                      onClick={() => togglePriority(key)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold transition-all border"
+                      style={{
+                        backgroundColor: teamFilters.priorities.includes(key) ? cfg.color : 'transparent',
+                        color: teamFilters.priorities.includes(key) ? '#fff' : cfg.color,
+                        borderColor: teamFilters.priorities.includes(key) ? cfg.color : '#e5e7eb',
+                      }}
+                    >
+                      {cfg.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {filteredMembers.length === 0 ? (
+              <div className="py-12 text-center border border-dashed border-border rounded-lg">
+                <Users size={28} className="mx-auto text-text-tertiary mb-2" />
+                <p className="text-sm text-text-secondary">No team members match the selected filters</p>
+                {hasAnyFilter && (
+                  <button onClick={clearAll} className="mt-2 text-xs text-primary hover:underline">Clear filters</button>
+                )}
+              </div>
+            ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left py-2 px-3 text-text-secondary font-medium">Member</th>
+                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Total</th>
+                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Done</th>
+                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Working</th>
+                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Stuck</th>
+                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Overdue</th>
+                    <th className="text-left py-2 px-3 text-text-secondary font-medium">Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deptOrder.map((dept, deptIdx) => (
+                    <React.Fragment key={dept}>
+                      {/* Department header — visually distinct band, with top
+                          breathing room before each group except the first. */}
+                      <tr>
+                        <td colSpan={7} className={`${deptIdx === 0 ? 'pt-2' : 'pt-5'} pb-2 px-0`}>
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-surface/80 border border-border/60">
+                            <span className="w-1 h-3.5 rounded-sm bg-primary/70 flex-shrink-0" />
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-text-secondary">{dept}</span>
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-primary/10 text-primary ml-1">
+                              {byDept[dept].length} {byDept[dept].length === 1 ? 'member' : 'members'}
+                            </span>
                           </div>
-                          <span className="text-xs text-text-tertiary w-8 text-right">{pct}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        </td>
+                      </tr>
+                      {byDept[dept].map(member => {
+                        const pct = member.total > 0 ? Math.round((member.done / member.total) * 100) : 0;
+                        const children = Array.isArray(member.children) ? member.children : [];
+                        // Always render two lines (name + secondary) so rows
+                        // with no designation match the height of rows that
+                        // have one. Falls back to role, then a non-breaking
+                        // space placeholder.
+                        const secondary = member.designation || member.role || ' ';
+                        return (
+                          <tr key={member.id} onClick={() => setSelectedMember(member.id)} className="border-b border-border/40 hover:bg-primary/5 cursor-pointer transition-colors group/row">
+                            <td className="py-2 px-3 align-middle relative">
+                              <div className="flex items-center gap-2.5 min-h-[44px]">
+                                <Avatar name={member.name} size="sm" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium text-text-primary group-hover/row:text-primary truncate leading-tight">{member.name}</p>
+                                  <p className="text-[10px] text-text-tertiary truncate leading-tight mt-0.5">{secondary}</p>
+                                </div>
+                                <ChevronRight size={14} className="text-text-tertiary opacity-0 group-hover/row:opacity-100 transition-opacity flex-shrink-0" />
+                              </div>
+
+                              {/* Hover popover — child members from org hierarchy.
+                                  DOM child of the row so :hover propagates and
+                                  the popover doesn't flicker when the cursor
+                                  moves onto it. position: absolute keeps the
+                                  table layout stable. */}
+                              <div
+                                className="hidden group-hover/row:block absolute left-3 top-full z-30 w-[280px] rounded-lg border border-border bg-white dark:bg-[#1E1F23] shadow-xl p-2 cursor-default"
+                                onClick={e => e.stopPropagation()}
+                                role="tooltip"
+                              >
+                                <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider px-1 mb-1.5">
+                                  Direct reports {children.length > 0 && <span className="ml-1 text-text-secondary">({children.length})</span>}
+                                </p>
+                                {children.length > 0 ? (
+                                  <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+                                    {children.map(c => (
+                                      <div key={c.id} className="flex items-center gap-2 px-1.5 py-1 rounded">
+                                        <Avatar name={c.name} size="xs" />
+                                        <div className="min-w-0 flex-1">
+                                          <p className="text-xs font-medium text-text-primary truncate">{c.name}</p>
+                                          <p className="text-[10px] text-text-tertiary truncate">
+                                            {c.designation || c.role}{c.department ? ` · ${c.department}` : ''}
+                                          </p>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-text-tertiary text-center py-2">No child members</p>
+                                )}
+                              </div>
+                            </td>
+                            <td className="text-center py-2 px-2 align-middle font-semibold">{member.total}</td>
+                            <td className="text-center py-2 px-2 align-middle"><span className="text-success font-semibold">{member.done}</span></td>
+                            <td className="text-center py-2 px-2 align-middle"><span className="text-warning font-semibold">{member.working}</span></td>
+                            <td className="text-center py-2 px-2 align-middle"><span className={member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.stuck}</span></td>
+                            <td className="text-center py-2 px-2 align-middle"><span className={member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.overdue}</span></td>
+                            <td className="py-2 px-3 align-middle w-[140px]">
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#00c875' : '#0073ea' }} />
+                                </div>
+                                <span className="text-xs text-text-tertiary w-8 text-right">{pct}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Board Summary (global view only) */}
       {boards && boards.length > 0 && (
@@ -240,7 +596,7 @@ export default function DashboardPage() {
       )}
 
       {/* Bottom row: Activity + Work Logs */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Recent Activity */}
         <div className="widget-card">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
@@ -309,7 +665,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Completion Trend + Workload */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Weekly Completion Trend */}
         {trendData.length > 0 && (
           <div className="widget-card">
@@ -334,24 +690,39 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Team Workload */}
-        {workloadData.length > 0 && (
-          <div className="widget-card">
-            <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
-              <Users size={15} className="text-primary" /> Team Workload
-            </h3>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={workloadData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ef" />
-                <XAxis type="number" tick={{ fontSize: 10 }} allowDecimals={false} />
-                <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={80} />
-                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                <Bar dataKey="active" fill="#0073ea" name="Active" stackId="stack" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="done" fill="#00c875" name="Done" stackId="stack" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+        {/* Team Workload — dynamic height + scrollable when many members */}
+        {workloadData.length > 0 && (() => {
+          const rowHeight = 32;
+          const baseHeight = 180;
+          const verticalPadding = 24; // chart top/bottom padding
+          const chartHeight = Math.max(baseHeight, workloadData.length * rowHeight + verticalPadding);
+          return (
+            <div className="widget-card">
+              <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                <Users size={15} className="text-primary" /> Team Workload
+              </h3>
+              <div className="max-h-[280px] overflow-y-auto pr-1">
+                <ResponsiveContainer width="100%" height={chartHeight}>
+                  <BarChart data={workloadData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ef" />
+                    <XAxis type="number" tick={{ fontSize: 10 }} allowDecimals={false} />
+                    <YAxis
+                      dataKey="name"
+                      type="category"
+                      tick={{ fontSize: 10 }}
+                      width={100}
+                      interval={0}
+                      tickFormatter={v => (v && v.length > 14 ? `${v.slice(0, 13)}…` : v)}
+                    />
+                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                    <Bar dataKey="active" fill="#0073ea" name="Active" stackId="stack" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="done" fill="#00c875" name="Done" stackId="stack" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Overdue Tasks Widget */}
@@ -362,25 +733,34 @@ export default function DashboardPage() {
             <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-danger text-white">{overdueTasks.length}</span>
           </h3>
           <div className="space-y-1.5">
-            {overdueTasks.map(task => (
-              <div key={task.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-danger/5 border border-danger/10 hover:bg-danger/10 transition-colors cursor-pointer"
-                onClick={() => task.boardId && navigate(`/boards/${task.boardId}`)}>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-text-primary truncate">{task.title}</p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {task.board && <span className="text-[10px] text-text-tertiary">{task.board.name}</span>}
-                    <span className="text-[10px] text-danger font-semibold">{task.daysOverdue} day{task.daysOverdue !== 1 ? 's' : ''} overdue</span>
+            {overdueTasks.map(task => {
+              // Open the exact task sheet on its board via the ?taskId= deep
+              // link consumed by BoardPage (same pattern used by MemberDrillDown
+              // and RecurringWorkPage).
+              const openOverdueTask = () => {
+                if (!task.boardId) return;
+                navigate(`/boards/${task.boardId}?taskId=${task.id}`);
+              };
+              return (
+                <div key={task.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-danger/5 border border-danger/10 hover:bg-danger/10 transition-colors cursor-pointer"
+                  onClick={openOverdueTask}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary truncate hover:text-primary hover:underline">{task.title}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {task.board && <span className="text-[10px] text-text-tertiary">{task.board.name}</span>}
+                      <span className="text-[10px] text-danger font-semibold">{task.daysOverdue} day{task.daysOverdue !== 1 ? 's' : ''} overdue</span>
+                    </div>
                   </div>
+                  {task.assignee && (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <Avatar name={task.assignee.name} size="xs" />
+                      <span className="text-[10px] text-text-secondary">{task.assignee.name.split(' ')[0]}</span>
+                    </div>
+                  )}
+                  <span className="text-[10px] text-danger font-medium">Due {task.dueDate}</span>
                 </div>
-                {task.assignee && (
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <Avatar name={task.assignee.name} size="xs" />
-                    <span className="text-[10px] text-text-secondary">{task.assignee.name.split(' ')[0]}</span>
-                  </div>
-                )}
-                <span className="text-[10px] text-danger font-medium">Due {task.dueDate}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

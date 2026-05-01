@@ -89,9 +89,15 @@ export default function StatusCell({
   }
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center">
+    // `isolate` keeps the absolute "approved" tick contained in this cell's
+    // own stacking context — without it, the tick's z-10 bubbled into the
+    // row's stacking context and floated above the sticky frozen title
+    // column during horizontal scroll. `overflow-hidden` is a second line
+    // of defense so the tick can't physically escape the cell box even if
+    // its inset values drift.
+    <div className="relative isolate w-full h-full flex items-center justify-center overflow-hidden">
       {approvalStatus === 'approved' && (
-        <span className="absolute -top-1 -right-1 z-10 w-4 h-4 rounded-full bg-green-500 text-white flex items-center justify-center text-[8px] font-bold shadow-sm" title="Approved">✓</span>
+        <span className="absolute top-0.5 right-0.5 z-10 w-4 h-4 rounded-full bg-green-500 text-white flex items-center justify-center text-[8px] font-bold shadow-sm" title="Approved">✓</span>
       )}
       <button ref={btnRef} onClick={(e) => { e.stopPropagation(); if (onChange && !isBlocked) setOpen(!open); }}
         className={`status-pill w-full ${(!onChange || isBlocked) ? 'cursor-default opacity-75' : ''}`}

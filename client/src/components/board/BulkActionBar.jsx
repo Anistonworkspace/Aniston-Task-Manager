@@ -1,12 +1,20 @@
 import React, { useState } from 'react';
-import { X, CheckSquare, Archive, UserPlus, ArrowRight } from 'lucide-react';
+import { X, CheckSquare, Archive, UserPlus } from 'lucide-react';
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup } from '../../utils/constants';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
+import { useAuth } from '../../context/AuthContext';
+import { canArchiveTask, canAssignOthers as canAssignOthersHelper } from '../../utils/permissions';
 
 export default function BulkActionBar({ selectedIds, members = [], boardStatuses, onDone, onClear }) {
   const [saving, setSaving] = useState(false);
   const count = selectedIds.length;
+  const { user, isSuperAdmin, granularPermissions } = useAuth();
+  // Bulk archive is a delete-class action — hide the button entirely if the
+  // actor can't archive any task (e.g. member without explicit tasks.delete).
+  // Backend bulk endpoint also enforces this.
+  const canBulkArchive = canArchiveTask(user, null, granularPermissions);
+  const canBulkAssign = canAssignOthersHelper(isSuperAdmin, granularPermissions);
 
   async function bulkUpdate(updates) {
     setSaving(true);
@@ -14,16 +22,6 @@ export default function BulkActionBar({ selectedIds, members = [], boardStatuses
       await api.put('/tasks/bulk', { taskIds: selectedIds, updates });
       onDone();
     } catch (err) { console.error('Bulk update failed:', err); }
-    finally { setSaving(false); }
-  }
-
-  async function bulkDelete() {
-    if (!confirm(`Delete ${count} task(s)? This cannot be undone.`)) return;
-    setSaving(true);
-    try {
-      for (const id of selectedIds) { await api.delete(`/tasks/${id}`); }
-      onDone();
-    } catch (err) { console.error('Bulk delete failed:', err); }
     finally { setSaving(false); }
   }
 
@@ -63,30 +61,29 @@ export default function BulkActionBar({ selectedIds, members = [], boardStatuses
         </div>
       </div>
 
-      {/* Assign */}
-      <div className="relative group">
-        <button className="text-xs px-2.5 py-1.5 rounded-md hover:bg-zinc-800 transition-colors flex items-center gap-1"><UserPlus size={12} /> Assign</button>
-        <div className="absolute bottom-full left-0 mb-2 bg-white rounded-lg shadow-dropdown border border-border py-1 min-w-[180px] max-h-[200px] overflow-y-auto hidden group-hover:block">
-          {members.map(m => (
-            <button key={m.id} onClick={() => bulkUpdate({ assignedTo: m.id })}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface w-full text-text-primary">
-              <Avatar name={m.name} size="xs" /> {m.name}
-            </button>
-          ))}
+      {/* Assign — only when the actor can assign others (admin/manager+/grant). */}
+      {canBulkAssign && (
+        <div className="relative group">
+          <button className="text-xs px-2.5 py-1.5 rounded-md hover:bg-zinc-800 transition-colors flex items-center gap-1"><UserPlus size={12} /> Assign</button>
+          <div className="absolute bottom-full left-0 mb-2 bg-white rounded-lg shadow-dropdown border border-border py-1 min-w-[180px] max-h-[200px] overflow-y-auto hidden group-hover:block">
+            {members.map(m => (
+              <button key={m.id} onClick={() => bulkUpdate({ assignedTo: m.id })}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface w-full text-text-primary">
+                <Avatar name={m.name} size="xs" /> {m.name}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Archive */}
-      <button onClick={() => bulkUpdate({ isArchived: true })} disabled={saving}
-        className="text-xs px-2.5 py-1.5 rounded-md hover:bg-zinc-800 transition-colors flex items-center gap-1">
-        <ArrowRight size={12} /> Archive
-      </button>
-
-      {/* Archive */}
-      <button onClick={() => bulkUpdate({ isArchived: true })} disabled={saving}
-        className="text-xs px-2.5 py-1.5 rounded-md hover:bg-yellow-900 text-yellow-400 transition-colors flex items-center gap-1">
-        <Archive size={12} /> Archive
-      </button>
+      {/* Archive — gated by tasks.delete (deny-aware). Members without the
+          permission don't see this at all; backend also returns 403. */}
+      {canBulkArchive && (
+        <button onClick={() => bulkUpdate({ isArchived: true })} disabled={saving}
+          className="text-xs px-2.5 py-1.5 rounded-md hover:bg-yellow-900 text-yellow-400 transition-colors flex items-center gap-1">
+          <Archive size={12} /> Archive
+        </button>
+      )}
 
       <div className="w-px h-6 bg-zinc-700" />
 

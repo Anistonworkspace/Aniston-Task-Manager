@@ -5,6 +5,15 @@ import { useAuth } from '../../context/AuthContext';
 import useSocket from '../../hooks/useSocket';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
 import { useToast } from '../common/Toast';
+import {
+  groupFlowsByLogicalStage,
+  rollUpStageStatus,
+  currentLogicalStage,
+  roleLabelFor,
+  rowStatusLabel,
+  isSuperAdminRow,
+  LOGICAL_STAGE,
+} from '../../utils/approvalStages';
 
 // Visual mapping for the approvalStatus badge at the top of the section.
 const STATUS_BADGE = {
@@ -45,7 +54,7 @@ function formatTime(iso) {
  * one tab and the submitter in another stay in sync without refresh.
  */
 export default function ApprovalSection({ task, onUpdate }) {
-  const { user } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const { success, error: toastError } = useToast();
 
   // Local mirror of the chain. Hydrated from props (flows ship via the task
@@ -79,27 +88,33 @@ export default function ApprovalSection({ task, onUpdate }) {
     if (data.task.approvalStatus !== undefined) setApprovalStatus(data.task.approvalStatus);
   });
 
-  // Backward-compat: rows missing `stage` (legacy) fall back to using level.
-  const stageOf = (r) => (r && r.stage != null ? r.stage : r?.level);
+  // Logical stage groups (Submission / Assistant Manager / Final), derived
+  // from the row roles. Always max 3 entries; missing stages omitted.
+  const stageGroups = groupFlowsByLogicalStage(flows);
+  const currentStageKey = currentLogicalStage(stageGroups); // 'assistant_manager' | 'final' | null
 
-  // Derive: which stage is currently pending? A stage may have one OR many
-  // approvers. ALL pending rows in the lowest pending stage are "current".
-  const pendingRows = flows.filter((f) => f.status === 'pending');
-  const currentStageValue = pendingRows.length > 0
-    ? Math.min(...pendingRows.map(stageOf))
-    : null;
-  const currentStageRows = currentStageValue !== null
-    ? pendingRows.filter((r) => stageOf(r) === currentStageValue)
-    : [];
-  // Used for "is it my turn" gating + the "waiting on" message. Picks the
-  // first row in the current stage as a representative when single.
+  // All pending rows in the currently-active logical stage. When the FINAL
+  // stage is active it can contain multiple parallel approvers (Manager,
+  // Admin, Super Admin) — every one of them is a "current approver".
+  const currentStageGroup = stageGroups.find((g) => g.stage === currentStageKey);
+  const currentStageRows = (currentStageGroup?.rows || []).filter((r) => r.status === 'pending');
   const currentPendingRow = currentStageRows[0] || null;
   const isCurrentApprover = !!user?.id && currentStageRows.some((r) => r.userId === user.id);
-  // Early-completion eligibility: actor has a pending row in a stage HIGHER
-  // than the current one. Reject and request_changes still require being in
-  // the current stage only.
+
+  // Early-completion eligibility: the actor holds a pending row in a stage
+  // LATER than the current one. Today the only meaningful "earlier vs later"
+  // distinction is Assistant Manager (current) vs Final (later) — a final-
+  // stage approver may approve early to skip a pending asst-manager step.
+  const stageRank = { [LOGICAL_STAGE.SUBMISSION]: 0, [LOGICAL_STAGE.ASSISTANT_MANAGER]: 1, [LOGICAL_STAGE.FINAL]: 2 };
   const myAnyPendingRow = !!user?.id ? flows.find((f) => f.status === 'pending' && f.userId === user.id) : null;
-  const canEarlyComplete = !!myAnyPendingRow && stageOf(myAnyPendingRow) > (currentStageValue ?? 0);
+  const myStageKey = myAnyPendingRow
+    ? (stageGroups.find((g) => g.rows.some((r) => r === myAnyPendingRow || r.id === myAnyPendingRow.id))?.stage)
+    : null;
+  const canEarlyComplete =
+    !!myAnyPendingRow
+    && currentStageKey
+    && myStageKey
+    && stageRank[myStageKey] > stageRank[currentStageKey];
   const isInActiveCycle = approvalStatus === 'pending_approval';
 
   // Resubmit button rules:
@@ -133,9 +148,18 @@ export default function ApprovalSection({ task, onUpdate }) {
     && task?.createdBy === user?.id
     && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
 
+  // Super Admin exemption — Super Admins are top of the hierarchy and have
+  // no senior reviewer to route to. The backend rejects submitForApproval for
+  // them (super_admin_no_approval) and the Done intercept skips the modal,
+  // so we hide the Submit / Resubmit buttons here too. They retain full
+  // visibility into existing chains (read-only) — only the initiate action
+  // is suppressed.
   const canResubmit =
-    ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
-    || (!approvalStatus && isOwner && !isSelfTask);
+    !isSuperAdmin
+    && (
+      ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
+      || (!approvalStatus && isOwner && !isSelfTask)
+    );
 
   function openActionPanel(action) {
     setShowActionPanel(action);
@@ -196,10 +220,21 @@ export default function ApprovalSection({ task, onUpdate }) {
         )}
       </div>
 
-      {/* Empty state — no flow yet. Self-tasks get a different message: no
-          approval chain is ever needed for a personal task. Non-self tasks
-          show the standard "mark Done to start approval" hint. */}
-      {flows.length === 0 && isSelfTask && (
+      {/* Empty state — no flow yet. The hint shown depends on who's looking
+          at the task and whether the task itself is a personal one:
+            - Super Admin: top-of-hierarchy, no approval ever needed
+            - Self-task (creator IS the only assignee): no approval needed
+            - Otherwise: the standard "mark Done to start approval" hint */}
+      {flows.length === 0 && isSuperAdmin && (
+        <div className="flex items-start gap-2 text-[11px] text-zinc-600 dark:text-zinc-300 mb-3 p-2.5 rounded-md bg-purple-50 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30">
+          <Shield size={12} className="text-purple-600 dark:text-purple-300 mt-0.5 flex-shrink-0" />
+          <div>
+            <div className="font-medium text-zinc-700 dark:text-zinc-200">No approval needed — Super Admin authority</div>
+            <div className="text-zinc-500 dark:text-zinc-400 mt-0.5">Mark Done from the status column to complete the task directly.</div>
+          </div>
+        </div>
+      )}
+      {flows.length === 0 && !isSuperAdmin && isSelfTask && (
         <div className="flex items-start gap-2 text-[11px] text-zinc-600 dark:text-zinc-300 mb-3 p-2.5 rounded-md bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-700/60">
           <Check size={12} className="text-emerald-500 mt-0.5 flex-shrink-0" />
           <div>
@@ -208,181 +243,127 @@ export default function ApprovalSection({ task, onUpdate }) {
           </div>
         </div>
       )}
-      {flows.length === 0 && !isSelfTask && (
+      {flows.length === 0 && !isSuperAdmin && !isSelfTask && (
         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-3">
           Mark this task <span className="font-medium text-zinc-700 dark:text-zinc-200">Done</span> from the status column to start an approval chain, or use the button below.
         </div>
       )}
 
-      {/* Timeline — grouped by stage so the parallel final stage renders as
-          one collapsible block instead of three sequential rows. */}
-      {flows.length > 0 && (() => {
-        // Group rows by stage value, preserving order.
-        const stageGroups = [];
-        for (const row of flows) {
-          const s = stageOf(row);
-          let last = stageGroups[stageGroups.length - 1];
-          if (!last || last.stage !== s) {
-            last = { stage: s, rows: [] };
-            stageGroups.push(last);
-          }
-          last.rows.push(row);
-        }
+      {/* Timeline — grouped into MAX 3 logical stages (Submission / Assistant
+          Manager / Final). Multiple users in one stage render as a sub-list
+          instead of separate timeline rows, so the chain reads as a workflow
+          (3 phases) not a long roster of approvers. */}
+      {stageGroups.length > 0 && (
+        <ol className="relative ml-1 mb-3 space-y-3">
+          {stageGroups.map((group, gIdx) => {
+            const isLastGroup = gIdx === stageGroups.length - 1;
+            const isCurrentStage = currentStageKey === group.stage;
+            const isMultiMember = group.rows.length > 1;
 
-        // Display label for a row's status given its stage context.
-        const rowVisualStatus = (row) => {
-          if (row.status !== 'pending') return row.status;
-          // Pending row in a stage AFTER the current one → "awaiting" pip.
-          if (currentStageValue != null && stageOf(row) > currentStageValue) return 'awaiting';
-          return 'pending';
-        };
+            // Stage roll-up: drives the dot color + summary chip on the
+            // stage header. A pending stage that isn't the current one is
+            // a future stage → "awaiting" (visually neutral).
+            let stageStatus = rollUpStageStatus(group.rows);
+            if (stageStatus === 'pending' && !isCurrentStage) stageStatus = 'awaiting';
+            const stageStyle = ROW_STYLES[stageStatus] || ROW_STYLES.awaiting;
+            const StageIcon = stageStyle.Icon;
+            const stageNumber = gIdx + 1;
 
-        return (
-          <ol className="relative ml-1 mb-3 space-y-2">
-            {stageGroups.map((group, gIdx) => {
-              const isLastGroup = gIdx === stageGroups.length - 1;
-              const isParallel = group.rows.length > 1 && group.rows.some((r) => r.level > 0);
-              const isCurrentStage = currentStageValue !== null && group.stage === currentStageValue;
+            // Sub-headline hint: explains the parallel/sequential semantics
+            // so the user understands why multiple names live under one dot.
+            const stageHint =
+              group.stage === LOGICAL_STAGE.FINAL && isMultiMember
+                ? 'any one approves'
+                : group.stage === LOGICAL_STAGE.ASSISTANT_MANAGER && isMultiMember
+                ? 'all approve in order'
+                : group.stage === LOGICAL_STAGE.SUBMISSION
+                ? 'submitted by'
+                : null;
 
-              // Roll-up status for the stage header (only used when parallel).
-              let groupStatus = 'awaiting';
-              if (group.rows.some((r) => r.status === 'rejected')) groupStatus = 'rejected';
-              else if (group.rows.some((r) => r.status === 'changes_requested')) groupStatus = 'changes_requested';
-              else if (group.rows.some((r) => r.status === 'approved')) groupStatus = 'approved';
-              else if (isCurrentStage) groupStatus = 'pending';
-
-              if (isParallel) {
-                const groupStyle = ROW_STYLES[groupStatus] || ROW_STYLES.awaiting;
-                const GroupIcon = groupStyle.Icon;
-                return (
-                  <li key={`stage-${group.stage}`} className="text-[11px]">
-                    <div className="flex items-start gap-2.5">
-                      <div className="flex flex-col items-center self-stretch">
-                        <span className={`flex items-center justify-center w-5 h-5 rounded-full ${groupStyle.bg} ${isCurrentStage ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white dark:ring-offset-[#1E1F23]' : ''}`}>
-                          <GroupIcon className="w-2.5 h-2.5 text-white" />
-                        </span>
-                        {!isLastGroup && (
-                          <span className="flex-1 w-px bg-zinc-200 dark:bg-zinc-700 mt-1" />
-                        )}
-                      </div>
-                      <div className="flex-1 pb-1">
-                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
-                          <span className="font-semibold text-zinc-800 dark:text-zinc-100">
-                            Stage {group.stage} · Final stage
-                          </span>
-                          <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-                            any one approves
-                          </span>
-                          <span className={`text-[9px] uppercase tracking-wide font-semibold px-1.5 py-px rounded ${groupStyle.bg} text-white`}>
-                            {groupStyle.label}
-                          </span>
-                        </div>
-                        {/* Member rows */}
-                        <ul className="ml-1 space-y-1 border-l-2 border-zinc-200 dark:border-zinc-700 pl-3">
-                          {group.rows.map((row) => {
-                            const memberVis = rowVisualStatus(row);
-                            const memberStyle = ROW_STYLES[memberVis] || ROW_STYLES.awaiting;
-                            const isYou = row.userId && row.userId === user?.id;
-                            return (
-                              <li key={row.id || row.level} className="flex items-start gap-2">
-                                <span className={`flex-shrink-0 mt-0.5 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full ${memberStyle.bg}`}>
-                                  <memberStyle.Icon className="w-2 h-2 text-white" />
-                                </span>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="font-medium text-zinc-800 dark:text-zinc-100 truncate">
-                                      {row.userName || '(deleted user)'}
-                                    </span>
-                                    {isYou && (
-                                      <span className="text-[9px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400 font-semibold">you</span>
-                                    )}
-                                    {row.role && (
-                                      <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-                                        {row.role.replace('_', ' ')}
-                                      </span>
-                                    )}
-                                    <span className={`text-[9px] uppercase tracking-wide font-semibold ${
-                                      row.status === 'approved' ? 'text-emerald-600 dark:text-emerald-400'
-                                      : row.status === 'rejected' ? 'text-red-600 dark:text-red-400'
-                                      : row.status === 'changes_requested' ? 'text-orange-600 dark:text-orange-400'
-                                      : row.status === 'pending' ? 'text-amber-600 dark:text-amber-400'
-                                      : 'text-zinc-400 dark:text-zinc-500'
-                                    }`}>
-                                      {row.status === 'skipped_parallel' ? 'auto-skipped'
-                                        : row.status === 'cancelled_peer' ? 'cancelled'
-                                        : row.status.replace('_', ' ')}
-                                    </span>
-                                  </div>
-                                  {row.comment && (
-                                    <p className="mt-0.5 text-zinc-600 dark:text-zinc-300 italic break-words">
-                                      &ldquo;{row.comment}&rdquo;
-                                    </p>
-                                  )}
-                                  {row.actionAt && (
-                                    <p className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">{formatTime(row.actionAt)}</p>
-                                  )}
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    </div>
-                  </li>
-                );
-              }
-
-              // Sequential single-row stage — render the original timeline row.
-              const row = group.rows[0];
-              const visualStatus = rowVisualStatus(row);
-              const style = ROW_STYLES[visualStatus] || ROW_STYLES.awaiting;
-              const Icon = style.Icon;
-              const isCurrent = row.status === 'pending' && isCurrentStage;
-              const isYou = row.userId && row.userId === user?.id;
-              return (
-                <li key={row.id || `${row.level}-${gIdx}`} className="flex items-start gap-2.5 text-[11px]">
+            return (
+              <li key={group.stage} className="text-[11px]">
+                <div className="flex items-start gap-2.5">
                   <div className="flex flex-col items-center self-stretch">
-                    <span
-                      className={`flex items-center justify-center w-5 h-5 rounded-full ${style.bg} ${isCurrent ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white dark:ring-offset-[#1E1F23]' : ''}`}
-                    >
-                      <Icon className="w-2.5 h-2.5 text-white" />
+                    <span className={`flex items-center justify-center w-5 h-5 rounded-full ${stageStyle.bg} ${isCurrentStage ? 'ring-2 ring-amber-300 ring-offset-1 ring-offset-white dark:ring-offset-[#1E1F23]' : ''}`}>
+                      <StageIcon className="w-2.5 h-2.5 text-white" />
                     </span>
                     {!isLastGroup && (
                       <span className="flex-1 w-px bg-zinc-200 dark:bg-zinc-700 mt-1" />
                     )}
                   </div>
                   <div className="flex-1 pb-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="font-medium text-zinc-800 dark:text-zinc-100">
-                        {row.level === 0 ? 'Submitted' : `L${group.stage}`} · {row.userName || '(deleted user)'}
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                      <span className="font-semibold text-zinc-800 dark:text-zinc-100">
+                        Stage {stageNumber} · {group.label}
                       </span>
-                      {isYou && (
-                        <span className="text-[9px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400 font-semibold">you</span>
-                      )}
-                      {row.role && (
+                      {stageHint && (
                         <span className="text-[9px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-                          {row.role.replace('_', ' ')}
+                          {stageHint}
                         </span>
                       )}
-                      <span className={`text-[9px] uppercase tracking-wide font-semibold px-1.5 py-px rounded ${style.bg} text-white`}>
-                        {style.label}
+                      <span className={`text-[9px] uppercase tracking-wide font-semibold px-1.5 py-px rounded ${stageStyle.bg} text-white`}>
+                        {stageStyle.label}
                       </span>
                     </div>
-                    {row.comment && (
-                      <p className="mt-0.5 text-zinc-600 dark:text-zinc-300 italic break-words">
-                        &ldquo;{row.comment}&rdquo;
-                      </p>
-                    )}
-                    {row.actionAt && (
-                      <p className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">{formatTime(row.actionAt)}</p>
-                    )}
+                    {/* Member rows — one per user in this logical stage. */}
+                    <ul className={`space-y-1 ${isMultiMember ? 'ml-1 border-l-2 border-zinc-200 dark:border-zinc-700 pl-3' : ''}`}>
+                      {group.rows.map((row) => {
+                        // Per-row visual status — pending rows in a future
+                        // stage render as awaiting; everything else uses the
+                        // backend status verbatim.
+                        let memberVis = row.status;
+                        if (memberVis === 'pending' && !isCurrentStage) memberVis = 'awaiting';
+                        const memberStyle = ROW_STYLES[memberVis] || ROW_STYLES.awaiting;
+                        const isYou = row.userId && row.userId === user?.id;
+                        const memberColor =
+                          row.status === 'approved' ? 'text-emerald-600 dark:text-emerald-400'
+                          : row.status === 'rejected' ? 'text-red-600 dark:text-red-400'
+                          : row.status === 'changes_requested' ? 'text-orange-600 dark:text-orange-400'
+                          : row.status === 'pending' && isCurrentStage ? 'text-amber-600 dark:text-amber-400'
+                          : row.status === 'submitted' ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-zinc-400 dark:text-zinc-500';
+                        return (
+                          <li key={row.id || row.level} className="flex items-start gap-2">
+                            <span className={`flex-shrink-0 mt-0.5 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full ${memberStyle.bg}`}>
+                              <memberStyle.Icon className="w-2 h-2 text-white" />
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-medium text-zinc-800 dark:text-zinc-100 truncate">
+                                  {row.userName || '(deleted user)'}
+                                </span>
+                                {isYou && (
+                                  <span className="text-[9px] uppercase tracking-wide text-emerald-600 dark:text-emerald-400 font-semibold">you</span>
+                                )}
+                                {(row.role || row.user?.role) && (
+                                  <span className={`text-[9px] uppercase tracking-wide ${isSuperAdminRow(row) ? 'text-purple-600 dark:text-purple-300 font-semibold' : 'text-zinc-400 dark:text-zinc-500'}`}>
+                                    {roleLabelFor(row)}
+                                  </span>
+                                )}
+                                <span className={`text-[9px] uppercase tracking-wide font-semibold ${memberColor}`}>
+                                  {rowStatusLabel(row.status)}
+                                </span>
+                              </div>
+                              {row.comment && (
+                                <p className="mt-0.5 text-zinc-600 dark:text-zinc-300 italic break-words">
+                                  &ldquo;{row.comment}&rdquo;
+                                </p>
+                              )}
+                              {row.actionAt && (
+                                <p className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">{formatTime(row.actionAt)}</p>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
                   </div>
-                </li>
-              );
-            })}
-          </ol>
-        );
-      })()}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
 
       {/* Action panel — appears when current approver clicks Approve / Reject / Request Changes */}
       {showActionPanel && (

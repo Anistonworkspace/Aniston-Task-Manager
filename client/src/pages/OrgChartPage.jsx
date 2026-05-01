@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
+import AccessDenied from '../components/common/AccessDenied';
+import { isExplicitlyDenied } from '../utils/permissions';
 import {
   Users, ChevronDown, ArrowUp, User, Edit2, X, History, Shield, Search,
   GitBranch, Crown, Settings2, Layers, Building2, GripVertical,
@@ -496,8 +498,16 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
 
 // ═══ MAIN PAGE ═══
 export default function OrgChartPage() {
-  const { canManage, isAdmin } = useAuth();
+  const { canManage, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
   const { success: toastSuccess, error: toastError } = useToast();
+
+  // Defense-in-depth guard. The /org-chart route is also wrapped in
+  // <PermissionRoute>, but a page-level check ensures that if permissions
+  // change live (admin issues a DENY while the user is on this page) the
+  // permissions:updated socket refresh swaps the page out cleanly even
+  // without a remount. Server APIs are also locked down via requirePermission,
+  // so a denied user that races past this check still gets 403s.
+  const orgChartViewDenied = isExplicitlyDenied('org_chart', 'view', isSuperAdmin, granularPermissions);
   const [orgChart, setOrgChart] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [hierarchyLevels, setHierarchyLevels] = useState([]);
@@ -529,7 +539,11 @@ export default function OrgChartPage() {
   const [dropRootHover, setDropRootHover] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
 
-  useEffect(() => { fetchData(); }, []);
+  // Skip the fetch entirely when an explicit DENY is in place so we don't
+  // trigger 403 toasts for a user that is correctly blocked. Re-runs on
+  // permissions:updated (granularPermissions changes) so revoking a deny
+  // restores the chart without a manual reload.
+  useEffect(() => { if (!orgChartViewDenied) fetchData(); }, [orgChartViewDenied]);
 
   // Wheel zoom
   useEffect(() => {
@@ -808,6 +822,14 @@ export default function OrgChartPage() {
     onDropOnCard,
     onClick: onCardClick,
   };
+
+  // If an admin DENY override removed Org Chart access (either before mount
+  // or live via permissions:updated socket), render the AccessDenied screen
+  // instead of the chart. The server already 403s the underlying APIs, so
+  // this is purely UX.
+  if (orgChartViewDenied) {
+    return <AccessDenied resourceLabel="the Org Chart" action="view" />;
+  }
 
   if (loading) return <div className="p-8 bg-white min-h-full flex items-center justify-center"><div className="animate-pulse flex gap-6">{[1,2,3].map(i => <div key={i} className="w-32 h-24 bg-gray-100 rounded-lg" />)}</div></div>;
 

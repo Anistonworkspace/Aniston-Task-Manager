@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
-import { connect, disconnect } from '../services/socket';
+import { connect, disconnect, subscribe } from '../services/socket';
 
 const AuthContext = createContext(null);
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes
@@ -10,7 +10,6 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
-  const [viewAsRole, setViewAsRole] = useState(null);
   const [permissionGrants, setPermissionGrants] = useState([]);
   const lastActivityRef = useRef(Date.now());
   const inactivityTimerRef = useRef(null);
@@ -25,7 +24,6 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('user');
     setToken(null);
     setUser(null);
-    setViewAsRole(null);
     setPermissionGrants([]);
     setEffectivePermissions({});
     setIsHierarchyManager(false);
@@ -99,6 +97,20 @@ export function AuthProvider({ children }) {
 
   useEffect(() => { loadUser(); }, [loadUser]);
 
+  // Live permission refresh — when an admin issues/updates/revokes an
+  // override for this user, the server emits 'permissions:updated' to the
+  // user's personal socket room. We re-fetch effective permissions so the
+  // sidebar, route guards, and in-page checks all reflect the new state
+  // without requiring the user to reload.
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribe = subscribe('permissions:updated', () => {
+      console.log('[Auth] permissions:updated received — refreshing grants');
+      loadPermissions();
+    });
+    return () => { if (unsubscribe) unsubscribe(); };
+  }, [user, loadPermissions]);
+
   // Inactivity tracker — logout after 5 min of no activity
   useEffect(() => {
     if (!user) return;
@@ -157,7 +169,6 @@ export function AuthProvider({ children }) {
     if (d.refreshToken) sessionStorage.setItem('refreshToken', d.refreshToken);
     setToken(newToken);
     setUser(newUser);
-    setViewAsRole(null);
     lastActivityRef.current = Date.now();
     connect(newToken);
     // Load permission grants after login (await so UI has grants before navigating)
@@ -174,7 +185,6 @@ export function AuthProvider({ children }) {
       const u = res.data?.data?.user || res.data?.user || res.data;
       setUser(u);
       sessionStorage.setItem('user', JSON.stringify(u));
-      setViewAsRole(null);
       lastActivityRef.current = Date.now();
       connect(newToken);
       // Load permission grants after token login
@@ -199,7 +209,7 @@ export function AuthProvider({ children }) {
 
   // Super admin check
   const isSuperAdmin = !!user?.isSuperAdmin;
-  const effectiveRole = (isSuperAdmin && viewAsRole) ? viewAsRole : user?.role;
+  const effectiveRole = user?.role;
   // Manager has all access same as admin (for most features)
   const isAdmin = effectiveRole === 'admin' || effectiveRole === 'manager';
   // Strict admin: actual admin role only (for Admin Settings, Integrations, Feedback)
@@ -211,16 +221,11 @@ export function AuthProvider({ children }) {
   const canManage = isAdmin || isManager || user?.isSuperAdmin;
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
-  const switchViewAs = (role) => {
-    if (!isSuperAdmin) return;
-    setViewAsRole(role === user?.role ? null : role);
-  };
-
   return (
     <AuthContext.Provider value={{
       user, token, loading, login, loginWithToken, logout, updateProfile,
       isAdmin, isStrictAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
-      isSuperAdmin, isHierarchyManager, viewAsRole, switchViewAs, effectiveRole,
+      isSuperAdmin, isHierarchyManager, effectiveRole,
       permissionGrants, effectivePermissions, granularPermissions, permissionOverrides, loadPermissions,
     }}>
       {children}

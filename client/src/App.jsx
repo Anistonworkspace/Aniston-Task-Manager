@@ -3,6 +3,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/layout/Layout';
 import ErrorBoundary from './components/common/ErrorBoundary';
+import AccessDenied from './components/common/AccessDenied';
+import { isExplicitlyDenied } from './utils/permissions';
 
 // Auth pages — loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login';
@@ -118,6 +120,37 @@ function StrictAdminRoute({ children, requiredPermission }) {
   return children;
 }
 
+/**
+ * PermissionRoute — guards a route that is base-allowed for everyone (e.g.
+ * Org Chart view) but can be revoked by an explicit DENY override. Mirrors
+ * the server's permission engine: deny precedence wins, role-based defaults
+ * and explicit grants both pass through unless the resolver said false.
+ *
+ * Use this for routes where any authenticated user normally has access, but
+ * an admin may have issued a DENY override on the resource/action pair.
+ * Accepts `requiredPermission` in "resource.action" format (e.g.
+ * "org_chart.view"). Renders <AccessDenied/> instead of redirecting silently
+ * so direct-URL hits surface a clean reason.
+ */
+function PermissionRoute({ children, requiredPermission, resourceLabel = 'this page', action = 'view' }) {
+  const { user, loading, isSuperAdmin, granularPermissions } = useAuth();
+  if (loading) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-surface">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  if (requiredPermission && !isSuperAdmin) {
+    const [resource, act] = requiredPermission.split('.');
+    if (isExplicitlyDenied(resource, act, isSuperAdmin, granularPermissions)) {
+      return <AccessDenied resourceLabel={resourceLabel} action={action} />;
+    }
+  }
+  return children;
+}
+
 export default function App() {
   return (
     <Suspense fallback={<PageLoader />}>
@@ -147,7 +180,7 @@ export default function App() {
           <Route path="users" element={<AdminRoute requiredPermission="users.view"><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></AdminRoute>} />
           <Route path="admin-settings" element={<StrictAdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></StrictAdminRoute>} />
           <Route path="access-requests" element={<AdminRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></AdminRoute>} />
-          <Route path="org-chart" element={<Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense>} />
+          <Route path="org-chart" element={<PermissionRoute requiredPermission="org_chart.view" resourceLabel="the Org Chart" action="view"><Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense></PermissionRoute>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />

@@ -136,16 +136,22 @@ async function getTaskIncludes() {
   }
   if (await hasTaskApprovalFlowsTable()) {
     // separate:true issues a single grouped query for all task ids — avoids N+1
-    // when listing many tasks. Trimmed attributes since the table-level indicator
-    // only needs level/status/userName for rendering segments + tooltip.
+    // when listing many tasks. `stage` is required by the frontend's logical
+    // grouping (parallel final stage = Manager+Admin+SuperAdmin under one stage
+    // value); the User join exposes isSuperAdmin so the indicator can place
+    // super admins last in the final stage and label them correctly.
     includes.push({
       model: TaskApprovalFlow,
       as: 'approvalFlows',
       separate: true,
       order: [['level', 'ASC']],
-      // `comment` is needed by the Approvals tab timeline; `attachmentUrl` for
-      // the level-0 submission attachment surfaced inside the modal section.
-      attributes: ['id', 'level', 'status', 'userId', 'userName', 'role', 'actionAt', 'comment', 'attachmentUrl'],
+      attributes: ['id', 'level', 'stage', 'status', 'userId', 'userName', 'role', 'actionAt', 'comment', 'attachmentUrl'],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'avatar', 'role', 'isSuperAdmin'],
+        required: false,
+      }],
     });
   }
   return includes;
@@ -646,6 +652,20 @@ const updateTask = async (req, res) => {
     // Layer 3: Check action permission using the new system
     const taskAssignees = task.taskAssignees || [];
     const editPermission = checkTaskAction('edit', req.user, task, taskAssignees, req);
+
+    // Archive-as-delete gate: PUT { isArchived: true|false } is the board UI's
+    // way of soft-deleting / restoring. It must be authorized by tasks.delete
+    // (deny-aware), not silently filtered, so a member that bypasses the UI
+    // and POSTs the field directly receives a clear 403 instead of a no-op.
+    if (req.body.isArchived !== undefined) {
+      const canArchive = await enginePermission(req.user, 'tasks', 'delete');
+      if (!canArchive) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to archive or restore this task.',
+        });
+      }
+    }
 
     // If user can't edit at all, check if they can at least update status
     if (!editPermission.allowed) {
@@ -1410,6 +1430,19 @@ const bulkUpdateTasks = async (req, res) => {
 
     if (Object.keys(safeUpdates).length === 0) {
       return res.status(400).json({ success: false, message: 'No valid update fields provided.' });
+    }
+
+    // Archive-as-delete gate for bulk: same rule as the single-task PUT —
+    // tasks.delete (deny-aware) is required to flip isArchived, even though
+    // the route gate only requires tasks.edit.
+    if (safeUpdates.isArchived !== undefined) {
+      const canArchive = await enginePermission(req.user, 'tasks', 'delete');
+      if (!canArchive) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to archive or restore tasks.',
+        });
+      }
     }
 
     // Bulk assignment authority. If the bulk update changes assignees and the

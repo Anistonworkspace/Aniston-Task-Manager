@@ -362,6 +362,16 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Inline subtask section — opacity-only fade. Avoids height/width tweens
+   that fight the sticky-left flex grid in BoardPage and caused jitter. */
+.subtask-section-fade-in {
+  animation: subtaskSectionFadeIn 0.16s ease-out;
+}
+@keyframes subtaskSectionFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .modal-enter {
   animation: modalEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }

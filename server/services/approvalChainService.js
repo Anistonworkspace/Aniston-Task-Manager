@@ -231,52 +231,77 @@ async function findFirstActiveSuperAdmin(excludeIds = new Set()) {
  * Collect every user who belongs to the parallel final stage. Members:
  *   - the `anchor` (the first manager / admin / super admin we hit walking
  *     upward from the submitter), if any
+ *   - all active managers
  *   - all active admins
  *   - all active super admins
+ *
+ * Final result is ordered Manager → Admin → Super Admin so the UI renders the
+ * roles in escalating seniority (Super Admin ALWAYS appears last — the user-
+ * facing convention is "highest authority is the final entry"). Within a role
+ * tier ordering is by createdAt ASC for stable, name-independent ordering.
  *
  * Excludes the submitter and any user who appears in `excludeIds` (used to
  * keep someone already placed in the sequential chain from showing up twice).
  * Returns: Array<{ userId, userName, role, isSuperAdmin }> (deduped).
  */
 async function collectFinalStageMembers({ submitterId, anchor, excludeIds = new Set() }) {
-  const members = new Map(); // userId -> approver shape
   const exclude = new Set([submitterId, ...excludeIds]);
 
-  if (anchor && !exclude.has(anchor.userId)) {
-    members.set(anchor.userId, anchor);
-  }
+  // Three buckets keyed in seniority order. Anchor is dropped into the bucket
+  // matching its role so the final ordering is stable regardless of where the
+  // anchor came from.
+  const managers = new Map();   // userId -> shape
+  const admins = new Map();     // userId -> shape (excludes super admins)
+  const superAdmins = new Map();// userId -> shape
 
-  const admins = await User.findAll({
-    where: { role: 'admin', isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
-    order: [['createdAt', 'ASC']],
-  });
-  for (const u of admins) {
-    if (exclude.has(u.id) || members.has(u.id)) continue;
-    members.set(u.id, {
-      userId: u.id,
-      userName: u.name,
+  function bucketFor(u) {
+    if (u.isSuperAdmin) return superAdmins;
+    if (u.role === 'admin') return admins;
+    if (u.role === 'manager') return managers;
+    return null;
+  }
+  function add(u) {
+    if (exclude.has(u.userId || u.id)) return;
+    const b = bucketFor(u);
+    if (!b) return;
+    const id = u.userId || u.id;
+    if (b.has(id)) return;
+    b.set(id, {
+      userId: id,
+      userName: u.userName || u.name,
       role: u.role,
       isSuperAdmin: !!u.isSuperAdmin,
     });
   }
 
-  const supers = await User.findAll({
+  if (anchor) add(anchor);
+
+  const managerRows = await User.findAll({
+    where: { role: 'manager', isActive: true },
+    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    order: [['createdAt', 'ASC']],
+  });
+  for (const u of managerRows) add(u);
+
+  const adminRows = await User.findAll({
+    where: { role: 'admin', isActive: true },
+    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    order: [['createdAt', 'ASC']],
+  });
+  for (const u of adminRows) add(u);
+
+  const superRows = await User.findAll({
     where: { isSuperAdmin: true, isActive: true },
     attributes: ['id', 'name', 'role', 'isSuperAdmin'],
     order: [['createdAt', 'ASC']],
   });
-  for (const u of supers) {
-    if (exclude.has(u.id) || members.has(u.id)) continue;
-    members.set(u.id, {
-      userId: u.id,
-      userName: u.name,
-      role: u.role,
-      isSuperAdmin: true,
-    });
-  }
+  for (const u of superRows) add(u);
 
-  return Array.from(members.values());
+  return [
+    ...managers.values(),
+    ...admins.values(),
+    ...superAdmins.values(),
+  ];
 }
 
 /**

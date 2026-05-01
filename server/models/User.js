@@ -88,6 +88,16 @@ const User = sequelize.define(
       defaultValue: true,
       allowNull: false,
     },
+    localStatusOverride: {
+      // Set to true the moment an admin manually flips isActive via Admin
+      // Settings (PUT /api/users/:id or /toggle-status). Microsoft sync
+      // reads this and skips the user's isActive field so manual
+      // deactivations are not silently undone on the next sync run.
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false,
+      field: 'local_status_override',
+    },
     isSuperAdmin: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,

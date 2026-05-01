@@ -192,6 +192,15 @@ const updateUser = async (req, res) => {
       }
     }
 
+    // If this update is flipping isActive, mark the row so Microsoft sync
+    // does not silently revert the change on its next pass.
+    if (
+      updates.isActive !== undefined &&
+      Boolean(updates.isActive) !== Boolean(user.isActive)
+    ) {
+      updates.localStatusOverride = true;
+    }
+
     // Email uniqueness (only relevant when 'email' is in the permitted set).
     if (updates.email && updates.email !== user.email.toLowerCase()) {
       const existing = await User.findOne({
@@ -311,7 +320,8 @@ const toggleUserStatus = async (req, res) => {
     }
 
     const newStatus = !user.isActive;
-    await user.update({ isActive: newStatus });
+    // Persist the override flag so Microsoft sync respects this manual choice.
+    await user.update({ isActive: newStatus, localStatusOverride: true });
 
     logActivity({
       action: newStatus ? 'user_activated' : 'user_deactivated',

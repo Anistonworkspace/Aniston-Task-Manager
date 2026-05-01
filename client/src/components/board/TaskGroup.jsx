@@ -7,16 +7,20 @@ import TaskRow from './TaskRow';
 import AddColumnModal from './AddColumnModal';
 import ColumnHeaderMenu from './ColumnHeaderMenu';
 import ColumnInfoTooltip from './ColumnInfoTooltip';
+import BoardSubtaskSection from './BoardSubtaskSection';
 import { STATUS_CONFIG, buildStatusLookup } from '../../utils/constants';
 
 export default function TaskGroup({
   group, tasks = [], members = [], columns = [], boardId, boardStatuses,
   onTaskClick, onTaskUpdate, onAddTask, onArchiveTask,
-  onRequestExtension, onRequestHelp, onEditColumn, onAddColumn, onRemoveColumn,
+  onRequestExtension, onEditColumn, onAddColumn, onRemoveColumn,
   onHideColumn, onResizeColumn, onSort, onArchiveGroup, onRenameGroup,
   onDuplicateColumn, onChangeColumnType, onFilter, onGroupBy, onSetColumnRequired, onSetColumnDescription, onReorderColumns,
   color = '#579bfc', index, isDragEnabled = false,
   selectedTaskIds = [], onSelectTask,
+  // Inline-subtask expand state — owned by the parent group so it survives
+  // task list re-renders (socket updates, optimistic patches, etc.).
+  expandedTaskIds = [], onToggleSubtasks, onSubtaskCountsChange,
 }) {
   const TASK_DISPLAY_LIMIT = 100;
   const { canManage, user, isSuperAdmin, permissionGrants, effectivePermissions } = useAuth();
@@ -127,27 +131,50 @@ export default function TaskGroup({
     <div ref={provided?.innerRef} {...(provided?.droppableProps || {})}
       className={`min-h-[2px] ${snapshot?.isDraggingOver ? 'bg-[#e6f0ff]/30' : ''}`}>
       {visibleTasks.map((task, taskIndex) => {
+        const isExpanded = expandedTaskIds.includes(task.id);
         const rowContent = (dragHandleProps) => (
           <TaskRow task={task} members={members} columns={columns} boardId={boardId} color={color}
             taskColWidth={taskColWidth} boardStatuses={boardStatuses}
             onClick={() => onTaskClick(task)} onUpdate={(u) => onTaskUpdate(task.id, u)} onArchive={onArchiveTask}
-            onRequestExtension={onRequestExtension} onRequestHelp={onRequestHelp}
+            onRequestExtension={onRequestExtension}
             dragHandleProps={dragHandleProps} selected={selectedTaskIds.includes(task.id)}
-            onSelect={(sel) => onSelectTask?.(task.id, sel)} />
+            onSelect={(sel) => onSelectTask?.(task.id, sel)}
+            expanded={isExpanded}
+            onToggleSubtasks={onToggleSubtasks ? () => onToggleSubtasks(task.id) : undefined} />
         );
+        // The expanded subtask section renders directly under the parent
+        // row. We mount it lazily — only when the user expands the task —
+        // so a board with hundreds of tasks doesn't issue hundreds of
+        // /api/subtasks fetches up front.
+        const subtaskSection = isExpanded ? (
+          <BoardSubtaskSection
+            key={`subs-${task.id}`}
+            parentTask={task}
+            members={members}
+            columns={columns}
+            boardId={boardId}
+            taskColWidth={taskColWidth}
+            color={color}
+            boardStatuses={boardStatuses}
+            onCountsChange={onSubtaskCountsChange ? (c) => onSubtaskCountsChange(task.id, c) : undefined}
+          />
+        ) : null;
         if (isDragEnabled) {
           return (
-            <Draggable key={task.id} draggableId={task.id} index={taskIndex}>
-              {(dp, ds) => (
-                <div ref={dp.innerRef} {...dp.draggableProps}
-                  style={{ ...dp.draggableProps.style, ...(ds.isDragging ? { boxShadow: '0 4px 20px rgba(0,0,0,0.1)', background: 'white', zIndex: 10 } : {}) }}>
-                  {rowContent(dp.dragHandleProps)}
-                </div>
-              )}
-            </Draggable>
+            <React.Fragment key={task.id}>
+              <Draggable draggableId={task.id} index={taskIndex}>
+                {(dp, ds) => (
+                  <div ref={dp.innerRef} {...dp.draggableProps}
+                    style={{ ...dp.draggableProps.style, ...(ds.isDragging ? { boxShadow: '0 4px 20px rgba(0,0,0,0.1)', background: 'white', zIndex: 10 } : {}) }}>
+                    {rowContent(dp.dragHandleProps)}
+                  </div>
+                )}
+              </Draggable>
+              {subtaskSection}
+            </React.Fragment>
           );
         }
-        return <React.Fragment key={task.id}>{rowContent(null)}</React.Fragment>;
+        return <React.Fragment key={task.id}>{rowContent(null)}{subtaskSection}</React.Fragment>;
       })}
       {provided?.placeholder}
       {hasMoreTasks && (
@@ -161,7 +188,15 @@ export default function TaskGroup({
   );
 
   return (
-    <div className="mb-8 group/group">
+    // `min-w-fit` makes the group container at least as wide as its widest
+    // child (the bordered table, which is `min-w-fit` itself). Without it
+    // the group container collapses to the scroller's clientWidth, which
+    // means the group title's `sticky left-0` "releases" when you scroll
+    // past the visible width — its containing block is the group, and
+    // sticky can't extend past that. With `min-w-fit` the containing block
+    // matches the scroll content, so the title stays pinned to the left
+    // across the full horizontal scroll range.
+    <div className="mb-8 group/group min-w-fit">
       {/* Group Header — Monday.com large colored text — sticky so it doesn't scroll */}
       <div className="flex items-center gap-2 mb-0.5 px-1 sticky left-0 z-[10] w-fit">
         <button onClick={() => setCollapsed(!collapsed)} className="p-0.5 hover:bg-gray-100 rounded transition-colors" style={{ color }}>
@@ -201,15 +236,18 @@ export default function TaskGroup({
           <div>
             {/* Column Headers */}
             <div className="flex items-center border-b border-[#e6e9ef] text-[13px] font-medium text-[#676879] sticky top-0 bg-white z-[5]">
-              {/* Sticky left: color bar + checkbox + task name */}
-              <div className="flex items-center sticky left-0 z-[6] bg-white">
+              {/* Sticky left: color bar + checkbox + task name.
+                  z-[21] keeps the header's frozen column above the row
+                  sticky titles (z-[20]) where the two intersect during
+                  combined horizontal + vertical scroll. */}
+              <div className="flex items-center sticky left-0 z-[21] bg-white">
                 <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color }} />
                 <div className="w-10 flex-shrink-0 py-2.5" />
                 <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#e6e9ef] relative">
                   Task
                   {/* Task column resize handle (mouse + touch) */}
                   <div onMouseDown={handleTaskColResize} onTouchStart={handleTaskColResize}
-                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[7] hover:bg-[#0073ea] transition-colors ${resizingCol === '__task__' ? 'bg-[#0073ea]' : 'bg-transparent'}`} />
+                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[22] hover:bg-[#0073ea] transition-colors ${resizingCol === '__task__' ? 'bg-[#0073ea]' : 'bg-transparent'}`} />
                 </div>
               </div>
 
@@ -267,7 +305,7 @@ export default function TaskGroup({
                   <div
                     onMouseDown={(e) => handleResizeStart(e, col)}
                     onTouchStart={(e) => handleResizeStart(e, col)}
-                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[7] group/resize hover:bg-[#0073ea] transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent'}`}
+                    className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[22] group/resize hover:bg-[#0073ea] transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent'}`}
                     title="Resize Column"
                   >
                     <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-full transition-colors ${resizingCol === col.id ? 'bg-[#0073ea]' : 'bg-transparent group-hover/resize:bg-[#0073ea]'}`} />
@@ -296,8 +334,8 @@ export default function TaskGroup({
 
             {/* + Add task — only for users who can create tasks */}
             {canCreateTask && (
-              <div className="flex items-center border-t border-[#e6e9ef]">
-                <div className="flex items-center sticky left-0 bg-white">
+              <div className="flex items-center border-t border-[#e6e9ef] relative isolate">
+                <div className="flex items-center sticky left-0 z-[20] bg-white">
                   <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color, opacity: 0.3 }} />
                   <div className="w-10 flex-shrink-0" />
                   {adding ? (
@@ -326,9 +364,11 @@ export default function TaskGroup({
           const leftCols = columns.slice(0, splitAt);  // columns before Status (spacers)
           const rightCols = columns.slice(splitAt);     // columns from Status onward (bordered)
           return (
-        <div className="flex items-center relative">
-          {/* Empty left area: columns before Status — no border */}
-          <div className="flex items-center sticky left-0 z-[2]">
+        <div className="flex items-center relative isolate">
+          {/* Empty left area: columns before Status — no border.
+              z-[20] mirrors the row sticky so summary cells can't bleed
+              through on the left during horizontal scroll. */}
+          <div className="flex items-center sticky left-0 z-[20]">
             <div className="w-[6px] flex-shrink-0" />
             <div className="w-10 flex-shrink-0" />
             <div style={{ width: taskColWidth }} />

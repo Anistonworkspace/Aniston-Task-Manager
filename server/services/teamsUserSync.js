@@ -106,15 +106,26 @@ async function syncUsersFromM365() {
       }
 
       if (existing) {
-        // Update teamsUserId and authProvider if not set
+        // Update teamsUserId and authProvider if not set.
+        //
+        // Locally-edited fields are NEVER overwritten here:
+        //   - name, department, designation, role, hierarchyLevel, title,
+        //     departmentId, avatar — left untouched on existing rows. (Sync
+        //     only seeds them on first create below.)
+        //   - isActive — protected by `localStatusOverride`. If an admin has
+        //     manually toggled the user's status from Admin Settings, sync
+        //     will not silently re-activate the account.
+        //   - accountStatus — same protection: respect manual deactivations.
         const updates = {};
         if (!existing.teamsUserId && m365User.id) updates.teamsUserId = m365User.id;
         // Only set authProvider to microsoft if user has NO local password
         // This prevents breaking local login for users who have both
         if (existing.authProvider !== 'microsoft' && !existing.password) updates.authProvider = 'microsoft';
         // Ensure synced M365 users are active and approved so they appear in assignment dropdowns
-        if (!existing.isActive) updates.isActive = true;
-        if (existing.accountStatus !== 'approved') updates.accountStatus = 'approved';
+        if (!existing.isActive && !existing.localStatusOverride) updates.isActive = true;
+        if (existing.accountStatus !== 'approved' && !existing.localStatusOverride) {
+          updates.accountStatus = 'approved';
+        }
         if (Object.keys(updates).length) await existing.update(updates);
         results.existing.push({ email, name: m365User.displayName, id: existing.id });
         continue;
@@ -197,12 +208,19 @@ async function syncUserActiveStatus() {
   // Find all Microsoft-linked local users
   const localUsers = await User.findAll({
     where: { authProvider: 'microsoft' },
-    attributes: ['id', 'email', 'teamsUserId', 'isActive', 'name'],
+    attributes: ['id', 'email', 'teamsUserId', 'isActive', 'name', 'localStatusOverride'],
   });
 
-  const results = { activated: [], deactivated: [], unchanged: 0 };
+  const results = { activated: [], deactivated: [], unchanged: 0, skippedManual: 0 };
 
   for (const user of localUsers) {
+    // Skip users whose status has been manually overridden from Admin
+    // Settings — Microsoft is no longer the source of truth for them.
+    if (user.localStatusOverride) {
+      results.skippedManual++;
+      continue;
+    }
+
     // Look up by teamsUserId first, then by email
     let m365Active = undefined;
     if (user.teamsUserId && m365StatusMap.has(user.teamsUserId)) {
@@ -227,7 +245,9 @@ async function syncUserActiveStatus() {
     }
   }
 
-  console.log(`[TeamsSync] Status sync: ${results.activated.length} activated, ${results.deactivated.length} deactivated, ${results.unchanged} unchanged`);
+  console.log(
+    `[TeamsSync] Status sync: ${results.activated.length} activated, ${results.deactivated.length} deactivated, ${results.unchanged} unchanged, ${results.skippedManual} skipped (manual override)`
+  );
   return results;
 }
 

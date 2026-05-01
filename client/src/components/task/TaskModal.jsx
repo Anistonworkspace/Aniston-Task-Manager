@@ -25,6 +25,7 @@ import useSocket from '../../hooks/useSocket';
 import DetailModalShell from '../common/DetailModalShell';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
+import { canEditTask as canEditTaskFn } from '../../utils/permissions';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
@@ -35,27 +36,30 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   const shellCloseRef = useRef(null);
   const handleClose = () => (shellCloseRef.current ? shellCloseRef.current() : onClose());
   const isApproved = task?.approvalStatus === 'approved';
-  // Approved tasks are fully read-only for members. Admin/manager can still edit.
-  const canEditAllFields = !isApproved && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
+  // Centralized permission checks — respect explicit DENY overrides even for
+  // management roles. `canEditAllFields` keeps its prior meaning (full edit
+  // for admin/manager/asst-mgr) but now also collapses to false when an admin
+  // has denied tasks.edit on this user.
+  const denyEdit = granularPermissions?.['tasks.edit'] === false;
+  const canEditAllFields = !isApproved && !denyEdit && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
 
   // Whether the actor can assign tasks to OTHER users. When false, the
   // assignee/supervisor pickers must be locked to self only and supervisors
   // are hidden. Backend (assign_others permission) is the source of truth.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
 
-  // Members editing their own tasks: allowed for the field-level whitelist
-  // (description, due date, priority, progress, etc.) — mirrors the backend
-  // whitelist in server/middleware/taskPermissions.js (`edit` action).
-  const isOwnTask = !!user?.id && (
-    task?.assignedTo === user.id ||
-    task?.createdBy === user.id ||
-    (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => (ta.userId || ta.user?.id) === user.id))
-  );
-  const canEditOwnFields = !isApproved && (canEditAllFields || (isMember && isOwnTask));
+  // canEditOwnFields uses the centralized helper so explicit DENY on tasks.edit
+  // wins even for members who would otherwise be allowed to edit their own
+  // tasks. Mirrors the backend's `checkTaskAction('edit', …)` whitelist plus
+  // permissionEngine.deny precedence.
+  const canEditOwnFields = canEditTaskFn(user, task, granularPermissions);
 
   const canEditTitle = !isApproved && (canEditAllFields || (isMember && task?.assignedTo === user?.id));
   const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
-  const canEditStatus = !isApproved && !isBlockedByDependency;
+  // Status edit gate: only owners/management may change status. Members who
+  // can view a task they don't own (e.g. via cross-team links) get a read-
+  // only pill instead of the dropdown.
+  const canEditStatus = !isApproved && !isBlockedByDependency && (canEditAllFields || canEditOwnFields);
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
   const [status, setStatus] = useState(task?.status || 'not_started');
@@ -115,12 +119,22 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   }, [task?.id]);
 
   // Acknowledge "seen" when the assignee actually opens the task detail view.
-  // The server enforces that only assignees can write this state and is
-  // idempotent, so it's safe to call unconditionally. A 403 for non-assignees
-  // (like the creator) is expected and silently ignored.
+  // Only assignees (role='assignee') are accepted by the server — calling for
+  // anyone else (creator, admin, manager, supervisor) returns 403 and would
+  // surface a global toast via the api interceptor. So gate the call on
+  // assignee-membership client-side, and mark it _silent as a safety net in
+  // case server state has drifted.
   useEffect(() => {
     if (!task?.id || !user?.id) return;
-    api.post(`/tasks/${task.id}/receipt`, { event: 'seen' }).catch(() => { /* expected for non-assignees */ });
+    const assigneeRows = Array.isArray(task?.taskAssignees)
+      ? task.taskAssignees.filter(ta => ta.role === 'assignee')
+      : [];
+    const isAssignee = assigneeRows.length > 0
+      ? assigneeRows.some(ta => String(ta.userId || ta.user?.id) === String(user.id))
+      : String(task?.assignedTo) === String(user.id);
+    if (!isAssignee) return;
+    api.post(`/tasks/${task.id}/receipt`, { event: 'seen' }, { _silent: true })
+      .catch(() => { /* idempotent — ignore transient failures */ });
   }, [task?.id, user?.id]);
 
   useEffect(() => {
@@ -223,10 +237,14 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     && task?.createdBy === user.id
     && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
 
+  // Super Admin exemption — top of the org hierarchy, no senior reviewer
+  // exists, so they never go through approval. Backend rejects the API call
+  // too (super_admin_no_approval), so this is the UX-side mirror.
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isTaskOwner
     && !isSelfTask
+    && !isSuperAdmin
     && task?.approvalStatus !== 'pending_approval'
     && task?.approvalStatus !== 'approved';
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Search, X, ChevronDown, AlertTriangle, Clock, User,
   Calendar, AlertCircle, Tag, Users, Filter,
@@ -8,6 +9,7 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { openTaskFromAnywhere } from '../../utils/taskNavigation';
 import Avatar from '../common/Avatar';
 
 const SMART_VIEWS_ALL = [
@@ -30,6 +32,7 @@ const SMART_VIEWS_ALL = [
  */
 export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle = '', showPersonFilter = true, showUnassigned = true }) {
   const { user: currentUser } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [personList, setPersonList] = useState([]);
@@ -369,9 +372,14 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
                   const statusCfg = STATUS_CONFIG[task.status] || {};
                   const priorityCfg = PRIORITY_CONFIG[task.priority] || {};
                   const isOverdue = task.dueDate && isBefore(new Date(task.dueDate), startOfDay(new Date())) && task.status !== 'done';
+                  const taskBoardId = task.boardId || task.board?.id;
+                  const openThisTask = () => openTaskFromAnywhere(navigate, { taskId: task.id, boardId: taskBoardId });
                   return (
-                    <tr key={task.id} className="border-t border-border hover:bg-surface/30 transition-colors">
-                      <td className="py-2.5 px-4"><p className="text-sm font-medium text-text-primary truncate max-w-[280px]">{task.title}</p></td>
+                    <tr key={task.id} onClick={openThisTask}
+                      className="border-t border-border hover:bg-surface/30 transition-colors cursor-pointer">
+                      <td className="py-2.5 px-4">
+                        <p className="text-sm font-medium text-text-primary truncate max-w-[280px] hover:text-primary hover:underline">{task.title}</p>
+                      </td>
                       <td className="py-2.5 px-4">
                         {task.board && (
                           <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">

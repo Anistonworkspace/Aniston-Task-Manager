@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { HelpCircle, X, Send, Calendar, AlertCircle, Clock, Video, Check } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { HelpCircle, X, Send, AlertCircle, Clock, Video, Check } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 
@@ -24,6 +25,21 @@ export default function HelpRequestModal({ task, onClose }) {
   useEffect(() => {
     fetchData();
   }, [task?.id]);
+
+  // Capture-phase Escape so this dialog wins over the parent TaskModal's
+  // DetailModalShell listener — without stopImmediatePropagation, both fire
+  // and the underlying TaskModal closes alongside Help, taking the typed
+  // request with it.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      onClose?.();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
 
   async function fetchData() {
     try {
@@ -68,9 +84,16 @@ export default function HelpRequestModal({ task, onClose }) {
     resolved: 'bg-green-100 text-green-700',
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+  // Portal to <body> so the dialog escapes any stacking context the
+  // TaskModal/DetailModalShell creates and can render above its z-[100]
+  // backdrop. z-[120] keeps Help reliably on top.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 dark:border-zinc-700">
           <h2 className="text-sm font-bold text-gray-800 dark:text-gray-200 flex items-center gap-2"><HelpCircle size={15} className="text-primary" /> Request Help</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
@@ -164,6 +187,7 @@ export default function HelpRequestModal({ task, onClose }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

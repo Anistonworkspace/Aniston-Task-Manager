@@ -18,6 +18,24 @@ const Subtask = sequelize.define('Subtask', {
     type: DataTypes.ENUM('not_started', 'working_on_it', 'stuck', 'done'),
     defaultValue: 'not_started',
   },
+  priority: {
+    type: DataTypes.ENUM('low', 'medium', 'high', 'critical'),
+    allowNull: true,
+  },
+  progress: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    validate: { min: 0, max: 100 },
+  },
+  dueDate: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  description: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
   position: {
     type: DataTypes.INTEGER,
     defaultValue: 0,
@@ -71,6 +89,7 @@ const Subtask = sequelize.define('Subtask', {
     { fields: ['taskId'] },
     { fields: ['assignedTo'] },
     { fields: ['status'] },
+    { fields: ['dueDate'] },
   ],
 });
 

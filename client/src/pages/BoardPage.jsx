@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Filter, SortAsc, BarChart3, Plus, Columns3, Calendar, Settings,
   LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal
@@ -22,7 +22,6 @@ import CalendarView from '../components/board/CalendarView';
 import SortDropdown from '../components/board/SortDropdown';
 import CSVImportModal from '../components/board/CSVImportModal';
 import DueDateExtensionModal from '../components/board/DueDateExtensionModal';
-import HelpRequestModal from '../components/board/HelpRequestModal';
 import TimelineView from '../components/board/TimelineView';
 import { SkeletonBoard } from '../components/common/Skeleton';
 import { useToast } from '../components/common/Toast';
@@ -59,6 +58,7 @@ function NewTaskDropdown({ onNewGroup, onImport, onClose }) {
 export default function BoardPage() {
   const { id: boardId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, canManage, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
   const canCreateTask = canUserFn(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
   const canEditBoard = canUserFn(user?.role, 'edit_board', isSuperAdmin, permissionGrants, effectivePermissions);
@@ -83,8 +83,11 @@ export default function BoardPage() {
   const [sortConfig, setSortConfig] = useState(null);
   const [showCSVImport, setShowCSVImport] = useState(false);
   const [extensionTask, setExtensionTask] = useState(null);
-  const [helpTask, setHelpTask] = useState(null);
   const [showNewTaskMenu, setShowNewTaskMenu] = useState(false);
+  // Inline-subtask expanded set — array of task IDs that are currently
+  // showing their nested subtask section in the board table. Lives on
+  // BoardPage so it survives task-group re-renders.
+  const [expandedTaskIds, setExpandedTaskIds] = useState([]);
   const [hiddenColumns, setHiddenColumns] = useState(() => {
     return JSON.parse(localStorage.getItem(`board_hidden_cols_${boardId}`) || '[]');
   });
@@ -178,10 +181,83 @@ export default function BoardPage() {
   useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => { loadTasks(); }, [loadTasks]);
 
+  // Deep-link: open the task referenced by ?taskId=... once tasks finish loading.
+  // Used by MemberDrillDown and RecurringWorkPage to jump from a task tile
+  // straight into the TaskModal. The param is consumed (removed) on open so a
+  // refresh doesn't re-open the modal and so closing the modal doesn't leave
+  // a stale id in the URL.
+  useEffect(() => {
+    const targetId = searchParams.get('taskId');
+    if (!targetId || loading) return;
+    const target = tasks.find(t => t.id === targetId);
+    if (!target) return;
+    setSelectedTask(target);
+    const next = new URLSearchParams(searchParams);
+    next.delete('taskId');
+    setSearchParams(next, { replace: true });
+  }, [tasks, loading, searchParams, setSearchParams]);
+
   useEffect(() => {
     if (boardId) joinBoard(boardId);
     return () => { if (boardId) leaveBoard(boardId); };
   }, [boardId]);
+
+  // ── Inline-subtask helpers ───────────────────────────────────────────
+  const toggleSubtasksFor = useCallback((taskId) => {
+    setExpandedTaskIds((prev) => prev.includes(taskId) ? prev.filter(id => id !== taskId) : [...prev, taskId]);
+  }, []);
+  // BoardSubtaskSection reports updated totals up so the ListChecks badge
+  // on the row title reflects new/edited/deleted subtasks immediately,
+  // even while the row stays loaded in memory.
+  //
+  // Equality guard: if total + done are already what the row holds, we MUST
+  // skip setTasks. Otherwise every load() inside BoardSubtaskSection would
+  // produce a new task object even when nothing changed — and a new task
+  // object reference re-renders TaskGroup → re-renders BoardSubtaskSection
+  // with a fresh `onCountsChange` closure → if any consumer ever uses that
+  // closure as an effect dependency, it loops. Defensive at the source.
+  const handleSubtaskCountsChange = useCallback((taskId, counts) => {
+    setTasks(prev => {
+      let changed = false;
+      const next = prev.map(t => {
+        if (t.id !== taskId) return t;
+        if ((t.subtaskTotal || 0) === counts.total && (t.subtaskDone || 0) === counts.done) {
+          return t;
+        }
+        changed = true;
+        return { ...t, subtaskTotal: counts.total, subtaskDone: counts.done, _subtaskCounts: counts };
+      });
+      return changed ? next : prev;
+    });
+    setSelectedTask(prev => {
+      if (!prev || prev.id !== taskId) return prev;
+      if ((prev.subtaskTotal || 0) === counts.total && (prev.subtaskDone || 0) === counts.done) return prev;
+      return { ...prev, subtaskTotal: counts.total, subtaskDone: counts.done, _subtaskCounts: counts };
+    });
+  }, []);
+
+  // ── Subtask socket events ────────────────────────────────────────────
+  // BoardSubtaskSection (when mounted) maintains its own list via these
+  // same events, but we also bump the parent's subtaskTotal so the badge
+  // updates even when the row is collapsed.
+  useSocket('subtask:created', (data) => {
+    if (!data?.taskId) return;
+    setTasks(prev => prev.map(t => t.id === data.taskId
+      ? { ...t, subtaskTotal: (t.subtaskTotal || 0) + 1 }
+      : t));
+  });
+  useSocket('subtask:updated', (data) => {
+    if (!data?.taskId || !data?.subtask) return;
+    // Status flips can change the done-count; we don't have the full list
+    // here, so leave the task badge alone unless the section is mounted
+    // (which already updates via onCountsChange).
+  });
+  useSocket('subtask:deleted', (data) => {
+    if (!data?.taskId) return;
+    setTasks(prev => prev.map(t => t.id === data.taskId
+      ? { ...t, subtaskTotal: Math.max(0, (t.subtaskTotal || 0) - 1) }
+      : t));
+  });
 
   useSocket('task:created', (data) => { if (data?.task?.boardId === boardId) loadTasks(); });
   useSocket('task:updated', (data) => {
@@ -907,7 +983,14 @@ export default function BoardPage() {
         </div>
       ) : (
         <DragDropContext onDragEnd={handleDragEnd}>
-          <div className="flex-1 overflow-auto px-2 sm:px-6 pb-6 -webkit-overflow-scrolling-touch" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          {/* Visual gutter (matches monday.com left/right breathing room)
+              lives on this *outer* wrapper, NOT on the scroll container
+              below. Putting it on the scroll container creates a
+              padding-edge gap that `position: sticky; left: 0` can't cover
+              — any data-cell scrolled into that gap bleeds out. Putting it
+              here keeps the gutter as static, non-scrollable space. */}
+          <div className="flex-1 flex flex-col px-2 sm:px-6 pb-6 min-h-0">
+            <div className="flex-1 overflow-auto -webkit-overflow-scrolling-touch min-h-0" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             {/* Empty state for employees with no visible tasks */}
             {sortedTasks.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -938,7 +1021,6 @@ export default function BoardPage() {
                   onAddTask={handleAddTask}
                   onArchiveTask={handleArchiveTask}
                   onRequestExtension={setExtensionTask}
-                  onRequestHelp={setHelpTask}
                   onEditColumn={handleEditColumn}
                   onAddColumn={handleAddColumn}
                   onRemoveColumn={handleRemoveColumn}
@@ -959,9 +1041,13 @@ export default function BoardPage() {
                   onSetColumnRequired={handleSetColumnRequired}
                   onSetColumnDescription={handleSetColumnDescription}
                   onReorderColumns={handleReorderColumns}
+                  expandedTaskIds={expandedTaskIds}
+                  onToggleSubtasks={toggleSubtasksFor}
+                  onSubtaskCountsChange={handleSubtaskCountsChange}
                 />
               );
             })}
+            </div>
           </div>
         </DragDropContext>
       )}
@@ -1014,10 +1100,6 @@ export default function BoardPage() {
         <DueDateExtensionModal task={extensionTask} onClose={() => setExtensionTask(null)} onSubmit={loadTasks} />
       )}
 
-      {/* Help Request Modal */}
-      {helpTask && (
-        <HelpRequestModal task={helpTask} members={members} onClose={() => setHelpTask(null)} onSubmit={loadTasks} />
-      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const { authenticate, adminOnly, managerOrAdmin } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 const {
   createUser,
   getAllUsersAdmin,
@@ -19,6 +20,7 @@ router.use(authenticate);
 router.post(
   '/',
   managerOrAdmin,
+  requirePermission('users', 'create'),
   [
     body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Name must be 2-100 characters.'),
     body('email').isEmail().withMessage('Valid email is required.'),
@@ -36,21 +38,25 @@ router.post(
 );
 
 // GET /api/users/my-team — Manager/Admin gets their hierarchical team members
-router.get('/my-team', managerOrAdmin, getMyTeam);
+router.get('/my-team', managerOrAdmin, requirePermission('users', 'view'), getMyTeam);
 
 // GET /api/users — Admin/Manager lists all users
-router.get('/', managerOrAdmin, getAllUsersAdmin);
+router.get('/', managerOrAdmin, requirePermission('users', 'view'), getAllUsersAdmin);
 
 // PUT /api/users/:id — Admin/Manager updates user details
 router.put(
   '/:id',
   managerOrAdmin,
+  requirePermission('users', 'edit'),
   [
     body('name').optional().trim().isLength({ min: 2, max: 100 }),
     body('email').optional().isEmail(),
     body('role').optional().isIn(['admin', 'manager', 'assistant_manager', 'member']),
-    body('department').optional().trim().isLength({ max: 100 }),
-    body('designation').optional().trim().isLength({ max: 100 }),
+    body('department').optional({ nullable: true }).trim().isLength({ max: 100 }),
+    body('designation').optional({ nullable: true }).trim().isLength({ max: 100 }),
+    body('hierarchyLevel').optional({ nullable: true }).isString().isLength({ max: 50 }),
+    body('isActive').optional().isBoolean(),
+    body('isSuperAdmin').optional().isBoolean(),
   ],
   updateUser
 );
@@ -59,6 +65,7 @@ router.put(
 router.put(
   '/:id/reset-password',
   adminOnly,
+  requirePermission('users', 'manage'),
   [
     body('newPassword')
       .isStrongPassword({ minLength: 8, minLowercase: 1, minUppercase: 1, minNumbers: 1, minSymbols: 1 })
@@ -68,9 +75,9 @@ router.put(
 );
 
 // PUT /api/users/:id/toggle-status — Admin activates/deactivates user
-router.put('/:id/toggle-status', adminOnly, toggleUserStatus);
+router.put('/:id/toggle-status', adminOnly, requirePermission('users', 'manage'), toggleUserStatus);
 
 // DELETE /api/users/:id — Admin permanently deletes user
-router.delete('/:id', adminOnly, deleteUser);
+router.delete('/:id', adminOnly, requirePermission('users', 'delete'), deleteUser);
 
 module.exports = router;

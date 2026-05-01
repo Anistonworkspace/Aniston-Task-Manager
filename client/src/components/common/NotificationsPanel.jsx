@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { X, Bell, Check, CheckCheck, Clock, AlertTriangle } from 'lucide-react';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import api from '../../services/api';
+import { openTaskFromAnywhere } from '../../utils/taskNavigation';
 import Avatar from './Avatar';
 
 export default function NotificationsPanel({ onClose }) {
@@ -38,21 +39,19 @@ export default function NotificationsPanel({ onClose }) {
     } catch {}
   }
 
-  function handleNotificationClick(n) {
+  async function handleNotificationClick(n) {
     markAsRead(n.id);
 
-    // Navigate to the correct entity
+    // Navigate to the correct entity. For task notifications we use the
+    // shared openTaskFromAnywhere helper so the destination board opens the
+    // exact TaskModal via the ?taskId= deep link consumed by BoardPage —
+    // matching Dashboard Overdue, MemberDrillDown, and Home My Tasks.
     if (n.entityType === 'task' && n.entityId) {
-      // Try to find boardId from notification meta or fetch task
-      api.get(`/tasks/${n.entityId}`).then(res => {
-        const task = res.data?.task || res.data?.data?.task || res.data;
-        if (task?.boardId) {
-          navigate(`/boards/${task.boardId}`);
-        }
-      }).catch(() => {
-        // Fallback to my-work
-        navigate('/my-work');
+      const opened = await openTaskFromAnywhere(navigate, {
+        taskId: n.entityId,
+        boardId: n.boardId || n.meta?.boardId,
       });
+      if (!opened) navigate('/my-work');
     } else if (n.entityType === 'board' && n.entityId) {
       navigate(`/boards/${n.entityId}`);
     } else if (n.entityType === 'meeting' && n.entityId) {

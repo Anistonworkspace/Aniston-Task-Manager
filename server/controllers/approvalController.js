@@ -168,7 +168,7 @@ async function loadChainForResponse(taskId, transaction) {
       [sequelize.literal('COALESCE(stage, level)'), 'ASC'],
       ['level', 'ASC'],
     ],
-    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar', 'role'] }],
+    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar', 'role', 'isSuperAdmin'] }],
     transaction,
   });
   return rows.map((r) => ({
@@ -179,6 +179,7 @@ async function loadChainForResponse(taskId, transaction) {
     userName: r.user?.name || r.userName || '(deleted user)',
     userAvatar: r.user?.avatar || null,
     role: r.role,
+    isSuperAdmin: !!r.user?.isSuperAdmin,
     status: r.status,
     comment: r.comment,
     attachmentUrl: r.attachmentUrl,
@@ -216,6 +217,21 @@ exports.submitForApproval = async (req, res) => {
       return res.status(409).json({
         success: false,
         message: 'Task is already pending approval.',
+      });
+    }
+
+    // Super Admin bypass — Super Admins are the top of the org hierarchy and
+    // have no senior reviewer to route to. Per product spec they NEVER go
+    // through approval: completing a task is the final authority. Frontend
+    // hides the Submit button for them, but anyone calling this endpoint
+    // directly (script, curl, replay) gets a 403. The hint tells the caller
+    // what to do instead.
+    if (req.user.isSuperAdmin) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'Super Admin tasks do not require approval. Mark the task as Done directly.',
+        code: 'super_admin_no_approval',
       });
     }
 
@@ -779,6 +795,15 @@ async function notifyApprovalChange({ task, actorId, actorName, flows, changeTyp
 // before the user clicks Submit. Pure derivation, no DB writes.
 exports.getApprovalPreview = async (req, res) => {
   try {
+    // Super Admin sees no approval flow at all — short-circuit so the bottom
+    // sheet doesn't render an approver list and so the modal can render the
+    // "no approval needed" hint instead.
+    if (req.user.isSuperAdmin) {
+      return res.json({
+        success: true,
+        data: { autoApprove: true, nextApprover: null, nextStage: null, reason: 'super_admin' },
+      });
+    }
     const next = await previewNextApprover(req.user.id);
     if (!next) {
       // No senior reviewer in chain — submission would auto-approve.

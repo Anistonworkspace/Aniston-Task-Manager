@@ -1,19 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Plus, CheckCircle2, Clock, AlertTriangle, ListChecks, MessageSquare, ChevronRight } from 'lucide-react';
-import { formatDistanceToNow, parseISO } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
+import { X, CheckCircle2, Clock, AlertTriangle, ListChecks, MessageSquare } from 'lucide-react';
 import api from '../../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
 import Avatar from '../common/Avatar';
 import DetailModalShell from '../common/DetailModalShell';
 
 export default function MemberDrillDown({ userId, boardId, onClose }) {
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState('all');
-  const [addingTask, setAddingTask] = useState(false);
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskBoardId, setNewTaskBoardId] = useState(boardId || '');
-  const [boards, setBoards] = useState([]);
   const [commentTaskId, setCommentTaskId] = useState(null);
   const [commentText, setCommentText] = useState('');
   // Ref the shell populates with its animated `requestClose` so the X button
@@ -24,7 +21,6 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
 
   useEffect(() => {
     loadMemberData();
-    if (!boardId) loadBoards();
   }, [userId, boardId]);
 
   async function loadMemberData() {
@@ -37,34 +33,6 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
       console.error('Failed to load member data:', err);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function loadBoards() {
-    try {
-      const res = await api.get('/boards');
-      setBoards(res.data.boards || res.data || []);
-    } catch {}
-  }
-
-  async function handleAddTask(e) {
-    if (e.key === 'Escape') { setAddingTask(false); setNewTaskTitle(''); return; }
-    if (e.key !== 'Enter' || !newTaskTitle.trim()) return;
-    const targetBoard = newTaskBoardId || boardId;
-    if (!targetBoard) return;
-    try {
-      await api.post('/tasks', {
-        title: newTaskTitle.trim(),
-        boardId: targetBoard,
-        assignedTo: userId,
-        status: 'not_started',
-        priority: 'medium',
-      });
-      setNewTaskTitle('');
-      setAddingTask(false);
-      loadMemberData();
-    } catch (err) {
-      console.error('Failed to add task:', err);
     }
   }
 
@@ -118,24 +86,33 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
 
   const memberTitleId = `member-drilldown-title-${userId}`;
 
+  // Navigate to a task by jumping to its board with ?taskId=... — BoardPage
+  // consumes that param and opens the TaskModal (matches RecurringWorkPage).
+  const openTask = (task) => {
+    const targetBoardId = task.boardId || task.board?.id;
+    if (!targetBoardId) return;
+    handleClose();
+    navigate(`/boards/${targetBoardId}?taskId=${task.id}`);
+  };
+
   return (
     <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={memberTitleId} size="sheet" placement="bottom-sheet">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-border flex-shrink-0">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <Avatar name={member.name} size="lg" />
-              <div>
-                <h2 id={memberTitleId} className="text-lg font-bold text-text-primary">{member.name}</h2>
-                <p className="text-xs text-text-tertiary">{member.designation || member.role} {member.department ? `- ${member.department}` : ''}</p>
-                <p className="text-xs text-text-tertiary">{member.email}</p>
-              </div>
+        {/* Header — compact two-row band: profile, stat boxes, progress */}
+        <div className="px-4 pt-3 pb-2.5 border-b border-border flex-shrink-0">
+          {/* Row 1: profile */}
+          <div className="flex items-center gap-3">
+            <Avatar name={member.name} size="md" />
+            <div className="min-w-0 flex-1">
+              <h2 id={memberTitleId} className="text-base font-bold text-text-primary leading-tight truncate">{member.name}</h2>
+              <p className="text-[11px] text-text-tertiary leading-tight truncate">
+                {member.designation || member.role}{member.department ? ` · ${member.department}` : ''}{member.email ? ` · ${member.email}` : ''}
+              </p>
             </div>
-            <button onClick={handleClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={handleClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary flex-shrink-0"><X size={18} /></button>
           </div>
 
-          {/* Mini Stats */}
-          <div className="grid grid-cols-4 gap-2">
+          {/* Row 2: compact stat boxes — 4 cols on desktop, wraps to 2 on narrow widths */}
+          <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2">
             {[
               { label: 'Total', value: summary.total, color: '#0073ea', icon: ListChecks },
               { label: 'Done', value: summary.done, color: '#00c875', icon: CheckCircle2 },
@@ -144,26 +121,28 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
             ].map(s => {
               const Icon = s.icon;
               return (
-                <div key={s.label} className="text-center p-2 rounded-lg bg-surface/50">
-                  <Icon size={14} className="mx-auto mb-1" style={{ color: s.color }} />
-                  <p className="text-lg font-bold" style={{ color: s.color }}>{s.value}</p>
-                  <p className="text-[10px] text-text-tertiary uppercase tracking-wider">{s.label}</p>
+                <div key={s.label} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface/60 border border-border/50">
+                  <Icon size={16} style={{ color: s.color }} className="flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-base font-bold leading-none" style={{ color: s.color }}>{s.value}</p>
+                    <p className="text-[10px] text-text-tertiary uppercase tracking-wider mt-0.5">{s.label}</p>
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Progress bar */}
-          <div className="mt-3 flex items-center gap-2">
-            <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+          {/* Row 3: progress bar */}
+          <div className="mt-2 flex items-center gap-2">
+            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
               <div className="h-full rounded-full transition-all" style={{ width: `${completionRate}%`, backgroundColor: completionRate === 100 ? '#00c875' : '#0073ea' }} />
             </div>
-            <span className="text-xs font-semibold text-text-secondary">{completionRate}%</span>
+            <span className="text-[11px] font-semibold text-text-secondary">{completionRate}%</span>
           </div>
         </div>
 
         {/* Filter Chips */}
-        <div className="px-5 py-2 border-b border-border flex items-center gap-1.5 overflow-x-auto flex-shrink-0">
+        <div className="px-4 py-1.5 border-b border-border flex items-center gap-1.5 overflow-x-auto flex-shrink-0">
           {statusFilters.map(f => (
             <button key={f.id} onClick={() => setActiveFilter(f.id)}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
@@ -175,90 +154,93 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
           ))}
         </div>
 
-        {/* Add Task */}
-        <div className="px-5 py-2 border-b border-border flex-shrink-0">
-          {addingTask ? (
-            <div className="flex items-center gap-2">
-              {!boardId && (
-                <select value={newTaskBoardId} onChange={e => setNewTaskBoardId(e.target.value)}
-                  className="text-xs border border-border rounded-md px-2 py-1.5 bg-white w-[120px]">
-                  <option value="">Board...</option>
-                  {boards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </select>
-              )}
-              <input type="text" value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} onKeyDown={handleAddTask}
-                onBlur={() => { if (!newTaskTitle) setAddingTask(false); }}
-                placeholder="Task name (Enter to add, Esc to cancel)" className="flex-1 text-sm border border-border rounded-md px-3 py-1.5 focus:outline-none focus:border-primary" autoFocus />
-            </div>
-          ) : (
-            <button onClick={() => setAddingTask(true)} className="flex items-center gap-1.5 text-sm text-primary hover:text-primary-600 font-medium">
-              <Plus size={14} /> Add task for {member.name.split(' ')[0]}
-            </button>
-          )}
-        </div>
-
-        {/* Task List */}
-        <div className="flex-1 overflow-y-auto px-5 py-3">
+        {/* Task List — 2-column responsive grid */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
           {filteredTasks.length === 0 ? (
             <div className="text-center py-12">
               <ListChecks size={36} className="mx-auto text-text-tertiary mb-2" />
               <p className="text-sm text-text-secondary">No tasks found</p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
               {filteredTasks.map(task => {
                 const statusCfg = STATUS_CONFIG[task.status] || STATUS_CONFIG.not_started;
                 const priorityCfg = PRIORITY_CONFIG[task.priority];
                 const isOverdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10) && task.status !== 'done';
                 const subtasksDone = task.subtasks ? task.subtasks.filter(s => s.status === 'done').length : 0;
                 const subtasksTotal = task.subtasks ? task.subtasks.length : 0;
+                const canNavigate = !!(task.boardId || task.board?.id);
 
                 return (
-                  <div key={task.id} className={`p-3 rounded-lg border transition-colors ${isOverdue ? 'border-danger/30 bg-danger/5' : 'border-border hover:border-primary/20'}`}>
-                    <div className="flex items-start gap-2.5">
+                  <div key={task.id} className={`p-2.5 rounded-lg border transition-colors ${isOverdue ? 'border-danger/30 bg-danger/5' : 'border-border hover:border-primary/30'}`}>
+                    <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-text-primary mb-1">{task.title}</p>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {/* Status dropdown */}
+                        {/* Clickable title — opens TaskModal on its board */}
+                        <button
+                          type="button"
+                          onClick={() => canNavigate && openTask(task)}
+                          disabled={!canNavigate}
+                          title={canNavigate ? 'Open task' : task.title}
+                          className={`block w-full text-left text-sm font-medium text-text-primary mb-1.5 truncate ${
+                            canNavigate ? 'cursor-pointer hover:text-primary hover:underline' : 'cursor-default'
+                          }`}
+                        >
+                          {task.title}
+                        </button>
+
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Status — compact chip with hover dropdown */}
                           <div className="relative group/status">
-                            <span className="status-pill text-[10px] cursor-pointer" style={{ backgroundColor: statusCfg.bgColor }}>{statusCfg.label}</span>
+                            <span
+                              className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium text-white cursor-pointer"
+                              style={{ backgroundColor: statusCfg.bgColor }}
+                            >
+                              {statusCfg.label}
+                            </span>
                             <div className="hidden group-hover/status:block absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border p-1 z-50 min-w-[120px]">
                               {Object.entries(STATUS_CONFIG).map(([k, c]) => (
                                 <button key={k} onClick={() => handleStatusChange(task.id, k)}
-                                  className="status-pill w-full mb-0.5 last:mb-0 text-[10px]" style={{ backgroundColor: c.bgColor }}>{c.label}</button>
+                                  className="block w-full mb-0.5 last:mb-0 px-2 py-1 rounded text-[11px] font-medium text-white text-left hover:brightness-110"
+                                  style={{ backgroundColor: c.bgColor }}>{c.label}</button>
                               ))}
                             </div>
                           </div>
+
+                          {/* Priority — compact badge (no full-width bar) */}
                           {priorityCfg && (
-                            <span className="status-pill text-[10px]" style={{ backgroundColor: priorityCfg.bgColor }}>{priorityCfg.label}</span>
+                            <span
+                              className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium text-white"
+                              style={{ backgroundColor: priorityCfg.bgColor }}
+                            >
+                              {priorityCfg.label}
+                            </span>
                           )}
+
                           {task.board && (
-                            <span className="text-[10px] text-text-tertiary bg-surface px-1.5 py-0.5 rounded">{task.board.name}</span>
+                            <span className="text-[10px] text-text-tertiary bg-surface px-1.5 py-0.5 rounded truncate max-w-[100px]">{task.board.name}</span>
                           )}
                           {task.dueDate && (
                             <span className={`text-[10px] ${isOverdue ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>
-                              Due: {task.dueDate.slice(0, 10)}
+                              Due {task.dueDate.slice(0, 10)}
                             </span>
                           )}
                           {subtasksTotal > 0 && (
-                            <span className="text-[10px] text-text-tertiary">{subtasksDone}/{subtasksTotal} subtasks</span>
+                            <span className="text-[10px] text-text-tertiary">{subtasksDone}/{subtasksTotal} sub</span>
                           )}
                         </div>
                       </div>
 
-                      {/* Quick comment */}
                       <button onClick={() => setCommentTaskId(commentTaskId === task.id ? null : task.id)}
                         className="p-1 rounded hover:bg-surface text-text-tertiary hover:text-primary flex-shrink-0" title="Comment">
                         <MessageSquare size={14} />
                       </button>
                     </div>
 
-                    {/* Inline comment form */}
                     {commentTaskId === task.id && (
                       <div className="mt-2 flex gap-2">
                         <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
                           onKeyDown={e => e.key === 'Enter' && handleAddComment(task.id)}
-                          placeholder="Write a comment..." className="flex-1 text-xs border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:border-primary" autoFocus />
+                          placeholder="Write a comment..." className="flex-1 text-xs border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:border-primary min-w-0" autoFocus />
                         <button onClick={() => handleAddComment(task.id)}
                           className="px-3 py-1.5 bg-primary text-white text-xs rounded-md hover:bg-primary-600 font-medium">Send</button>
                       </div>

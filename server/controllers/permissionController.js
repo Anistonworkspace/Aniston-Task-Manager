@@ -2,12 +2,26 @@ const { PermissionGrant, User } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { getEffectivePermissions } = require('../middleware/permissions');
+const { emitToUser } = require('../services/socketService');
 const {
   computeEffectivePermissions,
   canGrantPermission,
   getPermissionMetadata,
   VALID_EFFECTS,
 } = require('../services/permissionEngine');
+
+// Push a 'permissions:updated' event to a user's personal socket room so
+// that a logged-in target re-fetches their effective permissions immediately
+// after an admin grants/denies/revokes — eliminating stale UI state without
+// requiring a page reload.
+function notifyPermissionChange(userId, payload = {}) {
+  if (!userId) return;
+  try {
+    emitToUser(userId, 'permissions:updated', { reason: 'admin-changed', ...payload });
+  } catch (err) {
+    console.error('[Permission] notifyPermissionChange error:', err.message);
+  }
+}
 const {
   RESOURCES,
   RESOURCE_ACTIONS,
@@ -158,6 +172,7 @@ exports.grantPermission = async (req, res) => {
         userId: req.user.id,
         meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, effect: grantEffect },
       });
+      notifyPermissionChange(userId, { resourceType, action: grantAction, effect: grantEffect });
       return res.json({ success: true, data: { permission: existing }, updated: true });
     }
 
@@ -184,6 +199,7 @@ exports.grantPermission = async (req, res) => {
       userId: req.user.id,
       meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, effect: grantEffect, scope: scope || 'global' },
     });
+    notifyPermissionChange(userId, { resourceType, action: grantAction, effect: grantEffect });
 
     res.status(201).json({ success: true, data: { permission: grant } });
   } catch (err) {
@@ -240,6 +256,9 @@ exports.bulkGrantPermissions = async (req, res) => {
       userId: req.user.id,
       meta: { count: grants.length },
     });
+    // Notify each affected user once.
+    const affectedUserIds = Array.from(new Set(grants.map(g => g.userId).filter(Boolean)));
+    affectedUserIds.forEach(uid => notifyPermissionChange(uid, { source: 'bulk' }));
 
     res.json({ success: true, data: { permissions: results, count: results.length } });
   } catch (err) {
@@ -393,6 +412,17 @@ exports.multiGrant = async (req, res) => {
       });
     }
 
+    // Notify the target user that their permissions changed so any open
+    // session re-fetches /auth/me/permissions and refreshes guards.
+    if (created.length > 0 || updated.length > 0) {
+      notifyPermissionChange(userId, {
+        source: 'multi',
+        effect: grantEffect,
+        resources: resourceList,
+        actions: actionList,
+      });
+    }
+
     res.status(created.length > 0 ? 201 : 200).json({
       success: true,
       data: {
@@ -437,6 +467,11 @@ exports.revokePermission = async (req, res) => {
       entityId: grant.id,
       userId: req.user.id,
       meta: { targetUserId: grant.userId, resourceType: grant.resourceType, action: grant.action },
+    });
+    notifyPermissionChange(grant.userId, {
+      source: 'revoke',
+      resourceType: grant.resourceType,
+      action: grant.action,
     });
 
     res.json({ success: true, message: 'Permission revoked.' });

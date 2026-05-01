@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { GripVertical, ListChecks, MessageSquare, HelpCircle, Archive, RefreshCw } from 'lucide-react';
+import { GripVertical, ListChecks, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { canArchiveTask } from '../../utils/permissions';
 import StatusCell from './StatusCell';
 import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
 import ApprovalStepIndicator from './ApprovalStepIndicator';
@@ -19,8 +20,12 @@ import TaskReceiptIcon from '../common/TaskReceiptIcon';
 const TaskRow = React.memo(function TaskRow({
   task, members = [], color, columns = [], boardId,
   taskColWidth = 300, boardStatuses,
-  onClick, onUpdate, onArchive, onRequestExtension, onRequestHelp,
+  onClick, onUpdate, onArchive, onRequestExtension,
   dragHandleProps, selected = false, onSelect,
+  // Inline-subtask controls — when provided, the row renders a chevron to
+  // the left of the title that toggles the parent group's expanded set.
+  // `expanded` reflects the current open/closed state for THIS task.
+  expanded = false, onToggleSubtasks,
 }) {
   const subtaskTotal = task.subtaskTotal || task._subtaskCounts?.total || 0;
   const subtaskDone = task.subtaskDone || task._subtaskCounts?.done || 0;
@@ -34,6 +39,11 @@ const TaskRow = React.memo(function TaskRow({
   // true for managers/asst-mgrs that have an admin DENY on tasks.assign_others).
   // Backend remains the source of truth — this just hides invalid options.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+
+  // Centralized archive check — respects role defaults, ownership for members,
+  // and explicit DENY overrides. Hides the row's archive icon entirely when
+  // the user can't archive this task, instead of showing a button that 403s.
+  const canArchive = canArchiveTask(user, task, granularPermissions);
 
   // Row background: selected wins over overdue wins over default. Overdue uses
   // a solid subtle red tint (not alpha) so text stays readable and the sticky
@@ -82,12 +92,17 @@ const TaskRow = React.memo(function TaskRow({
 
   // Intercept rule: when the actor owns the task, the task is NOT a personal
   // self-task, and it isn't already in approval, a "done" pick triggers the
-  // modal instead of a direct status update. Backend auto-approves if the
-  // actor has no senior reviewer (e.g. super admin).
+  // modal instead of a direct status update.
+  //
+  // Super Admin exemption: Super Admins are the top of the org hierarchy and
+  // have final authority on every task. They never go through approval —
+  // marking Done is the terminal action. This matches the backend guard in
+  // approvalController.submitForApproval.
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isOwnTask
     && !isSelfTask
+    && !isSuperAdmin
     && task.approvalStatus !== 'pending_approval'
     && task.approvalStatus !== 'approved';
 
@@ -153,11 +168,17 @@ const TaskRow = React.memo(function TaskRow({
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className={`flex items-stretch border-b border-[#e6e9ef] cursor-pointer transition-all duration-150 group/row ${rowBg}`}
+      className={`flex items-stretch border-b border-[#e6e9ef] cursor-pointer transition-all duration-150 group/row relative isolate ${rowBg}`}
       onClick={onClick}>
 
-      {/* Sticky left: color bar + checkbox + task name */}
-      <div className="flex items-stretch sticky left-0 z-[3] bg-inherit">
+      {/* Sticky left: color bar + checkbox + task name.
+          `relative isolate` on the row above creates a per-row stacking
+          context, and z-[20] here keeps the frozen column above any
+          absolutely-positioned decoration inside a scrolling cell (e.g.
+          StatusCell's z-10 "approved" tick at -top-1 -right-1). Without
+          this, that tick floated above the sticky title during horizontal
+          scroll and bled through on the left side of the task name. */}
+      <div className="flex items-stretch sticky left-0 z-[20] bg-inherit">
         {/* Color bar */}
         <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color, opacity: 0.6 }} />
 
@@ -175,6 +196,26 @@ const TaskRow = React.memo(function TaskRow({
 
         {/* Task Name — Monday.com style */}
         <div style={{ width: taskColWidth }} className="flex-shrink-0 px-3 py-2.5 text-[14px] text-[#323338] border-r border-[#e6e9ef] flex items-center gap-2">
+          {/* Subtask expand chevron — appears on hover when the row has no
+              subtasks; stays visible when subtasks exist (so the count badge
+              acts as the visual cue too). Keyboard accessible: Enter / Space
+              activates. Stops propagation so the row click doesn't open the
+              modal. */}
+          {onToggleSubtasks && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onToggleSubtasks(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggleSubtasks(); } }}
+              className={`flex-shrink-0 -ml-1 w-4 h-4 flex items-center justify-center rounded text-[#9aa1ad] hover:bg-[#eef0f4] hover:text-[#0073ea] transition-all ${
+                expanded || subtaskTotal > 0 ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'
+              }`}
+              aria-label={expanded ? 'Collapse subitems' : 'Expand subitems'}
+              aria-expanded={expanded}
+              title={expanded ? 'Hide subitems' : (subtaskTotal > 0 ? `Show ${subtaskTotal} subitem${subtaskTotal === 1 ? '' : 's'}` : 'Add subitem')}
+            >
+              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+          )}
           {/* WhatsApp-style receipt: renders only for the task assigner (the
               server only attaches _receipt for the creator/assigner). */}
           {task._receipt ? <TaskReceiptIcon receipt={task._receipt} /> : null}
@@ -210,13 +251,11 @@ const TaskRow = React.memo(function TaskRow({
         </div>
       ))}
 
-      {/* Hover actions */}
+      {/* Hover actions — slot is fixed-width to keep the row geometry stable
+          even when no actions are visible (avoids hover flicker / column
+          jitter for member users without permissions). */}
       <div className="w-[50px] flex-shrink-0 flex items-center justify-center gap-0.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
-        {onRequestHelp && (
-          <button onClick={e => { e.stopPropagation(); onRequestHelp(task); }}
-            className="p-1 rounded hover:bg-[#cce5ff] text-[#676879] transition-colors" title="Help"><HelpCircle size={12} /></button>
-        )}
-        {onArchive && (
+        {onArchive && canArchive && (
           <button onClick={e => { e.stopPropagation(); onArchive(task.id); }}
             className="p-1 rounded hover:bg-gray-100 text-[#c4c4c4] hover:text-[#676879] transition-colors" title="Archive"><Archive size={12} /></button>
         )}

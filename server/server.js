@@ -693,6 +693,44 @@ const start = async () => {
       console.warn('[Server] Recurring-task schema migration warning:', e.message?.slice(0, 200));
     }
 
+    // ── Auto-migration: Subtask inline-table columns ──
+    // Inline subtasks render in the board grid with the same column set as
+    // main tasks (priority, progress, due date, description). The Subtask
+    // model declares these but `sequelize.sync({ alter: false })` only
+    // creates missing tables — it never adds missing columns to an existing
+    // `subtasks` table. Without this block the inline subtask UI would
+    // crash on existing prod DBs with `column "priority" does not exist`.
+    // All statements are idempotent.
+    for (const stmt of [
+      `ALTER TABLE subtasks ADD COLUMN IF NOT EXISTS "priority" VARCHAR(20)`,
+      `ALTER TABLE subtasks ADD COLUMN IF NOT EXISTS "progress" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE subtasks ADD COLUMN IF NOT EXISTS "dueDate" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE subtasks ADD COLUMN IF NOT EXISTS "description" TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_subtasks_due_date ON subtasks ("dueDate")`,
+      // Range guard for progress; matches the model validator. Wrapped in DO
+      // so re-runs don't trip "constraint already exists".
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'subtasks_progress_range_check') THEN
+          ALTER TABLE subtasks ADD CONSTRAINT subtasks_progress_range_check
+            CHECK ("progress" >= 0 AND "progress" <= 100);
+        END IF;
+      END $$`,
+      // Priority must match the same canonical set used on tasks.
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'subtasks_priority_check') THEN
+          ALTER TABLE subtasks ADD CONSTRAINT subtasks_priority_check
+            CHECK ("priority" IS NULL OR "priority" IN ('low','medium','high','critical'));
+        END IF;
+      END $$`,
+    ]) {
+      try {
+        await sequelize.query(stmt);
+      } catch (e) {
+        console.warn('[Server] subtasks inline-columns migration warning:', e.message?.slice(0, 200));
+      }
+    }
+    console.log('[Server] subtasks inline-table columns ensured.');
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
@@ -783,6 +821,24 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] boards.archivedGroups migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: Add local_status_override column to users ──
+    // Tracks whether an admin manually edited a user's isActive flag from
+    // Admin Settings. The Microsoft sync skips users with this flag so that
+    // manual deactivations are not reactivated on the next sync cycle.
+    try {
+      const [userTables] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
+      );
+      if (userTables.length > 0) {
+        await sequelize.query(
+          `ALTER TABLE users ADD COLUMN IF NOT EXISTS local_status_override BOOLEAN NOT NULL DEFAULT FALSE`
+        );
+        console.log('[Server] users.local_status_override column ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] users.local_status_override migration warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: Add receipt columns to task_assignees ──

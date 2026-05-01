@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, CheckCircle2, Circle, Clock, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
+import useSocket from '../../hooks/useSocket';
 import Avatar from '../common/Avatar';
 
 const SUBTASK_STATUS = {
@@ -21,6 +22,37 @@ export default function SubtaskList({ taskId, members = [], onSubtaskCountChange
   useEffect(() => {
     if (taskId) loadSubtasks();
   }, [taskId]);
+
+  // ── Real-time sync with the board's BoardSubtaskSection ──
+  // Both views listen to the same socket events emitted by the controller
+  // (`subtask:created`, `subtask:updated`, `subtask:deleted`). That keeps
+  // the modal in lockstep with the inline board table without either side
+  // having to know about the other.
+  useSocket('subtask:created', (data) => {
+    if (!data?.subtask || data?.taskId !== taskId) return;
+    setSubtasks(prev => {
+      if (prev.some(s => s.id === data.subtask.id)) return prev;
+      const next = [...prev, data.subtask].sort((a, b) => (a.position || 0) - (b.position || 0));
+      onSubtaskCountChange?.({ total: next.length, done: next.filter(s => s.status === 'done').length });
+      return next;
+    });
+  });
+  useSocket('subtask:updated', (data) => {
+    if (!data?.subtask || data?.taskId !== taskId) return;
+    setSubtasks(prev => {
+      const next = prev.map(s => s.id === data.subtask.id ? { ...s, ...data.subtask } : s);
+      onSubtaskCountChange?.({ total: next.length, done: next.filter(s => s.status === 'done').length });
+      return next;
+    });
+  });
+  useSocket('subtask:deleted', (data) => {
+    if (!data?.subtaskId || data?.taskId !== taskId) return;
+    setSubtasks(prev => {
+      const next = prev.filter(s => s.id !== data.subtaskId);
+      onSubtaskCountChange?.({ total: next.length, done: next.filter(s => s.status === 'done').length });
+      return next;
+    });
+  });
 
   async function loadSubtasks() {
     try {

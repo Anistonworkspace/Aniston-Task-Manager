@@ -209,11 +209,138 @@ export function hasGranularPermission(resource, action, isSuperAdmin = false, gr
 }
 
 /**
+ * Returns true ONLY when the server has explicitly resolved this permission
+ * to false (i.e. an admin DENY override is in effect, OR the role itself
+ * doesn't grant it). This is the canonical check used by route guards and
+ * sidebar visibility for resources that are base-allowed for everyone (e.g.
+ * org_chart.view) — undefined falls back to "not denied" so that we don't
+ * incorrectly hide the UI before /auth/me/permissions has finished loading.
+ *
+ * Mirrors the server's permissionEngine: deny precedence is honoured because
+ * the server already collapsed deny+grant+role into a single boolean.
+ *
+ * @param {string} resource
+ * @param {string} action
+ * @param {boolean} isSuperAdmin
+ * @param {Object} granularPermissions
+ * @returns {boolean}
+ */
+export function isExplicitlyDenied(resource, action, isSuperAdmin = false, granularPermissions = {}) {
+  if (isSuperAdmin) return false;
+  return granularPermissions[`${resource}.${action}`] === false;
+}
+
+/**
  * Convenience: can this user assign tasks to OTHER users? Returns false if
  * either the role doesn't have it or an admin denied it.
  */
 export function canAssignOthers(isSuperAdmin = false, granularPermissions = {}) {
   return hasGranularPermission('tasks', 'assign_others', isSuperAdmin, granularPermissions);
+}
+
+// ── Task action helpers (canonical) ────────────────────────────────────
+//
+// These helpers are the single source of truth used by every task UI
+// surface (board row, board modal, dashboard, home widgets, bulk action
+// bar). They mirror the backend rules in `server/middleware/taskPermissions.js`
+// and `server/services/permissionEngine.js` so an explicit DENY override
+// on the user always wins over the role default.
+//
+// Usage:
+//   const { user, isSuperAdmin, granularPermissions } = useAuth();
+//   if (canArchiveTask(user, task, granularPermissions)) { ... }
+
+const MANAGEMENT_ROLES = ['admin', 'manager', 'assistant_manager'];
+
+/**
+ * Is this user a member-rank assignee/creator of the given task?
+ * Used as the "own task" predicate for member-restricted actions.
+ */
+export function isOwnTask(user, task) {
+  if (!user || !task) return false;
+  const uid = user.id;
+  if (!uid) return false;
+  if (task.assignedTo === uid) return true;
+  if (task.createdBy === uid) return true;
+  if (Array.isArray(task.taskAssignees)) {
+    return task.taskAssignees.some(ta => (ta.userId || ta.user?.id) === uid);
+  }
+  return false;
+}
+
+/**
+ * Can this user edit *any* of this task's fields?
+ *
+ * Rules:
+ *   - Super admin: always yes.
+ *   - Explicit DENY on tasks.edit: never (overrides role default).
+ *   - Approved tasks: locked except for management roles.
+ *   - Management roles (admin/manager/assistant_manager): yes.
+ *   - Member: yes if the task is theirs (owns it via assignedTo/createdBy/
+ *     taskAssignees) and tasks.edit is granted.
+ *
+ * If `task` is omitted, returns whether the user can edit tasks in general
+ * (e.g. for showing "edit" affordances at the board level).
+ */
+export function canEditTask(user, task, granularPermissions = {}) {
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  // Explicit deny always wins, including for management roles.
+  if (granularPermissions['tasks.edit'] === false) return false;
+  // Approved tasks are locked for non-management actors.
+  const isApproved = !!task && task.approvalStatus === 'approved';
+  if (isApproved && !MANAGEMENT_ROLES.includes(user.role)) return false;
+  if (MANAGEMENT_ROLES.includes(user.role)) return true;
+  // Member needs tasks.edit AND ownership (when task context is provided).
+  if (granularPermissions['tasks.edit'] !== true) return false;
+  if (!task) return true;
+  return isOwnTask(user, task);
+}
+
+/**
+ * Can this user archive (soft-delete) this task?
+ *
+ * Archive is a "delete-class" action: it requires `tasks.delete` and an
+ * explicit DENY blocks even role defaults. A member with tasks.delete=true
+ * may archive their *own* tasks; without ownership the answer is false.
+ */
+export function canArchiveTask(user, task, granularPermissions = {}) {
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  if (granularPermissions['tasks.delete'] === false) return false;
+  if (MANAGEMENT_ROLES.includes(user.role)) {
+    return granularPermissions['tasks.delete'] !== false;
+  }
+  // Members must be explicitly granted tasks.delete to archive, and only
+  // their own tasks.
+  if (granularPermissions['tasks.delete'] !== true) return false;
+  if (!task) return true;
+  return isOwnTask(user, task);
+}
+
+/**
+ * Can this user permanently delete this task? (Admin/manager-only by default.)
+ * Members never permanently delete — archive is the strongest action they have.
+ */
+export function canDeleteTask(user, task, granularPermissions = {}) {
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  if (granularPermissions['tasks.delete'] === false) return false;
+  if (MANAGEMENT_ROLES.includes(user.role)) {
+    return granularPermissions['tasks.delete'] !== false;
+  }
+  return false;
+}
+
+/**
+ * Aggregate: should we render a row-action affordance / three-dot menu /
+ * trash icon at all for this task? True iff at least one of edit/archive/
+ * delete is permitted. Use this to avoid leaving an empty action slot.
+ */
+export function canManageTaskActions(user, task, granularPermissions = {}) {
+  return canEditTask(user, task, granularPermissions)
+    || canArchiveTask(user, task, granularPermissions)
+    || canDeleteTask(user, task, granularPermissions);
 }
 
 /**

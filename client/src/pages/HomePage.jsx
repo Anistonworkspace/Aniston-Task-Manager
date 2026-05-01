@@ -13,6 +13,7 @@ import useSocket from '../hooks/useSocket';
 import { staggerContainer, staggerItem, fadeInUp, hoverLift, pressable } from '../utils/animations';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
+import { openTaskFromAnywhere } from '../utils/taskNavigation';
 
 // Animated number that counts up from 0
 function AnimatedNumber({ value }) {
@@ -200,10 +201,10 @@ export default function HomePage() {
                     initial={{ opacity: 0, x: -8 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.05 * idx, duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                    onClick={() => task.boardId && navigate(`/boards/${task.boardId}`)}
+                    onClick={() => openTaskFromAnywhere(navigate, { taskId: task.id, boardId: task.boardId })}
                     className={`flex items-center gap-3 px-4 py-3 border-b border-border/50 last:border-b-0 hover:bg-surface-50 cursor-pointer transition-colors ${task.status === 'done' ? 'opacity-50' : ''}`}>
                     <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: statusConf.color || '#94a3b8' }} />
-                    <span className={`text-sm flex-1 truncate ${task.status === 'done' ? 'line-through text-text-tertiary' : 'text-text-primary'}`}>
+                    <span className={`text-sm flex-1 truncate hover:underline hover:text-primary ${task.status === 'done' ? 'line-through text-text-tertiary' : 'text-text-primary'}`}>
                       {task.title}
                     </span>
                     <span className="text-[10px] font-medium px-2 py-0.5 rounded-md hidden sm:inline"
@@ -279,16 +280,37 @@ export default function HomePage() {
               </div>
             ) : (
               <motion.div className="space-y-1" variants={staggerContainer} initial="initial" animate="animate">
-                {notifications.map(n => (
-                  <motion.div key={n.id} variants={staggerItem}
-                    className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg transition-colors cursor-pointer ${!n.isRead ? 'bg-primary-50/50 hover:bg-primary-50' : 'hover:bg-surface-100'}`}>
-                    <div className={`w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0 ${!n.isRead ? 'bg-primary-500' : 'bg-transparent'}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-text-primary line-clamp-2">{n.message}</p>
-                      <p className="text-[10px] text-text-muted mt-0.5">{n.createdAt ? new Date(n.createdAt).toLocaleDateString() : ''}</p>
-                    </div>
-                  </motion.div>
-                ))}
+                {notifications.map(n => {
+                  const handleClick = async () => {
+                    // Mark read locally — same UX as the panel — without
+                    // blocking navigation on the API round-trip.
+                    if (!n.isRead) {
+                      api.put(`/notifications/${n.id}/read`).catch(() => {});
+                      setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, isRead: true } : x));
+                    }
+                    if (n.entityType === 'task' && n.entityId) {
+                      const opened = await openTaskFromAnywhere(navigate, { taskId: n.entityId });
+                      if (!opened) navigate('/my-work');
+                    } else if (n.entityType === 'board' && n.entityId) {
+                      navigate(`/boards/${n.entityId}`);
+                    } else if (n.entityType === 'meeting' && n.entityId) {
+                      navigate('/meetings');
+                    } else if (n.entityType === 'help_request') {
+                      navigate('/cross-team');
+                    }
+                  };
+                  return (
+                    <motion.div key={n.id} variants={staggerItem}
+                      onClick={handleClick}
+                      className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg transition-colors cursor-pointer ${!n.isRead ? 'bg-primary-50/50 hover:bg-primary-50' : 'hover:bg-surface-100'}`}>
+                      <div className={`w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0 ${!n.isRead ? 'bg-primary-500' : 'bg-transparent'}`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-text-primary line-clamp-2">{n.message}</p>
+                        <p className="text-[10px] text-text-muted mt-0.5">{n.createdAt ? new Date(n.createdAt).toLocaleDateString() : ''}</p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
               </motion.div>
             )}
           </div>

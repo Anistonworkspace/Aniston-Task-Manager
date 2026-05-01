@@ -14,7 +14,7 @@ import useSocket from '../../hooks/useSocket';
 import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
 import ProfileModal from '../common/ProfileModal';
-import { canUser } from '../../utils/permissions';
+import { canUser, isExplicitlyDenied } from '../../utils/permissions';
 
 // Portal-based dropdown that renders outside sidebar overflow
 function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, canCreateWorkspace, canManage }) {
@@ -340,7 +340,9 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
             {(isSuperAdmin || isAdmin) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
             {(isSuperAdmin || isAdmin) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
-            <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
+            {!isExplicitlyDenied('org_chart', 'view', isSuperAdmin, granularPermissions) && (
+              <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
+            )}
             <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />

@@ -11,7 +11,9 @@ import {
 } from 'lucide-react';
 import Avatar from '../components/common/Avatar';
 import CreateUserModal from '../components/user/CreateUserModal';
+import EditUserModal from '../components/user/EditUserModal';
 import ResetPasswordModal from '../components/user/ResetPasswordModal';
+import { useToast } from '../components/common/Toast';
 import { RESOURCES, ACTIONS, RESOURCE_ACTIONS, getResourcesByCategory, getActionsForResource } from '../utils/permissions';
 
 const TABS = [
@@ -76,15 +78,23 @@ export default function AdminSettingsPage() {
 
 function UsersTab() {
   const { user: currentUser, isSuperAdmin } = useAuth();
+  const toast = useToast();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [showCreate, setShowCreate] = useState(false);
   const [showReset, setShowReset] = useState(null);
+  const [editUser, setEditUser] = useState(null);
   const [actionMenu, setActionMenu] = useState(null);
   const [roleChanging, setRoleChanging] = useState(null);
   const [visibleCount, setVisibleCount] = useState(25);
+
+  // Admins (and super admins) get the privileged edit form (role / status /
+  // email). Managers see only the safe-profile-fields slice — server side
+  // also enforces this via hierarchyService.canManageUser. Keep the two in
+  // sync so the form does not lie about what will save.
+  const canEditPrivileged = isSuperAdmin || currentUser?.role === 'admin';
 
   useEffect(() => { fetchUsers(); }, []);
 
@@ -104,8 +114,11 @@ function UsersTab() {
         await api.put(`/users/${userId}`, { role: newRole, isSuperAdmin: false });
       }
       fetchUsers();
-    } catch (err) { console.error(err); alert(err.response?.data?.message || 'Failed to change role'); }
-    finally { setRoleChanging(null); setActionMenu(null); }
+      toast.success('Role updated.');
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to change role');
+    } finally { setRoleChanging(null); setActionMenu(null); }
   }
 
   async function handleDelete(userId, name) {
@@ -113,14 +126,25 @@ function UsersTab() {
     try {
       await api.delete(`/users/${userId}`);
       fetchUsers();
-    } catch (err) { console.error(err); alert(err.response?.data?.message || 'Failed to delete user'); }
+      toast.success(`Deleted ${name}.`);
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to delete user');
+    }
   }
 
   async function handleToggleStatus(userId) {
     try {
-      await api.put(`/users/${userId}/toggle-status`);
+      const res = await api.put(`/users/${userId}/toggle-status`);
+      const updated = res.data?.data?.user;
       fetchUsers();
-    } catch (err) { console.error(err); }
+      if (updated) {
+        toast.success(updated.isActive ? 'User activated.' : 'User deactivated.');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.message || 'Failed to toggle status');
+    }
     setActionMenu(null);
   }
 
@@ -240,6 +264,10 @@ function UsersTab() {
                       </button>
                       {actionMenu === u.id && (
                         <div className="absolute right-0 top-full mt-1 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg shadow-xl z-20 w-44 py-1">
+                          <button onClick={() => { setEditUser(u); setActionMenu(null); }}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-700">
+                            <Edit2 size={12} /> Edit User
+                          </button>
                           <button onClick={() => { setShowReset(u); setActionMenu(null); }}
                             className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-700">
                             <KeyRound size={12} /> Reset Password
@@ -282,6 +310,16 @@ function UsersTab() {
       {/* Modals */}
       {showCreate && <CreateUserModal isOpen={showCreate} onClose={() => setShowCreate(false)} onCreated={fetchUsers} />}
       {showReset && <ResetPasswordModal isOpen={!!showReset} onClose={() => setShowReset(null)} user={showReset} />}
+      {editUser && (
+        <EditUserModal
+          isOpen={!!editUser}
+          onClose={() => setEditUser(null)}
+          user={editUser}
+          isAdmin={canEditPrivileged}
+          onUpdated={fetchUsers}
+          onToast={({ type, message }) => (toast[type] || toast.info)(message)}
+        />
+      )}
     </div>
   );
 }

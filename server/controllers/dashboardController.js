@@ -27,7 +27,7 @@ const getDashboardStats = async (req, res) => {
     const tasks = await Task.findAll({
       where: taskWhere,
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar', 'department', 'designation', 'managerId'] },
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
       ],
       raw: false,
@@ -38,7 +38,13 @@ const getDashboardStats = async (req, res) => {
     const priorityCounts = {};
     const memberStats = {};
     let overdue = 0;
-    const today = new Date().toISOString().slice(0, 10);
+    const todayDate = new Date();
+    const today = todayDate.toISOString().slice(0, 10);
+    // End of "this week" — 7 days from today, inclusive of today (matches the
+    // Tasks table "This Week" smart view: dueDate >= today AND < today+7).
+    const weekEndDate = new Date(todayDate);
+    weekEndDate.setDate(weekEndDate.getDate() + 7);
+    const weekEnd = weekEndDate.toISOString().slice(0, 10);
 
     tasks.forEach(t => {
       const plain = t.toJSON();
@@ -53,13 +59,33 @@ const getDashboardStats = async (req, res) => {
       const memberName = plain.assignee?.name || 'Unassigned';
       const memberAvatar = plain.assignee?.avatar || null;
       if (!memberStats[memberId]) {
-        memberStats[memberId] = { id: memberId, name: memberName, avatar: memberAvatar, total: 0, done: 0, working: 0, stuck: 0, overdue: 0 };
+        memberStats[memberId] = {
+          id: memberId,
+          name: memberName,
+          avatar: memberAvatar,
+          department: plain.assignee?.department || null,
+          designation: plain.assignee?.designation || null,
+          managerId: plain.assignee?.managerId || null,
+          total: 0, done: 0, working: 0, stuck: 0, overdue: 0,
+          // Filter metadata for the Team Overview filter toolbar — populated
+          // from the same task scan so we never need a second DB pass.
+          dueToday: 0,
+          dueThisWeek: 0,
+          statusCounts: {},
+          priorityCounts: {},
+          children: [],
+        };
       }
-      memberStats[memberId].total++;
-      if (plain.status === 'done') memberStats[memberId].done++;
-      if (plain.status === 'working_on_it') memberStats[memberId].working++;
-      if (plain.status === 'stuck') memberStats[memberId].stuck++;
-      if (plain.dueDate && plain.dueDate < today && plain.status !== 'done') memberStats[memberId].overdue++;
+      const m = memberStats[memberId];
+      m.total++;
+      if (plain.status === 'done') m.done++;
+      if (plain.status === 'working_on_it') m.working++;
+      if (plain.status === 'stuck') m.stuck++;
+      if (plain.dueDate && plain.dueDate < today && plain.status !== 'done') m.overdue++;
+      if (plain.dueDate === today) m.dueToday++;
+      if (plain.dueDate && plain.dueDate >= today && plain.dueDate < weekEnd) m.dueThisWeek++;
+      if (plain.status) m.statusCounts[plain.status] = (m.statusCounts[plain.status] || 0) + 1;
+      if (plain.priority) m.priorityCounts[plain.priority] = (m.priorityCounts[plain.priority] || 0) + 1;
     });
 
     // Recent activity (last 20)
@@ -150,6 +176,33 @@ const getDashboardStats = async (req, res) => {
       .filter(m => m.id !== 'unassigned')
       .map(m => ({ name: m.name, active: m.total - m.done, done: m.done, stuck: m.stuck, overdue: m.overdue }))
       .sort((a, b) => b.active - a.active);
+
+    // Org-hierarchy children for hover popover in Team Overview.
+    // Single bulk query keyed on managerId — no N+1 even with many members.
+    // Children are scoped to active users whose managerId is in the visible
+    // member set, so RBAC filtering at the task layer naturally narrows what
+    // a member-role viewer can see (their memberStats only contains
+    // themselves, so only their own direct reports surface).
+    const realMemberIds = Object.keys(memberStats).filter(id => id !== 'unassigned');
+    if (realMemberIds.length > 0) {
+      const childrenRows = await User.findAll({
+        where: { managerId: { [Op.in]: realMemberIds }, isActive: true },
+        attributes: ['id', 'name', 'avatar', 'role', 'designation', 'department', 'managerId'],
+      });
+      childrenRows.forEach(u => {
+        const c = u.toJSON();
+        const parent = memberStats[c.managerId];
+        if (!parent) return;
+        parent.children.push({
+          id: c.id,
+          name: c.name,
+          avatar: c.avatar,
+          role: c.role,
+          designation: c.designation,
+          department: c.department,
+        });
+      });
+    }
 
     res.json({
       success: true,
