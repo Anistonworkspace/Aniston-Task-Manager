@@ -305,7 +305,13 @@ const getBoard = async (req, res) => {
 
     res.json({ success: true, data: responseData });
   } catch (error) {
-    console.error('[Board] GetBoard error:', error);
+    console.error('[Board] GetBoard error:', {
+      message: error.message,
+      name: error.name,
+      sql: error.sql || error.parent?.sql || undefined,
+      original: error.original?.message || error.parent?.message || undefined,
+      stack: error.stack?.split('\n').slice(0, 5).join('\n'),
+    });
     res.status(500).json({ success: false, message: 'Server error fetching board.' });
   }
 };

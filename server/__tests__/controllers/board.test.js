@@ -236,6 +236,38 @@ describe('GET /api/boards/:id', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data).toHaveProperty('board');
   });
+
+  // Regression guard for the production failure we hit when migration 010 +
+  // recurring-task columns were missing in prod: every Task.findAll inside
+  // Board.findByPk's eager-load throws SequelizeDatabaseError, and the
+  // controller's catch must return a clean JSON 500 (not crash, not leak
+  // HTML), and the log must include `original.message` so prod logs name
+  // the missing column.
+  it('returns a clean JSON 500 when the DB layer throws (e.g. missing column)', async () => {
+    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'manager' }));
+    const dbErr = Object.assign(new Error('database error'), {
+      name: 'SequelizeDatabaseError',
+      original: { message: 'column tasks."syncStatus" does not exist' },
+      sql: 'SELECT * FROM "boards" ...',
+    });
+    Board.findByPk.mockRejectedValue(dbErr);
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const token = generateToken(USER_ID, 'manager');
+    const res = await request(app)
+      .get(`/api/boards/${BOARD_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ success: false, message: 'Server error fetching board.' });
+    expect(errSpy).toHaveBeenCalledWith(
+      '[Board] GetBoard error:',
+      expect.objectContaining({
+        original: 'column tasks."syncStatus" does not exist',
+      })
+    );
+    errSpy.mockRestore();
+  });
 });
 
 // ─── POST /api/boards ─────────────────────────────────────────────────────────

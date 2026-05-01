@@ -544,6 +544,155 @@ const start = async () => {
       console.warn('[Server] transcript_segments migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: Task calendar-sync columns (migration 010) ──
+    // Mirrors server/migrations/010_add_task_calendar_sync_fields.sql.
+    // Originally applied via server/migrations/run_010.js, but deploy.yml
+    // never invokes that script — so prod DBs deployed before commit
+    // 0a90125 are missing these columns, and `Task.findAll` (which selects
+    // all model-declared columns by default) crashes with
+    // `column tasks."syncStatus" does not exist`. That single failure takes
+    // down GET /api/boards/:id (eager-loads tasks) and GET /api/tasks at
+    // the same time — i.e. the production board page exactly. Idempotent:
+    // each ADD COLUMN guarded with its own try so a single failure does
+    // not abort the rest of the schema fixes.
+    for (const stmt of [
+      `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "teamsCalendarUserId" VARCHAR(255)`,
+      `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "syncStatus" VARCHAR(20) NOT NULL DEFAULT 'not_synced'`,
+      `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "lastSyncedAt" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "syncError" TEXT`,
+      `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "syncAttempts" INTEGER NOT NULL DEFAULT 0`,
+      `CREATE INDEX IF NOT EXISTS idx_tasks_sync_status_retry ON tasks ("syncStatus") WHERE "syncStatus" IN ('failed', 'pending')`,
+    ]) {
+      try {
+        await sequelize.query(stmt);
+      } catch (e) {
+        console.warn('[Server] tasks calendar-sync migration warning:', e.message?.slice(0, 200));
+      }
+    }
+    console.log('[Server] tasks calendar-sync columns ensured.');
+
+    // ── Auto-migration: Daily Work / Recurring Task workflow schema ──
+    // Mirrors server/scripts/create-recurring-task-templates.js +
+    // server/scripts/add-recurring-fields-to-tasks.js so the schema is
+    // self-installing on every boot. Without this, existing prod DBs that
+    // pre-date this feature stay stuck on the old schema (sequelize.sync
+    // with alter:false creates missing tables but NEVER adds missing
+    // columns to existing tables) — and every Task.findAll on the new
+    // columns crashes with `column tasks.recurringTemplateId does not exist`,
+    // taking down /api/tasks, /api/dashboard/stats,
+    // /api/task-extras/workflow-items, /api/task-extras/my-feedback, and
+    // /api/recurring-tasks. All statements are idempotent (IF NOT EXISTS).
+    // Runs BEFORE sequelize.sync so the FK target table is in place when
+    // sync evaluates Task model FKs.
+    try {
+      // pgcrypto provides gen_random_uuid() used by table DDL below.
+      await sequelize.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+
+      // 1. recurring_task_templates table
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS recurring_task_templates (
+        id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title                   VARCHAR(300) NOT NULL,
+        description             TEXT,
+        "boardId"               UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        "groupId"               VARCHAR(100) NOT NULL DEFAULT 'new',
+        "assigneeId"            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "createdBy"             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        priority                VARCHAR(20) NOT NULL DEFAULT 'medium',
+        frequency               VARCHAR(20) NOT NULL DEFAULT 'daily',
+        weekdays                JSONB NOT NULL DEFAULT '[]'::jsonb,
+        "dayOfMonth"            INTEGER,
+        "startDate"             DATE NOT NULL,
+        "endDate"               DATE,
+        "dueTime"               TIME NOT NULL DEFAULT '18:00:00',
+        timezone                VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        "escalateIfMissed"      BOOLEAN NOT NULL DEFAULT FALSE,
+        "escalationTargets"     JSONB NOT NULL DEFAULT '["assignee","manager"]'::jsonb,
+        "isActive"              BOOLEAN NOT NULL DEFAULT TRUE,
+        "lastGeneratedDate"     DATE,
+        "nextRunAt"             TIMESTAMP WITH TIME ZONE,
+        "archivedAt"            TIMESTAMP WITH TIME ZONE,
+        "createdAt"             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt"             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      // Defensive constraints (idempotent via NOT EXISTS via DO block — old DBs
+      // may already have the table from a prior partial install).
+      await sequelize.query(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recurring_task_templates_frequency_check') THEN
+          ALTER TABLE recurring_task_templates ADD CONSTRAINT recurring_task_templates_frequency_check
+            CHECK (frequency IN ('daily','weekdays','weekly','monthly','custom'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recurring_task_templates_priority_check') THEN
+          ALTER TABLE recurring_task_templates ADD CONSTRAINT recurring_task_templates_priority_check
+            CHECK (priority IN ('low','medium','high','critical'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recurring_task_templates_end_after_start_check') THEN
+          ALTER TABLE recurring_task_templates ADD CONSTRAINT recurring_task_templates_end_after_start_check
+            CHECK ("endDate" IS NULL OR "endDate" >= "startDate");
+        END IF;
+      END $$`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_next_run_idx
+        ON recurring_task_templates ("nextRunAt") WHERE "isActive" = TRUE AND "archivedAt" IS NULL`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_assignee_idx
+        ON recurring_task_templates ("assigneeId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_board_idx
+        ON recurring_task_templates ("boardId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_active_idx
+        ON recurring_task_templates ("isActive", "archivedAt")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_created_by_idx
+        ON recurring_task_templates ("createdBy")`);
+      console.log('[Server] recurring_task_templates table ensured.');
+
+      // 2. New columns on tasks for recurring-instance bookkeeping. ON DELETE
+      //    SET NULL keeps generated task history intact even if the template
+      //    is hard-deleted (we soft-archive by default).
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "recurringTemplateId" UUID
+        REFERENCES recurring_task_templates(id) ON DELETE SET NULL`);
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "occurrenceDate" DATE`);
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "isRecurringInstance" BOOLEAN NOT NULL DEFAULT FALSE`);
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "completedAt" TIMESTAMP WITH TIME ZONE`);
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "missedEscalationSent" BOOLEAN NOT NULL DEFAULT FALSE`);
+      await sequelize.query(`ALTER TABLE tasks
+        ADD COLUMN IF NOT EXISTS "missedEscalationSentAt" TIMESTAMP WITH TIME ZONE`);
+
+      // Read-side index for missed-escalation job.
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS tasks_recurring_instance_idx
+        ON tasks ("recurringTemplateId", "occurrenceDate")
+        WHERE "isRecurringInstance" = TRUE`);
+      // Duplicate-protection guarantee — partial unique index, only kicks in
+      // for recurring instances. Non-recurring tasks unaffected.
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS tasks_recurring_template_occurrence_unique
+        ON tasks ("recurringTemplateId", "occurrenceDate")
+        WHERE "recurringTemplateId" IS NOT NULL AND "occurrenceDate" IS NOT NULL`);
+
+      // Idempotent backfill — give legacy done-tasks a completedAt so
+      // reporting queries that COALESCE(completedAt, updatedAt) work day one.
+      await sequelize.query(`UPDATE tasks
+        SET "completedAt" = "updatedAt"
+        WHERE status = 'done' AND "completedAt" IS NULL`);
+      console.log('[Server] tasks recurring/completedAt columns ensured.');
+
+      // 3. notifications.type ENUM extensions used by the recurring jobs.
+      //    Skip silently if the type doesn't exist yet (very fresh install).
+      const [notifTypeRows] = await sequelize.query(
+        `SELECT 1 FROM pg_type WHERE typname = 'enum_notifications_type'`
+      );
+      if (notifTypeRows.length > 0) {
+        for (const v of ['recurring_generated', 'recurring_missed']) {
+          try {
+            await sequelize.query(`ALTER TYPE "enum_notifications_type" ADD VALUE IF NOT EXISTS '${v}'`);
+          } catch (_) { /* already exists */ }
+        }
+        console.log('[Server] notifications.type ENUM extended for recurring events.');
+      }
+    } catch (e) {
+      console.warn('[Server] Recurring-task schema migration warning:', e.message?.slice(0, 200));
+    }
+
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
