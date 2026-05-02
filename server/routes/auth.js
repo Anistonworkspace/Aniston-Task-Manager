@@ -131,6 +131,10 @@ router.put(
       .optional()
       .isStrongPassword({ minLength: 8, minLowercase: 1, minUppercase: 1, minNumbers: 1, minSymbols: 1 })
       .withMessage('New password must be at least 8 characters and contain uppercase, lowercase, number, and special character'),
+    body('fontSizePreference')
+      .optional({ nullable: true })
+      .isIn(['compact', 'default', 'comfortable', 'large'])
+      .withMessage('fontSizePreference must be one of: compact, default, comfortable, large'),
   ],
   updateProfile
 );

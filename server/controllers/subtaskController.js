@@ -1,7 +1,7 @@
 const { validationResult } = require('express-validator');
 const { Subtask, Task, User, TaskAssignee, TaskOwner } = require('../models');
 const { logActivity } = require('../services/activityService');
-const { emitToBoard } = require('../services/socketService');
+const realtime = require('../services/realtimeService');
 const { canAssignTo } = require('../services/hierarchyService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { Op } = require('sequelize');
@@ -37,6 +37,16 @@ async function userCanAccessParentTask(user, task) {
     const to = await TaskOwner.findOne({ where: { taskId: task.id, userId: user.id } });
     if (to) return true;
   } catch { /* table may not exist on older DBs */ }
+  // Dependency-owner read path — a user assigned to a DependencyRequest on
+  // this parent gets read access (subtask list, file list, parent context).
+  // Mutation gates (canMemberMutateSubtask) still enforce write rules.
+  try {
+    const { DependencyRequest } = require('../models');
+    const depCount = await DependencyRequest.count({
+      where: { parentTaskId: task.id, assignedToUserId: user.id },
+    });
+    if (depCount > 0) return true;
+  } catch { /* dependency_requests table may not exist on very old DBs */ }
   return false;
 }
 
@@ -181,7 +191,10 @@ const createSubtask = async (req, res) => {
       userId: req.user.id,
     });
 
-    if (task.boardId) emitToBoard(task.boardId, 'subtask:created', { subtask: fullSubtask, taskId });
+    // Fan out to board + parent task's affected users (assignees,
+    // supervisors, watchers, owners) so subtask changes also reach users
+    // who don't have the board open.
+    realtime.emitSubtaskChanged('created', taskId, { subtask: fullSubtask, taskId }, { actorId: req.user.id });
     res.status(201).json({ success: true, data: { subtask: fullSubtask } });
   } catch (error) {
     console.error('Create subtask error:', error);
@@ -294,7 +307,12 @@ const updateSubtask = async (req, res) => {
 
     const fullSubtask = await Subtask.findByPk(subtask.id, { include: SUBTASK_INCLUDES() });
 
-    if (task.boardId) emitToBoard(task.boardId, 'subtask:updated', { subtask: fullSubtask, taskId: subtask.taskId });
+    realtime.emitSubtaskChanged(
+      'updated',
+      subtask.taskId,
+      { subtask: fullSubtask, taskId: subtask.taskId },
+      { actorId: req.user.id }
+    );
     res.json({ success: true, data: { subtask: fullSubtask } });
   } catch (error) {
     console.error('Update subtask error:', error);
@@ -342,7 +360,7 @@ const deleteSubtask = async (req, res) => {
       userId: req.user.id,
     });
 
-    if (boardId) emitToBoard(boardId, 'subtask:deleted', { subtaskId, taskId });
+    realtime.emitSubtaskChanged('deleted', taskId, { subtaskId, taskId }, { actorId: req.user.id });
     res.json({ success: true, message: 'Subtask deleted.' });
   } catch (error) {
     console.error('Delete subtask error:', error);

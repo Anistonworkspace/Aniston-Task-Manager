@@ -9,7 +9,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import MeetingModal from '../components/meeting/MeetingModal';
-import useSocket from '../hooks/useSocket';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { useToast } from '../components/common/Toast';
 
 const TYPE_CONFIG = {
@@ -36,8 +36,11 @@ export default function MeetingsPage() {
 
   useEffect(() => { loadMeetings(); }, []);
 
-  // Live updates
-  useSocket('notification:new', () => loadMeetings());
+  // Live updates — Phase 4 wired meeting:* events through realtimeService,
+  // so meetings.my now invalidates on every meeting CRUD / RSVP change
+  // without piggybacking on the bell flow. The notifications.list fallback
+  // we added in Phase 3 is dropped.
+  useRealtimeQuery({ queryKey: 'meetings.my', refetch: loadMeetings });
 
   async function loadMeetings() {
     try {

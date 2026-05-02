@@ -171,6 +171,10 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
                 const subtasksTotal = task.subtasks ? task.subtasks.length : 0;
                 const canNavigate = !!(task.boardId || task.board?.id);
 
+                // Assignment metadata — popup is filtered by assignedTo=userId
+                // so the assignee is `member` for every row. `task.creator`
+                // is supplied by the dashboardController include block.
+                const creatorName = task.creator?.name || 'Unknown';
                 return (
                   <div key={task.id} className={`p-2.5 rounded-lg border transition-colors ${isOverdue ? 'border-danger/30 bg-danger/5' : 'border-border hover:border-primary/30'}`}>
                     <div className="flex items-start gap-2">
@@ -181,12 +185,22 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
                           onClick={() => canNavigate && openTask(task)}
                           disabled={!canNavigate}
                           title={canNavigate ? 'Open task' : task.title}
-                          className={`block w-full text-left text-sm font-medium text-text-primary mb-1.5 truncate ${
+                          className={`block w-full text-left text-sm font-medium text-text-primary mb-1 truncate ${
                             canNavigate ? 'cursor-pointer hover:text-primary hover:underline' : 'cursor-default'
                           }`}
                         >
                           {task.title}
                         </button>
+
+                        {/* "Assigned by" only — the popup is already scoped to
+                            `member`, so showing "To <member>" on every card is
+                            redundant noise. Assignee chips are still rendered
+                            in TaskModal and any non-user-scoped view. */}
+                        <div className="flex items-center gap-1 flex-wrap text-[10px] text-text-tertiary mb-1.5">
+                          <span>By</span>
+                          <Avatar name={creatorName} size="xs" />
+                          <span className="text-text-secondary font-medium truncate max-w-[160px]">{creatorName}</span>
+                        </div>
 
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {/* Status — compact chip with hover dropdown */}

@@ -3,8 +3,10 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './context/AuthContext';
+import { RealtimeProvider } from './realtime';
 import { ToastProvider } from './components/common/Toast';
 import { ThemeProvider } from './context/ThemeContext';
+import { FontSizeProvider } from './context/FontSizeContext';
 import { UndoProvider } from './context/UndoContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import UpdatePrompt from './components/common/UpdatePrompt';
@@ -46,13 +48,17 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ThemeProvider>
         <AuthProvider>
-          <UndoProvider>
-            <ToastProvider>
-              <ErrorBoundary>
-                <App />
-              </ErrorBoundary>
-            </ToastProvider>
-          </UndoProvider>
+          <FontSizeProvider>
+            <RealtimeProvider>
+              <UndoProvider>
+                <ToastProvider>
+                  <ErrorBoundary>
+                    <App />
+                  </ErrorBoundary>
+                </ToastProvider>
+              </UndoProvider>
+            </RealtimeProvider>
+          </FontSizeProvider>
         </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>

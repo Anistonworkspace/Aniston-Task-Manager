@@ -1,9 +1,10 @@
 const { Comment, Task, User, Board, Notification } = require('../models');
 const { validationResult } = require('express-validator');
-const { emitToBoard, emitToUser } = require('../services/socketService');
+const { emitToBoard, emitToUser, emitToUsers } = require('../services/socketService');
 const teamsWebhook = require('../services/teamsWebhook');
 const teamsNotif = require('../services/teamsNotificationService');
 const { sanitizeInput } = require('../utils/sanitize');
+const taskVisibility = require('../services/taskVisibilityService');
 
 /**
  * POST /api/comments
@@ -90,11 +91,11 @@ const addComment = async (req, res) => {
       emitToUser(task.createdBy, 'notification:new', { notification });
     }
 
-    // Socket.io
-    emitToBoard(task.boardId, 'comment:created', {
-      comment: fullComment,
-      taskId,
-    });
+    // CP-3 RBAC: emit comment events only to authorized recipients of the
+    // parent task. The previous board-room broadcast leaked the existence
+    // (and content) of comments on tasks the receiver couldn't see.
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    emitToUsers('comment:created', { comment: fullComment, taskId }, recipients);
 
     // Teams webhook (channel-level)
     const preview = content.length > 120 ? content.substring(0, 120) + '...' : content;
@@ -179,7 +180,9 @@ const deleteComment = async (req, res) => {
 
     await comment.destroy();
 
-    emitToBoard(boardId, 'comment:deleted', { commentId, taskId });
+    // CP-3 RBAC: same recipient rule as create.
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(taskId);
+    emitToUsers('comment:deleted', { commentId, taskId }, recipients);
 
     res.json({ success: true, message: 'Comment deleted successfully.' });
   } catch (error) {

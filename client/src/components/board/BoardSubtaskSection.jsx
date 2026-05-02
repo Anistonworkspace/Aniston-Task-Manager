@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Trash2, GripVertical, ListChecks } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
-import useSocket from '../../hooks/useSocket';
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import StatusCell from './StatusCell';
 import PriorityCell from './PriorityCell';
 import PersonCell from './PersonCell';
@@ -140,18 +140,18 @@ export default function BoardSubtaskSection({
   // ── Real-time sync: subtask events for this parent task ──
   // Updaters MUST be pure — no side effects (no parent setState). Count
   // reporting happens in the [subtasks] useEffect above.
-  useSocket('subtask:created', (data) => {
+  useRealtimeEvent('subtask:created', (data) => {
     if (!data?.subtask || data?.taskId !== parentTask?.id) return;
     setSubtasks((prev) => {
       if (prev.some((s) => s.id === data.subtask.id)) return prev;
       return [...prev, data.subtask].sort((a, b) => (a.position || 0) - (b.position || 0));
     });
   });
-  useSocket('subtask:updated', (data) => {
+  useRealtimeEvent('subtask:updated', (data) => {
     if (!data?.subtask || data?.taskId !== parentTask?.id) return;
     setSubtasks((prev) => prev.map((s) => (s.id === data.subtask.id ? { ...s, ...data.subtask } : s)));
   });
-  useSocket('subtask:deleted', (data) => {
+  useRealtimeEvent('subtask:deleted', (data) => {
     if (!data?.subtaskId || data?.taskId !== parentTask?.id) return;
     setSubtasks((prev) => prev.filter((s) => s.id !== data.subtaskId));
   });

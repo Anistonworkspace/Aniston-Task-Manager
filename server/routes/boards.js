@@ -37,6 +37,9 @@ router.post(
     body('color')
       .optional()
       .matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).withMessage('Color must be a valid hex code'),
+    body('workspaceId')
+      .optional({ nullable: true, checkFalsy: true })
+      .isUUID().withMessage('workspaceId must be a valid UUID'),
   ],
   createBoard
 );

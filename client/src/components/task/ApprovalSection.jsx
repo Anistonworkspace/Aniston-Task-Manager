@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Shield, Check, X, Clock, MessageSquare, Send, RotateCcw, AlertCircle } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
-import useSocket from '../../hooks/useSocket';
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
 import { useToast } from '../common/Toast';
 import {
@@ -79,11 +79,11 @@ export default function ApprovalSection({ task, onUpdate }) {
 
   // Live updates from the backend (emitted by approvalController on every
   // submit/approve/reject/changes_requested). Filtered to this task only.
-  useSocket('task:approval-updated', (data) => {
+  useRealtimeEvent('task:approval-updated', (data) => {
     if (data?.taskId !== task?.id) return;
     if (Array.isArray(data.flows)) setFlows(data.flows);
   });
-  useSocket('task:updated', (data) => {
+  useRealtimeEvent('task:updated', (data) => {
     if (data?.task?.id !== task?.id) return;
     if (data.task.approvalStatus !== undefined) setApprovalStatus(data.task.approvalStatus);
   });
@@ -132,33 +132,23 @@ export default function ApprovalSection({ task, onUpdate }) {
   );
   const isOriginalSubmitter = !!user?.id && submitterId === user?.id;
 
-  // Self-task detection — same rule as the backend isSelfAssignedTask guard.
-  // For self-tasks, render a "Personal task" hint INSTEAD of the empty state
-  // and suppress the Resubmit button (no chain needed, ever).
-  const taskAllAssigneeIds = (() => {
-    const ids = new Set();
-    if (task?.assignedTo) ids.add(task.assignedTo);
-    for (const ta of (task?.taskAssignees || [])) {
-      const id = ta.userId || ta.user?.id;
-      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
-    }
-    return ids;
-  })();
-  const isSelfTask = !!user?.id
-    && task?.createdBy === user?.id
-    && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
-
   // Super Admin exemption — Super Admins are top of the hierarchy and have
   // no senior reviewer to route to. The backend rejects submitForApproval for
   // them (super_admin_no_approval) and the Done intercept skips the modal,
   // so we hide the Submit / Resubmit buttons here too. They retain full
   // visibility into existing chains (read-only) — only the initiate action
   // is suppressed.
+  //
+  // Self-assigned tasks are no longer exempt from approval — the prior
+  // carve-out (`isSelfTask` empty state + `&& !isSelfTask` on the resubmit
+  // gate) was the bypass we removed. The standard "submit for approval"
+  // initiation path now applies to every non-super-admin owner regardless of
+  // who else is on the assignee list.
   const canResubmit =
     !isSuperAdmin
     && (
       ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
-      || (!approvalStatus && isOwner && !isSelfTask)
+      || (!approvalStatus && isOwner)
     );
 
   function openActionPanel(action) {
@@ -220,11 +210,11 @@ export default function ApprovalSection({ task, onUpdate }) {
         )}
       </div>
 
-      {/* Empty state — no flow yet. The hint shown depends on who's looking
-          at the task and whether the task itself is a personal one:
+      {/* Empty state — no flow yet. Two paths:
             - Super Admin: top-of-hierarchy, no approval ever needed
-            - Self-task (creator IS the only assignee): no approval needed
-            - Otherwise: the standard "mark Done to start approval" hint */}
+            - Everyone else (including self-assigned tasks): standard
+              "mark Done to start approval" hint. The previous "Personal task
+              — no approval needed" carve-out was the bypass we removed. */}
       {flows.length === 0 && isSuperAdmin && (
         <div className="flex items-start gap-2 text-[11px] text-zinc-600 dark:text-zinc-300 mb-3 p-2.5 rounded-md bg-purple-50 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30">
           <Shield size={12} className="text-purple-600 dark:text-purple-300 mt-0.5 flex-shrink-0" />
@@ -234,16 +224,7 @@ export default function ApprovalSection({ task, onUpdate }) {
           </div>
         </div>
       )}
-      {flows.length === 0 && !isSuperAdmin && isSelfTask && (
-        <div className="flex items-start gap-2 text-[11px] text-zinc-600 dark:text-zinc-300 mb-3 p-2.5 rounded-md bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-700/60">
-          <Check size={12} className="text-emerald-500 mt-0.5 flex-shrink-0" />
-          <div>
-            <div className="font-medium text-zinc-700 dark:text-zinc-200">Personal task — no approval needed</div>
-            <div className="text-zinc-500 dark:text-zinc-400 mt-0.5">Mark Done from the status column to complete it directly.</div>
-          </div>
-        </div>
-      )}
-      {flows.length === 0 && !isSuperAdmin && !isSelfTask && (
+      {flows.length === 0 && !isSuperAdmin && (
         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-3">
           Mark this task <span className="font-medium text-zinc-700 dark:text-zinc-200">Done</span> from the status column to start an approval chain, or use the button below.
         </div>

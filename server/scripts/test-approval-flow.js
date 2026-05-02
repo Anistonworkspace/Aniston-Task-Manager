@@ -47,9 +47,10 @@ function assert(cond, msg) {
     columns: [],
     groups: [{ id: 'new', title: 'New', color: '#888' }],
   });
-  // Creator MUST differ from assignee, otherwise the self-task guard
-  // (Section: "Self-task" — creator==only-assignee==actor) correctly skips
-  // approval and these tests would no-op. Shikha creates, monika gets it.
+  // Historic note: this used to require creator != assignee because the
+  // self-task guard short-circuited submission. That guard has been removed
+  // (self-tasks now require approval too). The split is preserved here so the
+  // chain shape mirrors a real "shikha assigns to monika" scenario.
   const task = await Task.create({
     title: 'Approval flow test task',
     boardId: board.id,
@@ -264,10 +265,13 @@ function assert(cond, msg) {
     );
     assert(res._status === 403, `non-current reject -> 403 (got ${res._status})`);
 
-    console.log('\nTEST 16: SELF-TASK — submitForApproval short-circuits, no chain rows created');
-    // A task whose creator is also the (only) assignee, where the same user
-    // submits, must NOT create any approval rows. The endpoint should return
-    // success with approvalSkipped=true.
+    console.log('\nTEST 16: SELF-TASK — approval is now REQUIRED (formerly short-circuited)');
+    // Contract change: self-assigned tasks (creator == sole assignee) used to
+    // bypass approval entirely. That carved out a privilege bypass — a member
+    // could self-assign and mark Done without review. The new rule is that
+    // every non-super-admin submission walks the manager chain. A submission
+    // by a member on their own self-task must therefore CREATE chain rows
+    // and leave approvalStatus='pending_approval', not skip.
     const selfTaskBoard = await Board.create({
       name: '__SELF_TASK_TEST__',
       color: '#000000',
@@ -276,7 +280,7 @@ function assert(cond, msg) {
       groups: [{ id: 'new', title: 'New', color: '#888' }],
     });
     const selfTask = await Task.create({
-      title: 'self task — should skip approval',
+      title: 'self task — should require approval',
       boardId: selfTaskBoard.id,
       groupId: 'new',
       status: 'working_on_it',
@@ -291,11 +295,18 @@ function assert(cond, msg) {
       res
     );
     assert(res._status === 200, `self-task submit returns 200 (got ${res._status})`);
-    assert(res._body?.approvalSkipped === true, 'response includes approvalSkipped=true');
+    assert(res._body?.approvalSkipped !== true, 'response no longer carries approvalSkipped=true');
     const selfRows = await TaskApprovalFlow.findAll({ where: { taskId: selfTask.id }, raw: true });
-    assert(selfRows.length === 0, `no chain rows created for self-task (got ${selfRows.length})`);
+    assert(selfRows.length > 0, `chain rows created for self-task submission (got ${selfRows.length})`);
     const selfTaskAfter = await Task.findByPk(selfTask.id);
-    assert(selfTaskAfter.approvalStatus === null, `approvalStatus stays null for self-task (got ${selfTaskAfter.approvalStatus})`);
+    // Either pending_approval (chain has approvers above Monika in the org) OR
+    // approved (autoApprove fired because no senior reviewer exists). Both are
+    // valid post-submit states; what we are asserting is that the OLD null
+    // bypass no longer happens.
+    assert(
+      selfTaskAfter.approvalStatus === 'pending_approval' || selfTaskAfter.approvalStatus === 'approved',
+      `approvalStatus is pending_approval or approved (got ${selfTaskAfter.approvalStatus})`
+    );
 
     console.log('\nTEST 17: NOT a self-task — different creator → approval still triggers');
     // Monika created her own task above, but Shikha-as-actor on Monika's task

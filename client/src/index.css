@@ -13,6 +13,31 @@
   --duration-normal: 250ms;
   --duration-slow: 400ms;
 
+  /* ── Typography scale ─────────────────────────────────────────────
+     The whole app's text + spacing is rem-based via Tailwind. By driving
+     `html { font-size }` from a single CSS variable we can rescale the
+     entire UI proportionally without touching individual components.
+
+     --app-font-base is the root size in pixels. Default = 15px (≈0.9375x
+     of the browser's standard 16px) — this is what gives the app its new
+     slightly compact, Monday.com-style baseline. The data-font-size
+     attribute on <html> overrides this per user preference.
+
+     --app-font-scale is exposed for components that want a unitless
+     multiplier (e.g. inline styles or fixed-px sizes that opt in).
+
+     --font-xs … --font-xl mirror the Tailwind text-* sizes in rem so
+     custom CSS can stay in lockstep with the utility classes. */
+  --app-font-base: 15px;
+  --app-font-scale: 0.9375;
+  --font-xxs: 0.625rem;   /* 10px */
+  --font-xs:  0.75rem;    /* 12px */
+  --font-sm:  0.8125rem;  /* 13px */
+  --font-base: 0.875rem;  /* 14px */
+  --font-md:  0.9375rem;  /* 15px */
+  --font-lg:  1.0625rem;  /* 17px */
+  --font-xl:  1.25rem;    /* 20px */
+
   /* --- Theme Tokens: Light Mode --- */
   --sidebar-bg: #f6f7fb;
   --sidebar-hover: #dcdfec;
@@ -76,6 +101,19 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 html, body, #root { height: 100%; width: 100%; }
+
+/* ── Root typography scale ─────────────────────────────────────────
+   Every Tailwind text-* and spacing utility is rem-based, so changing
+   this single value rescales the whole app. Browser default is 16px;
+   we ship 15px so the UI feels slightly more compact by default.
+
+   The data-font-size attribute is set by FontSizeContext from the
+   user's saved profile preference. */
+html { font-size: var(--app-font-base); }
+html[data-font-size="compact"]      { --app-font-base: 14px;   --app-font-scale: 0.875;  }
+html[data-font-size="default"]      { --app-font-base: 15px;   --app-font-scale: 0.9375; }
+html[data-font-size="comfortable"]  { --app-font-base: 16px;   --app-font-scale: 1;      }
+html[data-font-size="large"]        { --app-font-base: 17px;   --app-font-scale: 1.0625; }
 body {
   font-family: 'Figtree', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--text-primary);

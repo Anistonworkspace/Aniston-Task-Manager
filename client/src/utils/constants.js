@@ -44,6 +44,31 @@ export const BOARD_COLORS = [
   '#f97316', '#eab308', '#06b6d4', '#ec4899', '#14b8a6', '#6366f1',
 ];
 
+// Color palette used to colour group chips inside the create-board modal.
+// We cycle through this rather than asking the user to pick per-group.
+export const GROUP_COLORS = [
+  '#579bfc', '#fdab3d', '#00c875', '#a25ddc', '#0073ea', '#e2445c',
+  '#ff7575', '#bb3354', '#9aadbd', '#5559df', '#3db085', '#ffcb00',
+];
+
+// Predefined board-group templates surfaced in the Create Board modal.
+// "default" mirrors the legacy backend default and is preselected so the
+// existing flow (do-nothing → New Task / In Progress / Done) is preserved.
+// Adding a template entry here is enough to make it available; no other
+// edits are required.
+export const BOARD_GROUP_TEMPLATES = [
+  { id: 'default', label: 'Default Task Flow', groups: ['New Task', 'In Progress', 'Done'] },
+  { id: 'software', label: 'Software / Development', groups: ['Backlog', 'Planning', 'In Development', 'Code Review', 'Testing', 'Ready for Release', 'Done'] },
+  { id: 'qa', label: 'Bug / QA', groups: ['Reported', 'Reproducing', 'Fixing', 'QA Testing', 'Verified', 'Closed'] },
+  { id: 'ops', label: 'Management / Operations', groups: ['Requested', 'Reviewing', 'Assigned', 'In Progress', 'Waiting for Approval', 'Completed'] },
+  { id: 'marketing', label: 'Marketing', groups: ['Ideas', 'Planning', 'Content Creation', 'Design', 'Review', 'Scheduled', 'Published'] },
+  { id: 'sales', label: 'Sales / CRM', groups: ['Lead', 'Contacted', 'Qualified', 'Proposal Sent', 'Negotiation', 'Won', 'Lost'] },
+  { id: 'support', label: 'Support / Helpdesk', groups: ['New Ticket', 'Assigned', 'In Progress', 'Waiting on Customer', 'Resolved', 'Closed'] },
+  { id: 'hr', label: 'HR / Recruitment', groups: ['Request Raised', 'Screening', 'Interview', 'Selected', 'Offer', 'Joined', 'Rejected'] },
+  { id: 'design', label: 'Design / Creative', groups: ['Brief', 'Concept', 'Design Draft', 'Internal Review', 'Client Review', 'Approved', 'Delivered'] },
+  { id: 'custom', label: 'Custom (start blank)', groups: [] },
+];
+
 export const COLUMN_TYPES = {
   STATUS: 'status',
   PERSON: 'person',

@@ -1,6 +1,7 @@
 const { Task, Board, User } = require('../models');
 const { Op } = require('sequelize');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
+const taskVisibility = require('../services/taskVisibilityService');
 
 /**
  * GET /api/search?q=...&limit=20
@@ -20,15 +21,22 @@ const globalSearch = async (req, res) => {
     // Search tasks
     const taskWhere = {
       isArchived: false,
-      [Op.or]: [
-        { title: { [Op.iLike]: `%${searchTerm}%` } },
-        { description: { [Op.iLike]: `%${searchTerm}%` } },
+      [Op.and]: [
+        {
+          [Op.or]: [
+            { title: { [Op.iLike]: `%${searchTerm}%` } },
+            { description: { [Op.iLike]: `%${searchTerm}%` } },
+          ],
+        },
       ],
     };
 
-    // Members can only see their own tasks
-    if (req.user.role === 'member') {
-      taskWhere.assignedTo = req.user.id;
+    // CP-3 RBAC: scope every viewer (admin/super_admin unrestricted; everyone
+    // else → self + descendants). The earlier `member-only` filter leaked
+    // every task to managers and assistant managers.
+    const visibilityFragment = await taskVisibility.buildTaskVisibilityWhere(req.user);
+    if (visibilityFragment && visibilityFragment[Op.and]) {
+      for (const f of visibilityFragment[Op.and]) taskWhere[Op.and].push(f);
     }
 
     const tasks = await Task.findAll({

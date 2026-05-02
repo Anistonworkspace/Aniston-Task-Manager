@@ -141,6 +141,20 @@ const User = sequelize.define(
       defaultValue: null,
       field: 'password_reset_expires',
     },
+    fontSizePreference: {
+      // 'compact' | 'default' | 'comfortable' | 'large' — drives the global
+      // typography scale on the client. NULL means "use the app default".
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
+      field: 'font_size_preference',
+      validate: {
+        isIn: {
+          args: [['compact', 'default', 'comfortable', 'large']],
+          msg: 'fontSizePreference must be one of: compact, default, comfortable, large',
+        },
+      },
+    },
   },
   {
     tableName: 'users',

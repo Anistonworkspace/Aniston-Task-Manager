@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { GripVertical, ListChecks, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
+import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { canArchiveTask } from '../../utils/permissions';
 import StatusCell from './StatusCell';
@@ -15,6 +15,7 @@ import TextCell from './TextCell';
 import NumberCell from './NumberCell';
 import CheckboxCell from './CheckboxCell';
 import LinkCell from './LinkCell';
+import SubtaskCountBadge from './SubtaskCountBadge';
 import TaskReceiptIcon from '../common/TaskReceiptIcon';
 
 const TaskRow = React.memo(function TaskRow({
@@ -73,40 +74,33 @@ const TaskRow = React.memo(function TaskRow({
   // 'done' to collect a comment + optional attachment before submitting.
   const [showApprovalModal, setShowApprovalModal] = useState(false);
 
-  // Self-task detection: a self-assigned task (creator is the only assignee
-  // AND the actor) is a personal task — no approval required, mark Done
-  // directly. Mirrors the backend isSelfAssignedTask guard so client-side
-  // never even shows the modal for self tasks.
-  const allAssigneeIds = (() => {
-    const ids = new Set();
-    if (task.assignedTo) ids.add(task.assignedTo);
-    for (const ta of (task.taskAssignees || [])) {
-      const id = ta.userId || ta.user?.id;
-      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
-    }
-    return ids;
-  })();
-  const isSelfTask = !!user?.id
-    && task.createdBy === user.id
-    && (allAssigneeIds.size === 0 || Array.from(allAssigneeIds).every((id) => id === task.createdBy));
-
-  // Intercept rule: when the actor owns the task, the task is NOT a personal
-  // self-task, and it isn't already in approval, a "done" pick triggers the
-  // modal instead of a direct status update.
+  // Intercept rule: when the actor owns the task and it isn't already
+  // approved, a "Done" pick triggers the approval modal instead of a direct
+  // status update. Self-assigned tasks are NOT exempt — the prior carve-out
+  // for `isSelfTask` was the bypass that let members close their own work
+  // without review. The chain service routes a self-task through the normal
+  // hierarchy walk and auto-approves only when no senior reviewer exists.
   //
-  // Super Admin exemption: Super Admins are the top of the org hierarchy and
-  // have final authority on every task. They never go through approval —
-  // marking Done is the terminal action. This matches the backend guard in
-  // approvalController.submitForApproval.
+  // Super Admin exemption: Super Admins are the top of the org hierarchy
+  // and have final authority on every task — they never go through approval.
+  // Mirrors the backend gate in approvalController.submitForApproval and
+  // approvalGateForCompletion in taskController.
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isOwnTask
-    && !isSelfTask
     && !isSuperAdmin
     && task.approvalStatus !== 'pending_approval'
     && task.approvalStatus !== 'approved';
 
   const handleStatusChange = (val) => {
+    // Soft block: a non-super-admin owner clicking Done while a chain is
+    // already pending should not re-trigger submission or fall through to a
+    // direct status save (the backend would 403 anyway). The pill stays at
+    // its prior value because BoardPage.handleTaskUpdate only commits on
+    // success, so no revert is needed here.
+    if (val === 'done' && !isSuperAdmin && task.approvalStatus === 'pending_approval') {
+      return;
+    }
     if (shouldInterceptDone(val)) {
       setShowApprovalModal(true);
       return;
@@ -152,7 +146,16 @@ const TaskRow = React.memo(function TaskRow({
       }
       case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
       case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
-      case 'progress': return <ProgressCell value={task.progress || 0} status={task.status} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
+      case 'progress': {
+        // Approval-required gate (UX mirror of the backend approvalGateForCompletion).
+        // For non-super-admin owners on a not-yet-approved task, the slider
+        // must not be draggable to 100% — the backend would reject it and the
+        // user would see a confusing 403 toast. Approved tasks (chain
+        // completed) and super admins keep the full 0-100 range.
+        const progressApprovalRequired =
+          isOwnTask && !isSuperAdmin && task.approvalStatus !== 'approved';
+        return <ProgressCell value={task.progress || 0} status={task.status} approvalRequired={progressApprovalRequired} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
+      }
       case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;
       case 'text': return <TextCell value={customVal || ''} onChange={customOnChange} />;
       case 'number': return <NumberCell value={customVal} onChange={customOnChange} />;
@@ -219,7 +222,13 @@ const TaskRow = React.memo(function TaskRow({
           {/* WhatsApp-style receipt: renders only for the task assigner (the
               server only attaches _receipt for the creator/assigner). */}
           {task._receipt ? <TaskReceiptIcon receipt={task._receipt} /> : null}
-          <span className="truncate flex-1">{task.title}</span>
+          <span className="truncate flex-1 min-w-0">{task.title}</span>
+          {/* monday.com-style subtask count pill — sits immediately after the
+              title text, before the trailing icon group. flex-shrink-0 keeps
+              it visible even when the title is long enough to truncate. The
+              count comes from `task.subtaskTotal` (server) which the inline
+              subtask section keeps in sync via BoardPage's count syncer. */}
+          <SubtaskCountBadge count={subtaskTotal} doneCount={subtaskDone} className="ml-1" />
           <div className="flex items-center gap-1 flex-shrink-0 text-[#c4c4c4]">
             {/* Daily Work / Recurring instance marker — small icon with tooltip; full badge text
                 is in the modal header so we don't crowd the row. */}
@@ -229,11 +238,6 @@ const TaskRow = React.memo(function TaskRow({
                 title={`Daily Work — ${task.occurrenceDate || task.dueDate}`}
               >
                 <RefreshCw size={10} />
-              </span>
-            )}
-            {subtaskTotal > 0 && (
-              <span className="flex items-center gap-0.5 text-[11px]" title={`${subtaskDone}/${subtaskTotal}`}>
-                <ListChecks size={12} className={subtaskDone === subtaskTotal ? 'text-[#00c875]' : ''} />
               </span>
             )}
             {isOverdue && daysOverdue > 3 && (

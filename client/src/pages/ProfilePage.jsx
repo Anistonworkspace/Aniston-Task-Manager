@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase, User as UserIcon, Check, AlertCircle, Bell } from 'lucide-react';
+import { Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase, User as UserIcon, Check, AlertCircle, Bell, Type, RotateCcw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useFontSize, DEFAULT_FONT_SIZE } from '../context/FontSizeContext';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import SOPViewer from '../components/common/SOPViewer';
@@ -14,8 +15,36 @@ const ROLE_STYLES = {
 
 export default function ProfilePage() {
   const { user, updateProfile } = useAuth();
+  const { fontSize, setFontSize, reset: resetFontSize, options: fontSizeOptions } = useFontSize();
+  const [savingFontSize, setSavingFontSize] = useState(false);
   const sopRef = useRef(null);
   const location = useLocation();
+
+  async function handleFontSizeChange(value) {
+    if (value === fontSize) return;
+    setSavingFontSize(true);
+    try {
+      await setFontSize(value);
+      showFlash('Font size updated.');
+    } catch (err) {
+      showFlash(err.response?.data?.message || 'Failed to save font size preference.', 'error');
+    } finally {
+      setSavingFontSize(false);
+    }
+  }
+
+  async function handleFontSizeReset() {
+    if (fontSize === DEFAULT_FONT_SIZE) return;
+    setSavingFontSize(true);
+    try {
+      await resetFontSize();
+      showFlash('Font size reset to default.');
+    } catch (err) {
+      showFlash(err.response?.data?.message || 'Failed to reset font size.', 'error');
+    } finally {
+      setSavingFontSize(false);
+    }
+  }
 
   // Auto-scroll to SOP section when navigating with #sop hash
   useEffect(() => {
@@ -485,6 +514,60 @@ export default function ProfilePage() {
               </div>
             </form>
           )}
+        </div>
+
+        {/* Font size preference */}
+        <div className="widget-card">
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <h3 className="text-base font-semibold text-text-primary flex items-center gap-2">
+              <Type size={18} className="text-primary" />
+              Font size
+            </h3>
+            <button
+              type="button"
+              onClick={handleFontSizeReset}
+              disabled={savingFontSize || fontSize === DEFAULT_FONT_SIZE}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-secondary rounded-md border border-border hover:bg-surface-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              aria-label="Reset font size to default"
+            >
+              <RotateCcw size={12} />
+              Reset
+            </button>
+          </div>
+          <p className="text-xs text-text-secondary mb-3">
+            Choose how dense the interface feels. Saved to your account, so it follows you across devices.
+            Currently: <span className="font-semibold text-text-primary">{fontSizeOptions.find(o => o.value === fontSize)?.label || 'Default'}</span>
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="Font size"
+            className="grid grid-cols-2 sm:grid-cols-4 gap-2"
+          >
+            {fontSizeOptions.map(opt => {
+              const active = opt.value === fontSize;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => handleFontSizeChange(opt.value)}
+                  disabled={savingFontSize}
+                  className={`flex flex-col items-start gap-1 px-3 py-2.5 rounded-lg border text-left transition-all ${
+                    active
+                      ? 'border-primary bg-primary/5 text-text-primary shadow-sm'
+                      : 'border-border bg-bg-elevated text-text-secondary hover:border-border-dark hover:bg-surface-50'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  <span className="flex items-center gap-1.5 text-sm font-semibold">
+                    {opt.label}
+                    {active && <Check size={13} className="text-primary" />}
+                  </span>
+                  <span className="text-[11px] text-text-tertiary">{opt.description}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Teams Chat Notifications Toggle */}

@@ -12,7 +12,7 @@ import api from '../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import Avatar from '../components/common/Avatar';
 import MemberDrillDown from '../components/dashboard/MemberDrillDown';
-import useSocket from '../hooks/useSocket';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { SkeletonDashboard } from '../components/common/Skeleton';
 import { useAuth } from '../context/AuthContext';
 
@@ -48,11 +48,8 @@ export default function DashboardPage() {
     loadDashboard();
   }, [boardId]);
 
-  // Live refresh when tasks change
-  useSocket('task:created', () => loadDashboard());
-  useSocket('task:updated', () => loadDashboard());
-  useSocket('task:deleted', () => loadDashboard());
-  useSocket('task:delegated', () => loadDashboard());
+  // Live refresh — every task event hits dashboard.stats per the router.
+  useRealtimeQuery({ queryKey: 'dashboard.stats', refetch: loadDashboard });
 
   async function loadDashboard() {
     try {

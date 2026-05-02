@@ -2,6 +2,7 @@ const { Meeting, User, Task, Board, Notification } = require('../models');
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { emitToUser } = require('../services/socketService');
+const realtime = require('../services/realtimeService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 
@@ -76,6 +77,10 @@ const createMeeting = async (req, res) => {
       entityId: meeting.id,
       userId: req.user.id,
     });
+
+    // Phase 4 — semantic meeting:created event so MeetingsPage refreshes
+    // for every participant without piggybacking on the bell flow.
+    realtime.emitMeetingChanged('created', fullMeeting, { actorId: req.user.id });
 
     res.status(201).json({ success: true, message: 'Meeting created successfully.', data: { meeting: fullMeeting } });
   } catch (error) {
@@ -166,6 +171,8 @@ const updateMeeting = async (req, res) => {
     await meeting.update(updates);
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
 
+    realtime.emitMeetingChanged('updated', fullMeeting, { actorId: req.user.id });
+
     res.json({ success: true, message: 'Meeting updated.', data: { meeting: fullMeeting } });
   } catch (error) {
     console.error('[Meeting] Update error:', error);
@@ -206,6 +213,8 @@ const respondToMeeting = async (req, res) => {
     }
 
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
+    // Send status-specific event so the organizer's MeetingsPage updates.
+    realtime.emitMeetingChanged(status, fullMeeting, { actorId: req.user.id });
     res.json({ success: true, message: `Meeting ${status}.`, data: { meeting: fullMeeting } });
   } catch (error) {
     console.error('[Meeting] Respond error:', error);
@@ -238,7 +247,11 @@ const deleteMeeting = async (req, res) => {
       }
     }
 
+    // Snapshot meeting BEFORE destroy so we can fan out to participants —
+    // realtimeService can't read the row after it's gone.
+    const meetingSnapshot = meeting.toJSON();
     await meeting.destroy();
+    realtime.emitMeetingChanged('deleted', meetingSnapshot, { actorId: req.user.id });
     res.json({ success: true, message: 'Meeting deleted.' });
   } catch (error) {
     console.error('[Meeting] Delete error:', error);

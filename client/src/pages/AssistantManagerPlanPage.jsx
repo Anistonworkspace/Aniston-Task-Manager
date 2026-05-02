@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { useToast } from '../components/common/Toast';
 import { useUndo } from '../context/UndoContext';
-import useSocket from '../hooks/useSocket';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { format, addDays, subDays, isToday, isYesterday, isTomorrow, isFuture } from 'date-fns';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
@@ -298,7 +298,7 @@ export default function AssistantManagerPlanPage() {
   }, [dirty, categories, notes]);
 
   // Real-time sync: reload when director toggles tasks
-  useSocket('director-plan:updated', (data) => {
+  useRealtimeEvent('director-plan:updated', (data) => {
     // Only reload if it's for the same date AND same director, and we're not currently dirty
     if (!dirty && data?.date === dateStr && (!data?.directorId || data.directorId === selectedDirectorIdRef.current)) {
       loadPlan();

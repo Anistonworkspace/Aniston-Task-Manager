@@ -9,7 +9,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import api from '../services/api';
-import useSocket from '../hooks/useSocket';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { staggerContainer, staggerItem, fadeInUp, hoverLift, pressable } from '../utils/animations';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
@@ -76,14 +76,13 @@ export default function HomePage() {
     Promise.all([loadBoards(), loadNotifications(), loadMyTasks(), canManage && loadStats()]).finally(() => setLoading(false));
   }, []);
 
-  useSocket('task:created', () => loadMyTasks());
-  useSocket('task:updated', () => loadMyTasks());
-  useSocket('task:delegated', () => loadMyTasks());
-  useSocket('notification:new', () => loadNotifications());
-  useSocket('board:created', () => loadBoards());
-  useSocket('board:updated', () => loadBoards());
-  useSocket('board:memberRemoved', () => loadBoards());
-  useSocket('board:memberAdded', () => loadBoards());
+  // Phase 3 — three queryKeys replace eight per-event listeners. Any task
+  // event for the current user routes to tasks.assignedTo.me; any board
+  // membership change routes to boards.list; any notification event routes
+  // to notifications.list. The eventRouter is the single source of truth.
+  useRealtimeQuery({ queryKey: 'tasks.assignedTo.me', refetch: loadMyTasks });
+  useRealtimeQuery({ queryKey: 'notifications.list', refetch: loadNotifications });
+  useRealtimeQuery({ queryKey: 'boards.list', refetch: loadBoards });
 
   async function loadBoards() {
     try { const res = await api.get('/boards'); setBoards((res.data.boards || res.data || []).slice(0, 6)); } catch (err) { toastError('Failed to load boards'); }

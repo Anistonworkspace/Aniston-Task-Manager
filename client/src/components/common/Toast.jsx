@@ -1,5 +1,12 @@
-import React, { useState, useEffect, createContext, useContext, useCallback } from 'react';
+import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from 'react';
 import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
+
+// Suppress an identical (type+message) toast fired within this window. A single
+// failed action can trigger two paths — the local handler's toast.error() and
+// the global axios interceptor's `api-error` event — both surfacing the same
+// server message. 1500ms is short enough that intentional repeats (e.g. two
+// successful saves in a row) still surface.
+const TOAST_DEDUP_WINDOW_MS = 1500;
 
 const ToastContext = createContext(null);
 
@@ -12,9 +19,27 @@ const ICONS = {
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
+  // Tracks recent (type+message) -> timestamp so we can swallow duplicates fired
+  // by two code paths reacting to the same event. Lives in a ref so dedup
+  // decisions are stable across renders.
+  const recentToastsRef = useRef(new Map());
 
   const addToast = useCallback((message, type = 'info', duration = 4000) => {
-    const id = Date.now() + Math.random();
+    const dedupKey = `${type}::${typeof message === 'string' ? message : JSON.stringify(message)}`;
+    const now = Date.now();
+    const last = recentToastsRef.current.get(dedupKey);
+    if (last && now - last < TOAST_DEDUP_WINDOW_MS) {
+      return null;
+    }
+    recentToastsRef.current.set(dedupKey, now);
+    // Bound the dedup map so a long session doesn't grow it unbounded.
+    if (recentToastsRef.current.size > 50) {
+      for (const [k, t] of recentToastsRef.current.entries()) {
+        if (now - t > TOAST_DEDUP_WINDOW_MS * 4) recentToastsRef.current.delete(k);
+      }
+    }
+
+    const id = now + Math.random();
     setToasts(prev => {
       const updated = [...prev, { id, message, type, duration }];
       // Keep max 5 toasts visible — remove oldest if exceeded

@@ -1,4 +1,5 @@
 const { TaskWatcher, User, Task } = require('../models');
+const realtime = require('../services/realtimeService');
 
 // GET /api/tasks/:taskId/watchers
 exports.getWatchers = async (req, res) => {
@@ -16,16 +17,22 @@ exports.getWatchers = async (req, res) => {
 // POST /api/tasks/:taskId/watch — toggle watch
 exports.toggleWatch = async (req, res) => {
   try {
+    const taskId = req.params.taskId;
     const existing = await TaskWatcher.findOne({
-      where: { taskId: req.params.taskId, userId: req.user.id },
+      where: { taskId, userId: req.user.id },
     });
 
     if (existing) {
       await existing.destroy();
+      // Realtime — notifies the watcher (their MyWork "watched tasks" badge
+      // refreshes) and any TaskModal currently open on this task
+      // (WatcherSection re-renders without refetch).
+      realtime.emitWatcherChanged('removed', taskId, req.user.id, { actorId: req.user.id });
       return res.json({ success: true, data: { watching: false } });
     }
 
-    await TaskWatcher.create({ taskId: req.params.taskId, userId: req.user.id });
+    await TaskWatcher.create({ taskId, userId: req.user.id });
+    realtime.emitWatcherChanged('added', taskId, req.user.id, { actorId: req.user.id });
     res.json({ success: true, data: { watching: true } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to toggle watch.' });

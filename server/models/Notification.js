@@ -30,7 +30,16 @@ const Notification = sequelize.define(
         // Daily Work / Recurring Task workflow. DB enum is extended by
         // server/scripts/create-recurring-task-templates.js (ALTER TYPE ADD VALUE).
         'recurring_generated',
-        'recurring_missed'
+        'recurring_missed',
+        // Phase 3 — Dependency Request lifecycle. DB enum extended in the
+        // boot auto-migration block in server.js and in
+        // server/migrations/012_create_dependency_requests.sql.
+        'dependency_requested',
+        'dependency_accepted',
+        'dependency_started',
+        'dependency_done',
+        'dependency_rejected',
+        'dependency_cancelled'
       ),
       allowNull: false,
     },

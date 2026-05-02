@@ -27,7 +27,10 @@ const ArchivedPage = lazy(() => import('./pages/ArchivedPage'));
 const AdminSettingsPage = lazy(() => import('./pages/AdminSettingsPage'));
 const AccessRequestPage = lazy(() => import('./pages/AccessRequestPage'));
 const OrgChartPage = lazy(() => import('./pages/OrgChartPage'));
-const CrossTeamTasksPage = lazy(() => import('./pages/CrossTeamTasksPage'));
+// Phase 7: /cross-team URL now serves the new Dependency Requests page. The
+// legacy CrossTeamTasksPage file is retained for reference but no longer
+// routed — the new DependenciesPage replaces it in place.
+const DependenciesPage = lazy(() => import('./pages/DependenciesPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
 const MemberDashboardPage = lazy(() => import('./pages/MemberDashboardPage'));
 const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage'));
@@ -181,7 +184,7 @@ export default function App() {
           <Route path="admin-settings" element={<StrictAdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></StrictAdminRoute>} />
           <Route path="access-requests" element={<AdminRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></AdminRoute>} />
           <Route path="org-chart" element={<PermissionRoute requiredPermission="org_chart.view" resourceLabel="the Org Chart" action="view"><Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense></PermissionRoute>} />
-          <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><CrossTeamTasksPage /></Suspense>} />
+          <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><DependenciesPage /></Suspense>} />
           <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
           <Route path="notes" element={<Suspense fallback={<PageLoader />}><NotesPage /></Suspense>} />
           {/* All authenticated users can land here. Server-side filtering hides templates the user

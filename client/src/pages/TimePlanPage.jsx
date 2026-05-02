@@ -5,7 +5,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import TimeBlockForm from '../components/timeplan/TimeBlockForm';
-import useSocket from '../hooks/useSocket';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { useToast } from '../components/common/Toast';
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8AM - 8PM
@@ -122,7 +122,7 @@ export default function TimePlanPage() {
     else loadTeamBlocks();
   }, [weekStart, viewMode]);
 
-  useSocket('task:updated', () => { if (viewMode === 'my') loadWeekBlocks(); });
+  useRealtimeEvent('task:updated', () => { if (viewMode === 'my') loadWeekBlocks(); });
 
   async function loadWeekBlocks() {
     try {

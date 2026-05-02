@@ -9,7 +9,7 @@
 
 const { sequelize } = require('../config/db');
 const logger = require('../utils/logger');
-const { emitToUser } = require('./socketService');
+const { emitToUser, forceUserLeaveBoard } = require('./socketService');
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -149,8 +149,9 @@ async function cleanupIfNoTasksRemain(userId, boardId) {
     const removed = meta?.rowCount ?? 0;
     if (removed > 0) {
       logger.info(`[BoardMembership] Removed auto-added membership: user ${userId} from board ${boardId}`);
-      // Notify the user's sidebar to refresh — emit board:memberRemoved so
-      // the frontend re-fetches the board list and drops this board.
+      // Phase 4 — drop the user out of the board socket room first, so
+      // any in-flight emit doesn't leak. Then notify their UI.
+      forceUserLeaveBoard(userId, boardId).catch(() => { /* non-fatal */ });
       try {
         emitToUser(userId, 'board:memberRemoved', { boardId });
       } catch (e) { /* socket may not be ready */ }

@@ -1,9 +1,12 @@
-const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency, TaskApprovalFlow } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency, TaskApprovalFlow, DependencyRequest } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
-const { emitToBoard, emitToUser } = require('../services/socketService');
+const { emitToBoard, emitToUser, emitToBoardAndUsers } = require('../services/socketService');
+const socketService = require('../services/socketService');
+const taskVisibility = require('../services/taskVisibilityService');
+const realtime = require('../services/realtimeService');
 const teamsWebhook = require('../services/teamsWebhook');
 const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
@@ -96,6 +99,52 @@ function needsDueDateForAssignment(actorId, assigneeIds = [], supervisorIds = []
   if (targets.length === 0) return false;
   // Only block when at least one target is NOT the actor (i.e. assigning others).
   return targets.some((id) => id !== actorId);
+}
+
+/**
+ * Approval-required gate for task completion.
+ *
+ * Rule: Non-super-admin users cannot transition a task to status='done' (or
+ * progress=100) directly. They must go through the approval chain — submit
+ * for approval, then a senior reviewer marks it done by approving the chain.
+ * The chain itself sets status='done' inside `approvalController.approveTask`,
+ * which never traverses this controller.
+ *
+ * Allowed direct transitions:
+ *   - actor is a Super Admin (top of the org — final authority)
+ *   - task.approvalStatus === 'approved' (chain already completed; this is a
+ *     legitimate write from approveTask, or a manual re-flip after approval)
+ *   - the transition is not toward done/100% (any other status/progress edit)
+ *
+ * Self-assigned tasks are NOT exempt — that was the bypass the old rule
+ * allowed and is the bug we are fixing. The approvalChainService routes a
+ * self-task through the standard hierarchy walk and auto-approves only when
+ * no senior reviewer exists at all.
+ *
+ * Returns { blocked: true, message } when the request should be denied,
+ * otherwise { blocked: false }.
+ */
+function approvalGateForCompletion(task, user, updates) {
+  const goingToDone = updates.status === 'done' && task.status !== 'done';
+  // Direct progress=100 with no status change is the secondary bypass vector
+  // — block it too. (Status flipping to non-done resets progress in
+  // taskController, so a partial-progress update never trips this.)
+  const goingToFullProgress = updates.progress === 100
+    && task.progress !== 100
+    && updates.status !== 'done'
+    && task.status !== 'done';
+
+  if (!goingToDone && !goingToFullProgress) {
+    return { blocked: false };
+  }
+  if (user?.isSuperAdmin) return { blocked: false };
+  if (task.approvalStatus === 'approved') return { blocked: false };
+
+  return {
+    blocked: true,
+    message: 'This task requires manager approval before it can be marked Done.',
+    code: task.approvalStatus === 'pending_approval' ? 'approval_pending' : 'approval_required',
+  };
 }
 
 // ── Table existence cache ────────────────────────────────────────────────
@@ -254,6 +303,19 @@ const createTask = async (req, res) => {
     // Keep backward compat: set assignedTo to first assignee
     const primaryAssignee = assigneeIds.length > 0 ? assigneeIds[0] : null;
 
+    // Approval gate at creation: a non-super-admin cannot create a task that
+    // is already status='done'. This closes the secondary bypass where a
+    // member could POST { status: 'done', assignedTo: self } and skip the
+    // chain. Members must create the task at a non-done status, work on it,
+    // then submit for approval. Super Admins are exempt (final authority).
+    if (status === 'done' && !req.user?.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Tasks cannot be created in the Done state. Submit for approval after completing the work.',
+        code: 'approval_required',
+      });
+    }
+
     // Determine position (append to end of group)
     const maxPosition = await Task.max('position', {
       where: { boardId, groupId: groupId || 'new' },
@@ -367,8 +429,14 @@ const createTask = async (req, res) => {
       userId: req.user.id,
     });
 
-    // Socket.io real-time event
-    emitToBoard(boardId, 'task:created', { task: fullTask });
+    // Realtime fan-out — assignees / supervisors / owners / creator + the
+    // board room. realtimeService also pulls in watchers and dedupes against
+    // sockets already in the board room. This is the path that fixes the
+    // "Sunny doesn't see JOKER without refresh" bug.
+    realtime.emitTaskCreated(fullTask, {
+      actorId: req.user.id,
+      extraUserIds: [...supervisorIds, ...(Array.isArray(ownerIds) ? ownerIds : [])],
+    });
 
     // Teams webhook
     teamsWebhook.sendTaskCreated({
@@ -472,21 +540,23 @@ const getTasks = async (req, res) => {
         );
       }
       where[Op.and].push({ [Op.or]: assigneeOrFilter });
-    } else if (boardId) {
-      // ── Layer 2: Apply role-based visibility filter only for board-level queries ──
-      // When fetching by board, restrict visibility based on role.
-      // Skip for assignedTo=me (already filtered above) to avoid redundant AND.
-      const visibilityFilter = await buildTaskVisibilityFilter(req.user, boardId);
-      if (visibilityFilter[Op.or]) {
-        if (!where[Op.and]) where[Op.and] = [];
-        where[Op.and].push(visibilityFilter);
-      }
     }
 
-    // Members without boardId and without assignedTo filter can only see their own tasks
-    if (!boardId && req.user.role === 'member' && context !== 'dependency' && assignedTo !== 'me' && !assignedTo) {
+    // ── CP-3 Strict RBAC: visibility filter is ALWAYS applied for non-admins ─
+    // Hierarchy-scoped users (manager / assistant_manager / member) only see
+    // tasks where assignee / creator / owner / task_assignees user is in
+    // their { self ∪ descendants } set. Admin / super_admin pass through
+    // unfiltered.
+    //
+    // We apply this on top of any explicit assignedTo filter so that a
+    // request like ?assignedTo=<some-stranger-id> still returns nothing when
+    // the stranger isn't in the viewer's subtree. Combined with the [Op.and]
+    // shape returned by buildTaskVisibilityWhere, the two AND together
+    // correctly.
+    const visibilityFilter = await buildTaskVisibilityFilter(req.user, boardId);
+    if (visibilityFilter && visibilityFilter[Op.and]) {
       if (!where[Op.and]) where[Op.and] = [];
-      where[Op.and].push({ [Op.or]: ownershipFilter });
+      for (const frag of visibilityFilter[Op.and]) where[Op.and].push(frag);
     }
 
     if (status) where.status = status;
@@ -772,6 +842,91 @@ const updateTask = async (req, res) => {
     if (willBeDone && updates.progress !== 100) {
       updates.progress = 100;
       if (task.progress !== 100) changes.progress = 100;
+    }
+
+    // Phase 10 — guard: don't let a task be completed while it has active
+    // blocking dependencies. Non-elevated users get a hard 400. Elevated
+    // users (admin / manager / super-admin) can override by passing
+    // `?force=true` (or body.force=true), which gets recorded as an
+    // adminOverride in the activity log a few hundred lines down.
+    let _depAdminOverride = false;
+    let _depBlockingCount = 0;
+    if (updates.status === 'done' && task.status !== 'done') {
+      // Phase-fix: dep-owner-but-not-parent-owner cannot mark the parent
+      // task done. They reach the parent modal via "Open Parent" on the
+      // dependencies page; their assistant_manager / manager-ish edit power
+      // would otherwise bypass the approval intercept (which is gated on
+      // parent ownership in the UI). Block the direct done transition so
+      // the dependency owner can't end-run Sunny's approval workflow.
+      //
+      // Real elevated users (admin / super-admin) keep their existing
+      // ability to close any task. Only assistant_manager / member dep
+      // owners are caught by this gate.
+      const taskAssigneeRow = await TaskAssignee.findOne({
+        where: { taskId: task.id, userId: req.user.id },
+      }).catch(() => null);
+      const isTaskParticipant = (
+        task.assignedTo === req.user.id ||
+        task.createdBy === req.user.id ||
+        !!taskAssigneeRow
+      );
+      const isElevatedUser = !!req.user?.isSuperAdmin || ['admin', 'manager'].includes(req.user?.role);
+      if (!isTaskParticipant && !isElevatedUser) {
+        const depAssigneeCount = await DependencyRequest.count({
+          where: { parentTaskId: task.id, assignedToUserId: req.user.id },
+        });
+        if (depAssigneeCount > 0) {
+          return res.status(403).json({
+            success: false,
+            message: 'Dependency owners cannot complete the parent task. Ask the parent task owner to mark it Done.',
+            meta: { reason: 'dep_owner_cannot_complete_parent' },
+          });
+        }
+      }
+
+      _depBlockingCount = await DependencyRequest.count({
+        where: {
+          parentTaskId: task.id,
+          status: { [Op.in]: ['pending', 'accepted', 'working_on_it', 'rejected'] },
+          archivedAt: null,
+        },
+      });
+      if (_depBlockingCount > 0) {
+        const isElevated = !!req.user?.isSuperAdmin || ['admin', 'manager'].includes(req.user?.role);
+        const force = req.body?.force === true || req.query?.force === 'true';
+        if (!isElevated) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cannot complete parent task while active dependencies exist.',
+            meta: { blockingDepCount: _depBlockingCount },
+          });
+        }
+        if (!force) {
+          return res.status(409).json({
+            success: false,
+            message: `This task has ${_depBlockingCount} active dependenc${_depBlockingCount === 1 ? 'y' : 'ies'}. Re-send with force=true to override and mark done.`,
+            meta: { blockingDepCount: _depBlockingCount, requiresOverride: true },
+          });
+        }
+        // Elevated user passed force=true — proceed but flag for audit.
+        _depAdminOverride = true;
+      }
+    }
+
+    // ── Approval gate ───────────────────────────────────────────────────
+    // Non-super-admin users cannot mark a task done (or push progress to
+    // 100%) without an approved approval chain. This blocks the direct
+    // PUT /api/tasks/:id { status: 'done' } bypass that previously let
+    // members self-complete self-assigned tasks. The /task-extras/.../approve
+    // path is unaffected because it never goes through updateTask — it
+    // mutates the task row directly inside approvalController.approveTask.
+    const approvalGate = approvalGateForCompletion(task, req.user, updates);
+    if (approvalGate.blocked) {
+      return res.status(403).json({
+        success: false,
+        message: approvalGate.message,
+        code: approvalGate.code,
+      });
     }
 
     // completedAt invariant: stamp on transition INTO 'done', clear on
@@ -1162,6 +1317,63 @@ const updateTask = async (req, res) => {
       });
     }
 
+    // Phase 10 — audit the admin override path. When an elevated user
+    // forces a 'done' transition past active blocking dependencies, log a
+    // dedicated row so the timeline shows it was an override, not a clean
+    // completion. Separate from the standard task_updated rows so it's
+    // searchable.
+    if (_depAdminOverride) {
+      logActivity({
+        action: 'task_done_override',
+        description: `${req.user.name} marked "${task.title}" done while ${_depBlockingCount} active dependenc${_depBlockingCount === 1 ? 'y was' : 'ies were'} still open`,
+        entityType: 'task',
+        entityId: task.id,
+        taskId: task.id,
+        boardId: task.boardId,
+        userId: req.user.id,
+        meta: { adminOverride: true, blockingDepCount: _depBlockingCount },
+      });
+    }
+
+    // Phase 10 — when a task is archived, cascade-cancel its active
+    // dependency requests so the assignees stop seeing rows for work that
+    // can never complete (the parent is archived). DependencyRequest rows
+    // are NOT deleted — they get status='cancelled' + cancellationReason
+    // so the audit trail survives.
+    if (updates.isArchived === true && previousIsArchived !== true) {
+      try {
+        const orphanedReqs = await DependencyRequest.findAll({
+          where: {
+            parentTaskId: task.id,
+            status: { [Op.in]: ['pending', 'accepted', 'working_on_it', 'rejected'] },
+            archivedAt: null,
+          },
+        });
+        for (const dep of orphanedReqs) {
+          dep.status = 'cancelled';
+          dep.cancelledAt = new Date();
+          dep.cancellationReason = `Parent task "${task.title}" was archived by ${req.user.name}.`;
+          await dep.save();
+          await depService.dispatchDependencyEvent('cancelled', dep, req.user);
+          logActivity({
+            action: 'dependency_request_cancelled',
+            description: `Auto-cancelled dependency "${dep.title}" (parent task archived)`,
+            entityType: 'dependency_request',
+            entityId: dep.id,
+            taskId: task.id,
+            boardId: task.boardId,
+            userId: req.user.id,
+            meta: { reason: 'parent_archived', adminOverride: false },
+          });
+        }
+      } catch (cascadeErr) {
+        // Non-fatal — never block a task archive on dep cleanup. The
+        // dependencies remain dangling but the parent is archived; a
+        // re-archive or admin sweep will catch them later.
+        logger.warn('[Task] Dependency-request cascade cancel failed:', cascadeErr.message);
+      }
+    }
+
     // Process automations
     if (updates.status && updates.status !== previousStatus) {
       processAutomations('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: req.user.id });
@@ -1170,10 +1382,14 @@ const updateTask = async (req, res) => {
       processAutomations('task_assigned', { task: fullTask, userId: req.user.id });
     }
 
-    // Socket.io — broadcast to board room and assignee's personal room
-    emitToBoard(task.boardId, 'task:updated', { task: fullTask });
-    if (task.assignedTo) emitToUser(task.assignedTo, 'task:updated', { task: fullTask });
-    if (previousAssignee && previousAssignee !== task.assignedTo) emitToUser(previousAssignee, 'task:updated', { task: fullTask });
+    // Realtime — fans out to board + assignees / supervisors / owners /
+    // watchers, plus the previous assignee (so their MyWork drops the row)
+    // when the task was reassigned.
+    realtime.emitTaskUpdated(fullTask, {
+      actorId: req.user.id,
+      changedFields: Object.keys(changes || {}),
+      extraUserIds: previousAssignee && previousAssignee !== fullTask.assignedTo ? [previousAssignee] : [],
+    });
 
     // Teams webhook for general updates (skip if it was only a completion)
     if (Object.keys(changes).length > 0 && updates.status !== 'done') {
@@ -1289,7 +1505,13 @@ const deleteTask = async (req, res) => {
         description: `${req.user.name} archived task "${task.title}"`,
         entityType: 'task', entityId: task.id, taskId: task.id, boardId: task.boardId, userId: req.user.id,
       });
-      emitToBoard(task.boardId, 'task:updated', { task: { ...task.toJSON(), isArchived: true } });
+      // Archive fires task:updated so the row disappears from any list
+      // viewing un-archived tasks (board, MyWork, dashboard). Fan-out
+      // includes assignees / watchers so it disappears from THEIR lists too.
+      realtime.emitTaskUpdated(
+        { ...task.toJSON(), isArchived: true },
+        { actorId: req.user.id, changedFields: ['isArchived'] }
+      );
       return res.json({ success: true, message: 'Task archived successfully. Only managers can permanently delete tasks.' });
     }
 
@@ -1348,7 +1570,13 @@ const deleteTask = async (req, res) => {
       userId: req.user.id,
     });
 
-    emitToBoard(boardId, 'task:deleted', { taskId, boardId });
+    // Realtime fan-out for deletion. We MUST pass affectedUserIds explicitly
+    // here because the task row is already destroyed — realtimeService can no
+    // longer derive assignees from it. We captured them above (allAffected).
+    realtime.emitTaskDeleted(
+      { taskId, boardId, affectedUserIds: allAffected },
+      { actorId: req.user.id }
+    );
 
     res.json({ success: true, message: 'Task deleted successfully.' });
   } catch (error) {
@@ -1391,7 +1619,14 @@ const moveTask = async (req, res) => {
       include: [...(await getTaskIncludes())],
     });
 
-    emitToBoard(task.boardId, 'task:moved', { task: fullTask });
+    // Move is intra-board (groupId / position change). Frontend has no
+    // 'task:moved' handler — it relied on a generic refetch. Emit
+    // 'task:updated' instead so BoardPage's existing patcher repositions
+    // the row in the new group without a full refetch.
+    realtime.emitTaskUpdated(fullTask, {
+      actorId: req.user.id,
+      changedFields: ['groupId', 'position'],
+    });
 
     res.json({
       success: true,
@@ -1483,6 +1718,33 @@ const bulkUpdateTasks = async (req, res) => {
         if (!isValidStatusForTask(safeUpdates.status, t, t.board)) {
           return res.status(400).json({ success: false, message: `Invalid status "${safeUpdates.status}" for task "${t.id}".` });
         }
+      }
+    }
+
+    // Bulk approval gate. Mirrors the single-update guard — non-super-admin
+    // users cannot bulk-set status='done' or progress=100 unless every row
+    // already has approvalStatus='approved'. Otherwise the bulk path
+    // becomes a fast-track for the same self-completion bypass.
+    const wantsBulkComplete = safeUpdates.status === 'done' || safeUpdates.progress === 100;
+    if (wantsBulkComplete && !req.user?.isSuperAdmin) {
+      const completionTargets = await Task.findAll({
+        where: { id: { [Op.in]: taskIds } },
+        attributes: ['id', 'status', 'progress', 'approvalStatus'],
+        raw: true,
+      });
+      const blocked = completionTargets.filter((t) => {
+        const gate = approvalGateForCompletion(t, req.user, safeUpdates);
+        return gate.blocked;
+      });
+      if (blocked.length > 0) {
+        return res.status(403).json({
+          success: false,
+          message: blocked.length === completionTargets.length
+            ? 'These tasks require manager approval before they can be marked Done.'
+            : `${blocked.length} of ${completionTargets.length} task(s) require manager approval before they can be marked Done.`,
+          code: 'approval_required',
+          meta: { blockedCount: blocked.length, totalCount: completionTargets.length },
+        });
       }
     }
 
@@ -1583,12 +1845,31 @@ const bulkUpdateTasks = async (req, res) => {
       include: [...(await getTaskIncludes())],
     });
 
-    // Emit to all affected boards
-    const boardIds = [...new Set(updatedTasks.map((t) => t.boardId))];
-    boardIds.forEach((boardId) => {
-      const boardTasks = updatedTasks.filter((t) => t.boardId === boardId);
-      emitToBoard(boardId, 'tasks:bulkUpdated', { tasks: boardTasks });
-    });
+    // CP-3 RBAC: do NOT emit the bulk task array to the entire board room —
+    // that was leaking unauthorized rows to subtree-scoped subscribers.
+    // Instead, emit a payload-free "tasks:bulkUpdated" hint to each task's
+    // authorized recipients, and rely on per-task realtime.emitTaskUpdated
+    // (which is already authorized) to push the row-level data. The
+    // hint lets BoardPage coalesce a single refetch via /api/tasks (which
+    // applies the visibility filter) instead of thrashing on N events.
+    const boardRecipientMap = new Map(); // boardId → Set of authorized userIds
+    for (const t of updatedTasks) {
+      const userIds = await taskVisibility.getAuthorizedRealtimeRecipients(t);
+      const set = boardRecipientMap.get(t.boardId) || new Set();
+      for (const uid of userIds) set.add(uid);
+      boardRecipientMap.set(t.boardId, set);
+    }
+    for (const [boardId, recipients] of boardRecipientMap.entries()) {
+      socketService.emitToUsers('tasks:bulkUpdated', { boardId }, Array.from(recipients));
+    }
+    // Per-task updates so MyWork / HomePage / Dashboard listeners refresh.
+    // realtime.emitTaskUpdated now uses CP-3 visibility recipients only.
+    for (const t of updatedTasks) {
+      realtime.emitTaskUpdated(t, {
+        actorId: req.user.id,
+        changedFields: Object.keys(safeUpdates || {}),
+      });
+    }
 
     // Teams notifications for bulk assignment (batched via teamsNotificationService)
     if (safeUpdates.assignedTo) {
@@ -1683,7 +1964,17 @@ const reorderTasks = async (req, res) => {
       throw err;
     }
 
-    emitToBoard(boardId, 'tasks:reordered', { boardId, items });
+    // CP-3 RBAC: don't broadcast reorder items to the whole board room — that
+    // exposes task IDs of unauthorized rows. Compute the union of authorized
+    // recipients across the affected tasks and emit only to them. Frontend
+    // refetches via /api/tasks (visibility-filtered), so it's enough to nudge.
+    const recipientUnion = new Set();
+    for (const item of items) {
+      if (!item?.id) continue;
+      const userIds = await taskVisibility.getAuthorizedRealtimeRecipients(item.id);
+      for (const uid of userIds) recipientUnion.add(uid);
+    }
+    socketService.emitToUsers('tasks:reordered', { boardId }, Array.from(recipientUnion));
 
     res.json({ success: true, message: 'Tasks reordered successfully.' });
   } catch (error) {
@@ -1755,7 +2046,7 @@ const duplicateTask = async (req, res) => {
       ],
     });
 
-    emitToBoard(original.boardId, 'task:created', { task: fullTask });
+    realtime.emitTaskCreated(fullTask, { actorId: req.user.id });
 
     logActivity({
       action: 'task_duplicated',
@@ -1848,8 +2139,10 @@ const autoReschedule = async (req, res) => {
     });
 
     if (fullTask) {
-      emitToBoard(fullTask.boardId, 'task:updated', { task: fullTask });
-      if (fullTask.assignedTo) emitToUser(fullTask.assignedTo, 'task:updated', { task: fullTask });
+      realtime.emitTaskUpdated(fullTask, {
+        actorId: req.user.id,
+        changedFields: ['dueDate', 'plannedStartTime', 'plannedEndTime'],
+      });
 
       // Sync rescheduled task to Teams calendar (service falls back to create-or-attach if unmapped).
       if (fullTask.assignedTo) {
@@ -1937,6 +2230,15 @@ const manageTaskMembers = async (req, res) => {
       });
     }
 
+    // Hoisted to function scope so the realtime emit at the end can include
+    // users who were REMOVED from the task — the hydrated fullTask only
+    // tells us who's CURRENTLY on it, but we want a removed assignee to
+    // see the row drop out of their MyWork too.
+    let removedAssigneeIds = [];
+    let removedSupervisorIds = [];
+    let newAssigneeIds = [];
+    let newSupervisorIds = [];
+
     // Sync assignees
     if (Array.isArray(assignees)) {
       // Remove assignees not in the new list
@@ -1964,8 +2266,8 @@ const manageTaskMembers = async (req, res) => {
       const existingAssigneeIds = task.taskAssignees
         .filter(ta => ta.role === 'assignee')
         .map(ta => ta.userId);
-      const newAssigneeIds = assignees.filter(uid => !existingAssigneeIds.includes(uid) && uid !== req.user.id);
-      const removedAssigneeIds = existingAssigneeIds.filter(uid => !assignees.includes(uid));
+      newAssigneeIds = assignees.filter(uid => !existingAssigneeIds.includes(uid) && uid !== req.user.id);
+      removedAssigneeIds = existingAssigneeIds.filter(uid => !assignees.includes(uid));
 
       // Cleanup board membership for removed assignees (awaited to avoid race)
       if (removedAssigneeIds.length > 0 && board) {
@@ -2020,8 +2322,8 @@ const manageTaskMembers = async (req, res) => {
       const existingSupervisorIds = task.taskAssignees
         .filter(ta => ta.role === 'supervisor')
         .map(ta => ta.userId);
-      const newSupervisorIds = supervisors.filter(uid => !existingSupervisorIds.includes(uid) && uid !== req.user.id);
-      const removedSupervisorIds = existingSupervisorIds.filter(uid => !supervisors.includes(uid));
+      newSupervisorIds = supervisors.filter(uid => !existingSupervisorIds.includes(uid) && uid !== req.user.id);
+      removedSupervisorIds = existingSupervisorIds.filter(uid => !supervisors.includes(uid));
 
       // Cleanup board membership for removed supervisors (awaited to avoid race)
       if (removedSupervisorIds.length > 0 && board) {
@@ -2072,7 +2374,19 @@ const manageTaskMembers = async (req, res) => {
       userId: req.user.id,
     });
 
-    emitToBoard(task.boardId, 'task:updated', { task: fullTask });
+    // Membership changes affect added + removed users on top of the usual
+    // fan-out — so a user who was just removed gets the row out of MyWork,
+    // and a user who was just added sees it appear there.
+    realtime.emitTaskUpdated(fullTask, {
+      actorId: req.user.id,
+      changedFields: ['assignees', 'supervisors'],
+      extraUserIds: [
+        ...(Array.isArray(removedAssigneeIds) ? removedAssigneeIds : []),
+        ...(Array.isArray(removedSupervisorIds) ? removedSupervisorIds : []),
+        ...(Array.isArray(newAssigneeIds) ? newAssigneeIds : []),
+        ...(Array.isArray(newSupervisorIds) ? newSupervisorIds : []),
+      ],
+    });
 
     res.json({
       success: true,

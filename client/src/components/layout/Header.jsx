@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import NotificationsPanel from '../common/NotificationsPanel';
 import GlobalSearch from '../common/GlobalSearch';
 import KeyboardShortcuts from '../common/KeyboardShortcuts';
-import useSocket from '../../hooks/useSocket';
+import useRealtimeQuery from '../../realtime/useRealtimeQuery';
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import { useToast } from '../common/Toast';
 import { useTheme } from '../../context/ThemeContext';
 import { requestPushPermission, showLocalNotification, isPushSupported, subscribeToPush } from '../../services/pushNotifications';
@@ -27,11 +28,12 @@ export default function Header({ onToggleSidebar }) {
     }
   }, []);
 
-  useSocket('notification:new', (data) => {
+  // Notification side-effects (toast + browser push) need the raw payload —
+  // useRealtimeEvent is the right hook here. The unread COUNT, on the other
+  // hand, is a derived cache that gets bumped to via the queryKey below.
+  useRealtimeEvent('notification:new', (data) => {
     const msg = data?.notification?.message;
     if (msg) toastInfo(msg);
-    loadUnreadCount();
-    // Send browser push notification when tab is not focused
     if (msg) {
       showLocalNotification('Monday Aniston', {
         body: msg,
@@ -40,8 +42,8 @@ export default function Header({ onToggleSidebar }) {
       });
     }
   });
-  useSocket('task:unblocked', (data) => { toastSuccess(`Task "${data?.title || 'task'}" unblocked!`); });
-  useSocket('task:delegated', (data) => { toastInfo(`"${data?.title || 'Task'}" delegated to you`); });
+  useRealtimeEvent('task:unblocked', (data) => { toastSuccess(`Task "${data?.title || 'task'}" unblocked!`); });
+  useRealtimeEvent('task:delegated', (data) => { toastInfo(`"${data?.title || 'Task'}" delegated to you`); });
 
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -54,8 +56,9 @@ export default function Header({ onToggleSidebar }) {
   // Load unread count once on mount — socket events keep it updated
   useEffect(() => { loadUnreadCount(); }, []);
 
-  // Update unread count when notifications are read (panel closed)
-  useSocket('notification:read', () => { loadUnreadCount(); });
+  // Unread count is a derived cache — every notification:new + notification:read
+  // event invalidates 'notifications.unreadCount' via the router, refetching once.
+  useRealtimeQuery({ queryKey: 'notifications.unreadCount', refetch: loadUnreadCount });
 
   useEffect(() => {
     function handleClick(e) { if (menuRef.current && !menuRef.current.contains(e.target)) setShowUserMenu(false); }
@@ -136,6 +139,34 @@ export default function Header({ onToggleSidebar }) {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-1">
+          {/* Dependencies — moved from sidebar */}
+          <button data-tour="nav-dependencies-header" onClick={() => navigate('/cross-team')}
+            title="Dependencies"
+            aria-label="Dependencies"
+            className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/cross-team' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
+            <Link2 size={17} strokeWidth={1.8} />
+          </button>
+
+          {/* Notes — moved from sidebar */}
+          <button data-tour="nav-notes-header" onClick={() => navigate('/notes')}
+            title="Notes"
+            aria-label="Notes"
+            className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/notes' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
+            <Mic size={17} strokeWidth={1.8} />
+          </button>
+
+          {/* Help & SOP — moved from sidebar (BookOpen distinguishes it from
+              the existing HelpCircle which opens the keyboard shortcuts modal). */}
+          <button data-tour="nav-helpsop-header" onClick={() => navigate('/profile#sop')}
+            title="Help & SOP"
+            aria-label="Help & SOP"
+            className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
+            <BookOpen size={17} strokeWidth={1.8} />
+          </button>
+
+          {/* Sub-separator between page-nav icons and notification/system icons */}
+          <div className="h-5 w-px bg-border mx-1 hidden sm:block" />
+
           {/* Notifications */}
           <button data-tour="notifications" onClick={() => setShowNotifications(!showNotifications)}
             className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">

@@ -2,6 +2,8 @@ const { TaskAssignee, User } = require('../models');
 const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
 const { safeUUID } = require('../utils/safeSql');
+const taskVisibility = require('../services/taskVisibilityService');
+const logger = require('../utils/logger');
 
 // ── Table existence cache (shared across all middleware calls) ───────────
 const _tableCache = {};
@@ -56,8 +58,11 @@ function attachTaskPermissions(req, res, next) {
   const permissions = {
     role,
     isSuperAdmin,
-    hasFullAccess: isSuperAdmin || role === 'admin' || role === 'manager',
-    hasBoardAccess: role === 'assistant_manager',
+    // hasFullAccess now means "may bypass per-task visibility checks". Only
+    // admins / super admins do; managers and assistant managers are scoped to
+    // their org subtree.
+    hasFullAccess: isSuperAdmin || role === 'admin',
+    hasBoardAccess: role === 'manager' || role === 'assistant_manager',
     isHierarchyManager: false,
     hasPartialAccess: false,
     isRestricted: role === 'member',
@@ -73,43 +78,17 @@ function attachTaskPermissions(req, res, next) {
 }
 
 /**
- * Layer 2 — Task Visibility Query Builder
- * Constructs WHERE clauses that filter tasks based on user's role and membership.
- * Returns a Sequelize-compatible where condition to merge into task queries.
+ * Layer 2 — Task Visibility Query Builder (legacy compat shim)
+ *
+ * Existing callers (taskController.getTasks) expect a Sequelize where-fragment
+ * they can merge into their own clause. We delegate to the new
+ * taskVisibilityService so there's one rule, applied identically everywhere.
+ *
+ * Returns either `{}` (admin/super_admin → no filter) or
+ * `{ [Op.and]: [{ [Op.or]: [...] }] }` for hierarchy-scoped viewers.
  */
-async function buildTaskVisibilityFilter(user, boardId) {
-  const role = user.role;
-  const isSuperAdmin = !!user.isSuperAdmin;
-
-  // Admin / super admin — no filter, see everything
-  if (isSuperAdmin || role === 'admin') {
-    return {};
-  }
-
-  // Manager / Assistant Manager — full access to tasks within the board
-  if (role === 'manager' || role === 'assistant_manager') {
-    return {};
-  }
-
-  // Check if member is hierarchy manager — they can see their subtree's tasks too
-  const uid = safeUUID(user.id, 'user.id');
-  const orConditions = [
-    { assignedTo: user.id },
-    { createdBy: user.id },
-  ];
-
-  // Only include junction-table subqueries if the tables exist
-  if (await taskOwnersTableExists()) {
-    orConditions.push(
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_owners WHERE "userId" = ${uid})`)
-    );
-  }
-  if (await taskAssigneesTableExists()) {
-    orConditions.push(
-      sequelize.literal(`"Task"."id" IN (SELECT "taskId" FROM task_assignees WHERE "userId" = ${uid})`)
-    );
-  }
-  return { [Op.or]: orConditions };
+async function buildTaskVisibilityFilter(user /*, boardId */) {
+  return taskVisibility.buildTaskVisibilityWhere(user);
 }
 
 /**
@@ -127,8 +106,8 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
 
-  // Super admin / admin / manager — full access always (manager = admin)
-  if (isSuperAdmin || role === 'admin' || role === 'manager') {
+  // Super admin / admin — full access always.
+  if (isSuperAdmin || role === 'admin') {
     return { allowed: true, reason: 'admin_access', allowedFields: null };
   }
 
@@ -136,25 +115,26 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const userAssignment = taskAssignees.find(ta => ta.userId === user.id);
   const isAssignee = userAssignment?.role === 'assignee';
   const isSupervisor = userAssignment?.role === 'supervisor';
-  const isMember = !userAssignment && role === 'member';
   const isTaskCreator = task.createdBy === user.id;
+  const isLinked = !!userAssignment || isTaskCreator || task.assignedTo === user.id;
 
-  // Check if member is hierarchy manager (sync check using cached value)
-  const hierarchyMgr = req?._isHierarchyManager || false;
+  // For manager / assistant_manager / member, "in subtree" means the request
+  // already passed canViewTask (which calls taskVisibilityService). The flag is
+  // attached at middleware time when available; otherwise we conservatively
+  // treat the viewer as in-subtree only if they are directly linked.
+  const inSubtree = req?._taskInSubtree === true;
 
   switch (action) {
     case 'view': {
-      // Assistant manager — allowed for team members' tasks
-      if (role === 'assistant_manager') return { allowed: true, reason: 'assistant_manager_access' };
-      // Member — only if linked via task_assignees or creator
-      if (userAssignment || isTaskCreator || task.assignedTo === user.id) {
-        return { allowed: true, reason: 'member_linked' };
-      }
+      if (isLinked || inSubtree) return { allowed: true, reason: 'subtree_or_linked' };
       return { allowed: false, reason: 'no_task_membership' };
     }
 
     case 'edit_status': {
-      if (role === 'assistant_manager') return { allowed: true, reason: 'assistant_manager_access' };
+      // Manager / assistant_manager: full edit on tasks inside their subtree.
+      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+        return { allowed: true, reason: 'subtree_management', allowedFields: null };
+      }
       if (isAssignee || isTaskCreator || task.assignedTo === user.id) {
         return { allowed: true, reason: 'assignee_status', allowedFields: ['status', 'progress'] };
       }
@@ -162,16 +142,11 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'edit': {
-      // Assistant manager — full task edit access
-      if (role === 'assistant_manager') {
-        return { allowed: true, reason: 'assistant_manager_access', allowedFields: null };
+      // Manager / assistant_manager: full edit on tasks inside their subtree.
+      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+        return { allowed: true, reason: 'subtree_management', allowedFields: null };
       }
-      // Assignee / creator — can update an extended whitelist on their own
-      // tasks. Members may set their own due date, priority, dates, tags,
-      // description, etc. — the fields a self-creator legitimately needs to
-      // manage their own work. NOT included: assignedTo (assign others is
-      // gated separately via assign_others), isArchived, statusConfig
-      // (board-level config), and supervisor mutations.
+      // Assignee / creator — can update the self-management whitelist.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
         return {
           allowed: true,
@@ -192,15 +167,17 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'reassign': {
-      // Only manager+ can reassign
-      if (role === 'manager') return { allowed: true, reason: 'manager_access' };
-      if (role === 'assistant_manager') return { allowed: true, reason: 'assistant_manager_access' };
+      // Only manager+ acting on a task INSIDE their subtree.
+      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+        return { allowed: true, reason: 'subtree_management' };
+      }
       return { allowed: false, reason: 'insufficient_role_for_reassign' };
     }
 
     case 'delete': {
-      // Manager and assistant_manager can delete
-      if (role === 'manager' || role === 'assistant_manager') return { allowed: true, reason: 'manager_access' };
+      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+        return { allowed: true, reason: 'subtree_management' };
+      }
       // Members can archive their own tasks
       if ((isAssignee || task.assignedTo === user.id) && role === 'member') {
         return { allowed: true, reason: 'member_archive_only' };
@@ -214,7 +191,9 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'manage_members': {
-      if (['manager', 'assistant_manager'].includes(role)) return { allowed: true, reason: 'can_manage_members' };
+      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+        return { allowed: true, reason: 'can_manage_members' };
+      }
       return { allowed: false, reason: 'insufficient_role_for_member_management' };
     }
 
@@ -225,79 +204,57 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
 /**
  * Middleware: Verify user can view a specific task (for GET /tasks/:id endpoints)
- * Must be used after authenticate. Loads task assignees and checks visibility.
+ * Must be used after authenticate. Delegates to the centralized
+ * taskVisibilityService — the SAME rule used by list queries — so a viewer
+ * cannot access by direct URL anything the list filter would have hidden.
+ *
+ * On success, attaches `req._taskInSubtree = true` so downstream
+ * checkTaskAction() can elevate manager / assistant_manager edit
+ * permissions for the row that just passed visibility.
  */
 async function canViewTask(req, res, next) {
-  const user = req.user;
-  const taskId = req.params.id || req.params.taskId;
-  if (!taskId) return next();
+  try {
+    const user = req.user;
+    const taskId = req.params.id || req.params.taskId;
+    if (!taskId) return next();
 
-  const role = user.role;
-  const isSuperAdmin = !!user.isSuperAdmin;
-
-  // Admin/super admin/manager/assistant_manager — always allowed
-  if (isSuperAdmin || role === 'admin' || role === 'manager' || role === 'assistant_manager') {
-    return next();
-  }
-
-  // Check if user is linked to this task via task_assignees (new system)
-  if (await taskAssigneesTableExists()) {
-    const assignment = await TaskAssignee.findOne({
-      where: { taskId, userId: user.id },
-    });
-    if (assignment) return next();
-  }
-
-  // Check if user is linked via task_owners (multi-owner system)
-  const { Task, TaskOwner } = require('../models');
-  if (await taskOwnersTableExists()) {
-    const ownerRecord = await TaskOwner.findOne({
-      where: { taskId, userId: user.id },
-    });
-    if (ownerRecord) return next();
-  }
-
-  // Backward compat: check old assignedTo column and createdBy
-  const task = await Task.findByPk(taskId, { attributes: ['id', 'assignedTo', 'createdBy'] });
-  if (!task) {
-    return res.status(404).json({ success: false, message: 'Task not found.' });
-  }
-
-  if (task.assignedTo === user.id || task.createdBy === user.id) {
-    return next();
-  }
-
-  // Assistant manager — check if any assignee is on their team
-  if (role === 'assistant_manager') {
-    const teamMembers = await User.findAll({
-      where: { managerId: user.id },
-      attributes: ['id'],
-      raw: true,
-    });
-    const teamIds = teamMembers.map(m => m.id);
-    teamIds.push(user.id);
-
-    if (await taskAssigneesTableExists()) {
-      const teamAssignment = await TaskAssignee.findOne({
-        where: { taskId, userId: { [Op.in]: teamIds } },
-      });
-      if (teamAssignment) return next();
+    if (user.isSuperAdmin || user.role === 'admin') {
+      req._taskInSubtree = true;
+      return next();
     }
 
-    // Check task_owners for team members
-    const teamOwner = await taskOwnersTableExists() ? await TaskOwner.findOne({
-      where: { taskId, userId: { [Op.in]: teamIds } },
-    }) : null;
-    if (teamOwner) return next();
+    const allowed = await taskVisibility.canViewTask(user, taskId);
+    if (allowed) {
+      req._taskInSubtree = true;
+      return next();
+    }
 
-    // Check old assignedTo
-    if (teamIds.includes(task.assignedTo)) return next();
+    // Dependency-owner read path — a member assigned to a DependencyRequest
+    // on this parent task gets read access (so "Open Parent" from the
+    // Dependencies page doesn't 403). Mutations are still blocked by the
+    // existing role/ownership rules — this only opens the visibility door.
+    try {
+      const { DependencyRequest } = require('../models');
+      const depCount = await DependencyRequest.count({
+        where: { parentTaskId: taskId, assignedToUserId: user.id },
+      });
+      if (depCount > 0) {
+        // Dependency read access does NOT confer subtree powers.
+        return next();
+      }
+    } catch { /* dependency_requests table may not exist on very old DBs */ }
+
+    if (process.env.NODE_ENV !== 'production') {
+      logger.warn(`[RBAC] task view denied: user=${user.id} (${user.role}) task=${taskId}`);
+    }
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. You are not authorized to view this task.',
+    });
+  } catch (err) {
+    logger.error('[RBAC] canViewTask error:', err.message);
+    return res.status(500).json({ success: false, message: 'Permission check failed.' });
   }
-
-  return res.status(403).json({
-    success: false,
-    message: 'Access denied. You are not authorized to view this task.',
-  });
 }
 
 module.exports = {

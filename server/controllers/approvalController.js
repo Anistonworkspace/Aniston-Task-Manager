@@ -11,7 +11,7 @@ const {
 const { Op } = require('sequelize');
 const xss = require('xss');
 const { logActivity } = require('../services/activityService');
-const { emitToBoard } = require('../services/socketService');
+const realtime = require('../services/realtimeService');
 const { deriveApprovalChain, previewNextApprover } = require('../services/approvalChainService');
 const approvalNotif = require('../services/approvalNotificationService');
 
@@ -38,44 +38,14 @@ function appendChainAudit(task, entry) {
   ];
 }
 
-// Self-task detection. A task is "self-assigned" — and therefore not subject to
-// hierarchical approval — when the only assignees are the task's creator. The
-// caller must ALSO be that same user; otherwise this is somebody else acting on
-// the creator's task and approval still applies.
-//
-// Multi-assignee handling (per spec):
-//   - "self only" → the creator AND every entry in task_assignees (role=assignee)
-//     resolves to the same user id as task.createdBy
-//   - any other-user assignee → approval required
-//   - unassigned task with the creator submitting → treat as self (no one to route to)
-async function isSelfAssignedTask(task, actorId, transaction) {
-  if (!task || !actorId) return false;
-  if (task.createdBy !== actorId) return false;
-
-  const assigneeIds = new Set();
-  if (task.assignedTo) assigneeIds.add(task.assignedTo);
-
-  // Multi-assignee table — only role='assignee' rows count as "owners" for
-  // approval purposes; supervisors are watchers, not assignees.
-  try {
-    const TaskAssignee = require('../models').TaskAssignee;
-    if (TaskAssignee) {
-      const rows = await TaskAssignee.findAll({
-        where: { taskId: task.id, role: 'assignee' },
-        attributes: ['userId'],
-        transaction,
-        raw: true,
-      });
-      for (const r of rows) if (r.userId) assigneeIds.add(r.userId);
-    }
-  } catch (_) {
-    // Table may not exist on legacy installs — fall back to assignedTo only.
-  }
-
-  if (assigneeIds.size === 0) return true; // unassigned, creator acting → self
-  for (const id of assigneeIds) if (id !== task.createdBy) return false;
-  return true;
-}
+// NOTE: prior versions defined `isSelfAssignedTask` here and short-circuited the
+// approval flow for tasks where the actor was both creator and sole assignee.
+// That carved out a privilege bypass — a member could self-assign a task and
+// mark it Done without any review. Per the new product rule, hierarchical
+// approval applies to ALL non-super-admin completions, including self-assigned
+// tasks. Super Admins remain exempt (they have no senior reviewer in the org)
+// and the approvalChainService handles the no-reviewer case via autoApprove
+// for genuinely top-of-hierarchy actors. The helper has been removed.
 
 // Detect schema-mismatch errors from Postgres (undefined column 42703, undefined
 // table 42P01). When a deploy ships backend code that references a column the
@@ -235,21 +205,6 @@ exports.submitForApproval = async (req, res) => {
       });
     }
 
-    // Self-task short-circuit — a creator marking their own self-assigned task
-    // done has nobody to route approval to. Skip chain creation entirely; the
-    // frontend's intercept normally prevents this endpoint from being hit at
-    // all for self-tasks, but this is the defensive backend guard for direct
-    // API calls and edge cases like reassignment-to-self mid-flight.
-    if (await isSelfAssignedTask(task, req.user.id, t)) {
-      await t.commit();
-      return res.json({
-        success: true,
-        approvalSkipped: true,
-        message: 'Self-task — no approval required.',
-        data: { task, approvalFlows: [] },
-      });
-    }
-
     // Derive chain from the org tree.
     const { chain, warnings, autoApprove } = await deriveApprovalChain(req.user.id);
 
@@ -334,8 +289,7 @@ exports.submitForApproval = async (req, res) => {
       meta: { warnings },
     });
 
-    emitToBoard(task.boardId, 'task:updated', { task });
-    emitToBoard(task.boardId, 'task:approval-updated', { taskId: task.id, flows });
+    realtime.emitApprovalChanged(task, flows, { actorId: req.user.id });
 
     // Phase 4 will replace this stub with proper notification dispatch. For now
     // we keep behavior parity with the old controller: notify watchers + the
@@ -673,8 +627,7 @@ async function processApprovalAction(req, res, opts) {
       },
     });
 
-    emitToBoard(task.boardId, 'task:updated', { task });
-    emitToBoard(task.boardId, 'task:approval-updated', { taskId: task.id, flows });
+    realtime.emitApprovalChanged(task, flows, { actorId: req.user.id });
 
     notifyApprovalChange({
       task,

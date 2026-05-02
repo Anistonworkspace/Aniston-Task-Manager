@@ -12,6 +12,7 @@ import WorkLogSection from './WorkLogSection';
 import ActivityFeed from './ActivityFeed';
 import DependencyBadge from '../dependencies/DependencyBadge';
 import DependencySelector from '../dependencies/DependencySelector';
+import DependencyWorkSection from '../dependencies/DependencyWorkSection';
 
 import ApprovalSection from './ApprovalSection';
 import WatcherSection from './WatcherSection';
@@ -21,7 +22,7 @@ import HelpRequestModal from './HelpRequestModal';
 import ConflictWarning from './ConflictWarning';
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
-import useSocket from '../../hooks/useSocket';
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import DetailModalShell from '../common/DetailModalShell';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
@@ -101,6 +102,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   const [showDepSelector, setShowDepSelector] = useState(false);
   const [depKey, setDepKey] = useState(0);
+
+  // Phase 4 — graceful state when ANOTHER user (or this user, in another
+  // tab) deletes the task while this modal is open. We do NOT auto-close
+  // the modal — the user might be mid-edit, and yanking the panel out
+  // from under them is worse than showing a clear "this no longer
+  // exists" banner. They can dismiss themselves via the X.
+  const [deletedRemotely, setDeletedRemotely] = useState(false);
   const [showExtension, setShowExtension] = useState(false);
   const [showHelpRequest, setShowHelpRequest] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
@@ -143,21 +151,33 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     };
   }, []);
 
-  // Realtime: listen for new comments on this task
-  useSocket('comment:created', (data) => {
+  // Realtime — comment events arrive with a payload, so we use the raw-event
+  // hook (the in-place patch is cleaner than refetching the whole list and
+  // dedupes optimistic-local adds against the server broadcast).
+  useRealtimeEvent('comment:created', (data) => {
     if (data?.taskId === task?.id) {
       setComments(prev => {
-        // Prevent duplicates (from optimistic local add + server broadcast)
         if (prev.some(c => c.id === data.comment?.id)) return prev;
         return [data.comment, ...prev];
       });
     }
   });
 
-  // Realtime: listen for deleted comments on this task
-  useSocket('comment:deleted', (data) => {
+  useRealtimeEvent('comment:deleted', (data) => {
     if (data?.taskId === task?.id) {
       setComments(prev => prev.filter(c => c.id !== data.commentId));
+    }
+  });
+
+  // Reset the remote-deleted banner if the user navigates between tasks
+  // within the modal (we hold the same TaskModal instance with a fresh task).
+  useEffect(() => { setDeletedRemotely(false); }, [task?.id]);
+
+  // task:deleted while the modal is open → flip to read-only banner mode.
+  // Saves & mutations would 404 silently; the banner makes that visible.
+  useRealtimeEvent('task:deleted', (data) => {
+    if (data?.taskId && data.taskId === task?.id) {
+      setDeletedRemotely(true);
     }
   });
 
@@ -196,11 +216,77 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
     } catch (err) {
-      console.error('Failed to update task:', err);
+      const status = err.response?.status;
       const msg = err.response?.data?.message;
+      const meta = err.response?.data?.meta;
+
+      // Phase-fix — dep-owner-but-not-parent-owner attempted to mark the
+      // parent task done. Backend returns 403 with reason. Show a clean
+      // toast and revert the optimistic status pill to whatever the task
+      // was before (most likely 'stuck' if there was an active dep, or
+      // the prior status if all deps had cleared).
+      if (status === 403 && meta?.reason === 'dep_owner_cannot_complete_parent') {
+        if (toastError) toastError(msg);
+        // Revert: server didn't change anything. Set the pill back to the
+        // task's actual status from props.
+        setStatus(task.status);
+        setSaveStatus('error');
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
+        return;
+      }
+
+      // Approval gate — direct status='done' / progress=100 attempted on a
+      // task that needs review first. The interceptor normally catches this
+      // before it hits the network, so a 403 here means the actor is in an
+      // approval-pending state OR the gate's preconditions changed mid-flight
+      // (e.g. another tab submitted approval). Revert the optimistic pill to
+      // the server-side status so the UI doesn't lie. The api error toast
+      // pipeline already shows the message — don't double-toast.
+      const approvalCode = err.response?.data?.code;
+      if (status === 403 && (approvalCode === 'approval_required' || approvalCode === 'approval_pending')) {
+        setStatus(task.status);
+        setSaveStatus('error');
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
+        return;
+      }
+
+      // Phase 11 — admin-override flow for parent-done-while-blocked.
+      // Backend returns 409 with meta.requiresOverride for elevated users
+      // who can force the transition by re-sending with force=true.
+      if (status === 409 && meta?.requiresOverride && updates.status === 'done') {
+        const proceed = window.confirm(
+          `${msg}\n\nMark "${task.title}" done anyway? This action will be recorded as an admin override.`
+        );
+        if (proceed) {
+          try {
+            await api.put(`/tasks/${task.id}?force=true`, updates);
+            if (onUpdate) onUpdate({ ...task, ...updates });
+            setSaveStatus('saved');
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
+            return;
+          } catch (retryErr) {
+            console.error('Force-done retry failed:', retryErr);
+            setSaveStatus('error');
+            // fall through to revert below
+          }
+        }
+        // Cancelled or retry failed → revert UI status.
+        setStatus('stuck');
+        setSaveStatus('error');
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
+        return;
+      }
+
+      console.error('Failed to update task:', err);
       setSaveStatus('error');
-      // If blocked by dependency, revert status to 'stuck'
-      if (msg && msg.includes('blocked by')) {
+      // If the parent-done guard fired (400) or any "blocked"-flavoured
+      // server error came back, revert the optimistic status pill so the
+      // UI doesn't lie.
+      if (msg && (msg.includes('blocked by') || msg.includes('active dependencies'))) {
         setStatus('stuck');
       }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -221,34 +307,30 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     || task?.createdBy === user.id
     || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
   );
-  // Self-task detection — same rule as the backend isSelfAssignedTask guard:
-  // creator is the only assignee AND the actor is that creator. Self-tasks
-  // bypass approval entirely (mark Done directly, no modal, no chain rows).
-  const taskAllAssigneeIds = (() => {
-    const ids = new Set();
-    if (task?.assignedTo) ids.add(task.assignedTo);
-    for (const ta of (task?.taskAssignees || [])) {
-      const id = ta.userId || ta.user?.id;
-      if (id && (ta.role === undefined || ta.role === 'assignee')) ids.add(id);
-    }
-    return ids;
-  })();
-  const isSelfTask = !!user?.id
-    && task?.createdBy === user.id
-    && (taskAllAssigneeIds.size === 0 || Array.from(taskAllAssigneeIds).every((id) => id === task.createdBy));
 
   // Super Admin exemption — top of the org hierarchy, no senior reviewer
   // exists, so they never go through approval. Backend rejects the API call
   // too (super_admin_no_approval), so this is the UX-side mirror.
+  //
+  // Self-assigned tasks are NOT exempt — the prior carve-out for `isSelfTask`
+  // was the bypass that allowed members to mark their own tasks Done without
+  // any review. The chain service routes self-tasks up the manager hierarchy
+  // and only auto-approves when there is no senior reviewer at all.
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isTaskOwner
-    && !isSelfTask
     && !isSuperAdmin
     && task?.approvalStatus !== 'pending_approval'
     && task?.approvalStatus !== 'approved';
 
   async function handleStatusChange(val) {
+    // Soft block: clicking Done while a chain is already pending shouldn't
+    // re-trigger submission or fall through to save() (which would 403).
+    if (val === 'done' && !isSuperAdmin && task?.approvalStatus === 'pending_approval') {
+      setShowStatusDrop(false);
+      toastError('Task is awaiting approval. The reviewer will mark it Done.');
+      return;
+    }
     if (shouldInterceptDone(val)) {
       setShowStatusDrop(false);
       setShowApprovalModal(true);
@@ -443,6 +525,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   return (
     <>
       <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={titleElementId} size="sheet" placement="bottom-sheet">
+        {/* Remote-deletion banner (Phase 4). Stays at the very top so it's
+            visible regardless of which tab is active. */}
+        {deletedRemotely && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 px-6 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-red-800 dark:text-red-200 text-sm flex-shrink-0"
+          >
+            <span>
+              <strong>This task was deleted by another user.</strong>{' '}
+              Your changes can no longer be saved. Close this panel to continue.
+            </span>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="px-3 py-1 rounded-md bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors flex-shrink-0"
+            >
+              Close
+            </button>
+          </div>
+        )}
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-2">
@@ -493,10 +595,54 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
           {/* Title */}
           {canEditTitle ? (
             <input id={titleElementId} type="text" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={handleTitleBlur}
-              className="text-xl font-bold text-text-primary border-none outline-none w-full mb-4 placeholder:text-text-tertiary bg-transparent" placeholder="Task title" />
+              className="text-xl font-bold text-text-primary border-none outline-none w-full mb-2 placeholder:text-text-tertiary bg-transparent" placeholder="Task title" />
           ) : (
-            <h2 id={titleElementId} className="text-xl font-bold text-text-primary mb-4">{title}</h2>
+            <h2 id={titleElementId} className="text-xl font-bold text-text-primary mb-2">{title}</h2>
           )}
+
+          {/* Assignment summary — read-only "Assigned by / Assigned to" row.
+              Source: task.creator (createdBy FK include) + task.taskAssignees /
+              task.assignee (legacy single FK fallback). The editable Assign To
+              field below remains the source of truth for changing assignees;
+              this band is informational so members know who handed them work
+              without scrolling. TODO: when assignment-history is added, swap
+              creator → latest assignedBy. */}
+          {(() => {
+            const creator = task?.creator;
+            const creatorName = creator?.name || 'Unknown';
+            const assigneeRows = Array.isArray(task?.taskAssignees)
+              ? task.taskAssignees.filter(ta => ta.role === 'assignee')
+              : [];
+            const assigneeList = assigneeRows.length > 0
+              ? assigneeRows.map(ta => ({ id: ta.userId || ta.user?.id, name: ta.user?.name || 'Unknown' }))
+              : (task?.assignee ? [{ id: task.assignee.id, name: task.assignee.name }] : []);
+            return (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-4 text-xs text-text-secondary">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-text-tertiary">Assigned by</span>
+                  <Avatar name={creatorName} size="xs" />
+                  <span className="font-medium text-text-primary">{creatorName}</span>
+                  {creator?.role && (
+                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary">· {creator.role.replace('_', ' ')}</span>
+                  )}
+                </div>
+                <span className="text-border">|</span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-text-tertiary">Assigned to</span>
+                  {assigneeList.length === 0 ? (
+                    <span className="text-text-tertiary italic">Unassigned</span>
+                  ) : (
+                    assigneeList.map(a => (
+                      <span key={a.id || a.name} className="inline-flex items-center gap-1">
+                        <Avatar name={a.name} size="xs" />
+                        <span className="font-medium text-text-primary">{a.name}</span>
+                      </span>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Watcher + Approval + Recurrence */}
           <WatcherSection taskId={task?.id} />
@@ -540,6 +686,30 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
               <Link2 size={13} /> Add Dependency
             </button>
           )}
+
+          {/* Phase 8 — Dependency Work child rows. Subtask-style child rows
+              for DependencyRequest items rooted at this parent. Distinct
+              styling (chain icon + slate background) so users don't confuse
+              them with normal subtasks. Hidden when the task has no requests. */}
+          <DependencyWorkSection
+            key={`dws-${depKey}`}
+            taskId={task?.id}
+            depKey={depKey}
+            onChanged={async () => {
+              setDepKey(k => k + 1);
+              // Refresh parent task — a status transition on a dep may flip
+              // the parent's blocked state and restore its prior status.
+              try {
+                const res = await api.get(`/tasks/${task.id}`);
+                const updated = res.data?.data?.task || res.data?.task || res.data;
+                if (updated) {
+                  setStatus(updated.status || status);
+                  if (onUpdate) onUpdate(updated);
+                }
+              } catch {}
+              loadDependencyRole();
+            }}
+          />
 
           {/* Fields Grid */}
           <div className="grid grid-cols-[100px_1fr] gap-y-3 gap-x-4 mb-6">
@@ -998,16 +1168,18 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         </div>
       </DetailModalShell>
 
-      {/* Dependency Selector — sibling so it owns its own backdrop/escape */}
+      {/* Dependency Selector — sibling so it owns its own backdrop/escape.
+          Pass the full task so the dialog can render the parent summary
+          (owner, board, due date, status). */}
       {showDepSelector && (
         <DependencySelector
-          taskId={task.id}
-          taskTitle={task.title}
+          task={task}
           boardId={boardId || task.boardId}
           onClose={() => setShowDepSelector(false)}
           onCreated={async () => {
             setDepKey(k => k + 1);
-            // Refresh task data since dependency creation may have changed status to 'stuck' and auto-set startDate
+            // Refresh task data since dependency creation may have changed
+            // status to 'stuck' and auto-set startDate.
             try {
               const res = await api.get(`/tasks/${task.id}`);
               const updated = res.data?.data?.task || res.data?.task || res.data;
@@ -1017,7 +1189,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 if (onUpdate) onUpdate(updated);
               }
             } catch {}
-            // Refresh dependency role (this task may now be a receiver)
+            // Refresh dependency role (this task may now be a receiver).
             loadDependencyRole();
           }}
         />

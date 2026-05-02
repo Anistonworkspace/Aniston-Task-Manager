@@ -1,0 +1,494 @@
+'use strict';
+
+/**
+ * Phase 12 — Dependency Request controller tests.
+ *
+ * Scenarios from the project spec:
+ *   A. Main happy path        (create → accept → start → done → unblock)
+ *   B. Permission boundary    (non-assignee can't transition; assignee can)
+ *   C. Rejection flow         (reason required; parent stays blocked)
+ *   D. Multiple dependencies  (parent blocked until all clear)
+ *   E. Admin override         (elevated user transitions a row they're not a party to + audit log)
+ *
+ * The controller is exercised directly with mocked models / services / DB —
+ * matches the project's existing controller-test pattern (no DB, fast).
+ */
+
+process.env.JWT_SECRET = 'test-secret-key';
+process.env.NODE_ENV = 'test';
+
+// ─── Mocks ───────────────────────────────────────────────────────────────────
+
+jest.mock('../../config/db', () => ({
+  sequelize: { query: jest.fn(), define: jest.fn(() => ({})) },
+}));
+
+jest.mock('../../models', () => {
+  const STATUSES = ['pending', 'accepted', 'working_on_it', 'done', 'rejected', 'cancelled'];
+  const ACTIVE_STATUSES = ['pending', 'accepted', 'working_on_it'];
+  const PRIORITIES = ['low', 'medium', 'high', 'critical'];
+  const DependencyRequest = {
+    create:   jest.fn(),
+    findOne:  jest.fn(),
+    findByPk: jest.fn(),
+    findAll:  jest.fn(),
+    count:    jest.fn(),
+    STATUSES, ACTIVE_STATUSES, PRIORITIES,
+  };
+  return {
+    DependencyRequest,
+    Task: { findByPk: jest.fn() },
+    Board: {},
+    User: { findByPk: jest.fn() },
+    TaskAssignee: {},
+    TaskOwner: {},
+  };
+});
+
+jest.mock('../../services/dependencyService', () => ({
+  recomputeParentBlockState: jest.fn(),
+  dispatchDependencyEvent:   jest.fn(),
+  isTaskBlocked:             jest.fn(),
+}));
+
+jest.mock('../../services/activityService', () => ({
+  logActivity: jest.fn(),
+}));
+
+// xss is used to sanitise input — pass-through is fine for tests.
+jest.mock('xss', () => (s) => s);
+
+const { DependencyRequest, Task, User } = require('../../models');
+const depService = require('../../services/dependencyService');
+const activityService = require('../../services/activityService');
+const ctrl = require('../../controllers/dependencyRequestController');
+const perm = require('../../middleware/dependencyRequestPermissions');
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function buildRes() {
+  return {
+    status: jest.fn().mockReturnThis(),
+    json:   jest.fn().mockReturnThis(),
+  };
+}
+
+function makeUser(overrides = {}) {
+  return {
+    id: 'sunny-id',
+    name: 'Sunny Mehta',
+    role: 'member',
+    isSuperAdmin: false,
+    ...overrides,
+  };
+}
+
+function makeDep(overrides = {}) {
+  // Object that mimics a Sequelize instance: properties readable + a save() stub.
+  const dep = {
+    id: 'dep-1',
+    parentTaskId: 'task-1',
+    title: 'dependency check',
+    blockingReason: null,
+    requestedByUserId: 'sunny-id',
+    assignedToUserId: 'shub-id',
+    originalAssignerUserId: 'super-id',
+    boardId: 'board-1',
+    status: 'pending',
+    priority: 'medium',
+    dueDate: null,
+    acceptedAt: null,
+    startedAt: null,
+    completedAt: null,
+    rejectedAt: null,
+    cancelledAt: null,
+    rejectionReason: null,
+    cancellationReason: null,
+    archivedAt: null,
+    ...overrides,
+  };
+  dep.save = jest.fn().mockResolvedValue(dep);
+  dep.update = jest.fn(async (patch) => Object.assign(dep, patch));
+  return dep;
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  // Default: no duplicate dep, no parent task lookups. Tests override as needed.
+  DependencyRequest.findOne.mockResolvedValue(null);
+  DependencyRequest.findByPk.mockResolvedValue(null);
+  Task.findByPk.mockResolvedValue(null);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario A — Main happy path
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario A — main happy path', () => {
+  it('creates a DependencyRequest, no Task is created, dispatches "requested"', async () => {
+    Task.findByPk.mockResolvedValue({
+      id: 'task-1', title: 'test case evening', boardId: 'board-1',
+      status: 'working_on_it', isArchived: false,
+      createdBy: 'super-id', assignedTo: 'sunny-id',
+      board: { id: 'board-1', workspaceId: 'ws-1' },
+    });
+    User.findByPk.mockResolvedValue({ id: 'shub-id', name: 'Shubhanshu', isActive: true });
+    const created = makeDep();
+    DependencyRequest.create.mockResolvedValue(created);
+    DependencyRequest.findByPk.mockResolvedValue(created);
+
+    const req = {
+      params: { taskId: 'task-1' },
+      body: {
+        title: 'dependency check',
+        assignedToUserId: 'shub-id',
+        priority: 'medium',
+      },
+      user: makeUser(),
+    };
+    const res = buildRes();
+
+    await ctrl.createDependencyRequest(req, res);
+
+    // Created with snapshotted originalAssignerUserId from parent.assignedTo
+    expect(DependencyRequest.create).toHaveBeenCalledWith(expect.objectContaining({
+      parentTaskId: 'task-1',
+      requestedByUserId: 'sunny-id',
+      assignedToUserId: 'shub-id',
+      originalAssignerUserId: 'sunny-id', // parent.assignedTo (current owner) — snapshot
+      status: 'pending',
+    }));
+    expect(depService.recomputeParentBlockState).toHaveBeenCalledWith('task-1');
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('requested', created, req.user);
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('refuses self-assignment (400)', async () => {
+    const req = {
+      params: { taskId: 'task-1' },
+      body: { title: 'self-loop', assignedToUserId: 'sunny-id' },
+      user: makeUser(),
+    };
+    const res = buildRes();
+
+    await ctrl.createDependencyRequest(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(DependencyRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('assignee transitions pending → accepted → working_on_it → done; recomputes block-state at every step', async () => {
+    const dep = makeDep({ status: 'pending' });
+    DependencyRequest.findByPk.mockResolvedValue(dep);
+
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'accepted' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    let res = buildRes();
+    await ctrl.updateStatus(req, res);
+    expect(dep.status).toBe('accepted');
+    expect(dep.acceptedAt).toBeInstanceOf(Date);
+    expect(depService.recomputeParentBlockState).toHaveBeenCalledWith('task-1');
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('accepted', dep, req.user);
+
+    // working_on_it
+    req.body.status = 'working_on_it';
+    res = buildRes();
+    await ctrl.updateStatus(req, res);
+    expect(dep.status).toBe('working_on_it');
+    expect(dep.startedAt).toBeInstanceOf(Date);
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('started', dep, req.user);
+
+    // done
+    req.body.status = 'done';
+    res = buildRes();
+    await ctrl.updateStatus(req, res);
+    expect(dep.status).toBe('done');
+    expect(dep.completedAt).toBeInstanceOf(Date);
+    expect(dep.completedByUserId).toBe('shub-id');
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('done', dep, req.user);
+    // Block-state recomputed three times across this trip.
+    expect(depService.recomputeParentBlockState).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario B — Permission boundary
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario B — permission boundary', () => {
+  it('non-assignee non-elevated user cannot transition status (403)', async () => {
+    // pending → accepted is a VALID state-machine edge — what we're testing
+    // here is that the actor (random-other-id), being neither assignee nor
+    // elevated, gets the 403 from the auth check rather than the 400
+    // transition-validity check.
+    const dep = makeDep({ status: 'pending' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'accepted' },
+      user: makeUser({ id: 'random-other-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      message: 'You do not have permission to update this dependency.',
+    }));
+    expect(dep.save).not.toHaveBeenCalled();
+  });
+
+  it('non-requester non-elevated user cannot cancel (requireRequestManager rejects)', () => {
+    const dep = makeDep({ status: 'pending' });
+    const otherUser = makeUser({ id: 'random-other-id' });
+    const req = { user: otherUser, dependencyRequest: dep };
+    const res = buildRes();
+    const next = jest.fn();
+
+    perm.requireRequestManager(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'You do not have permission to update this dependency.',
+    }));
+  });
+
+  it('assignee can transition (canTransitionRequest passes)', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'accepted' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(dep.status).toBe('accepted');
+    expect(res.status).not.toHaveBeenCalledWith(403);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario C — Rejection
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario C — rejection', () => {
+  it('rejection requires a reason (400 when missing)', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'rejected' }, // no reason
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'rejectionReason is required when rejecting.',
+    }));
+    expect(dep.save).not.toHaveBeenCalled();
+  });
+
+  it('rejection with reason sets rejectedAt + rejectionReason and dispatches "rejected"', async () => {
+    const dep = makeDep({ status: 'working_on_it' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'rejected', reason: 'No bandwidth this sprint' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(dep.status).toBe('rejected');
+    expect(dep.rejectionReason).toBe('No bandwidth this sprint');
+    expect(dep.rejectedAt).toBeInstanceOf(Date);
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('rejected', dep, req.user);
+    expect(depService.recomputeParentBlockState).toHaveBeenCalledWith('task-1');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario D — Multiple dependencies (block until all clear)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario D — multiple deps', () => {
+  it('rejected dep keeps parent considered "blocking" via Phase 5 status set', () => {
+    // Sanity check on the spec contract: rejected is in the BLOCKING set.
+    const real = jest.requireActual('../../services/dependencyService');
+    expect(real.BLOCKING_DR_STATUSES).toEqual(
+      expect.arrayContaining(['pending', 'accepted', 'working_on_it', 'rejected'])
+    );
+    expect(real.BLOCKING_DR_STATUSES).not.toContain('done');
+    expect(real.BLOCKING_DR_STATUSES).not.toContain('cancelled');
+  });
+
+  it('marking one of two deps done still calls recomputeParentBlockState (parent decides)', async () => {
+    // Controller hands off to recomputeParentBlockState; that function reads
+    // the current count and decides. Here we just verify the call happens.
+    const dep = makeDep({ status: 'working_on_it' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'done' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.recomputeParentBlockState).toHaveBeenCalledWith('task-1');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario E — Admin override
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario E — admin override', () => {
+  it('admin who is not a party can transition status (elevated check passes)', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const adminReq = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'done' },
+      user: makeUser({ id: 'admin-1', role: 'admin' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(adminReq, res);
+
+    // pending → done isn't a valid assignee transition (must go through
+    // working_on_it), but admin can NOT skip the state-machine — both
+    // assignee and admin obey STATUS_TRANSITIONS. Verify that.
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('Cannot transition from pending to done'),
+    }));
+  });
+
+  it('admin can transition through valid state-machine edges and audit log records adminOverride=true', async () => {
+    const dep = makeDep({ status: 'working_on_it' });
+    const adminReq = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'done' },
+      user: makeUser({ id: 'admin-1', role: 'admin' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(adminReq, res);
+
+    expect(dep.status).toBe('done');
+    expect(activityService.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'dependency_request_done',
+      meta: expect.objectContaining({
+        from: 'working_on_it',
+        to: 'done',
+        adminOverride: true, // admin not a party to this dep → flagged
+      }),
+    }));
+  });
+
+  it('manager (also elevated) can cancel a row they did not create; audit logs adminOverride=true', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const mgrReq = {
+      params: { dependencyId: 'dep-1' },
+      body: { reason: 'Stale request, closing' },
+      user: makeUser({ id: 'mgr-1', role: 'manager' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.cancelDependency(mgrReq, res);
+
+    expect(dep.status).toBe('cancelled');
+    expect(dep.cancelledAt).toBeInstanceOf(Date);
+    expect(dep.cancellationReason).toBe('Stale request, closing');
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('cancelled', dep, mgrReq.user);
+    expect(activityService.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'dependency_request_cancelled',
+      meta: expect.objectContaining({ adminOverride: true }),
+    }));
+  });
+
+  it('non-elevated requester cancels their own row — adminOverride is false', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const reqUserReq = {
+      params: { dependencyId: 'dep-1' },
+      body: {},
+      user: makeUser({ id: 'sunny-id' }), // sunny is the requester (see makeDep default)
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.cancelDependency(reqUserReq, res);
+
+    expect(dep.status).toBe('cancelled');
+    expect(activityService.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'dependency_request_cancelled',
+      meta: expect.objectContaining({ adminOverride: false }),
+    }));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Bonus — Phase 11 spec wording assertions
+// (Catches future drift away from the canonical error strings.)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Phase 11 — spec-aligned error wording', () => {
+  it('inactive assignee on create returns spec-aligned message', async () => {
+    Task.findByPk.mockResolvedValue({
+      id: 'task-1', title: 't', boardId: 'b', status: 'not_started', isArchived: false,
+      createdBy: 'super-id', assignedTo: 'sunny-id', board: {},
+    });
+    User.findByPk.mockResolvedValue({ id: 'shub-id', name: 'Shubhanshu', isActive: false });
+
+    const req = {
+      params: { taskId: 'task-1' },
+      body: { title: 't', assignedToUserId: 'shub-id' },
+      user: makeUser(),
+    };
+    const res = buildRes();
+
+    await ctrl.createDependencyRequest(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Dependency assignee is inactive. Please choose another user.',
+    }));
+  });
+
+  it('cancelling an already-completed dep returns spec-aligned message', async () => {
+    const dep = makeDep({ status: 'done' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: {},
+      user: makeUser({ id: 'sunny-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.cancelDependency(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'This dependency is already completed.',
+    }));
+  });
+});

@@ -4,15 +4,16 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
   FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
-  Puzzle, Archive, Settings, Link2, GitBranch, PanelLeftClose, PanelLeft,
-  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown, BookOpen,
-  Mic, MessageSquare, RefreshCw
+  Puzzle, Archive, Settings, GitBranch, PanelLeftClose, PanelLeft,
+  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown,
+  MessageSquare, RefreshCw
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
-import useSocket from '../../hooks/useSocket';
+import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
+import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import ProfileModal from '../common/ProfileModal';
 import { canUser, isExplicitlyDenied } from '../../utils/permissions';
 
@@ -81,6 +82,11 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showCreateBoard, setShowCreateBoard] = useState(false);
+  // Workspace context for the create-board modal. `null` means "no workspace"
+  // (i.e. the bottom-of-sidebar "Create new board" button); a workspace id
+  // means the modal was opened from that workspace's three-dot menu and the
+  // new board should land directly inside it.
+  const [boardCreationWorkspace, setBoardCreationWorkspace] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const [wsActionMenu, setWsActionMenu] = useState(null);
@@ -92,17 +98,40 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const [dragBoardId, setDragBoardId] = useState(null);
   const [dragOverWsId, setDragOverWsId] = useState(null);
+  // Per-workspace "Show more / Show less" toggle for the board list. Keyed by
+  // workspace id; absent/false = collapsed (first 3 boards), true = expanded.
+  const [showAllByWorkspace, setShowAllByWorkspace] = useState({});
+  // Workspace currently open in the Rearrange Boards modal, or null when closed.
+  const [rearrangeWorkspace, setRearrangeWorkspace] = useState(null);
+  // Per-user board ordering: { [workspaceId]: [boardId, boardId, ...] }.
+  const [boardOrders, setBoardOrders] = useState({});
   const resizing = useRef(false);
   const wsMenuBtnRef = useRef(null);
   const renameInputRef = useRef(null);
 
   useEffect(() => { loadData(); }, []);
 
-  useSocket('board:created', () => loadData());
-  useSocket('board:updated', () => loadData());
-  useSocket('board:deleted', () => loadData());
-  useSocket('board:memberRemoved', () => loadData());
-  useSocket('board:memberAdded', () => loadData());
+  useRealtimeQuery({ queryKey: 'boards.list', refetch: loadData });
+
+  // Memoized permission flags — used a few times in the workspace menu render.
+  // Computed once per render, not per workspace iteration.
+  const canCreateBoardPerm = canUser(user?.role, 'create_board', isSuperAdmin, permissionGrants, effectivePermissions);
+  const canEditWsPerm = canUser(user?.role, 'edit_workspace', isSuperAdmin, permissionGrants, effectivePermissions);
+
+  // Best-effort guess at the workspace context for the bottom "Create new
+  // board" button. If the user is currently looking at a board, default the
+  // new board to that board's workspace; otherwise leave it null and the
+  // modal will show a workspace selector.
+  function inferCurrentWorkspaceId() {
+    const m = location.pathname.match(/^\/boards\/([0-9a-f-]{36})/i);
+    if (!m) return null;
+    const currentBoard = boards.find(b => b.id === m[1]);
+    return currentBoard?.workspaceId || null;
+  }
+
+  function openRearrangeForWorkspace(ws) {
+    setRearrangeWorkspace(ws || null);
+  }
 
   // Drag-and-drop: move board to a different workspace
   async function handleBoardDrop(boardId, targetWsId) {
@@ -117,9 +146,11 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   async function loadData() {
     try {
-      const [boardsRes, wsRes] = await Promise.all([
+      const [boardsRes, wsRes, ordersRes] = await Promise.all([
         api.get('/boards'),
         api.get('/workspaces/mine'),
+        // Best-effort — older deployments may 404 here. Treat as no ordering.
+        api.get('/board-orders/mine').catch(() => ({ data: { orders: {} } })),
       ]);
       const allBoards = boardsRes.data.boards || boardsRes.data || [];
       setBoards(allBoards);
@@ -127,6 +158,9 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       const myWorkspaces = wsRes.data.workspaces || wsRes.data.data?.workspaces || [];
       setWorkspaces(myWorkspaces);
+
+      const orders = ordersRes?.data?.orders || ordersRes?.data?.data?.orders || {};
+      setBoardOrders(orders);
 
       // Default: open first workspace
       if (myWorkspaces.length > 0) {
@@ -141,12 +175,48 @@ export default function Sidebar({ collapsed, onToggle }) {
     } catch (err) { console.error('Failed to load sidebar data:', err); }
   }
 
+  // Apply the user's saved board order for a given workspace. Boards that
+  // appear in the saved order keep that order; any newer/uncovered boards
+  // fall through after them in their original (server-default) order. Boards
+  // that were removed/archived after saving are skipped silently.
+  function applyUserOrder(wsId, wsBoards) {
+    const order = boardOrders?.[wsId];
+    if (!order || !Array.isArray(order) || order.length === 0) return wsBoards;
+    const idIndex = new Map(order.map((id, i) => [id, i]));
+    const known = [];
+    const unknown = [];
+    for (const b of wsBoards) {
+      if (idIndex.has(b.id)) known.push(b); else unknown.push(b);
+    }
+    known.sort((a, b) => idIndex.get(a.id) - idIndex.get(b.id));
+    return [...known, ...unknown];
+  }
+
   async function handleCreateBoard(data) {
-    const res = await api.post('/boards', data);
+    // The modal already adds workspaceId to the payload when one was provided
+    // via props, but we also defensively merge in the current sidebar state so
+    // that the workspace context can never be silently lost.
+    const payload = { ...data };
+    if (boardCreationWorkspace?.id && !payload.workspaceId) {
+      payload.workspaceId = boardCreationWorkspace.id;
+    }
+    const res = await api.post('/boards', payload);
     const newBoard = res.data.board || res.data;
+    // Auto-expand the workspace where the board was created so the new
+    // entry is immediately visible.
+    if (newBoard?.workspaceId) {
+      setOpenWorkspaces(prev => ({ ...prev, [newBoard.workspaceId]: true }));
+    }
     loadData();
     setShowCreateBoard(false);
+    setBoardCreationWorkspace(null);
     navigate(`/boards/${newBoard.id}`);
+  }
+
+  // Open the create-board modal pre-bound to a specific workspace.
+  function openCreateBoardForWorkspace(ws) {
+    setBoardCreationWorkspace(ws || null);
+    setShowCreateBoard(true);
   }
 
   function toggleFavorite(e, boardId) {
@@ -348,9 +418,6 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label="Tasks & Workflows" path="/tasks" tourId="nav-tasks" />
             <NavItem icon={RefreshCw} label="Recurring Work" path="/recurring-work" tourId="nav-recurring-work" />
-            <NavItem icon={Link2} label="Dependencies" path="/cross-team" />
-            <NavItem icon={Mic} label="Notes" path="/notes" tourId="nav-notes" />
-            <NavItem icon={BookOpen} label="Help & SOP" path="/profile#sop" tourId="nav-helpsop" />
           </nav>
 
           {(canManage || !!granularPermissions['dashboard.view']) && (
@@ -443,9 +510,12 @@ export default function Sidebar({ collapsed, onToggle }) {
           {/* Dynamic Workspaces */}
           <div className="px-2 pb-2 space-y-1">
             {workspaces.map(ws => {
-              const wsBoards = (ws.boards || []).filter(b =>
+              const wsBoardsRaw = (ws.boards || []).filter(b =>
                 !searchQuery || b.name.toLowerCase().includes(searchQuery.toLowerCase())
               );
+              // Apply per-user ordering before the show-more slicing kicks in
+              // so the user's preference is respected at the top of the list.
+              const wsBoards = applyUserOrder(ws.id, wsBoardsRaw);
               const isOpen = openWorkspaces[ws.id] !== false;
 
               return (
@@ -487,8 +557,13 @@ export default function Sidebar({ collapsed, onToggle }) {
                     )}
                     <ChevronDown size={13} className={`text-sidebar-text/40 transition-transform duration-150 flex-shrink-0 ${isOpen ? '' : '-rotate-90'}`} />
                   </button>
-                  {/* Workspace hover menu — admin/super_admin only */}
-                  {canUser(user?.role, 'edit_workspace', isSuperAdmin, permissionGrants, effectivePermissions) && (
+                  {/* Workspace hover menu — visible to anyone who has at
+                      least one applicable workspace action. We deliberately
+                      check create_board AND edit_workspace separately because
+                      an assistant_manager with the board-create grant should
+                      still see "Create Board / Rearrange Boards" even though
+                      they can't rename or archive the workspace. */}
+                  {(canCreateBoardPerm || canEditWsPerm) && (
                     <div className="absolute right-2 top-1 opacity-0 group-hover/ws:opacity-100 transition-opacity z-10">
                       <div className="relative">
                         <button onClick={(e) => { e.stopPropagation(); setWsActionMenu(wsActionMenu === ws.id ? null : ws.id); }}
@@ -496,33 +571,74 @@ export default function Sidebar({ collapsed, onToggle }) {
                           <MoreHorizontal size={13} />
                         </button>
                         {wsActionMenu === ws.id && (
-                          <div className="absolute right-0 top-full mt-1 w-44 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
+                          <div className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
                             onMouseLeave={() => setWsActionMenu(null)}>
-                            <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                              <Edit3 size={12} /> Rename
-                            </button>
-                            <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
-                              <Archive size={12} /> Archive Workspace
-                            </button>
+                            {canCreateBoardPerm && (
+                              <button onClick={() => { setWsActionMenu(null); openCreateBoardForWorkspace(ws); }}
+                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                                <Plus size={12} /> Create Board
+                              </button>
+                            )}
+                            {canCreateBoardPerm && (
+                              <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
+                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                                <ArrowUpDown size={12} /> Rearrange Boards
+                              </button>
+                            )}
+                            {canEditWsPerm && (
+                              <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
+                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                                <Edit3 size={12} /> Rename
+                              </button>
+                            )}
+                            {canEditWsPerm && (
+                              <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
+                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
+                                <Archive size={12} /> Archive Workspace
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
                     </div>
                   )}
 
-                  {isOpen && (
-                    <div className="ml-4 mt-0.5 border-l border-sidebar-border pl-1 animate-fade-in">
-                      {wsBoards.map(board => renderBoardItem(board))}
-                      {wsBoards.length === 0 && searchQuery && (
-                        <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards match</p>
-                      )}
-                      {wsBoards.length === 0 && !searchQuery && (
-                        <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards yet</p>
-                      )}
-                    </div>
-                  )}
+                  {isOpen && (() => {
+                    // Per-workspace "show more / show less" — collapse to the
+                    // first 3 boards by default, with a toggle to reveal the
+                    // rest. The active board (if any) is always kept visible
+                    // even when collapsed so the user never loses context.
+                    const BOARD_LIMIT = 3;
+                    const showAll = !!showAllByWorkspace[ws.id];
+                    const hasMore = wsBoards.length > BOARD_LIMIT;
+                    let visible = showAll || !hasMore ? wsBoards : wsBoards.slice(0, BOARD_LIMIT);
+                    if (!showAll && hasMore) {
+                      const activeBoard = wsBoards.find(b => isBoardActive(b.id));
+                      if (activeBoard && !visible.some(b => b.id === activeBoard.id)) {
+                        visible = [...visible, activeBoard];
+                      }
+                    }
+                    const hiddenCount = Math.max(0, wsBoards.length - BOARD_LIMIT);
+                    return (
+                      <div className="ml-4 mt-0.5 border-l border-sidebar-border pl-1 animate-fade-in">
+                        {visible.map(board => renderBoardItem(board))}
+                        {hasMore && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setShowAllByWorkspace(prev => ({ ...prev, [ws.id]: !showAll })); }}
+                            className="flex items-center gap-1.5 w-full px-3 py-1 text-[11px] text-sidebar-text/60 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors">
+                            <ChevronDown size={11} className={`transition-transform duration-150 ${showAll ? 'rotate-180' : ''}`} />
+                            {showAll ? 'Show less' : `Show ${hiddenCount} more`}
+                          </button>
+                        )}
+                        {wsBoards.length === 0 && searchQuery && (
+                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards match</p>
+                        )}
+                        {wsBoards.length === 0 && !searchQuery && (
+                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards yet</p>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -560,10 +676,18 @@ export default function Sidebar({ collapsed, onToggle }) {
             </div>
           )}
 
-          {/* Create Board — manager/admin/super_admin only */}
-          {canUser(user?.role, 'create_board', isSuperAdmin, permissionGrants, effectivePermissions) && (
+          {/* Create Board — visible to anyone with create_board permission.
+              The bottom button defaults to the workspace of the board the
+              user is currently looking at (if any). When there is no inferred
+              workspace, the modal forces the user to pick one. */}
+          {canCreateBoardPerm && (
             <div className="px-2 pb-4">
-              <button onClick={() => setShowCreateBoard(true)}
+              <button onClick={() => {
+                  const inferredWsId = inferCurrentWorkspaceId();
+                  const inferredWs = inferredWsId ? workspaces.find(w => w.id === inferredWsId) : null;
+                  setBoardCreationWorkspace(inferredWs || null);
+                  setShowCreateBoard(true);
+                }}
                 className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
                 <FolderKanban size={14} /> Create new board
               </button>
@@ -617,11 +741,42 @@ export default function Sidebar({ collapsed, onToggle }) {
       )}
 
       {/* Create Board Modal */}
-      {showCreateBoard && (
-        <CreateBoardModal
-          isOpen={showCreateBoard}
-          onClose={() => setShowCreateBoard(false)}
-          onSubmit={handleCreateBoard}
+      {showCreateBoard && (() => {
+        // When opened from a workspace dropdown, bias the random color picker
+        // to avoid colors already used by boards in that same workspace and
+        // pin the modal to that workspace. When opened from the bottom button
+        // with no inferred workspace, hand the modal the full workspace list
+        // so the user must pick one.
+        const ws = boardCreationWorkspace;
+        const usedColors = ws
+          ? (workspaces.find(w => w.id === ws.id)?.boards || []).map(b => b.color).filter(Boolean)
+          : [];
+        return (
+          <CreateBoardModal
+            isOpen={showCreateBoard}
+            onClose={() => { setShowCreateBoard(false); setBoardCreationWorkspace(null); }}
+            onSubmit={handleCreateBoard}
+            workspaceId={ws?.id || null}
+            workspaceName={ws?.name || ''}
+            usedColors={usedColors}
+            availableWorkspaces={ws ? [] : workspaces}
+          />
+        );
+      })()}
+
+      {/* Rearrange Boards Modal */}
+      {rearrangeWorkspace && (
+        <RearrangeBoardsModal
+          workspace={rearrangeWorkspace}
+          boards={applyUserOrder(rearrangeWorkspace.id, rearrangeWorkspace.boards || [])}
+          onClose={() => setRearrangeWorkspace(null)}
+          onSaved={(boardIds) => {
+            // Optimistic local update so the sidebar reflects the new order
+            // immediately, before the next loadData() fetches the server view.
+            setBoardOrders(prev => ({ ...prev, [rearrangeWorkspace.id]: boardIds }));
+            setRearrangeWorkspace(null);
+            loadData();
+          }}
         />
       )}
 

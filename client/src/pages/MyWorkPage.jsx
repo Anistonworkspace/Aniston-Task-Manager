@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import api from '../services/api';
 import Avatar from '../components/common/Avatar';
-import useSocket from '../hooks/useSocket';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 
@@ -29,10 +29,14 @@ export default function MyWorkPage() {
 
   useEffect(() => { loadTasks(); }, []);
 
-  // Live updates
-  useSocket('task:created', () => loadTasks());
-  useSocket('task:updated', () => loadTasks());
-  useSocket('task:unblocked', () => loadTasks());
+  // Live updates — every task event for the current user (assignment,
+  // status change, archive, unblock, delegation) lands on this queryKey
+  // via the eventRouter. One declaration replaces the old chain of
+  // per-event listeners.
+  useRealtimeQuery({
+    queryKey: 'tasks.assignedTo.me',
+    refetch: loadTasks,
+  });
 
   async function loadTasks() {
     try {

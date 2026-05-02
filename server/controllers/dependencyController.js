@@ -1,9 +1,11 @@
-const { Task, TaskDependency, User, Notification, Board } = require('../models');
+const { Task, TaskDependency, DependencyRequest, User, Notification, Board } = require('../models');
 const { Op } = require('sequelize');
-const { emitToUser, emitToBoard } = require('../services/socketService');
+const { emitToUser } = require('../services/socketService');
+const realtime = require('../services/realtimeService');
 const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
+const dependencyRequestController = require('./dependencyRequestController');
 
 /**
  * GET /api/tasks/:taskId/dependencies
@@ -45,19 +47,59 @@ const getTaskDependencies = async (req, res) => {
       ],
     });
 
-    const isBlocked = blockedBy.some(d =>
+    const isBlockedByLegacy = blockedBy.some(d =>
       d.dependsOnTask && d.dependsOnTask.status !== 'done' &&
       ['blocks', 'required_for'].includes(d.dependencyType)
     );
 
+    // Surface the new DependencyRequest rows alongside the legacy
+    // task-to-task links so the frontend can read both shapes from one call.
+    // The frontend will gradually move to consume `dependencyRequests` and
+    // ignore `blockedBy`/`blocking` for delegated work.
+    const dependencyRequests = await DependencyRequest.findAll({
+      where: { parentTaskId: taskId, archivedAt: null },
+      include: [
+        { model: User, as: 'requestedBy', attributes: ['id', 'name', 'avatar', 'role'] },
+        { model: User, as: 'assignedTo',  attributes: ['id', 'name', 'avatar', 'role'] },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    const isBlockedByRequests = dependencyRequests.some(d =>
+      ['pending', 'accepted', 'working_on_it', 'rejected'].includes(d.status)
+    );
+
     res.json({
       success: true,
-      data: { blockedBy, blocking, isBlocked },
+      data: {
+        blockedBy,
+        blocking,
+        dependencyRequests,
+        isBlocked: isBlockedByLegacy || isBlockedByRequests,
+      },
     });
   } catch (error) {
     console.error('[Dependency] Get error:', error);
     res.status(500).json({ success: false, message: 'Server error fetching dependencies.' });
   }
+};
+
+/**
+ * Dispatcher for POST /api/tasks/:taskId/dependencies.
+ *
+ * Two body shapes are accepted at the same URL:
+ *   - { dependsOnTaskId, ... }       → legacy task-to-task link (TaskDependency)
+ *   - { assignedToUserId, title, ... } → new DependencyRequest (delegated work)
+ *
+ * The new behaviour is the default — any caller that doesn't pass
+ * `dependsOnTaskId` lands in the new request handler. This is what the spec
+ * calls for and what the existing UI's Add Dependency dialog will use.
+ */
+const createDependencyOrRequest = async (req, res) => {
+  if (req.body?.dependsOnTaskId && !req.body?.assignedToUserId && !req.body?.assignToUserId) {
+    return createDependency(req, res);
+  }
+  return dependencyRequestController.createDependencyRequest(req, res);
 };
 
 /**
@@ -217,12 +259,25 @@ const delegateTask = async (req, res) => {
       entityId: taskId,
       userId: toUserId,
     });
+    // Bell update for the new assignee (notification:new is a low-level
+    // primitive, kept as-is — no fan-out needed).
     emitToUser(toUserId, 'notification:new', { notification });
+    // Targeted "you got delegated something" event for the new assignee
+    // (TaskModal / MyWork can show a banner).
     emitToUser(toUserId, 'task:delegated', { taskId, title: task.title, fromUser: req.user.name, notes });
-
-    if (task.boardId) {
-      emitToBoard(task.boardId, 'task:updated', { task: { ...task.toJSON(), assignedTo: toUserId } });
-    }
+    // Realtime task update — fans out to board + assignees + watchers + the
+    // PREVIOUS assignee (so their MyWork drops the row) and the new one
+    // (so theirs picks it up). previousAssigneeId may be null if the task
+    // was unassigned before delegation.
+    const previousAssigneeId = task.assignedTo === toUserId ? null : task.assignedTo;
+    realtime.emitTaskUpdated(
+      { ...task.toJSON(), assignedTo: toUserId },
+      {
+        actorId: req.user.id,
+        changedFields: ['assignedTo'],
+        extraUserIds: [toUserId, previousAssigneeId].filter(Boolean),
+      }
+    );
 
     logActivity({
       action: 'task_delegated',
@@ -306,99 +361,17 @@ const getCrossTeamDependencies = async (req, res) => {
 };
 
 /**
- * POST /api/tasks/:taskId/dependencies/assign
- * Employee assigns a dependency to another employee.
- * Creates a new task assigned to the target employee and links it as a dependency.
+ * POST /api/tasks/:taskId/dependencies/assign  (legacy URL — preserved)
+ *
+ * Used to create a placeholder Task on the assignee's board and link it via
+ * TaskDependency. That was the source of the "random duplicate task" bug.
+ *
+ * Now: thin shim that delegates to dependencyRequestController.createDependencyRequest,
+ * which writes a DependencyRequest row and never creates a Task. Body shape
+ * stays compatible — `assignToUserId`/`description` are accepted as aliases
+ * for `assignedToUserId`/`blockingReason` inside the new handler.
  */
-const assignDependency = async (req, res) => {
-  try {
-    const { taskId } = req.params;
-    const { assignToUserId, title, description, dependencyType } = req.body;
-
-    if (!assignToUserId) {
-      return res.status(400).json({ success: false, message: 'assignToUserId is required.' });
-    }
-    if (!title || !title.trim()) {
-      return res.status(400).json({ success: false, message: 'Task title is required.' });
-    }
-
-    // Verify current task exists
-    const currentTask = await Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId', 'status'] });
-    if (!currentTask) {
-      return res.status(404).json({ success: false, message: 'Task not found.' });
-    }
-
-    // Mirror the createDependency rule — once a task is done, no new
-    // dependencies can be assigned out of it.
-    if (currentTask.status === 'done') {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot add a dependency to a completed task. Reopen the task first.',
-      });
-    }
-
-    // Verify target user exists
-    const targetUser = await User.findByPk(assignToUserId, { attributes: ['id', 'name', 'email'] });
-    if (!targetUser) {
-      return res.status(404).json({ success: false, message: 'Target user not found.' });
-    }
-
-    // Create new task assigned to the target employee on the same board
-    const newTask = await Task.create({
-      title: title.trim(),
-      description: description || '',
-      boardId: currentTask.boardId,
-      assignedTo: assignToUserId,
-      createdBy: req.user.id,
-      status: 'not_started',
-      priority: 'medium',
-      position: 0,
-    });
-
-    // Create dependency: current task depends on the new task
-    const dep = await depService.createDependency({
-      taskId,
-      dependsOnTaskId: newTask.id,
-      dependencyType: dependencyType || 'blocks',
-      autoAssignOnComplete: false,
-      createdById: req.user.id,
-    });
-
-    // Notify the assigned employee
-    const notification = await Notification.create({
-      type: 'task_assigned',
-      message: `${req.user.name} assigned you a dependency task: "${title.trim()}"`,
-      entityType: 'task',
-      entityId: newTask.id,
-      userId: assignToUserId,
-    });
-    emitToUser(assignToUserId, 'notification:new', { notification });
-    emitToBoard(currentTask.boardId, 'task:created', { task: newTask });
-
-    logActivity({
-      action: 'dependency_assigned',
-      description: `${req.user.name} assigned dependency "${title.trim()}" to ${targetUser.name}`,
-      entityType: 'task',
-      entityId: taskId,
-      taskId,
-      boardId: currentTask.boardId,
-      userId: req.user.id,
-      meta: { assignedToUserId: assignToUserId, newTaskId: newTask.id },
-    });
-
-    res.status(201).json({
-      success: true,
-      message: `Dependency assigned to ${targetUser.name} successfully.`,
-      data: { task: newTask, dependency: dep },
-    });
-  } catch (error) {
-    if (error.message.includes('circular') || error.message.includes('already exists')) {
-      return res.status(400).json({ success: false, message: error.message });
-    }
-    console.error('[Dependency] Assign error:', error);
-    res.status(500).json({ success: false, message: 'Server error assigning dependency.' });
-  }
-};
+const assignDependency = (req, res) => dependencyRequestController.createDependencyRequest(req, res);
 
 /**
  * PUT /api/tasks/:taskId/dependencies/:dependencyId/archive
@@ -540,4 +513,4 @@ const restoreDependency = async (req, res) => {
   }
 };
 
-module.exports = { getTaskDependencies, createDependency, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency, archiveDependency, getArchivedDependencies, permanentDeleteDependency, restoreDependency };
+module.exports = { getTaskDependencies, createDependency, createDependencyOrRequest, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency, archiveDependency, getArchivedDependencies, permanentDeleteDependency, restoreDependency };

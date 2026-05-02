@@ -1,13 +1,14 @@
 const { Board, User, Task, Workspace, TaskOwner, TaskAssignee, sequelize } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
-const { emitToBoard, emitToUser } = require('../services/socketService');
+const { emitToBoard, emitToUser, forceUserLeaveBoard } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isValidStatus } = require('../utils/statusConfig');
 const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritization');
 const { safeUUIDList } = require('../utils/safeSql');
 const boardMembershipService = require('../services/boardMembershipService');
+const taskVisibility = require('../services/taskVisibilityService');
 
 // ── Table / column existence cache ──
 const _tblCache = {};
@@ -41,7 +42,20 @@ const createBoard = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { name, description, color, columns, groups } = req.body;
+    const { name, description, color, columns, groups, workspaceId } = req.body;
+
+    // Validate workspace exists when one is provided. We do not enforce that
+    // the caller is a member of the workspace here — the route is already
+    // gated to manager/admin via boardMutate, and managers/admins implicitly
+    // see all workspaces in the sidebar.
+    let resolvedWorkspaceId = null;
+    if (workspaceId) {
+      const ws = await Workspace.findByPk(workspaceId);
+      if (!ws) {
+        return res.status(400).json({ success: false, message: 'Workspace not found.' });
+      }
+      resolvedWorkspaceId = ws.id;
+    }
 
     const board = await Board.create({
       name: sanitizeInput(name),
@@ -49,6 +63,7 @@ const createBoard = async (req, res) => {
       color: color || '#0073ea',
       columns: columns || undefined,
       groups: groups || undefined,
+      workspaceId: resolvedWorkspaceId,
       createdBy: req.user.id,
     });
 
@@ -231,6 +246,9 @@ const getBoard = async (req, res) => {
             { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
             { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
             { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
+            // Eager-load taskAssignees so taskVisibility.filterVisibleTasks
+            // can decide visibility in memory without N+1 lookups.
+            { model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'], required: false },
           ],
           limit: 500,
         },
@@ -241,26 +259,28 @@ const getBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Access control for non-admin/manager/assistant_manager users
+    // ── Stage 1: Board reachability (separate from task-row visibility) ──
+    // Admin / super_admin / manager / assistant_manager can REACH any board
+    // (sidebar / direct URL). Members must be linked via explicit membership,
+    // task assignment, or task ownership. NOTE: reaching the board does NOT
+    // imply they see every task on it — Stage 2 below filters task rows
+    // independently by hierarchy (CP-3 RBAC).
     const role = req.user.role;
     const isSuperAdmin = !!req.user.isSuperAdmin;
     if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
       const userId = req.user.id;
 
-      // Build the set of user IDs this person can "see through"
+      // Build the set of user IDs this person can "see through" for the
+      // reachability check (members can also reach a board through their
+      // direct reports' assignments).
       let visibleUserIds = [userId];
-      if (role === 'assistant_manager') {
-        const teamMembers = await User.findAll({
-          where: { managerId: userId },
-          attributes: ['id'],
-          raw: true,
-        });
-        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
-      }
+      const teamMembers = await User.findAll({
+        where: { managerId: userId },
+        attributes: ['id'],
+        raw: true,
+      });
+      visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
 
-      // Check explicit (non-auto-added) board membership.
-      // We don't use the eager-loaded board.members here because it includes
-      // stale auto-added rows that should not grant access after unassignment.
       let isExplicitMember = false;
       const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
       if (hasAutoAddedCol) {
@@ -270,14 +290,12 @@ const getBoard = async (req, res) => {
         );
         isExplicitMember = explicitRows.length > 0;
       } else {
-        // Fallback: if autoAdded column doesn't exist, trust all BoardMembers rows
         isExplicitMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
       }
 
       const hasAssignedTasks = board.tasks && board.tasks.some((t) => visibleUserIds.includes(t.assignedTo));
       const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => visibleUserIds.includes(o.id)));
 
-      // Also check task_assignees table (not loaded via eager-load above)
       let isTaskAssignee = false;
       if (!isExplicitMember && !hasAssignedTasks && !isTaskOwner) {
         const assigneeCount = await TaskAssignee.count({
@@ -297,9 +315,27 @@ const getBoard = async (req, res) => {
       }
     }
 
-    const tasksTruncated = board.tasks && board.tasks.length >= 500;
-    const responseData = { board };
-    if (tasksTruncated) {
+    // ── Stage 2: Task-row visibility (CP-3 strict RBAC) ──
+    // Filter the eager-loaded tasks down to rows the viewer is permitted to
+    // see by hierarchy. Admin / super_admin pass through unchanged. Manager,
+    // assistant_manager and member only see tasks where assignee / creator /
+    // owner / task_assignees user is inside their { self ∪ descendants }
+    // set. Board membership is NOT a shortcut — even an explicit
+    // BoardMember-manager added to a board outside their subtree only sees
+    // their own subtree's rows.
+    let visibleTasks = board.tasks || [];
+    const tasksAlreadyTruncated = visibleTasks.length >= 500;
+    if (!isSuperAdmin && role !== 'admin' && visibleTasks.length > 0) {
+      visibleTasks = await taskVisibility.filterVisibleTasks(req.user, visibleTasks);
+    }
+
+    // Replace board.tasks with the filtered list. Sequelize models use a
+    // private setter for associations — fall back to the JSON path if needed.
+    const boardJSON = board.toJSON();
+    boardJSON.tasks = visibleTasks.map((t) => (t.toJSON ? t.toJSON() : t));
+
+    const responseData = { board: boardJSON };
+    if (tasksAlreadyTruncated) {
       responseData.warning = 'This board has more than 500 tasks. Only the first 500 tasks are shown. Use filters to narrow results.';
     }
 
@@ -598,6 +634,14 @@ const removeMember = async (req, res) => {
 
     const removedUser = await User.findByPk(userId, { attributes: ['id', 'name'] });
     await board.removeMember(userId);
+
+    // Phase 4 — kick the removed user's sockets out of the board room so
+    // they stop receiving emitToBoard broadcasts they're no longer
+    // authorised to see (their next API GET will 403, but until then the
+    // socket would happily forward live data they shouldn't have).
+    forceUserLeaveBoard(userId, board.id).catch((err) =>
+      console.warn('[Board] forceUserLeaveBoard (removeMember) failed:', err.message)
+    );
 
     emitToUser(userId, 'board:memberRemoved', {
       boardId: board.id,

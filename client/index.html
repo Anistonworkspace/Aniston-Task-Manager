@@ -11,6 +11,24 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>Monday Aniston</title>
+    <script>
+      // Apply the saved font-size preference before React mounts so the very
+      // first paint is already at the correct scale (no "default → user-pref"
+      // flash on cold reload). FontSizeContext owns the value at runtime; this
+      // script just primes the <html> attribute from localStorage.
+      (function () {
+        try {
+          var v = localStorage.getItem('fontSizePreference');
+          var allowed = ['compact', 'default', 'comfortable', 'large'];
+          document.documentElement.setAttribute(
+            'data-font-size',
+            allowed.indexOf(v) >= 0 ? v : 'default'
+          );
+        } catch (_) {
+          document.documentElement.setAttribute('data-font-size', 'default');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

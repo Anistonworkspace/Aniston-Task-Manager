@@ -8,7 +8,8 @@ import { DragDropContext } from '@hello-pangea/dnd';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useUndo } from '../context/UndoContext';
-import useSocket from '../hooks/useSocket';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { joinBoard, leaveBoard } from '../services/socket';
 import { DEFAULT_COLUMNS, getBoardStatuses } from '../utils/constants';
 import TaskGroup from '../components/board/TaskGroup';
@@ -236,53 +237,70 @@ export default function BoardPage() {
     });
   }, []);
 
-  // ── Subtask socket events ────────────────────────────────────────────
-  // BoardSubtaskSection (when mounted) maintains its own list via these
-  // same events, but we also bump the parent's subtaskTotal so the badge
-  // updates even when the row is collapsed.
-  useSocket('subtask:created', (data) => {
-    if (!data?.taskId) return;
-    setTasks(prev => prev.map(t => t.id === data.taskId
+  // ── Realtime subscription via the Phase 3 invalidation registry ─────
+  //
+  // ONE queryKey replaces the old chain of useSocket('task:created'/...)
+  // listeners. The eventRouter knows that any task/subtask/dependency event
+  // for THIS board invalidates `tasks.board.<boardId>`, so loadTasks() runs
+  // once. No more hand-maintaining "which 11 events make this page refetch?".
+  useRealtimeQuery({
+    queryKey: `tasks.board.${boardId}`,
+    refetch: loadTasks,
+    enabled: !!boardId,
+  });
+
+  // The events below still need the raw payload because they patch state
+  // in place rather than refetching — keeping the row stable, preserving
+  // scroll position, avoiding flicker on every status flip.
+
+  // task:updated → patch in place (groupId / status / fields).
+  useRealtimeEvent('task:updated', (data) => {
+    const tBoardId = data?.boardId || data?.task?.boardId;
+    if (tBoardId !== boardId) return;
+    const tId = data?.taskId || data?.task?.id;
+    if (!tId) return;
+    setTasks(prev => prev.map(t => t.id === tId ? { ...t, ...(data.task || {}) } : t));
+  });
+
+  // task:deleted → drop the row immediately so the user sees it disappear
+  // before the refetch fires.
+  useRealtimeEvent('task:deleted', (data) => {
+    const tId = data?.taskId;
+    if (tId) setTasks(prev => prev.filter(t => t.id !== tId));
+  });
+
+  // board:updated → swap the board metadata (name, columns, groups).
+  useRealtimeEvent('board:updated', (data) => {
+    if (data?.board?.id === boardId) setBoard(data.board);
+  });
+
+  // Subtask badge bumps — keep the count accurate even when the section is
+  // collapsed (BoardSubtaskSection handles itself when expanded).
+  useRealtimeEvent('subtask:created', (data) => {
+    const tId = data?.taskId;
+    if (!tId) return;
+    setTasks(prev => prev.map(t => t.id === tId
       ? { ...t, subtaskTotal: (t.subtaskTotal || 0) + 1 }
       : t));
   });
-  useSocket('subtask:updated', (data) => {
-    if (!data?.taskId || !data?.subtask) return;
-    // Status flips can change the done-count; we don't have the full list
-    // here, so leave the task badge alone unless the section is mounted
-    // (which already updates via onCountsChange).
-  });
-  useSocket('subtask:deleted', (data) => {
-    if (!data?.taskId) return;
-    setTasks(prev => prev.map(t => t.id === data.taskId
+  useRealtimeEvent('subtask:deleted', (data) => {
+    const tId = data?.taskId;
+    if (!tId) return;
+    setTasks(prev => prev.map(t => t.id === tId
       ? { ...t, subtaskTotal: Math.max(0, (t.subtaskTotal || 0) - 1) }
       : t));
   });
 
-  useSocket('task:created', (data) => { if (data?.task?.boardId === boardId) loadTasks(); });
-  useSocket('task:updated', (data) => {
-    if (data?.task?.boardId === boardId) {
-      setTasks(prev => prev.map(t => t.id === data.task.id ? { ...t, ...data.task } : t));
-    }
-  });
-  useSocket('task:deleted', (data) => { if (data?.taskId) setTasks(prev => prev.filter(t => t.id !== data.taskId)); });
-  useSocket('tasks:reordered', () => loadTasks());
-  useSocket('board:updated', (data) => { if (data?.board?.id === boardId) setBoard(data.board); });
-
-  // Approval flow updates — patches just the approvalFlows array on the affected
-  // task so the multi-step indicator on TaskRow re-renders without refetching.
-  // Also mirrors the patch into selectedTask so the TaskModal's ApprovalSection
-  // tab refreshes live (selectedTask is its own state, not derived from tasks).
-  useSocket('task:approval-updated', (data) => {
+  // Approval flows — patch the in-row indicator AND any open TaskModal
+  // (selectedTask is its own piece of state).
+  useRealtimeEvent('task:approval-updated', (data) => {
     if (!data?.taskId || !Array.isArray(data?.flows)) return;
     setTasks(prev => prev.map(t => t.id === data.taskId ? { ...t, approvalFlows: data.flows } : t));
     setSelectedTask(prev => (prev && prev.id === data.taskId ? { ...prev, approvalFlows: data.flows } : prev));
   });
 
-  // Receipt events: server emits only for mutations (delivered/seen). The
-  // payload targets the task's creator — ignore if the current viewer isn't
-  // the assigner (they'd have no receipt row anyway).
-  useSocket('task:receipt', (data) => {
+  // Receipts — only the assigner (creator) has a receipt row; skip otherwise.
+  useRealtimeEvent('task:receipt', (data) => {
     if (!data?.taskId || !data?.summary) return;
     if (data.boardId && data.boardId !== boardId) return;
     if (data.createdBy && user?.id && data.createdBy !== user.id) return;
@@ -350,7 +368,16 @@ export default function BoardPage() {
       }
     } catch (err) {
       console.error('[BoardPage] handleTaskUpdate error:', err);
-      toastError('Failed to update task. Please try again.');
+      // 4xx responses already surface their specific server messages via
+      // the global api-error → toast pipeline (e.g. "Dependency owners
+      // cannot complete the parent task..."). Showing a generic "Failed to
+      // update task" on top would contradict the real reason. Reserve the
+      // generic toast for network failures and 5xx where the user has no
+      // other useful text to read.
+      const status = err.response?.status;
+      if (!status || status >= 500) {
+        toastError('Failed to update task. Please try again.');
+      }
     }
   }
 

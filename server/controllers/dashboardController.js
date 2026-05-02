@@ -2,6 +2,21 @@ const { Task, Board, User, Activity, WorkLog, Subtask } = require('../models');
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
+const taskVisibility = require('../services/taskVisibilityService');
+
+/**
+ * Merge the CP-3 task visibility WHERE-fragment into an existing where clause.
+ * Returns the same `where` object (mutated). Admin / super_admin pass through
+ * with no change.
+ */
+async function applyVisibilityWhere(viewer, where) {
+  const fragment = await taskVisibility.buildTaskVisibilityWhere(viewer);
+  if (fragment && fragment[Op.and]) {
+    if (!where[Op.and]) where[Op.and] = [];
+    for (const f of fragment[Op.and]) where[Op.and].push(f);
+  }
+  return where;
+}
 
 /**
  * GET /api/dashboard/stats?boardId=...
@@ -19,10 +34,9 @@ const getDashboardStats = async (req, res) => {
 
     const taskWhere = { isArchived: false, ...boardFilter };
 
-    // If member, only their tasks
-    if (req.user.role === 'member') {
-      taskWhere.assignedTo = req.user.id;
-    }
+    // CP-3 RBAC: scope tasks to the viewer's allowed user-set (admin/super_admin
+    // unrestricted, manager/assistant_manager/member → self + descendants).
+    await applyVisibilityWhere(req.user, taskWhere);
 
     const tasks = await Task.findAll({
       where: taskWhere,
@@ -88,12 +102,14 @@ const getDashboardStats = async (req, res) => {
       if (plain.priority) m.priorityCounts[plain.priority] = (m.priorityCounts[plain.priority] || 0) + 1;
     });
 
-    // Recent activity (last 20)
+    // Recent activity (last 20) — scope to visible tasks for non-admin viewers.
     const activityWhere = {};
     if (boardId) activityWhere.boardId = boardId;
-    if (req.user.role === 'member') {
-      const myTaskIds = tasks.map(t => t.id);
-      activityWhere.taskId = { [Op.in]: myTaskIds };
+    const isUnrestricted = req.user.isSuperAdmin || req.user.role === 'admin';
+    if (!isUnrestricted) {
+      const visibleTaskIds = tasks.map(t => t.id);
+      // If the viewer has no visible tasks, don't surface ANY activity.
+      activityWhere.taskId = { [Op.in]: visibleTaskIds.length ? visibleTaskIds : [null] };
     }
 
     const recentActivity = await Activity.findAll({
@@ -103,14 +119,14 @@ const getDashboardStats = async (req, res) => {
       limit: 20,
     });
 
-    // Recent work logs (last 15)
+    // Recent work logs (last 15) — scope to visible tasks for non-admin viewers.
     const worklogWhere = {};
-    if (boardId) {
+    if (!isUnrestricted) {
+      const visibleTaskIds = tasks.map(t => t.id);
+      worklogWhere.taskId = { [Op.in]: visibleTaskIds.length ? visibleTaskIds : [null] };
+    } else if (boardId) {
       const boardTaskIds = tasks.map(t => t.id);
       worklogWhere.taskId = { [Op.in]: boardTaskIds };
-    }
-    if (req.user.role === 'member') {
-      worklogWhere.userId = req.user.id;
     }
 
     const recentWorklogs = await WorkLog.findAll({
@@ -124,22 +140,31 @@ const getDashboardStats = async (req, res) => {
     });
 
     // Board summary (if not filtering by single board)
+    // CP-3 RBAC: only count tasks the viewer can see. We re-aggregate from the
+    // already-filtered `tasks` array rather than running a fresh unscoped query.
     let boards = [];
-    if (!boardId && req.user.role !== 'member') {
-      boards = await Board.findAll({
+    if (!boardId) {
+      const allBoards = await Board.findAll({
         where: { isArchived: false },
         attributes: ['id', 'name', 'color'],
-        include: [{ model: Task, as: 'tasks', attributes: ['id', 'status'], where: { isArchived: false }, required: false }],
       });
-      boards = boards.map(b => {
+      const tasksByBoard = new Map();
+      for (const t of tasks) {
+        const bid = t.boardId;
+        if (!tasksByBoard.has(bid)) tasksByBoard.set(bid, { total: 0, done: 0 });
+        const agg = tasksByBoard.get(bid);
+        agg.total += 1;
+        if (t.status === 'done') agg.done += 1;
+      }
+      boards = allBoards.map(b => {
         const plain = b.toJSON();
-        const boardTasks = plain.tasks || [];
+        const agg = tasksByBoard.get(plain.id) || { total: 0, done: 0 };
         return {
           id: plain.id,
           name: plain.name,
           color: plain.color,
-          totalTasks: boardTasks.length,
-          doneTasks: boardTasks.filter(t => t.status === 'done').length,
+          totalTasks: agg.total,
+          doneTasks: agg.done,
         };
       });
     }
@@ -248,6 +273,15 @@ const getMemberTasks = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
+    // CP-3 RBAC: requested member must be inside the viewer's allowed user-set.
+    const scope = await taskVisibility.getVisibleUserIdsForViewer(req.user);
+    if (!scope.unrestricted && !(scope.userIds || []).includes(userId)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. This user is not in your reporting subtree.',
+      });
+    }
+
     const taskWhere = { assignedTo: userId, isArchived: false };
     if (boardId) taskWhere.boardId = boardId;
 
@@ -292,9 +326,9 @@ const getEnterpriseDashboard = async (req, res) => {
     const today = new Date().toISOString().slice(0, 10);
     const taskWhere = { isArchived: false };
 
-    if (req.user.role === 'member') {
-      taskWhere.assignedTo = req.user.id;
-    }
+    // CP-3 RBAC: scope to the viewer's allowed user-set (admin/super_admin
+    // unrestricted; everyone else → self + descendants).
+    await applyVisibilityWhere(req.user, taskWhere);
 
     const tasks = await Task.findAll({
       where: taskWhere,
@@ -304,9 +338,15 @@ const getEnterpriseDashboard = async (req, res) => {
       ],
     });
 
-    // Team members grid
+    // Team members grid — for non-admin viewers, restrict to users in their
+    // allowed scope so the grid doesn't expose the rest of the org.
+    const userScope = await taskVisibility.getVisibleUserIdsForViewer(req.user);
+    const userWhere = { isActive: true };
+    if (!userScope.unrestricted) {
+      userWhere.id = { [Op.in]: userScope.userIds || [] };
+    }
     const users = await User.findAll({
-      where: { isActive: true },
+      where: userWhere,
       attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'],
     });
 
@@ -509,10 +549,9 @@ const getSuperDashboard = async (req, res) => {
     // Build task where clause
     const taskWhere = { isArchived: false };
 
-    // RBAC: members only see their tasks
-    if (user.role === 'member') {
-      taskWhere.assignedTo = user.id;
-    }
+    // CP-3 RBAC: scope to viewer's allowed user-set. Admin/super_admin see all;
+    // everyone else (manager/assistant_manager/member) → self + descendants.
+    await applyVisibilityWhere(user, taskWhere);
 
     // Filters
     if (status) {
@@ -647,19 +686,30 @@ const getRoleDashboard = async (req, res) => {
     // Build task filter
     const taskWhere = { isArchived: false };
 
-    // Scope-based filtering
+    // CP-3 RBAC: server-enforced scope. The `scope` query param can only
+    // narrow visibility — it can never widen it past the role-based ceiling.
+    // We always apply the central visibility filter; the scope param then
+    // optionally narrows further (member-scope = self only; manager-scope =
+    // self + direct reports; admin-scope = whatever the role allows).
+    await applyVisibilityWhere(user, taskWhere);
+
     let teamMemberIds = [];
     if (effectiveScope === 'member') {
-      taskWhere.assignedTo = user.id;
+      // Narrow further to self only.
+      if (!taskWhere[Op.and]) taskWhere[Op.and] = [];
+      taskWhere[Op.and].push({ assignedTo: user.id });
     } else if (effectiveScope === 'manager') {
       const teamMembers = await User.findAll({ where: { managerId: user.id, isActive: true }, attributes: ['id'] });
       teamMemberIds = teamMembers.map(m => m.id);
-      taskWhere[Op.or] = [
-        { assignedTo: { [Op.in]: [...teamMemberIds, user.id] } },
-        { createdBy: user.id },
-      ];
+      if (!taskWhere[Op.and]) taskWhere[Op.and] = [];
+      taskWhere[Op.and].push({
+        [Op.or]: [
+          { assignedTo: { [Op.in]: [...teamMemberIds, user.id] } },
+          { createdBy: user.id },
+        ],
+      });
     }
-    // admin scope: no task filter — sees all
+    // admin scope: no extra narrowing — visibility filter already applied.
 
     // Apply filters (same as getSuperDashboard)
     if (status) taskWhere.status = { [Op.in]: status.split(',') };

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link2, Lock, Unlock, ChevronDown, ChevronUp, FolderKanban, Zap, Trash2 } from 'lucide-react';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import { useAuth } from '../../context/AuthContext';
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 
 export default function DependencyBadge({ taskId, boardId, compact = false, onRefresh }) {
   const { canManage } = useAuth();
@@ -20,6 +21,23 @@ export default function DependencyBadge({ taskId, boardId, compact = false, onRe
     } catch {}
   }
 
+  // Phase 9: keep the lock-badge counts live when another user transitions
+  // a dep on this same parent. Filter by parentTaskId so unrelated traffic
+  // doesn't waste a fetch.
+  const onDepEvent = useCallback((p) => {
+    if (p?.parentTaskId === taskId) loadDeps();
+  // taskId is captured in the closure; loadDeps is stable per render. We
+  // intentionally skip a deps array — useSocket handles re-attach on its
+  // own tick. eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+  useRealtimeEvent('dependency:requested',  onDepEvent);
+  useRealtimeEvent('dependency:accepted',   onDepEvent);
+  useRealtimeEvent('dependency:started',    onDepEvent);
+  useRealtimeEvent('dependency:done',       onDepEvent);
+  useRealtimeEvent('dependency:rejected',   onDepEvent);
+  useRealtimeEvent('dependency:cancelled',  onDepEvent);
+  useRealtimeEvent('dependency:reassigned', onDepEvent);
+
   async function handleRemoveDep(depId) {
     try {
       await api.delete(`/tasks/${taskId}/dependencies/${depId}`);
@@ -30,11 +48,27 @@ export default function DependencyBadge({ taskId, boardId, compact = false, onRe
 
   if (!data) return null;
 
-  const blockedByCount = (data.blockedBy || []).filter(d =>
+  // Legacy task-to-task links: a "blocker" is the dependsOnTask side that
+  // hasn't completed yet. Counts only blocking/required_for type.
+  const legacyBlockedByCount = (data.blockedBy || []).filter(d =>
     d.dependsOnTask && d.dependsOnTask.status !== 'done' && ['blocks', 'required_for'].includes(d.dependencyType)
   ).length;
   const blockingCount = (data.blocking || []).length;
-  const totalDeps = (data.blockedBy || []).length + blockingCount;
+
+  // New DependencyRequest rows. "Blocking" = anything in pending/accepted/
+  // working_on_it. Rejected is shown as a separate "action needed" signal.
+  const requests = data.dependencyRequests || [];
+  const requestBlockingCount = requests.filter(r =>
+    ['pending', 'accepted', 'working_on_it'].includes(r.status)
+  ).length;
+  const requestRejectedCount = requests.filter(r => r.status === 'rejected').length;
+
+  // The unified "blocked by N dependencies" count — combines legacy task
+  // blockers and active requests. Rejected requests still keep the parent
+  // blocked per Phase 5 spec, so include them.
+  const blockedByCount = legacyBlockedByCount + requestBlockingCount + requestRejectedCount;
+
+  const totalDeps = (data.blockedBy || []).length + blockingCount + requests.length;
 
   if (totalDeps === 0) return null;
 
@@ -42,8 +76,13 @@ export default function DependencyBadge({ taskId, boardId, compact = false, onRe
     return (
       <div className="flex items-center gap-1">
         {blockedByCount > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-danger/10 text-danger" title={`Blocked by ${blockedByCount} task(s)`}>
+          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-danger/10 text-danger" title={`Blocked by ${blockedByCount} dependenc${blockedByCount === 1 ? 'y' : 'ies'}`}>
             <Lock size={9} /> {blockedByCount}
+          </span>
+        )}
+        {requestRejectedCount > 0 && (
+          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-orange-500/10 text-orange-600" title={`${requestRejectedCount} dependency rejected — action needed`}>
+            ! {requestRejectedCount}
           </span>
         )}
         {blockingCount > 0 && (
@@ -66,12 +105,24 @@ export default function DependencyBadge({ taskId, boardId, compact = false, onRe
         {blockedByCount > 0 ? <Lock size={14} /> : <Link2 size={14} />}
         <span className="flex-1 text-left">
           {blockedByCount > 0
-            ? `Blocked by ${blockedByCount} task${blockedByCount > 1 ? 's' : ''}`
+            ? `Blocked by ${blockedByCount} dependenc${blockedByCount === 1 ? 'y' : 'ies'}`
             : `${totalDeps} dependency link${totalDeps > 1 ? 's' : ''}`
           }
         </span>
         {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
       </button>
+
+      {/* Phase 5: rejected dependencies need explicit "action needed" surface
+          because they keep the parent blocked even though they aren't an
+          assignee-side blocker the requester can passively wait on. */}
+      {requestRejectedCount > 0 && (
+        <div className="mt-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-orange-500/10 text-orange-700 border border-orange-500/20 flex items-center gap-2">
+          <span className="font-bold">!</span>
+          <span>
+            {requestRejectedCount} dependency {requestRejectedCount === 1 ? 'was' : 'were'} rejected — action needed (remove, reassign, or replace)
+          </span>
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-2 space-y-1.5">

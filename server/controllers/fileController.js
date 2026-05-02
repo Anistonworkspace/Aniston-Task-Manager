@@ -1,5 +1,6 @@
-const { FileAttachment, Task, User, Board } = require('../models');
-const { emitToBoard } = require('../services/socketService');
+const { FileAttachment, Task, User, Board, TaskAssignee, TaskOwner, DependencyRequest } = require('../models');
+const { emitToBoard, emitToUsers } = require('../services/socketService');
+const taskVisibility = require('../services/taskVisibilityService');
 const {
   storeFile,
   deleteFile,
@@ -11,17 +12,53 @@ const {
 } = require('../services/storageService');
 
 /**
- * Check if user has access to a task (is assignee, creator, board member, or admin/manager)
+ * Check if a user has read access to a task's files. The previous implementation
+ * was out of sync with the rest of the app — it explicitly excluded
+ * `assistant_manager`, `super_admin`, multi-assignee (TaskAssignee), multi-owner
+ * (TaskOwner), and DependencyRequest assignees. That's what produced the
+ * "You do not have access to this task" toast for assistant_managers and
+ * dependency owners when their parent task modal opened.
+ *
+ * Aligned with `taskPermissions.canViewTask` + `subtaskController.userCanAccessParentTask`
+ * + the dependency-owner read path so opening a parent task you have legitimate
+ * context on doesn't 403 on the file panel.
  */
 const canAccessTask = async (taskId, user) => {
-  if (user.role === 'admin') return true;
+  if (!user || !taskId) return false;
+
+  // Elevated roles — admin, manager, assistant_manager, super-admin always read.
+  if (user.isSuperAdmin) return true;
+  const role = user.role;
+  if (role === 'admin' || role === 'manager' || role === 'assistant_manager') return true;
+
+  // Direct task linkage — single assignedTo, creator, multi-assignee row,
+  // multi-owner row, or board membership.
   const task = await Task.findByPk(taskId, {
     include: [{ model: Board, as: 'board', attributes: ['id', 'createdBy'], include: [{ model: User, as: 'members', attributes: ['id'] }] }],
   });
   if (!task) return false;
   if (task.assignedTo === user.id || task.createdBy === user.id) return true;
-  if (user.role === 'manager') return true;
   if (task.board?.members?.some(m => m.id === user.id)) return true;
+
+  try {
+    const ta = await TaskAssignee.findOne({ where: { taskId, userId: user.id } });
+    if (ta) return true;
+  } catch { /* table may not exist on older DBs */ }
+  try {
+    const to = await TaskOwner.findOne({ where: { taskId, userId: user.id } });
+    if (to) return true;
+  } catch { /* table may not exist on older DBs */ }
+
+  // Dependency-owner read path — a user assigned to a DependencyRequest on this
+  // parent task gets read access to the parent's context (files, subtasks,
+  // task detail). Mutations are gated separately by their own role checks.
+  try {
+    const depCount = await DependencyRequest.count({
+      where: { parentTaskId: taskId, assignedToUserId: user.id },
+    });
+    if (depCount > 0) return true;
+  } catch { /* dependency_requests table may not exist on very old DBs */ }
+
   return false;
 };
 
@@ -78,10 +115,9 @@ const uploadFile = async (req, res) => {
       ],
     });
 
-    emitToBoard(task.boardId, 'file:uploaded', {
-      file: fullAttachment,
-      taskId,
-    });
+    // CP-3 RBAC: emit only to authorized recipients of the parent task.
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    emitToUsers('file:uploaded', { file: fullAttachment, taskId }, recipients);
 
     res.status(201).json({
       success: true,
@@ -156,7 +192,9 @@ const deleteFileHandler = async (req, res) => {
 
     await attachment.destroy();
 
-    emitToBoard(boardId, 'file:deleted', { fileId, taskId });
+    // CP-3 RBAC: same recipient rule as upload.
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(taskId);
+    emitToUsers('file:deleted', { fileId, taskId }, recipients);
 
     res.json({ success: true, message: 'File deleted successfully.' });
   } catch (error) {

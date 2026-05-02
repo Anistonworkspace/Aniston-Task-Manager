@@ -12,6 +12,7 @@ const TimeBlock = require('./TimeBlock');
 const Department = require('./Department');
 const Meeting = require('./Meeting');
 const TaskDependency = require('./TaskDependency');
+const DependencyRequest = require('./DependencyRequest');
 const Automation = require('./Automation');
 const Workspace = require('./Workspace');
 const PermissionGrant = require('./PermissionGrant');
@@ -41,6 +42,7 @@ const ApiKey = require('./ApiKey');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
 const ManagerRelation = require('./ManagerRelation');
 const BoardMember = require('./BoardMember');
+const UserBoardOrder = require('./UserBoardOrder');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -307,6 +309,24 @@ TaskDependency.belongsTo(User, { as: 'archiver', foreignKey: 'archivedBy', onDel
 Task.hasMany(TaskDependency, { as: 'dependencies', foreignKey: 'taskId' });
 Task.hasMany(TaskDependency, { as: 'dependents', foreignKey: 'dependsOnTaskId' });
 
+// ─── DependencyRequest associations ──────────────────────────
+// New first-class "blocker work" record. Replaces the old behaviour where
+// adding a dependency silently created a Task on the assignee's board.
+// User FKs use SET NULL so historical rows survive user deletion (the UI
+// renders "Assignee unavailable" / "Requester unavailable" in that case).
+DependencyRequest.belongsTo(Task,      { as: 'parentTask',       foreignKey: 'parentTaskId',           onDelete: 'CASCADE' });
+DependencyRequest.belongsTo(User,      { as: 'requestedBy',      foreignKey: 'requestedByUserId',      onDelete: 'SET NULL' });
+DependencyRequest.belongsTo(User,      { as: 'assignedTo',       foreignKey: 'assignedToUserId',       onDelete: 'SET NULL' });
+DependencyRequest.belongsTo(User,      { as: 'originalAssigner', foreignKey: 'originalAssignerUserId', onDelete: 'SET NULL' });
+DependencyRequest.belongsTo(User,      { as: 'completedBy',      foreignKey: 'completedByUserId',      onDelete: 'SET NULL' });
+DependencyRequest.belongsTo(User,      { as: 'archiver',         foreignKey: 'archivedBy',             onDelete: 'SET NULL' });
+DependencyRequest.belongsTo(Board,     { as: 'board',            foreignKey: 'boardId',                onDelete: 'CASCADE' });
+DependencyRequest.belongsTo(Workspace, { as: 'workspace',        foreignKey: 'workspaceId',            onDelete: 'SET NULL' });
+
+Task.hasMany(DependencyRequest, { as: 'dependencyRequests', foreignKey: 'parentTaskId' });
+User.hasMany(DependencyRequest, { as: 'assignedDependencyRequests',  foreignKey: 'assignedToUserId' });
+User.hasMany(DependencyRequest, { as: 'requestedDependencyRequests', foreignKey: 'requestedByUserId' });
+
 // ─── Task <-> User (scheduledBy) ─────────────────────────────
 Task.belongsTo(User, { as: 'scheduler', foreignKey: 'scheduledBy', onDelete: 'SET NULL' });
 
@@ -367,6 +387,7 @@ module.exports = {
   Department,
   Meeting,
   TaskDependency,
+  DependencyRequest,
   Automation,
   Workspace,
   PermissionGrant,
@@ -396,6 +417,7 @@ module.exports = {
   TeamsNotificationLog,
   ManagerRelation,
   BoardMember,
+  UserBoardOrder,
 };
 
 // ─── Automation <-> Board/User ───────────────────────────────

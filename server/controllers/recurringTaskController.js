@@ -1,5 +1,6 @@
 const { Task, User } = require('../models');
 const { logActivity } = require('../services/activityService');
+const realtime = require('../services/realtimeService');
 
 // PUT /api/tasks/:id/recurrence — set/update recurrence
 exports.setRecurrence = async (req, res) => {
@@ -14,6 +15,7 @@ exports.setRecurrence = async (req, res) => {
     if (!type) {
       // Remove recurrence
       await task.update({ recurrence: null, lastRecurrenceAt: null });
+      realtime.emitTaskUpdated(task, { actorId: req.user.id, changedFields: ['recurrence'] });
       return res.json({ success: true, data: { task }, message: 'Recurrence removed.' });
     }
 
@@ -38,6 +40,7 @@ exports.setRecurrence = async (req, res) => {
     };
 
     await task.update({ recurrence });
+    realtime.emitTaskUpdated(task, { actorId: req.user.id, changedFields: ['recurrence'] });
 
     logActivity({
       action: 'task_recurrence_set',

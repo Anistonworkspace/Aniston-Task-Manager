@@ -7,7 +7,7 @@ function getProgressColor(val) {
   return '#00c875';
 }
 
-export default function ProgressCell({ value = 0, onChange, status }) {
+export default function ProgressCell({ value = 0, onChange, status, approvalRequired = false }) {
   const isDone = status === 'done';
   // When status === 'done', display always reads 100 even if the row hasn't yet
   // received the persisted update. Prevents a stale 0% flicker right after a
@@ -18,6 +18,11 @@ export default function ProgressCell({ value = 0, onChange, status }) {
   const lastCommittedRef = useRef(displayValue);
   const color = getProgressColor(displayValue);
   const readOnly = !onChange || isDone;
+  // When the task needs approval before completion, the slider must not be
+  // draggable to 100%. The backend approval gate would 403 anyway; clamping
+  // client-side avoids the confusing toast and matches the "you must submit
+  // for approval to complete" UX. Approved rows and super admins keep 0-100.
+  const sliderMax = approvalRequired && !isDone ? 95 : 100;
 
   // Keep the draft in sync when the row's value updates externally (socket
   // events, server response, status flip to done) and we're not actively
@@ -30,7 +35,7 @@ export default function ProgressCell({ value = 0, onChange, status }) {
   }, [displayValue, editing]);
 
   function handleSliderChange(e) {
-    const v = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+    const v = Math.max(0, Math.min(sliderMax, Number(e.target.value) || 0));
     setDraftVal(v);
   }
 
@@ -56,7 +61,13 @@ export default function ProgressCell({ value = 0, onChange, status }) {
     <div
       className="w-full h-full flex items-center justify-center px-2 gap-2"
       onClick={(e) => e.stopPropagation()}
-      title={readOnly ? `${displayValue}%${isDone ? ' (locked — task is done)' : ''}` : `Drag to change progress (${draftVal}%)`}
+      title={
+        readOnly
+          ? `${displayValue}%${isDone ? ' (locked — task is done)' : ''}`
+          : approvalRequired
+            ? `Drag to change progress (${draftVal}%) — submit for approval to reach 100%`
+            : `Drag to change progress (${draftVal}%)`
+      }
     >
       <div className="flex-1 flex items-center gap-1.5 min-w-0">
         <div className="flex-1 relative h-2">
@@ -72,9 +83,9 @@ export default function ProgressCell({ value = 0, onChange, status }) {
             <input
               type="range"
               min={0}
-              max={100}
+              max={sliderMax}
               step={5}
-              value={draftVal}
+              value={Math.min(draftVal, sliderMax)}
               onChange={handleSliderChange}
               onMouseDown={() => setEditing(true)}
               onTouchStart={() => setEditing(true)}

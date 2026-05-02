@@ -8,7 +8,8 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import TaskModal from '../components/task/TaskModal';
-import useSocket from '../hooks/useSocket';
+import { useToast } from '../components/common/Toast';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { getBoardStatuses } from '../utils/constants';
 
 const TABS = [
@@ -39,6 +40,7 @@ const URGENCY_COLORS = {
 export default function TasksPage() {
   const { canManage, isAdmin, isAssistantManager } = useAuth();
   const canViewTeamFeedback = canManage || isAssistantManager;
+  const { addToast } = useToast();
   const [activeTab, setActiveTab] = useState('approvals');
   const [data, setData] = useState({ approvals: [], extensions: [], helpRequests: [] });
   const [myFeedback, setMyFeedback] = useState([]);
@@ -68,9 +70,20 @@ export default function TasksPage() {
       setBoardMembers(board?.members || []);
       setBoardStatuses(board ? getBoardStatuses(board) : null);
     } catch (err) {
+      // CP-3 RBAC: a 403 here means the viewer is no longer in the task's
+      // visibility scope (e.g. reassigned away). Show a clean message rather
+      // than the raw error.
+      const status = err?.response?.status;
+      if (status === 403) {
+        addToast('You do not have permission to view this task.', 'warning');
+      } else if (status === 404) {
+        addToast('Task not found or has been archived.', 'warning');
+      } else {
+        addToast('Failed to open task.', 'error');
+      }
       console.error('Failed to open task:', err);
     }
-  }, []);
+  }, [addToast]);
 
   const closeTaskModal = useCallback(() => {
     setSelectedTask(null);
@@ -115,7 +128,7 @@ export default function TasksPage() {
   // Live-refresh feedback view when any approval action fires anywhere — covers
   // the case where the submitter is watching the page and an approver acts.
   // Cheap (limit 200, indexed) and keeps the UI honest without a full reload.
-  useSocket('task:approval-updated', () => {
+  useRealtimeEvent('task:approval-updated', () => {
     fetchMyFeedback(feedbackScope === 'mine' ? undefined : feedbackScope);
   });
 

@@ -62,6 +62,7 @@ const aiRoutes = require('./routes/ai');
 const transcriptionRoutes = require('./routes/transcriptionProviders');
 const apiKeyRoutes = require('./routes/apiKeys');
 const recurringTaskRoutes = require('./routes/recurringTasks');
+const boardOrderRoutes = require('./routes/boardOrders');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -228,6 +229,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/transcription', transcriptionRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
 app.use('/api/recurring-tasks', recurringTaskRoutes);
+app.use('/api/board-orders', boardOrderRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
 const { authenticate: mrAuth, managerOrAdmin: mrMgr } = require('./middleware/auth');
@@ -241,11 +243,47 @@ app.post('/api/multi-manager/sync', mrAuth, mrMgr, mrCtrl.syncFromManagerId);
 // Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
 app.use('/api', dependencyRoutes);
 
+// ─── Boot-time route registration check ──────────────────────
+// Recurring source of confusion: a running Node process serving requests on
+// port 5000 keeps reporting "Route not found." for newly-added routes
+// because the process was started before the file existed and hasn't been
+// restarted. Verify on boot that the board-order routes are actually in the
+// router's stack and print a clear log line either way. If this line is
+// MISSING from your backend boot output, you are running stale code.
+try {
+  const wsRouter = workspaceRoutes;
+  const wsLayers = wsRouter?.stack || [];
+  const has = (method, p) => wsLayers.some(l => l.route?.path === p && l.route?.methods?.[method]);
+  const getOk = has('get', '/:id/board-order');
+  const putOk = has('put', '/:id/board-order');
+  if (getOk && putOk) {
+    console.log('[Routes] GET  /api/workspaces/:id/board-order registered');
+    console.log('[Routes] PUT  /api/workspaces/:id/board-order registered');
+  } else {
+    console.warn(`[Routes] MISSING board-order routes! get=${getOk} put=${putOk}. Check server/routes/workspaces.js and restart the backend.`);
+  }
+  const boRouter = boardOrderRoutes;
+  if (boRouter?.stack?.some(l => l.route?.path === '/mine' && l.route?.methods?.get)) {
+    console.log('[Routes] GET  /api/board-orders/mine registered');
+  }
+} catch (e) {
+  console.warn('[Routes] route registration check failed:', e.message);
+}
+
 // ─── 404 handler ─────────────────────────────────────────────
-app.use((_req, res) => {
+// In development, include the method and path in the response so a stale
+// route registration is obvious from the network panel. In production, keep
+// the response generic to avoid leaking the API surface to unauthenticated
+// scanners.
+app.use((req, res) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  // Always log the unmatched request — this is the single most useful
+  // diagnostic when "Route not found" comes back.
+  console.warn(`[Server] 404 ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     success: false,
     message: 'Route not found.',
+    ...(isDev ? { method: req.method, path: req.originalUrl } : {}),
   });
 });
 
@@ -397,23 +435,98 @@ const start = async () => {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: task_approval_flows.stage column ──────────
-    // The `stage` column groups parallel approvers into a single stage so the
-    // final stage (Manager + Admin + Super Admin) acts as one any-of step
-    // rather than three sequential levels. Backfill stage = level for legacy
-    // rows so existing chains keep working unchanged.
+    // ── Auto-migration: user_board_orders table ───────────────────
+    // Per-user board ordering inside workspaces (sidebar Rearrange feature).
+    // Idempotent — safe to run on every boot.
     try {
-      const [tafTables] = await sequelize.query(
-        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'task_approval_flows'`
-      );
-      if (tafTables.length > 0) {
-        await sequelize.query(`ALTER TABLE task_approval_flows ADD COLUMN IF NOT EXISTS stage INTEGER`);
-        await sequelize.query(`UPDATE task_approval_flows SET stage = level WHERE stage IS NULL`);
-        await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_task_stage_status_idx ON task_approval_flows ("taskId", stage, status)`);
-        console.log('[Server] task_approval_flows.stage column ensured.');
-      }
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS user_board_orders (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId"      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "workspaceId" UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        "boardId"     UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        "position"    INTEGER NOT NULL DEFAULT 0,
+        "createdAt"   TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt"   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS user_board_orders_uniq
+        ON user_board_orders ("userId", "workspaceId", "boardId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS user_board_orders_lookup
+        ON user_board_orders ("userId", "workspaceId", "position")`);
+      console.log('[Server] user_board_orders table ensured.');
     } catch (e) {
-      console.warn('[Server] task_approval_flows.stage migration warning:', e.message?.slice(0, 120));
+      console.warn('[Server] user_board_orders migration warning:', e.message?.slice(0, 120));
+    }
+
+    // ── Auto-migration: task_approval_flows table + stage column ──
+    // Self-installing DDL — mirrors server/scripts/create-task-approval-flow.js
+    // and server/scripts/migrate-task-approval-flow-stage.js so the schema is
+    // guaranteed in production without anyone running a manual script.
+    //
+    // Why this is required (not just relying on sequelize.sync):
+    //   sync({ alter: false }) creates missing tables, but the FK on userId
+    //   with ON DELETE SET NULL is exactly the case CLAUDE.md flags as
+    //   unreliable for Sequelize's generated SQL. When sync errors on this
+    //   table the surrounding try/catch silently continues, the table is
+    //   never created, and every POST /api/task-extras/:id/submit-approval
+    //   blows up with `42P01 relation "task_approval_flows" does not exist`,
+    //   surfaced to the UI as "Server database schema is out of date" by
+    //   approvalController.buildErrorResponse.
+    //
+    // Idempotent: every statement uses IF NOT EXISTS / IS NULL guards, so
+    // re-running on every boot is a no-op once the schema is up to date.
+    // Non-destructive: nothing here drops, truncates, or rewrites data.
+    try {
+      // gen_random_uuid() needs pgcrypto. Cheap to assert per boot.
+      await sequelize.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+
+      // Canonical DDL (kept byte-for-byte identical to create-task-approval-flow.js
+      // so the manual script and the boot-time path produce the same shape).
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS task_approval_flows (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "taskId"        UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        "userId"        UUID REFERENCES users(id) ON DELETE SET NULL,
+        "userName"      VARCHAR(255),
+        role            VARCHAR(50),
+        level           INTEGER NOT NULL,
+        stage           INTEGER,
+        status          VARCHAR(30) NOT NULL DEFAULT 'pending',
+        comment         TEXT,
+        "attachmentUrl" TEXT,
+        "actionAt"      TIMESTAMP WITH TIME ZONE,
+        "createdAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+
+      // Defensive ADD COLUMN — covers the case where an older deploy created
+      // the table before `stage` existed. Backfill stage = level so existing
+      // in-flight chains route through findCurrentStageRows correctly.
+      await sequelize.query(`ALTER TABLE task_approval_flows ADD COLUMN IF NOT EXISTS stage INTEGER`);
+      await sequelize.query(`UPDATE task_approval_flows SET stage = level WHERE stage IS NULL`);
+
+      // All four indexes from the model definition. The unique (taskId, level)
+      // index is load-bearing — submitForApproval relies on it to prevent
+      // duplicate level rows under concurrent submissions.
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS task_approval_flows_task_level_unique
+        ON task_approval_flows ("taskId", level)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_task_status_idx
+        ON task_approval_flows ("taskId", status)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_user_status_idx
+        ON task_approval_flows ("userId", status)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_task_stage_status_idx
+        ON task_approval_flows ("taskId", stage, status)`);
+
+      // Verification — log the column set so an operator can confirm the
+      // schema is in shape after a deploy without a separate query.
+      const [verifyCols] = await sequelize.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'task_approval_flows'
+            AND column_name IN ('stage','level','status','taskId','userId')
+          ORDER BY column_name`
+      );
+      const present = verifyCols.map((r) => r.column_name).join(',') || '(none)';
+      console.log(`[Server] task_approval_flows table ensured. Verified columns: ${present}.`);
+    } catch (e) {
+      console.warn('[Server] task_approval_flows migration warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: permission_grants schema upgrades (008) ──
@@ -693,6 +806,98 @@ const start = async () => {
       console.warn('[Server] Recurring-task schema migration warning:', e.message?.slice(0, 200));
     }
 
+    // ── Auto-migration: Dependency Request system (migration 012) ──
+    // Mirrors server/migrations/012_create_dependency_requests.sql so the
+    // table, indexes, and CHECK constraints are self-installing on every
+    // boot. Without this block the new dependency endpoints crash with
+    // `relation "dependency_requests" does not exist`. All statements are
+    // idempotent (IF NOT EXISTS / DO blocks).
+    for (const stmt of [
+      `CREATE TABLE IF NOT EXISTS dependency_requests (
+        id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "parentTaskId"           UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        title                    VARCHAR(300) NOT NULL,
+        "blockingReason"         TEXT,
+        "requestedByUserId"      UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        "assignedToUserId"       UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        "originalAssignerUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "boardId"                UUID REFERENCES boards(id) ON DELETE CASCADE,
+        "workspaceId"            UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+        status                   VARCHAR(20) NOT NULL DEFAULT 'pending',
+        priority                 VARCHAR(20) NOT NULL DEFAULT 'medium',
+        "dueDate"                DATE,
+        "acceptedAt"             TIMESTAMP WITH TIME ZONE,
+        "startedAt"              TIMESTAMP WITH TIME ZONE,
+        "completedAt"            TIMESTAMP WITH TIME ZONE,
+        "rejectedAt"             TIMESTAMP WITH TIME ZONE,
+        "cancelledAt"            TIMESTAMP WITH TIME ZONE,
+        "rejectionReason"        TEXT,
+        "cancellationReason"     TEXT,
+        "completedByUserId"      UUID REFERENCES users(id) ON DELETE SET NULL,
+        "archivedAt"             TIMESTAMP WITH TIME ZONE,
+        "archivedBy"             UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt"              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt"              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`,
+      `DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dep_req_status_check') THEN
+          ALTER TABLE dependency_requests ADD CONSTRAINT dep_req_status_check
+            CHECK (status IN ('pending','accepted','working_on_it','done','rejected','cancelled'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'dep_req_priority_check') THEN
+          ALTER TABLE dependency_requests ADD CONSTRAINT dep_req_priority_check
+            CHECK (priority IN ('low','medium','high','critical'));
+        END IF;
+      END $$`,
+      `CREATE INDEX IF NOT EXISTS dep_req_parent_idx           ON dependency_requests ("parentTaskId")`,
+      `CREATE INDEX IF NOT EXISTS dep_req_assigned_status_idx  ON dependency_requests ("assignedToUserId", status)`,
+      `CREATE INDEX IF NOT EXISTS dep_req_requested_status_idx ON dependency_requests ("requestedByUserId", status)`,
+      `CREATE INDEX IF NOT EXISTS dep_req_board_idx            ON dependency_requests ("boardId")`,
+      `CREATE INDEX IF NOT EXISTS dep_req_status_idx           ON dependency_requests (status)`,
+      `CREATE INDEX IF NOT EXISTS dep_req_due_date_idx         ON dependency_requests ("dueDate")`,
+      `CREATE INDEX IF NOT EXISTS dep_req_created_at_idx       ON dependency_requests ("createdAt")`,
+      `CREATE INDEX IF NOT EXISTS dep_req_active_parent_idx
+        ON dependency_requests ("parentTaskId")
+        WHERE status IN ('pending','accepted','working_on_it') AND "archivedAt" IS NULL`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS dep_req_active_unique_idx
+        ON dependency_requests ("parentTaskId", "assignedToUserId", lower(btrim(title)))
+        WHERE status IN ('pending','accepted','working_on_it') AND "archivedAt" IS NULL`,
+    ]) {
+      try {
+        await sequelize.query(stmt);
+      } catch (e) {
+        console.warn('[Server] dependency_requests migration warning:', e.message?.slice(0, 200));
+      }
+    }
+    console.log('[Server] dependency_requests table ensured.');
+
+    // ── Auto-migration: extend notifications.type enum for dependency events ──
+    // Mirrors the recurring-task pattern: probe for the enum first (fresh
+    // installs may not have it yet), then ALTER TYPE per value with
+    // IF NOT EXISTS so re-runs are no-ops.
+    try {
+      const [depNotifEnumRows] = await sequelize.query(
+        `SELECT 1 FROM pg_type WHERE typname = 'enum_notifications_type'`
+      );
+      if (depNotifEnumRows.length > 0) {
+        for (const v of [
+          'dependency_requested',
+          'dependency_accepted',
+          'dependency_started',
+          'dependency_done',
+          'dependency_rejected',
+          'dependency_cancelled',
+        ]) {
+          try {
+            await sequelize.query(`ALTER TYPE "enum_notifications_type" ADD VALUE IF NOT EXISTS '${v}'`);
+          } catch (_) { /* already exists */ }
+        }
+        console.log('[Server] notifications.type ENUM extended for dependency events.');
+      }
+    } catch (e) {
+      console.warn('[Server] notifications.type dependency-enum migration warning:', e.message?.slice(0, 200));
+    }
+
     // ── Auto-migration: Subtask inline-table columns ──
     // Inline subtasks render in the board grid with the same column set as
     // main tasks (priority, progress, due date, description). The Subtask
@@ -839,6 +1044,37 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] users.local_status_override migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: Add font_size_preference column to users ──
+    // Mirrors server/migrations/013_add_user_font_size_preference.sql so a
+    // fresh boot picks up the column without an out-of-band migration step.
+    // Idempotent ADD COLUMN IF NOT EXISTS + DO $$ guard for the CHECK
+    // constraint — safe to re-run.
+    try {
+      const [userTablesFs] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
+      );
+      if (userTablesFs.length > 0) {
+        await sequelize.query(
+          `ALTER TABLE users ADD COLUMN IF NOT EXISTS font_size_preference VARCHAR(20) DEFAULT NULL`
+        );
+        await sequelize.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'users_font_size_preference_check'
+            ) THEN
+              ALTER TABLE users
+                ADD CONSTRAINT users_font_size_preference_check
+                CHECK (font_size_preference IS NULL OR font_size_preference IN ('compact','default','comfortable','large'));
+            END IF;
+          END $$;
+        `);
+        console.log('[Server] users.font_size_preference column ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] users.font_size_preference migration warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: Add receipt columns to task_assignees ──

@@ -1,18 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff, Users } from 'lucide-react';
 import api from '../../services/api';
+import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 
 export default function WatcherSection({ taskId }) {
   const [watching, setWatching] = useState(false);
   const [watchers, setWatchers] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (taskId) {
-      fetchWatchers();
-      checkWatching();
-    }
+  // Bundled refetch so watcher:added / watcher:removed events refresh both
+  // the list and the "is the current user watching?" pill in one shot.
+  const refresh = useCallback(() => {
+    if (!taskId) return;
+    fetchWatchers();
+    checkWatching();
   }, [taskId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Phase 2 added watcher events on the server; Phase 4 wires this consumer.
+  // Any watcher add/remove (this user OR another) now refreshes the section
+  // without manual refetch.
+  useRealtimeQuery({
+    queryKey: `watchers.task.${taskId}`,
+    refetch: refresh,
+    enabled: !!taskId,
+  });
 
   async function fetchWatchers() {
     try {

@@ -237,11 +237,25 @@ const updateProfile = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const allowedFields = ['name', 'avatar', 'department', 'designation', 'departmentId', 'teamsNotificationsEnabled'];
+    const allowedFields = ['name', 'avatar', 'department', 'designation', 'departmentId', 'teamsNotificationsEnabled', 'fontSizePreference'];
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         updates[field] = req.body[field];
+      }
+    }
+
+    // Server-side enum guard for fontSizePreference. The route validator
+    // already rejects bad strings, but a defensive check here protects
+    // controller-level callers and keeps the DB constraint from ever firing
+    // on a normal request path.
+    const ALLOWED_FONT_SIZES = ['compact', 'default', 'comfortable', 'large'];
+    if (updates.fontSizePreference !== undefined && updates.fontSizePreference !== null) {
+      if (!ALLOWED_FONT_SIZES.includes(updates.fontSizePreference)) {
+        return res.status(400).json({
+          success: false,
+          message: `fontSizePreference must be one of: ${ALLOWED_FONT_SIZES.join(', ')}.`,
+        });
       }
     }
 

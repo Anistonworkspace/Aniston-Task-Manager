@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import Avatar from '../components/common/Avatar';
 import { useToast } from '../components/common/Toast';
-import useSocket from '../hooks/useSocket';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { format } from 'date-fns';
 
 const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -52,7 +52,7 @@ export default function DirectorDashboardPage() {
   const [selectedDirectorId, setSelectedDirectorId] = useState(null);
 
   // Real-time sync: reload plan when PA updates it
-  useSocket('director-plan:updated', (data) => {
+  useRealtimeEvent('director-plan:updated', (data) => {
     if (data?.plan) {
       setPlan(prev => ({ ...prev, ...data.plan, directorName: prev?.directorName || data.plan.directorName }));
     } else {
@@ -60,8 +60,8 @@ export default function DirectorDashboardPage() {
     }
   });
   // Real-time sync: reload org data when tasks change
-  useSocket('task:updated', () => { loadOrgData(); });
-  useSocket('task:created', () => { loadOrgData(); });
+  useRealtimeEvent('task:updated', () => { loadOrgData(); });
+  useRealtimeEvent('task:created', () => { loadOrgData(); });
 
   const selectedDirectorIdRef = useRef(selectedDirectorId);
   useEffect(() => { selectedDirectorIdRef.current = selectedDirectorId; }, [selectedDirectorId]);
