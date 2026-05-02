@@ -91,11 +91,13 @@ describe('Modal component', () => {
 
   // ---- Size classes ----
 
+  // Compact enterprise sizing — pinned to the audit targets:
+  // sm 460px, md 560px, lg 720px, xl 960px.
   it.each([
-    ['sm', 'max-w-md'],
-    ['md', 'max-w-lg'],
-    ['lg', 'max-w-2xl'],
-    ['xl', 'max-w-4xl'],
+    ['sm', 'max-w-[460px]'],
+    ['md', 'max-w-[560px]'],
+    ['lg', 'max-w-[720px]'],
+    ['xl', 'max-w-[960px]'],
   ])('applies %s size class "%s" to the dialog', (size, expectedClass) => {
     renderModal({ size });
     expect(screen.getByRole('dialog')).toHaveClass(expectedClass);

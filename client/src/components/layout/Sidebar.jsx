@@ -6,7 +6,7 @@ import {
   FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
   Puzzle, Archive, Settings, GitBranch, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown,
-  MessageSquare, RefreshCw
+  MessageSquare, RefreshCw, Pin, PinOff
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +16,30 @@ import CreateBoardModal from '../board/CreateBoardModal';
 import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import ProfileModal from '../common/ProfileModal';
 import { canUser, isExplicitlyDenied } from '../../utils/permissions';
+
+// Per-user workspace usage memory (client-side only — survives reload, does
+// not sync across devices/browsers). Drives the "top 3 workspaces" sort in
+// the sidebar so the lists the user actually opens float to the top.
+//   { [wsId]: { lastOpenedAt: epochMs, openCount: number, pinned: boolean } }
+const WS_USAGE_KEY = 'workspaceUsage';
+function readWorkspaceUsage() {
+  try { return JSON.parse(localStorage.getItem(WS_USAGE_KEY) || '{}') || {}; }
+  catch { return {}; }
+}
+function writeWorkspaceUsage(obj) {
+  try { localStorage.setItem(WS_USAGE_KEY, JSON.stringify(obj)); } catch {}
+}
+// Recency-weighted ranking. 70% recency (with a 7-day half-life), 30% volume
+// — so a workspace opened yesterday outranks one clicked 100 times last
+// month. The volume cap prevents a single binge-week from pinning a
+// workspace forever.
+function workspaceScore(entry) {
+  if (!entry) return 0;
+  const days = entry.lastOpenedAt ? (Date.now() - entry.lastOpenedAt) / 86400000 : 365;
+  const recency = 1 / (1 + days / 7);
+  const volume = Math.min(entry.openCount || 0, 50) / 50;
+  return recency * 0.7 + volume * 0.3;
+}
 
 // Portal-based dropdown that renders outside sidebar overflow
 function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, canCreateWorkspace, canManage }) {
@@ -105,6 +129,11 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [rearrangeWorkspace, setRearrangeWorkspace] = useState(null);
   // Per-user board ordering: { [workspaceId]: [boardId, boardId, ...] }.
   const [boardOrders, setBoardOrders] = useState({});
+  // Per-user workspace usage memory (localStorage-backed) — drives the
+  // "top 3 workspaces" sort. Pinned + recency rank, with a Show More toggle.
+  const [wsUsage, setWsUsage] = useState(() => readWorkspaceUsage());
+  const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
+  const WS_VISIBLE_LIMIT = 3;
   const resizing = useRef(false);
   const wsMenuBtnRef = useRef(null);
   const renameInputRef = useRef(null);
@@ -127,6 +156,36 @@ export default function Sidebar({ collapsed, onToggle }) {
     if (!m) return null;
     const currentBoard = boards.find(b => b.id === m[1]);
     return currentBoard?.workspaceId || null;
+  }
+
+  // Bump a workspace's recency/volume counters whenever the user navigates
+  // into one of its boards. Called from the board-row click in the sidebar.
+  function bumpWorkspaceUsage(wsId) {
+    if (!wsId) return;
+    setWsUsage(prev => {
+      const entry = prev[wsId] || {};
+      const next = {
+        ...prev,
+        [wsId]: {
+          ...entry,
+          lastOpenedAt: Date.now(),
+          openCount: (entry.openCount || 0) + 1,
+        },
+      };
+      writeWorkspaceUsage(next);
+      return next;
+    });
+  }
+
+  // Toggle the "pinned" flag for a workspace. Pinned workspaces always sort
+  // above unpinned ones regardless of recent usage.
+  function toggleWorkspacePin(wsId) {
+    setWsUsage(prev => {
+      const entry = prev[wsId] || {};
+      const next = { ...prev, [wsId]: { ...entry, pinned: !entry.pinned } };
+      writeWorkspaceUsage(next);
+      return next;
+    });
   }
 
   function openRearrangeForWorkspace(ws) {
@@ -279,7 +338,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     </button>
   );
 
-  function renderBoardItem(board) {
+  function renderBoardItem(board, wsId = null) {
     const menuOpen = boardActionMenu === board.id;
     const isFav = favorites.includes(board.id);
     return (
@@ -297,7 +356,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           </div>
         ) : (
           <>
-            <button onClick={() => navigate(`/boards/${board.id}`)}
+            <button onClick={() => { bumpWorkspaceUsage(wsId); navigate(`/boards/${board.id}`); }}
               className={`sidebar-item flex-1 text-[13px] ${isBoardActive(board.id) ? 'sidebar-item-active' : ''}`}>
               <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: board.color || '#579bfc' }} />
               <span className={`truncate flex-1 text-left transition-[padding] duration-150 ${menuOpen ? 'pr-5' : 'group-hover:pr-5'}`}>{board.name}</span>
@@ -507,9 +566,31 @@ export default function Sidebar({ collapsed, onToggle }) {
             </div>
           </div>
 
-          {/* Dynamic Workspaces */}
+          {/* Dynamic Workspaces — sorted by pinned + recency, sliced to top
+              WS_VISIBLE_LIMIT (3) by default with a Show More toggle. The
+              workspace containing the currently-open board is always kept
+              visible so the user never loses context after navigating into a
+              board they don't normally visit. When the user is searching,
+              we suspend the slicing so search hits aren't hidden behind a
+              collapsed list. */}
+          {(() => {
+            const sortedWorkspaces = [...workspaces].sort((a, b) => {
+              const ea = wsUsage[a.id] || {};
+              const eb = wsUsage[b.id] || {};
+              if (!!ea.pinned !== !!eb.pinned) return ea.pinned ? -1 : 1;
+              return workspaceScore(eb) - workspaceScore(ea);
+            });
+            const activeWsId = inferCurrentWorkspaceId();
+            const collapse = !showAllWorkspaces && !searchQuery && sortedWorkspaces.length > WS_VISIBLE_LIMIT;
+            let visibleWorkspaces = collapse ? sortedWorkspaces.slice(0, WS_VISIBLE_LIMIT) : sortedWorkspaces;
+            if (collapse && activeWsId && !visibleWorkspaces.some(w => w.id === activeWsId)) {
+              const ws = sortedWorkspaces.find(w => w.id === activeWsId);
+              if (ws) visibleWorkspaces = [...visibleWorkspaces, ws];
+            }
+            const hiddenWsCount = Math.max(0, sortedWorkspaces.length - WS_VISIBLE_LIMIT);
+            return (
           <div className="px-2 pb-2 space-y-1">
-            {workspaces.map(ws => {
+            {visibleWorkspaces.map(ws => {
               const wsBoardsRaw = (ws.boards || []).filter(b =>
                 !searchQuery || b.name.toLowerCase().includes(searchQuery.toLowerCase())
               );
@@ -552,56 +633,66 @@ export default function Sidebar({ collapsed, onToggle }) {
                     ) : (
                       <span className="text-[13px] font-semibold text-sidebar-text-active flex-1 text-left truncate">{ws.name}</span>
                     )}
+                    {wsUsage[ws.id]?.pinned && (
+                      <Pin size={10} className="text-sidebar-accent flex-shrink-0 mr-0.5" title="Pinned" />
+                    )}
                     {ws.workspaceMembers?.length > 0 && (
                       <span className="text-[10px] text-sidebar-text/40 mr-1">{ws.workspaceMembers.length}</span>
                     )}
                     <ChevronDown size={13} className={`text-sidebar-text/40 transition-transform duration-150 flex-shrink-0 ${isOpen ? '' : '-rotate-90'}`} />
                   </button>
-                  {/* Workspace hover menu — visible to anyone who has at
-                      least one applicable workspace action. We deliberately
-                      check create_board AND edit_workspace separately because
-                      an assistant_manager with the board-create grant should
-                      still see "Create Board / Rearrange Boards" even though
-                      they can't rename or archive the workspace. */}
-                  {(canCreateBoardPerm || canEditWsPerm) && (
-                    <div className="absolute right-2 top-1 opacity-0 group-hover/ws:opacity-100 transition-opacity z-10">
-                      <div className="relative">
-                        <button onClick={(e) => { e.stopPropagation(); setWsActionMenu(wsActionMenu === ws.id ? null : ws.id); }}
-                          className="p-1 rounded-md text-sidebar-text/30 hover:text-sidebar-text hover:bg-sidebar-hover transition-colors">
-                          <MoreHorizontal size={13} />
-                        </button>
-                        {wsActionMenu === ws.id && (
-                          <div className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
-                            onMouseLeave={() => setWsActionMenu(null)}>
-                            {canCreateBoardPerm && (
-                              <button onClick={() => { setWsActionMenu(null); openCreateBoardForWorkspace(ws); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                                <Plus size={12} /> Create Board
-                              </button>
-                            )}
-                            {canCreateBoardPerm && (
-                              <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                                <ArrowUpDown size={12} /> Rearrange Boards
-                              </button>
-                            )}
-                            {canEditWsPerm && (
-                              <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                                <Edit3 size={12} /> Rename
-                              </button>
-                            )}
-                            {canEditWsPerm && (
-                              <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
-                                <Archive size={12} /> Archive Workspace
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                  {/* Workspace hover menu — always rendered (every user can
+                      personally pin/unpin), but each item inside is gated by
+                      its own permission. Assistant managers with the
+                      board-create grant still see Create/Rearrange; only
+                      edit_workspace holders see Rename/Archive. */}
+                  <div className="absolute right-2 top-1 opacity-0 group-hover/ws:opacity-100 transition-opacity z-10">
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setWsActionMenu(wsActionMenu === ws.id ? null : ws.id); }}
+                        className="p-1 rounded-md text-sidebar-text/30 hover:text-sidebar-text hover:bg-sidebar-hover transition-colors">
+                        <MoreHorizontal size={13} />
+                      </button>
+                      {wsActionMenu === ws.id && (
+                        <div className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
+                          onMouseLeave={() => setWsActionMenu(null)}>
+                          {/* Personal pin — available to every role since it
+                              only writes to localStorage. Pinned workspaces
+                              float to the top of the sidebar list. */}
+                          <button onClick={() => { toggleWorkspacePin(ws.id); setWsActionMenu(null); }}
+                            className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                            {wsUsage[ws.id]?.pinned
+                              ? <><PinOff size={12} /> Unpin from top</>
+                              : <><Pin size={12} /> Pin to top</>
+                            }
+                          </button>
+                          {canCreateBoardPerm && (
+                            <button onClick={() => { setWsActionMenu(null); openCreateBoardForWorkspace(ws); }}
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                              <Plus size={12} /> Create Board
+                            </button>
+                          )}
+                          {canCreateBoardPerm && (
+                            <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                              <ArrowUpDown size={12} /> Rearrange Boards
+                            </button>
+                          )}
+                          {canEditWsPerm && (
+                            <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                              <Edit3 size={12} /> Rename
+                            </button>
+                          )}
+                          {canEditWsPerm && (
+                            <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
+                              <Archive size={12} /> Archive Workspace
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
 
                   {isOpen && (() => {
                     // Per-workspace "show more / show less" — collapse to the
@@ -621,7 +712,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                     const hiddenCount = Math.max(0, wsBoards.length - BOARD_LIMIT);
                     return (
                       <div className="ml-4 mt-0.5 border-l border-sidebar-border pl-1 animate-fade-in">
-                        {visible.map(board => renderBoardItem(board))}
+                        {visible.map(board => renderBoardItem(board, ws.id))}
                         {hasMore && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setShowAllByWorkspace(prev => ({ ...prev, [ws.id]: !showAll })); }}
@@ -664,7 +755,21 @@ export default function Sidebar({ collapsed, onToggle }) {
             {boards.length === 0 && workspaces.length === 0 && (
               <p className="text-sidebar-text/40 text-[11px] px-3 py-2">No boards yet</p>
             )}
+
+            {/* Workspace-level Show More toggle. Only renders when more than
+                WS_VISIBLE_LIMIT workspaces exist and the user isn't searching
+                (search bypasses the cap so all hits are visible). */}
+            {!searchQuery && sortedWorkspaces.length > WS_VISIBLE_LIMIT && (
+              <button
+                onClick={() => setShowAllWorkspaces(v => !v)}
+                className="flex items-center gap-1.5 w-full px-3 py-1.5 mt-1 text-[11px] text-sidebar-text/60 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors">
+                <ChevronDown size={11} className={`transition-transform duration-150 ${showAllWorkspaces ? 'rotate-180' : ''}`} />
+                {showAllWorkspaces ? 'Show fewer workspaces' : `Show ${hiddenWsCount} more workspace${hiddenWsCount === 1 ? '' : 's'}`}
+              </button>
+            )}
           </div>
+            );
+          })()}
 
           {/* Add Workspace — admin/super_admin only */}
           {canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions) && (

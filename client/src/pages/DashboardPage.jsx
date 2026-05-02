@@ -34,6 +34,11 @@ export default function DashboardPage() {
   const [memberOpen, setMemberOpen] = useState(false);
   const smartViewRef = useRef(null);
   const memberRef = useRef(null);
+  // Anchors for stat-card click-to-scroll. Team Overview is the per-member
+  // roll-up (used for Total/Completed/In Progress/Stuck); the Overdue Tasks
+  // widget is a flat task list (used for Overdue) — see jumpFromStatCard().
+  const teamOverviewRef = useRef(null);
+  const overdueWidgetRef = useRef(null);
 
   useEffect(() => {
     function onDocClick(e) {
@@ -85,12 +90,56 @@ export default function DashboardPage() {
 
   const completionRate = summary.totalTasks > 0 ? Math.round((summary.done / summary.totalTasks) * 100) : 0;
 
+  // Each card jumps to the most relevant section and pre-applies a filter that
+  // matches its label. `target` picks which anchor to scroll to; `apply`
+  // mutates teamFilters so the Team Overview lands pre-filtered. Overdue uses
+  // the dedicated widget so the user sees the actual overdue task list rather
+  // than the per-member roll-up.
+  function jumpFromStatCard(kind) {
+    const scrollTo = (ref) => {
+      if (ref?.current) {
+        ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    };
+    switch (kind) {
+      case 'total':
+        setTeamFilters({ statuses: [], priorities: [], member: '', search: '', smartView: '' });
+        scrollTo(teamOverviewRef);
+        break;
+      case 'done':
+        setTeamFilters({ statuses: ['done'], priorities: [], member: '', search: '', smartView: '' });
+        scrollTo(teamOverviewRef);
+        break;
+      case 'working':
+        setTeamFilters({ statuses: ['working_on_it'], priorities: [], member: '', search: '', smartView: '' });
+        scrollTo(teamOverviewRef);
+        break;
+      case 'stuck':
+        setTeamFilters({ statuses: [], priorities: [], member: '', search: '', smartView: 'stuck' });
+        scrollTo(teamOverviewRef);
+        break;
+      case 'overdue':
+        // Prefer the flat task widget when it has data; fall back to the
+        // Team Overview with the overdue smart view if there are zero
+        // overdue tasks (widget isn't rendered then).
+        if (overdueTasks.length > 0) {
+          scrollTo(overdueWidgetRef);
+        } else {
+          setTeamFilters({ statuses: [], priorities: [], member: '', search: '', smartView: 'overdue' });
+          scrollTo(teamOverviewRef);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
   const statCards = [
-    { label: 'Total Tasks', value: summary.totalTasks, color: '#0073ea', icon: ListChecks },
-    { label: 'Completed', value: summary.done, color: '#00c875', icon: CheckCircle2 },
-    { label: 'In Progress', value: summary.working, color: '#fdab3d', icon: Clock },
-    { label: 'Stuck', value: summary.stuck, color: '#e2445c', icon: AlertTriangle },
-    { label: 'Overdue', value: summary.overdue, color: '#e2445c', icon: AlertTriangle },
+    { kind: 'total',   label: 'Total Tasks', value: summary.totalTasks, color: '#0073ea', icon: ListChecks },
+    { kind: 'done',    label: 'Completed',   value: summary.done,       color: '#00c875', icon: CheckCircle2 },
+    { kind: 'working', label: 'In Progress', value: summary.working,    color: '#fdab3d', icon: Clock },
+    { kind: 'stuck',   label: 'Stuck',       value: summary.stuck,      color: '#e2445c', icon: AlertTriangle },
+    { kind: 'overdue', label: 'Overdue',     value: summary.overdue,    color: '#e2445c', icon: AlertTriangle },
   ];
 
   return (
@@ -120,7 +169,12 @@ export default function DashboardPage() {
         {statCards.map(card => {
           const Icon = card.icon;
           return (
-            <motion.div key={card.label} className="widget-card"
+            <motion.button
+              key={card.label}
+              type="button"
+              onClick={() => jumpFromStatCard(card.kind)}
+              title={`Jump to ${card.label}`}
+              className="widget-card text-left cursor-pointer hover:shadow-md focus:outline-none focus:ring-2 focus:ring-primary/40"
               variants={{ initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.16, 1, 0.3, 1] } } }}
               whileHover={{ y: -1, transition: { duration: 0.15 } }}>
               <div className="flex items-center gap-2 mb-2">
@@ -128,7 +182,7 @@ export default function DashboardPage() {
                 <span className="text-xs text-text-secondary font-medium">{card.label}</span>
               </div>
               <p className="text-2xl font-bold" style={{ color: card.color }}>{card.value}</p>
-            </motion.div>
+            </motion.button>
           );
         })}
       </motion.div>
@@ -296,7 +350,7 @@ export default function DashboardPage() {
         }
 
         return (
-          <div className="widget-card mb-6">
+          <div ref={teamOverviewRef} className="widget-card mb-6 scroll-mt-20">
             <h3 className="text-sm font-semibold mb-1 flex items-center gap-2">
               <Users size={15} /> Team Overview
             </h3>
@@ -724,7 +778,7 @@ export default function DashboardPage() {
 
       {/* Overdue Tasks Widget */}
       {overdueTasks.length > 0 && (
-        <div className="widget-card">
+        <div ref={overdueWidgetRef} className="widget-card scroll-mt-20">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
             <AlertTriangle size={15} className="text-danger" /> Overdue Tasks
             <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-danger text-white">{overdueTasks.length}</span>

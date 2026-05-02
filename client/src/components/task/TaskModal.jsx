@@ -1150,12 +1150,17 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             if (onUpdate) onUpdate({ ...task, _subtaskCounts: counts });
           }} />
 
-          {/* Tabs */}
-          <div className="flex items-center gap-5 border-b border-border mb-4">
+          {/* Tabs — compact 32px row, scrolls horizontally on narrow widths */}
+          <div className="tabs-compact mb-3" role="tablist">
             {tabs.map(t => (
-              <button key={t.id} onClick={() => setActiveTab(t.id)}
-                className={`flex items-center gap-1.5 pb-2.5 text-sm font-medium border-b-2 transition-colors ${activeTab === t.id ? 'border-primary text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'}`}>
-                <t.icon size={14} />
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={activeTab === t.id}
+                onClick={() => setActiveTab(t.id)}
+                className="tab-trigger-compact"
+              >
+                <t.icon size={13} />
                 {t.label}{t.count !== undefined && ` (${t.count})`}
               </button>
             ))}

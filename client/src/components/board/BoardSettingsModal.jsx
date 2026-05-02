@@ -291,12 +291,12 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
     .filter(u => !memberSearch || u.name.toLowerCase().includes(memberSearch.toLowerCase()));
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 animate-fade-in" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-[720px] max-h-[85vh] flex overflow-hidden" onClick={e => e.stopPropagation()}>
-        {/* Sidebar */}
-        <div className="w-[180px] bg-surface/60 border-r border-border flex flex-col py-4 flex-shrink-0">
-          <h2 className="text-sm font-bold text-text-primary px-4 mb-3 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: board.color || '#0073ea' }} />
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-[2px] flex items-center justify-center z-50 animate-fade-in" onClick={onClose}>
+      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-[700px] max-h-[85vh] flex overflow-hidden border border-border" onClick={e => e.stopPropagation()}>
+        {/* Sidebar — narrower, denser tab rows */}
+        <div className="w-[160px] bg-surface/60 dark:bg-zinc-900/40 border-r border-border flex flex-col py-3 flex-shrink-0">
+          <h2 className="text-[12px] font-semibold uppercase tracking-wide text-text-secondary px-3 mb-2 flex items-center gap-1.5">
+            <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: board.color || '#0073ea' }} />
             Settings
           </h2>
           {TABS.map(tab => {
@@ -305,7 +305,7 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2.5 px-4 py-2 text-sm transition-colors ${
+                className={`flex items-center gap-2 px-3 py-1.5 text-[13px] transition-colors ${
                   activeTab === tab.id
                     ? 'bg-primary/10 text-primary font-medium border-r-2 border-primary'
                     : tab.id === 'danger'
@@ -313,7 +313,7 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
                     : 'text-text-secondary hover:bg-surface hover:text-text-primary'
                 }`}
               >
-                <Icon size={15} /> {tab.label}
+                <Icon size={14} /> {tab.label}
               </button>
             );
           })}
@@ -322,8 +322,8 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
         {/* Content */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
-            <h3 className="text-base font-bold text-text-primary">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+            <h3 className="text-[13px] font-semibold text-text-primary">
               {TABS.find(t => t.id === activeTab)?.label}
             </h3>
             <div className="flex items-center gap-2">

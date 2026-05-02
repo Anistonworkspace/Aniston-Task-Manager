@@ -381,6 +381,83 @@ body {
   .badge-danger { @apply bg-red-50 text-red-700; }
   .badge-purple { @apply bg-violet-50 text-violet-700; }
   .badge-neutral { @apply bg-slate-100 text-slate-600; }
+
+  /* ===== Compact enterprise modal / form / tabs primitives =====
+     One source of truth for popover/modal/tab density across the app.
+     Prefer these classes over ad-hoc px-6/py-4/space-y-4 inside dialogs. */
+
+  .modal-header-compact {
+    @apply flex items-center justify-between px-4 sm:px-5 py-3 border-b border-zinc-200 dark:border-zinc-800;
+  }
+  .modal-body-compact {
+    @apply px-4 sm:px-5 py-3.5 overflow-y-auto;
+  }
+  .modal-footer-compact {
+    @apply flex items-center justify-end gap-2 px-4 sm:px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/40;
+  }
+
+  .modal-title-chip {
+    @apply w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0;
+  }
+  .modal-title-text {
+    @apply text-[13px] font-semibold text-zinc-900 dark:text-white leading-tight;
+  }
+  .modal-title-sub {
+    @apply text-[11px] text-zinc-500 dark:text-zinc-400 truncate;
+  }
+  .modal-close-btn {
+    @apply p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 transition-colors disabled:opacity-40;
+  }
+
+  .form-field-compact { @apply space-y-1; }
+  .form-label-compact {
+    @apply block text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400;
+  }
+  .form-helper-compact {
+    @apply text-[10px] text-zinc-400 dark:text-zinc-500;
+  }
+  .form-input-compact {
+    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 disabled:opacity-60;
+  }
+  .form-textarea-compact {
+    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none disabled:opacity-60;
+    min-height: 64px;
+    max-height: 180px;
+  }
+
+  .compact-card {
+    @apply rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/40 px-3 py-2;
+  }
+
+  .compact-upload {
+    @apply w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 text-[12px] text-zinc-600 dark:text-zinc-300 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors disabled:opacity-50;
+  }
+  .compact-upload-row {
+    @apply flex items-center justify-between gap-2 px-3 py-1.5 rounded-md bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700;
+  }
+
+  .btn-compact {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors disabled:cursor-not-allowed;
+  }
+  .btn-compact-ghost {
+    @apply btn-compact text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40;
+  }
+  .btn-compact-primary {
+    @apply btn-compact text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500;
+  }
+
+  .tabs-compact {
+    @apply flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800 overflow-x-auto;
+    scrollbar-width: none;
+  }
+  .tabs-compact::-webkit-scrollbar { display: none; }
+  .tab-trigger-compact {
+    @apply inline-flex items-center gap-1.5 px-3 h-8 text-[13px] font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 border-b-2 border-transparent whitespace-nowrap transition-colors;
+  }
+  .tab-trigger-compact[aria-selected="true"],
+  .tab-trigger-compact.is-active {
+    @apply text-emerald-600 dark:text-emerald-400 border-emerald-500;
+  }
 }
 
 /* ===== Animations ===== */

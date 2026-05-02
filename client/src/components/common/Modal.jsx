@@ -50,7 +50,15 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     return () => { document.removeEventListener('keydown', handleKey); document.body.style.overflow = ''; };
   }, [isOpen, handleKey]);
 
-  const sizes = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl', panel: 'max-w-2xl ml-auto h-full rounded-none' };
+  // Compact enterprise sizing — matches the audit targets (sm 420–480, md
+   // 520–600, lg 680–760). The previous max-w-md/lg/2xl values overshot.
+  const sizes = {
+    sm: 'max-w-[460px]',
+    md: 'max-w-[560px]',
+    lg: 'max-w-[720px]',
+    xl: 'max-w-[960px]',
+    panel: 'max-w-[600px] ml-auto h-full rounded-none',
+  };
 
   return (
     <AnimatePresence>
@@ -79,21 +87,22 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
             {...modalContent}
           >
             {title && (
-              <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-                <h2 className="text-[15px] font-semibold text-text-primary">{title}</h2>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+                <h2 className="text-[13px] font-semibold text-text-primary leading-tight">{title}</h2>
                 <motion.button
                   onClick={onClose}
-                  className="p-1.5 rounded-lg hover:bg-surface-100 transition-colors text-text-tertiary hover:text-text-secondary"
+                  className="p-1 rounded-md hover:bg-surface-100 transition-colors text-text-tertiary hover:text-text-secondary"
                   whileHover={{ rotate: 90 }}
                   whileTap={{ scale: 0.9 }}
                   transition={{ duration: 0.2 }}
+                  aria-label="Close"
                 >
-                  <X size={16} />
+                  <X size={15} />
                 </motion.button>
               </div>
             )}
-            <div className="flex-1 overflow-auto px-6 py-4">{children}</div>
-            {footer && <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-border">{footer}</div>}
+            <div className="flex-1 overflow-auto px-5 py-3.5">{children}</div>
+            {footer && <div className="flex items-center justify-end gap-2 px-5 py-2.5 border-t border-border bg-surface-50/60 dark:bg-zinc-900/40">{footer}</div>}
           </motion.div>
         </motion.div>
       )}
