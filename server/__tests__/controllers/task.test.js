@@ -330,7 +330,7 @@ describe('POST /api/tasks', () => {
     expect(res.body.data).toHaveProperty('task');
   });
 
-  it('forces member role to assign the task to themselves only', async () => {
+  it('forces member role to assign the task to themselves only (when due date is set)', async () => {
     // authenticate call (1), then no additional User.findByPk in createTask
     User.findByPk.mockResolvedValue(makeUserRecord({ role: 'member' }));
     Board.findByPk.mockResolvedValue(makeBoardRecord());
@@ -345,10 +345,15 @@ describe('POST /api/tasks', () => {
 
     const token = generateToken(USER_ID, 'member');
 
+    // Auto-self-assign is gated on `dueDate` post-fix — supplying a date
+    // satisfies the new "no assignment without a due date" rule and the
+    // controller defaults assignedTo to the current member. Without a due
+    // date the task would be created unassigned (a deliberate change to
+    // make the assignment rule symmetric for self vs others).
     await request(app)
       .post('/api/tasks')
       .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'My Task', boardId: BOARD_ID });
+      .send({ title: 'My Task', boardId: BOARD_ID, dueDate: '2026-12-31' });
 
     // The controller must override assignedTo with the current user's id
     expect(Task.create).toHaveBeenCalledWith(

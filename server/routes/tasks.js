@@ -67,6 +67,10 @@ router.post(
       .trim()
       .notEmpty().withMessage('Task title is required')
       .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
+    body('description')
+      .optional({ nullable: true })
+      .isString().withMessage('description must be a string')
+      .isLength({ max: 10000 }).withMessage('description must be 10,000 characters or fewer'),
     body('boardId')
       .notEmpty().withMessage('boardId is required')
       .isUUID().withMessage('boardId must be a valid UUID'),

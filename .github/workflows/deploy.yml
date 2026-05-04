@@ -4,6 +4,20 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_password_reset_sunny_muskan:
+        description: "Run one-time Sunny/Muskan production password reset on this deploy"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      onetime_reset_rerun_key:
+        description: "Optional unique rerun key, e.g. password-reset-sunny-muskan-2026-05-rerun-1"
+        required: false
+        default: ""
+        type: string
 
 # Only one deploy at a time — queue, never cancel mid-deploy
 concurrency:
@@ -59,11 +73,11 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
-          # Forward both ENV_FILE (deploy/.env contents) and the one-time
-          # password-reset feature flag into the SSH session. The flag is a
-          # GitHub Actions repository VARIABLE (not a secret), so flipping
-          # it on/off does not require rotating any secret.
-          envs: ENV_FILE,RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN
+          # Forward ENV_FILE (deploy/.env contents) plus the two one-time
+          # password-reset inputs into the SSH session. Both inputs are
+          # FLAGS, not secrets — flipping them on/off does not require
+          # rotating any secret.
+          envs: ENV_FILE,RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN,ONETIME_RESET_RERUN_KEY
           script: |
             set -e
 
@@ -155,27 +169,28 @@ jobs:
 
             echo "=== [9/9] One-time password reset (guarded) ==="
             # This runs the deploy/run-onetime-password-reset.sh wrapper
-            # ONLY when RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=true is
-            # set as a GitHub Actions repo variable. The wrapper itself is
-            # the no-op fast path when the flag is unset; we still call it
-            # unconditionally so a flag flip is picked up on the next
-            # deploy without any workflow edit.
+            # ONLY when RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=true. We
+            # still call it unconditionally so a flag flip is picked up on
+            # the next deploy without any workflow edit. The wrapper logs
+            # a very loud "did not run" message when the flag is missing,
+            # so it's impossible to confuse "skipped" with "ran".
             #
-            # The wrapper:
-            #   - validates the aph-backend container is healthy
-            #   - confirms NODE_ENV=production and CLIENT_URL is non-local
-            #     inside the container
-            #   - runs the reset script in dry-run, asserts exactly the
-            #     two expected accounts resolved
-            #   - re-runs with --execute and a DB-backed maintenance
-            #     marker so a re-deploy with the flag still on is a
-            #     clean exit-0 no-op
+            # Two equivalent ways to enable the run:
+            #   A) Repo Variable RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=true
+            #      (Settings → Secrets and variables → Actions → Variables)
+            #   B) Manual workflow_dispatch input
+            #      run_password_reset_sunny_muskan=true
+            #
+            # Optional: ONETIME_RESET_RERUN_KEY (or workflow_dispatch input
+            # onetime_reset_rerun_key) supplies a fresh rerun key that
+            # overrides the original maintenance-key marker for THIS run.
             #
             # If this step fails, deployment fails (set -e at top). The
             # backend rollout above has already completed successfully,
             # so the app is up regardless of the reset hook outcome.
             chmod +x deploy/run-onetime-password-reset.sh 2>/dev/null || true
             RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN="${RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN:-}" \
+              ONETIME_RESET_RERUN_KEY="${ONETIME_RESET_RERUN_KEY:-}" \
               deploy/run-onetime-password-reset.sh
 
             echo "=== Setup daily backup cron (2 AM) ==="
@@ -193,10 +208,19 @@ jobs:
             echo "Previous: $PREVIOUS_SHA"
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
-          # Repo VARIABLE (not secret). Set to "true" to trigger the
-          # guarded one-time password-reset hook in deploy step [9/9].
-          # Leave unset (or set to "false"/anything else) for the normal
-          # no-op path. After a successful one-time run the in-DB
-          # marker prevents re-runs even if this remains "true", but
-          # please flip it back so deploy logs stay tidy.
-          RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN: ${{ vars.RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN }}
+          # Effective flag: TRUE if EITHER the repo variable is set to
+          # "true" OR the workflow_dispatch input is "true".
+          #   - Repo Variable: Settings → Secrets and variables → Actions
+          #     → Variables → RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN
+          #   - workflow_dispatch input: run_password_reset_sunny_muskan
+          # After a successful one-time run, the in-DB marker prevents
+          # re-runs of the SAME key even if this remains "true". Please
+          # flip both back to "false" anyway, so deploy logs stay tidy.
+          RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN: ${{ (vars.RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN == 'true' || github.event.inputs.run_password_reset_sunny_muskan == 'true') && 'true' || 'false' }}
+          # Effective rerun key: workflow_dispatch input wins, then repo
+          # variable, then empty (no rerun). When non-empty, this run
+          # uses the rerun key as its marker, bypassing the original
+          # maintenance-key marker check. Use this when Sunny/Muskan
+          # need to be reset a second time after a previous reset
+          # already ran (the original marker is already in the DB).
+          ONETIME_RESET_RERUN_KEY: ${{ github.event.inputs.onetime_reset_rerun_key || vars.ONETIME_RESET_RERUN_KEY || '' }}

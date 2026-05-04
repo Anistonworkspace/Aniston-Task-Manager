@@ -52,6 +52,7 @@ export const ACTIONS = {
   delete:            { label: 'Delete',               description: 'Delete/archive records' },
   assign:            { label: 'Assign Self',          description: 'Assign self as owner/assignee' },
   assign_others:     { label: 'Assign Others',        description: 'Assign tasks to other users' },
+  set_priority:      { label: 'Set Priority',         description: 'Change task priority (low/medium/high/critical)' },
   approve:           { label: 'Approve/Reject',       description: 'Approve or reject requests' },
   export:            { label: 'Export',               description: 'Export/download data' },
   manage:            { label: 'Manage',               description: 'Full management access' },
@@ -69,7 +70,7 @@ export const RESOURCE_ACTIONS = {
   admin_settings:   ['view', 'manage'],
   workspaces:       ['view', 'create', 'edit', 'delete', 'manage_members'],
   boards:           ['view', 'create', 'edit', 'delete', 'manage_members', 'manage_settings', 'export'],
-  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'change_status', 'comment', 'upload', 'approve'],
+  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'set_priority', 'change_status', 'comment', 'upload', 'approve'],
   subtasks:         ['view', 'create', 'edit', 'delete'],
   task_comments:    ['view', 'create', 'edit', 'delete'],
   task_files:       ['view', 'upload', 'delete'],
@@ -236,6 +237,17 @@ export function isExplicitlyDenied(resource, action, isSuperAdmin = false, granu
  */
 export function canAssignOthers(isSuperAdmin = false, granularPermissions = {}) {
   return hasGranularPermission('tasks', 'assign_others', isSuperAdmin, granularPermissions);
+}
+
+/**
+ * Convenience: can this user change task priority? Mirrors the backend
+ * `tasks.set_priority` action (members default to false). Use this to
+ * decide whether to render PriorityCell as an editable dropdown vs a
+ * read-only pill — backend remains the source of truth and will 403 on
+ * forged direct PUTs.
+ */
+export function canSetPriority(isSuperAdmin = false, granularPermissions = {}) {
+  return hasGranularPermission('tasks', 'set_priority', isSuperAdmin, granularPermissions);
 }
 
 // ── Task action helpers (canonical) ────────────────────────────────────

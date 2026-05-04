@@ -9,6 +9,7 @@ const { buildPendingPriorityOrderAliased } = require('../utils/taskPrioritizatio
 const { safeUUIDList } = require('../utils/safeSql');
 const boardMembershipService = require('../services/boardMembershipService');
 const taskVisibility = require('../services/taskVisibilityService');
+const boardVisibility = require('../services/boardVisibilityService');
 
 // ── Table / column existence cache ──
 const _tblCache = {};
@@ -128,45 +129,21 @@ const getBoards = async (req, res) => {
       where.name = { [Op.iLike]: `%${search}%` };
     }
 
-    // Non-admin/manager/assistant_manager users only see boards they have access to
-    const role = req.user.role;
-    const userId = req.user.id;
-    const isSuperAdmin = !!req.user.isSuperAdmin;
-
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
-      // Members only see boards they are connected to
-      const visibleUserIds = [userId];
-      const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
-
-      // ── Build visibility filters ──
-      // For members, board visibility comes from two independent sources:
-      //  A) Explicit membership (autoAdded=false) — survives task unassignment
-      //  B) Current task assignments — always reflects live state
-      // We must NOT use raw BoardMembers (autoAdded=true rows) for visibility
-      // because those are stale after unassignment until async cleanup runs.
-      const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
-
-      const boardOrFilters = [
-        // Board created by user
-        { createdBy: { [Op.in]: visibleUserIds } },
-        // Explicitly-added board member (NOT auto-added via task assignment).
-        // If autoAdded column exists, only include explicit members.
-        // If column doesn't exist (pre-migration), fall back to all BoardMembers.
-        hasAutoAddedCol
-          ? sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}) AND "autoAdded" = false)`)
-          : sequelize.literal(`"Board"."id" IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`),
-        // Task-based visibility: user has active tasks on the board (always current)
-        sequelize.literal(`"Board"."id" IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`),
-      ];
-      // Junction-table task visibility (always current)
-      if (await _tblExists('task_assignees')) {
-        boardOrFilters.push(sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`));
-      }
-      if (await _tblExists('task_owners')) {
-        boardOrFilters.push(sequelize.literal(`"Board"."id" IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`));
-      }
-      where[Op.or] = boardOrFilters;
-    }
+    // Visibility scoping is delegated to boardVisibilityService — the SAME
+    // rule used by getBoard, search, and direct-URL access. assistant_manager
+    // and member are restricted to {self ∪ descendants}; admin/manager/super
+    // admin remain unrestricted. The service correctly walks both
+    // User.managerId AND manager_relations via hierarchyService.
+    //
+    // CRITICAL — merge with Object.assign UNCONDITIONALLY. The visibility
+    // fragment is keyed on `Op.or`, which is a Symbol. A previous attempt
+    // gated the merge with `if (Object.keys(visWhere).length > 0)` — but
+    // Object.keys() ignores Symbols, so the guard was always false and the
+    // filter was silently dropped, leaking every board name to non-admins.
+    // For unrestricted viewers the service returns `{}`, so the unconditional
+    // assign is a safe no-op. (Object.assign does copy own Symbol keys.)
+    const visWhere = await boardVisibility.buildBoardVisibilityWhere(req.user);
+    Object.assign(where, visWhere || {});
 
     const { count, rows: boards } = await Board.findAndCountAll({
       where,
@@ -260,56 +237,48 @@ const getBoard = async (req, res) => {
     }
 
     // ── Stage 1: Board reachability (separate from task-row visibility) ──
-    // Admin / super_admin / manager / assistant_manager can REACH any board
-    // (sidebar / direct URL). Members must be linked via explicit membership,
-    // task assignment, or task ownership. NOTE: reaching the board does NOT
+    // Admin / super_admin / manager can REACH any board (sidebar / direct
+    // URL). assistant_manager and member must be linked via explicit
+    // membership, task assignment, or task ownership for themselves OR a
+    // user in their hierarchy subtree. NOTE: reaching the board does NOT
     // imply they see every task on it — Stage 2 below filters task rows
     // independently by hierarchy (CP-3 RBAC).
+    //
+    // Delegates to boardVisibilityService.canUserSeeBoard so the rule
+    // matches getBoards, search, and exportBoard exactly. Previously this
+    // grouped assistant_manager with admin/manager and let them reach any
+    // board — leaking board names.
     const role = req.user.role;
     const isSuperAdmin = !!req.user.isSuperAdmin;
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
+    const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+    if (!reachable) {
+      return res.status(403).json({ success: false, message: 'Access denied. You are not a member of this board.' });
+    }
+
+    // Auto-add the viewer as a (auto) board member when they reached this
+    // board through a task path — keeps the legacy autoAdded-cleanup loop
+    // in sync. We skip this for unrestricted roles (they don't need an
+    // explicit membership row to see the board) and for users who already
+    // have an explicit row.
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
       const userId = req.user.id;
-
-      // Build the set of user IDs this person can "see through" for the
-      // reachability check (members can also reach a board through their
-      // direct reports' assignments).
-      let visibleUserIds = [userId];
-      const teamMembers = await User.findAll({
-        where: { managerId: userId },
-        attributes: ['id'],
-        raw: true,
-      });
-      visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
-
-      let isExplicitMember = false;
-      const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
-      if (hasAutoAddedCol) {
-        const [explicitRows] = await sequelize.query(
-          `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId AND "autoAdded" = false LIMIT 1`,
-          { replacements: { boardId: board.id, userId } }
-        );
-        isExplicitMember = explicitRows.length > 0;
-      } else {
-        isExplicitMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
-      }
+      const visibleUserIds = [userId];
+      try {
+        const descendantIds = await require('../services/hierarchyService').getDescendantIds(userId);
+        for (const id of descendantIds) visibleUserIds.push(id);
+      } catch { /* hierarchy walk is best-effort */ }
 
       const hasAssignedTasks = board.tasks && board.tasks.some((t) => visibleUserIds.includes(t.assignedTo));
       const isTaskOwner = board.tasks && board.tasks.some((t) => t.owners && t.owners.some((o) => visibleUserIds.includes(o.id)));
-
       let isTaskAssignee = false;
-      if (!isExplicitMember && !hasAssignedTasks && !isTaskOwner) {
+      if (!hasAssignedTasks && !isTaskOwner) {
         const assigneeCount = await TaskAssignee.count({
           where: { userId: { [Op.in]: visibleUserIds } },
           include: [{ model: Task, as: 'task', attributes: [], where: { boardId: board.id, isArchived: false }, required: true }],
         });
         isTaskAssignee = assigneeCount > 0;
       }
-
-      if (!isExplicitMember && !hasAssignedTasks && !isTaskOwner && !isTaskAssignee) {
-        return res.status(403).json({ success: false, message: 'Access denied. You are not a member of this board.' });
-      }
-      // Auto-add as member if they have tasks/ownership but aren't a member yet
-      const isMember = board.members && board.members.some((m) => visibleUserIds.includes(m.id));
+      const isMember = board.members && board.members.some((m) => m.id === userId);
       if (!isMember && (hasAssignedTasks || isTaskOwner || isTaskAssignee)) {
         await boardMembershipService.autoAddMember(board.id, req.user.id);
       }
@@ -719,24 +688,14 @@ const exportBoard = async (req, res) => {
     });
     if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
 
-    // Board-level access check: admin/manager/assistant_manager can export any board;
-    // members can only export boards they belong to (as member, assignee, or creator).
-    const role = req.user.role;
-    const isSuperAdmin = !!req.user.isSuperAdmin;
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager' && role !== 'assistant_manager') {
-      const userId = req.user.id;
-      const isMember = board.members && board.members.some(m => m.id === userId);
-      const isCreator = board.createdBy === userId;
-      if (!isMember && !isCreator) {
-        // Also check if user has tasks in this board via task_assignees
-        const assigneeCount = await TaskAssignee.count({
-          include: [{ model: Task, as: 'task', attributes: [], where: { boardId: board.id, isArchived: false }, required: true }],
-          where: { userId },
-        });
-        if (assigneeCount === 0) {
-          return res.status(403).json({ success: false, message: 'Access denied. You are not authorized to export this board.' });
-        }
-      }
+    // Board-level access check delegated to the centralized service so it
+    // matches the sidebar visibility rule. Admin/manager/super_admin remain
+    // unrestricted; assistant_manager/member must have a real visibility
+    // path (creator / explicit member / task assignment / ownership in
+    // self+subtree).
+    const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+    if (!reachable) {
+      return res.status(403).json({ success: false, message: 'Access denied. You are not authorized to export this board.' });
     }
 
     const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { canArchiveTask } from '../../utils/permissions';
+import { canArchiveTask, canSetPriority as canSetPriorityFn } from '../../utils/permissions';
 import StatusCell from './StatusCell';
 import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
 import ApprovalStepIndicator from './ApprovalStepIndicator';
@@ -40,6 +40,12 @@ const TaskRow = React.memo(function TaskRow({
   // true for managers/asst-mgrs that have an admin DENY on tasks.assign_others).
   // Backend remains the source of truth — this just hides invalid options.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+
+  // Priority is gated by its own granular action (`tasks.set_priority`).
+  // Members default to false; managers/admins/asst-mgrs default to true.
+  // Centralized helper so an explicit DENY on the user wins over the role
+  // default (mirrors the backend gate in updateTask/bulkUpdate/createTask).
+  const canSetPriority = canSetPriorityFn(isSuperAdmin, granularPermissions);
 
   // Centralized archive check — respects role defaults, ownership for members,
   // and explicit DENY overrides. Hides the row's archive icon entirely when
@@ -144,8 +150,25 @@ const TaskRow = React.memo(function TaskRow({
           />
         );
       }
-      case 'date': return <DateCell value={task.dueDate} onChange={canEditAllFields ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
-      case 'priority': return <PriorityCell value={task.priority} onChange={canEditAllFields ? (val => onUpdate({ priority: val })) : undefined} />;
+      case 'date': {
+        // Due date editability mirrors the backend `checkTaskAction('edit')`
+        // whitelist in server/middleware/taskPermissions.js — assignees AND
+        // creators can update `dueDate` even when they aren't management.
+        // This is critical for the member flow: a member who quick-creates
+        // an unassigned task must be able to set the due date in order to
+        // satisfy the "no assignment without a due date" rule and then
+        // self-assign. Without this fallback, the cell was locked and the
+        // member was stranded.
+        const dateEditable = !isApproved && (canEditAllFields || isOwnTask);
+        return <DateCell value={task.dueDate} onChange={dateEditable ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
+      }
+      case 'priority': {
+        // Priority editing requires BOTH general edit access on this task AND
+        // the dedicated set_priority permission. Members lacking set_priority
+        // see the pill as a non-interactive label — no dropdown, no API call.
+        const priorityEditable = !isApproved && canSetPriority && (canEditAllFields || isOwnTask);
+        return <PriorityCell value={task.priority} onChange={priorityEditable ? (val => onUpdate({ priority: val })) : undefined} />;
+      }
       case 'progress': {
         // Approval-required gate (UX mirror of the backend approvalGateForCompletion).
         // For non-super-admin owners on a not-yet-approved task, the slider

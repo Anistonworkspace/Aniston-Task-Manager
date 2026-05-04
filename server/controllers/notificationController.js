@@ -111,4 +111,42 @@ const getUnreadCount = async (req, res) => {
   }
 };
 
-module.exports = { getNotifications, markAsRead, markAllRead, getUnreadCount };
+/**
+ * DELETE /api/notifications/:id
+ * Delete a single notification owned by the current user. 404 (not 403) if it
+ * belongs to someone else, so existence is not leaked.
+ */
+const deleteNotification = async (req, res) => {
+  try {
+    const deleted = await Notification.destroy({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Notification not found.' });
+    }
+    emitToUser(req.user.id, 'notification:read', { notificationId: req.params.id, deleted: true });
+    res.json({ success: true, message: 'Notification deleted.' });
+  } catch (error) {
+    console.error('[Notification] Delete error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
+ * DELETE /api/notifications/clear-read
+ * Bulk delete read notifications belonging to the current user. Idempotent.
+ */
+const clearRead = async (req, res) => {
+  try {
+    const deleted = await Notification.destroy({
+      where: { userId: req.user.id, isRead: true },
+    });
+    emitToUser(req.user.id, 'notification:read', { all: true, cleared: true });
+    res.json({ success: true, message: `${deleted} read notifications deleted.`, data: { deleted } });
+  } catch (error) {
+    console.error('[Notification] ClearRead error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+module.exports = { getNotifications, markAsRead, markAllRead, getUnreadCount, deleteNotification, clearRead };

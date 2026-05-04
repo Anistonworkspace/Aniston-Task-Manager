@@ -8,6 +8,26 @@ export default function PriorityCell({ value, onChange }) {
   const btnRef = useRef(null);
 
   const config = PRIORITY_CONFIG[value];
+  // Read-only mode (no onChange) — render the same pill but as a non-button
+  // span. Mirrors the convention used by other cells (DateCell, ProgressCell):
+  // when the parent withholds the change handler, the cell is uneditable.
+  // Centralizing the visual lets users without `tasks.set_priority` still see
+  // the current priority without an interactive affordance that would 403.
+  const readOnly = typeof onChange !== 'function';
+
+  if (readOnly) {
+    return (
+      <div className="relative w-full h-full flex items-center justify-center">
+        <span
+          className="status-pill w-full select-none cursor-default"
+          style={{ backgroundColor: config ? config.bgColor : '#94a3b8' }}
+          title="You don't have permission to change priority"
+        >
+          {config ? config.label : 'None'}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full h-full flex items-center justify-center">

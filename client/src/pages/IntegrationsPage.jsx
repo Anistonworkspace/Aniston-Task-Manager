@@ -11,6 +11,44 @@ import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
 import TranscriptionProviderSection from '../components/integrations/TranscriptionProviderSection';
 
+// Renders a copy-pastable Express receiver wired to the user's webhook secret.
+// Lives outside the component so it doesn't re-allocate per render and so the
+// secret is interpolated only when the kit is actually shown.
+function buildReceiverCode(secret) {
+  return `// npm install express
+const crypto = require('crypto');
+const express = require('express');
+const app = express();
+
+const SECRET = '${secret}';
+
+// Capture raw body so the HMAC matches byte-for-byte.
+app.use('/webhooks/aniston', express.raw({ type: 'application/json' }));
+
+app.post('/webhooks/aniston', (req, res) => {
+  const sig = req.header('X-Aniston-Signature') || '';
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', SECRET)
+    .update(req.body)
+    .digest('hex');
+
+  if (sig.length !== expected.length ||
+      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return res.status(401).send('bad signature');
+  }
+
+  // Ack fast — process async.
+  res.status(200).send('ok');
+
+  const { event, data } = JSON.parse(req.body.toString('utf8'));
+  // event = 'task.created' | 'task.updated' | 'task.deleted'
+  // data.task contains the task fields; data.taskId for deletes.
+  console.log(event, data);
+});
+
+app.listen(4000);`;
+}
+
 function TeamsNotificationStats() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -121,8 +159,19 @@ export default function IntegrationsPage() {
   const [showNewKeyForm, setShowNewKeyForm] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyExpiry, setNewKeyExpiry] = useState('');
+  const [newKeyWebhookUrl, setNewKeyWebhookUrl] = useState('');
+  const [newKeyEvents, setNewKeyEvents] = useState({
+    'task.created': true,
+    'task.updated': true,
+    'task.deleted': true,
+  });
   const [newlyCreatedKey, setNewlyCreatedKey] = useState(null);
+  const [newlyCreatedWebhook, setNewlyCreatedWebhook] = useState(null);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [copiedField, setCopiedField] = useState('');
+  const [webhooks, setWebhooks] = useState([]);
+  const [testingWebhookId, setTestingWebhookId] = useState(null);
+  const [testResult, setTestResult] = useState(null);
 
   useEffect(() => {
     loadStatus();
@@ -176,10 +225,15 @@ export default function IntegrationsPage() {
   async function loadApiKeys() {
     setApiKeysLoading(true);
     try {
-      const res = await api.get('/api-keys');
-      setApiKeys(res.data?.data || []);
+      const [keysRes, hooksRes] = await Promise.all([
+        api.get('/api-keys'),
+        api.get('/outbound-webhooks').catch(() => ({ data: { data: [] } })),
+      ]);
+      setApiKeys(keysRes.data?.data || []);
+      setWebhooks(hooksRes.data?.data || []);
     } catch {
       setApiKeys([]);
+      setWebhooks([]);
     } finally {
       setApiKeysLoading(false);
     }
@@ -190,17 +244,49 @@ export default function IntegrationsPage() {
       setError('Please enter a name for the API key.');
       return;
     }
+    const webhookUrl = newKeyWebhookUrl.trim();
+    if (webhookUrl) {
+      try {
+        const u = new URL(webhookUrl);
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error();
+      } catch {
+        setError('Webhook URL must be a valid http(s) URL.');
+        return;
+      }
+    }
+
     setGeneratingKey(true);
     setError('');
     try {
+      // 1. Create the API key
       const res = await api.post('/api-keys', {
         name: newKeyName.trim(),
         expiresAt: newKeyExpiry || null,
       });
       const data = res.data?.data || res.data;
-      setNewlyCreatedKey(data.key);
+      setNewlyCreatedKey({ key: data.key, id: data.id, name: data.name });
+
+      // 2. Optionally register a webhook bound to this key in the same flow.
+      //    Failure here is non-fatal: the API key still works for polling.
+      if (webhookUrl) {
+        try {
+          const events = Object.entries(newKeyEvents).filter(([, v]) => v).map(([k]) => k);
+          const hookRes = await api.post('/outbound-webhooks', {
+            apiKeyId: data.id,
+            name: `${data.name} webhook`,
+            url: webhookUrl,
+            events: events.length ? events : ['task.created', 'task.updated', 'task.deleted'],
+          });
+          const hookData = hookRes.data?.data || hookRes.data;
+          setNewlyCreatedWebhook(hookData);
+        } catch (hookErr) {
+          setError(`API key created, but webhook registration failed: ${hookErr.response?.data?.message || hookErr.message}`);
+        }
+      }
+
       setNewKeyName('');
       setNewKeyExpiry('');
+      setNewKeyWebhookUrl('');
       setShowNewKeyForm(false);
       loadApiKeys();
     } catch (err) {
@@ -208,6 +294,35 @@ export default function IntegrationsPage() {
     } finally {
       setGeneratingKey(false);
     }
+  }
+
+  async function handleTestWebhook(id) {
+    setTestingWebhookId(id);
+    setTestResult(null);
+    try {
+      const res = await api.post(`/outbound-webhooks/${id}/test`);
+      setTestResult({ id, ...(res.data?.data || {}) });
+    } catch (err) {
+      setTestResult({ id, status: 'failed', errorMessage: err.response?.data?.message || err.message });
+    } finally {
+      setTestingWebhookId(null);
+    }
+  }
+
+  async function handleDeleteWebhook(id) {
+    if (!confirm('Delete this webhook? The receiving application will stop getting events.')) return;
+    try {
+      await api.delete(`/outbound-webhooks/${id}`);
+      setWebhooks((prev) => prev.filter((w) => w.id !== id));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to delete webhook.');
+    }
+  }
+
+  function copyField(text, fieldName) {
+    navigator.clipboard.writeText(text);
+    setCopiedField(fieldName);
+    setTimeout(() => setCopiedField(''), 2000);
   }
 
   async function handleRevokeKey(id, name) {
@@ -1253,24 +1368,110 @@ export default function IntegrationsPage() {
               </p>
             </div>
 
-            {/* Newly created key banner */}
+            {/* Newly created key + receiver kit */}
             {newlyCreatedKey && (
-              <div className="mb-4 p-4 rounded-lg bg-emerald-50 border border-emerald-200 animate-fade-in">
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle2 size={16} className="text-emerald-600" />
-                  <p className="text-sm font-semibold text-emerald-800">API Key Generated</p>
+              <div className="mb-4 p-5 rounded-xl bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-300 shadow-sm animate-fade-in">
+                <div className="flex items-center gap-2 mb-3">
+                  <CheckCircle2 size={18} className="text-emerald-600" />
+                  <p className="text-base font-semibold text-emerald-800">Connection Kit Generated</p>
                 </div>
-                <p className="text-xs text-emerald-700 mb-2">Copy this key now. It will not be shown again.</p>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 px-3 py-2 text-xs font-mono bg-white rounded-lg border border-emerald-300 text-text-primary select-all break-all">
-                    {newlyCreatedKey}
-                  </code>
-                  <button onClick={() => copyToClipboard(newlyCreatedKey)}
-                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${copiedKey ? 'bg-emerald-600 text-white border-emerald-600' : 'text-emerald-700 border-emerald-300 hover:bg-emerald-100'}`}>
-                    {copiedKey ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}
-                  </button>
+                <p className="text-xs text-emerald-700 mb-4">
+                  Copy these credentials into your other application <strong>now</strong> — the API key and webhook secret won't be shown again.
+                </p>
+
+                {/* API Key */}
+                <div className="mb-3">
+                  <label className="block text-[11px] font-semibold text-emerald-900 mb-1 uppercase tracking-wider">
+                    1. API Key (header: X-API-Key)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 px-3 py-2 text-xs font-mono bg-white rounded-lg border border-emerald-300 text-text-primary select-all break-all">
+                      {newlyCreatedKey.key}
+                    </code>
+                    <button onClick={() => copyField(newlyCreatedKey.key, 'apikey')}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${copiedField === 'apikey' ? 'bg-emerald-600 text-white border-emerald-600' : 'text-emerald-700 border-emerald-300 hover:bg-emerald-100'}`}>
+                      {copiedField === 'apikey' ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}
+                    </button>
+                  </div>
                 </div>
-                <button onClick={() => setNewlyCreatedKey(null)} className="mt-2 text-[10px] text-emerald-600 hover:underline">Dismiss</button>
+
+                {newlyCreatedWebhook && (
+                  <>
+                    {/* Webhook URL (the URL THEY gave us) */}
+                    <div className="mb-3">
+                      <label className="block text-[11px] font-semibold text-emerald-900 mb-1 uppercase tracking-wider">
+                        2. Your Webhook URL (where Aniston will POST)
+                      </label>
+                      <code className="block px-3 py-2 text-xs font-mono bg-white rounded-lg border border-emerald-300 text-text-primary select-all break-all">
+                        {newlyCreatedWebhook.url}
+                      </code>
+                    </div>
+
+                    {/* Webhook Secret */}
+                    <div className="mb-3">
+                      <label className="block text-[11px] font-semibold text-emerald-900 mb-1 uppercase tracking-wider">
+                        3. Webhook Secret (used to verify HMAC signatures)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 px-3 py-2 text-xs font-mono bg-white rounded-lg border border-emerald-300 text-text-primary select-all break-all">
+                          {newlyCreatedWebhook.secret}
+                        </code>
+                        <button onClick={() => copyField(newlyCreatedWebhook.secret, 'secret')}
+                          className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${copiedField === 'secret' ? 'bg-emerald-600 text-white border-emerald-600' : 'text-emerald-700 border-emerald-300 hover:bg-emerald-100'}`}>
+                          {copiedField === 'secret' ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Subscribed events */}
+                    <div className="mb-3">
+                      <label className="block text-[11px] font-semibold text-emerald-900 mb-1 uppercase tracking-wider">
+                        4. Subscribed Events
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(newlyCreatedWebhook.events || []).map((e) => (
+                          <span key={e} className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-600 text-white">{e}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Receiver code sample */}
+                    <div className="mb-2">
+                      <label className="block text-[11px] font-semibold text-emerald-900 mb-1 uppercase tracking-wider">
+                        5. Drop-in Express receiver (Node.js)
+                      </label>
+                      <div className="relative">
+                        <button
+                          onClick={() => copyField(buildReceiverCode(newlyCreatedWebhook.secret), 'code')}
+                          className={`absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 text-[10px] rounded border ${copiedField === 'code' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white/90 text-emerald-700 border-emerald-300 hover:bg-emerald-100'}`}>
+                          {copiedField === 'code' ? <><Check size={10} /> Copied</> : <><Copy size={10} /> Copy</>}
+                        </button>
+                        <pre className="text-[11px] text-emerald-300 font-mono bg-zinc-900 rounded-lg p-3 overflow-x-auto whitespace-pre">
+{buildReceiverCode(newlyCreatedWebhook.secret)}
+                        </pre>
+                      </div>
+                      <p className="text-[10px] text-emerald-700 mt-1">
+                        Each request includes <code className="bg-white/60 px-1 rounded">X-Aniston-Signature</code> (sha256=<code>hex</code>),{' '}
+                        <code className="bg-white/60 px-1 rounded">X-Aniston-Event</code>, and{' '}
+                        <code className="bg-white/60 px-1 rounded">X-Aniston-Delivery</code> (replay-protection ID).
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {!newlyCreatedWebhook && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200">
+                    <p className="text-[11px] text-amber-800">
+                      <strong>No webhook registered.</strong> The other application will need to poll the API for changes.
+                      To get realtime push, edit the key above and add a webhook URL.
+                    </p>
+                  </div>
+                )}
+
+                <button onClick={() => { setNewlyCreatedKey(null); setNewlyCreatedWebhook(null); }}
+                  className="mt-3 text-xs font-medium text-emerald-700 hover:text-emerald-900 underline">
+                  I've copied everything — dismiss
+                </button>
               </div>
             )}
 
@@ -1287,9 +1488,9 @@ export default function IntegrationsPage() {
 
             {/* New Key Form */}
             {showNewKeyForm && (
-              <div className="mb-4 p-4 rounded-lg border border-emerald-200 bg-emerald-50/50 animate-fade-in">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="md:col-span-1">
+              <div className="mb-4 p-4 rounded-lg border border-emerald-200 bg-emerald-50/50 animate-fade-in space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
                     <label className="block text-xs font-medium text-text-secondary mb-1.5">Key Name *</label>
                     <input
                       type="text"
@@ -1299,7 +1500,7 @@ export default function IntegrationsPage() {
                       className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                     />
                   </div>
-                  <div className="md:col-span-1">
+                  <div>
                     <label className="block text-xs font-medium text-text-secondary mb-1.5">
                       <span className="flex items-center gap-1"><Clock size={12} /> Expires On (optional)</span>
                     </label>
@@ -1312,17 +1513,54 @@ export default function IntegrationsPage() {
                     />
                     <p className="text-[10px] text-text-tertiary mt-1">Leave empty for no expiration</p>
                   </div>
-                  <div className="flex items-end gap-2">
-                    <button onClick={handleGenerateKey} disabled={generatingKey}
-                      className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm">
-                      {generatingKey ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Key size={14} />}
-                      Generate
-                    </button>
-                    <button onClick={() => { setShowNewKeyForm(false); setNewKeyName(''); setNewKeyExpiry(''); }}
-                      className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface rounded-lg border border-border transition-colors">
-                      Cancel
-                    </button>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                    <span className="flex items-center gap-1"><Link2 size={12} /> Webhook URL (optional — for realtime push)</span>
+                  </label>
+                  <input
+                    type="url"
+                    value={newKeyWebhookUrl}
+                    onChange={e => setNewKeyWebhookUrl(e.target.value)}
+                    placeholder="https://your-app.example.com/webhooks/aniston"
+                    className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono"
+                  />
+                  <p className="text-[10px] text-text-tertiary mt-1">
+                    If set, Aniston will POST task changes to this URL with an HMAC-SHA256 signature.
+                    Leave empty if your other app polls the API instead.
+                  </p>
+                </div>
+
+                {newKeyWebhookUrl.trim() && (
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Events to send</label>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.keys(newKeyEvents).map((evt) => (
+                        <label key={evt} className="inline-flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newKeyEvents[evt]}
+                            onChange={(e) => setNewKeyEvents((prev) => ({ ...prev, [evt]: e.target.checked }))}
+                            className="rounded border-border text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <code className="font-mono">{evt}</code>
+                        </label>
+                      ))}
+                    </div>
                   </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-2 border-t border-emerald-200">
+                  <button onClick={handleGenerateKey} disabled={generatingKey}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">
+                    {generatingKey ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Key size={14} />}
+                    Generate Connection Kit
+                  </button>
+                  <button onClick={() => { setShowNewKeyForm(false); setNewKeyName(''); setNewKeyExpiry(''); setNewKeyWebhookUrl(''); }}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface rounded-lg border border-border transition-colors">
+                    Cancel
+                  </button>
                 </div>
               </div>
             )}
@@ -1404,6 +1642,94 @@ export default function IntegrationsPage() {
                 </table>
               </div>
             )}
+
+            {/* Registered webhooks */}
+            <div className="mt-6">
+              <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2 mb-3">
+                <Link2 size={15} /> Outbound Webhooks
+                <span className="text-[10px] font-normal text-text-tertiary">— realtime push to your other applications</span>
+              </h3>
+              {webhooks.length === 0 ? (
+                <div className="text-center py-6 text-text-tertiary border border-dashed border-border rounded-lg">
+                  <Link2 size={24} className="mx-auto mb-2 opacity-30" />
+                  <p className="text-xs">No webhooks registered</p>
+                  <p className="text-[10px] mt-1">Add a Webhook URL when generating an API key to push events to another app.</p>
+                </div>
+              ) : (
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-surface/50 border-b border-border">
+                        <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">Name</th>
+                        <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">URL</th>
+                        <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">Events</th>
+                        <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">Status</th>
+                        <th className="text-left px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">Last Delivered</th>
+                        <th className="text-right px-4 py-2.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {webhooks.map((w) => (
+                        <tr key={w.id} className="border-b border-border last:border-0 hover:bg-surface/30 transition-colors">
+                          <td className="px-4 py-3">
+                            <p className="text-xs font-medium text-text-primary">{w.name}</p>
+                            {w.apiKey && <p className="text-[10px] text-text-tertiary">key: {w.apiKey.name}</p>}
+                          </td>
+                          <td className="px-4 py-3">
+                            <code className="text-[11px] font-mono text-text-secondary break-all">{w.url}</code>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1">
+                              {(w.events || []).map((e) => (
+                                <span key={e} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 border border-emerald-200">{e}</span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            {w.lastErrorAt && (!w.lastDeliveredAt || new Date(w.lastErrorAt) > new Date(w.lastDeliveredAt)) ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/20" title={w.lastErrorMessage || ''}>
+                                <AlertCircle size={10} /> Erroring
+                              </span>
+                            ) : w.isActive ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
+                                <CheckCircle2 size={10} /> Active
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200">Disabled</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-text-secondary">
+                            {w.lastDeliveredAt ? new Date(w.lastDeliveredAt).toLocaleString() : <span className="text-text-tertiary">Never</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => handleTestWebhook(w.id)} disabled={testingWebhookId === w.id}
+                                title="Send test event"
+                                className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors disabled:opacity-50">
+                                {testingWebhookId === w.id
+                                  ? <div className="w-3 h-3 border border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin" />
+                                  : <TestTube2 size={13} />}
+                              </button>
+                              <button onClick={() => handleDeleteWebhook(w.id)} title="Delete"
+                                className="p-1.5 rounded-lg text-danger hover:bg-danger/10 transition-colors">
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {testResult && (
+                <div className={`mt-2 p-2.5 rounded-lg text-xs ${testResult.status === 'success' ? 'bg-success/10 text-success border border-success/20' : 'bg-danger/10 text-danger border border-danger/20'}`}>
+                  {testResult.status === 'success'
+                    ? `Test event delivered (HTTP ${testResult.responseStatus}).`
+                    : `Test event failed: ${testResult.errorMessage || `HTTP ${testResult.responseStatus}`}`}
+                </div>
+              )}
+            </div>
 
             {/* Usage Example */}
             <div className="mt-4 p-3 rounded-lg bg-zinc-50 border border-zinc-200">

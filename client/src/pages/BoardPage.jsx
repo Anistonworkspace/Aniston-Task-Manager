@@ -307,19 +307,30 @@ export default function BoardPage() {
     setTasks(prev => prev.map(t => t.id === data.taskId ? { ...t, _receipt: data.summary } : t));
   });
 
-  async function handleAddTask(groupId, title) {
+  async function handleAddTask(groupId, title, description) {
+    // Quick-create payload: send ONLY the fields the user actually picked.
+    // Reasons:
+    //   - `assignedTo` is omitted because the global rule is "no assignment
+    //     without a due date" and the inline row has no due-date input.
+    //   - `priority` is omitted because the `tasks.set_priority` gate 403s a
+    //     member who passes any priority value, even the default 'medium'.
+    //     The backend already defaults Task.priority to 'medium' at the
+    //     model layer, so the row still gets a Medium pill — we just don't
+    //     pretend the user *chose* it.
+    //   - `status` is omitted for the same reason; backend defaults to
+    //     'not_started' and the validators are happy without it.
+    // Position is the only derived value we still compute client-side
+    // because the backend's append-to-end heuristic uses Task.max(), which
+    // can lag behind the freshly-rendered list during rapid quick-adds.
+    const payload = {
+      title, boardId, groupId,
+      position: tasks.filter(t => t.groupId === groupId).length,
+    };
+    const trimmedDescription = typeof description === 'string' ? description.trim() : '';
+    if (trimmedDescription) {
+      payload.description = trimmedDescription;
+    }
     try {
-      // Members (no `tasks.assign_others`) can only create personal tasks.
-      // Send an explicit self-assignee so the server doesn't have to infer it
-      // and so the resulting task is unambiguously owned by the creator.
-      const payload = {
-        title, boardId, groupId,
-        status: 'not_started', priority: 'medium',
-        position: tasks.filter(t => t.groupId === groupId).length,
-      };
-      if (!canAssignOthers && user?.id) {
-        payload.assignedTo = [user.id];
-      }
       const res = await api.post('/tasks', payload);
       const newTask = res.data.task || res.data;
       setTasks(prev => [...prev, newTask]);
@@ -334,9 +345,14 @@ export default function BoardPage() {
           loadTasks();
         },
       });
+      return newTask;
     } catch (err) {
       console.error('[BoardPage] handleAddTask error:', err);
-      toastError('Failed to add task. Please try again.');
+      const apiMsg = err?.response?.data?.message;
+      toastError(apiMsg || 'Failed to add task. Please try again.');
+      // Re-throw so inline callers (e.g. TaskGroup) can keep the typed input
+      // and avoid clearing the row on failure.
+      throw err;
     }
   }
 
@@ -802,7 +818,9 @@ export default function BoardPage() {
         if (e.ctrlKey || e.metaKey || !e.shiftKey) {
           e.preventDefault();
           const firstGroupId = board?.groups?.[0]?.id || 'new';
-          handleAddTask(firstGroupId, 'New Task');
+          // Toast already surfaced inside handleAddTask — swallow the
+          // re-thrown error so the keyboard shortcut stays fire-and-forget.
+          handleAddTask(firstGroupId, 'New Task').catch(() => {});
         }
       }
       // Ctrl+F or F: Toggle filters

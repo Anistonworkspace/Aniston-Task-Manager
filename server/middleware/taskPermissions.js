@@ -177,6 +177,15 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
         return { allowed: true, reason: 'subtree_management', allowedFields: null };
       }
       // Assignee / creator — can update the self-management whitelist.
+      // `assignedTo` is INCLUDED so a member-creator can self-assign their
+      // own task once they've set a due date. The actual "can this user
+      // assign target X" decision is left to `checkAssignmentAuthority`
+      // (deny non-self for members lacking tasks.assign_others) and
+      // `needsDueDateForAssignment` (block any assignment without a due
+      // date) downstream in the controller — this whitelist only governs
+      // *which fields are even readable* from the body. Without
+      // `assignedTo` here, the field would be silently dropped and the
+      // member's self-assign call would no-op.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
         return {
           allowed: true,
@@ -184,7 +193,7 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
           allowedFields: [
             'title', 'description', 'status', 'priority', 'progress',
             'groupId', 'position', 'tags', 'customFields',
-            'dueDate', 'startDate',
+            'dueDate', 'startDate', 'assignedTo',
             'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',
           ],
         };

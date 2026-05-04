@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { Task, Notification } = require('../models');
 const { emitToUser } = require('../services/socketService');
 const { logActivity } = require('../services/activityService');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 
 /**
  * Start the priority escalation cron job.
@@ -40,7 +41,10 @@ function startPriorityEscalationJob() {
         if (task.assignedTo) {
           const notification = await Notification.create({
             type: 'priority_change',
-            message: `Task "${task.title}" has been auto-escalated to Critical priority (${task.progress}% complete)`,
+            message: sanitizeNotificationMessage(
+              `Task "${sanitizeNotificationField(task.title)}" has been auto-escalated ` +
+              `to Critical priority (${task.progress}% complete)`
+            ),
             entityType: 'task',
             entityId: task.id,
             userId: task.assignedTo,

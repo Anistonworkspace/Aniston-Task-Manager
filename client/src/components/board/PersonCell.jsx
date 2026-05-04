@@ -27,15 +27,18 @@ export default function PersonCell({
   const btnRef = useRef(null);
   const inputRef = useRef(null);
   const { error: toastError } = useToast();
-  // Removing assignees is always allowed; only adding a *non-self* assignee
-  // requires a due date. Self-only assignment (members claiming their own
-  // task) is exempt — mirrors the backend rule in taskController.js.
+  // Removing assignees is always allowed; ANY add (including self) on a
+  // task with no due date is blocked. Mirrors the backend rule in
+  // taskController.js → `needsDueDateForAssignment` (post-fix). The toast
+  // string distinguishes self vs others for clearer UX.
   function blockIfNoDueDate(targetIds = []) {
     if (dueDate) return false;
     const ids = (Array.isArray(targetIds) ? targetIds : [targetIds]).filter(Boolean);
+    if (ids.length === 0) return false;
     const hasOther = ids.some((id) => id !== currentUserId);
-    if (!hasOther) return false;
-    toastError('Please set a due date before assigning this task to another user.');
+    toastError(hasOther
+      ? 'Please set a due date before assigning this task to another user.'
+      : 'Please set a due date before assigning this task.');
     return true;
   }
 

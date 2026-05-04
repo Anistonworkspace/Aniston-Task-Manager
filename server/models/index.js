@@ -39,10 +39,14 @@ const AIProvider = require('./AIProvider');
 const TranscriptionProvider = require('./TranscriptionProvider');
 const TranscriptSegment = require('./TranscriptSegment');
 const ApiKey = require('./ApiKey');
+const Webhook = require('./Webhook');
+const WebhookDelivery = require('./WebhookDelivery');
 const TeamsNotificationLog = require('./TeamsNotificationLog');
 const ManagerRelation = require('./ManagerRelation');
 const BoardMember = require('./BoardMember');
 const UserBoardOrder = require('./UserBoardOrder');
+const UserWorkspaceOrder = require('./UserWorkspaceOrder');
+const PushSubscription = require('./PushSubscription');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -414,11 +418,19 @@ module.exports = {
   TranscriptionProvider,
   TranscriptSegment,
   ApiKey,
+  Webhook,
+  WebhookDelivery,
   TeamsNotificationLog,
   ManagerRelation,
   BoardMember,
   UserBoardOrder,
+  UserWorkspaceOrder,
+  PushSubscription,
 };
+
+// ─── PushSubscription <-> User ───────────────────────────────
+PushSubscription.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
+User.hasMany(PushSubscription, { foreignKey: 'userId', as: 'pushSubscriptions' });
 
 // ─── Automation <-> Board/User ───────────────────────────────
 Automation.belongsTo(Board, { foreignKey: 'boardId', as: 'board', onDelete: 'CASCADE' });
@@ -523,6 +535,16 @@ User.hasMany(Feedback, { foreignKey: 'userId', as: 'feedbacks' });
 // ─── ApiKey <-> User (creator) ──────────────────────────────
 ApiKey.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'CASCADE' });
 User.hasMany(ApiKey, { foreignKey: 'createdBy', as: 'apiKeys' });
+
+// ─── Webhook <-> ApiKey / User / Deliveries ─────────────────
+// Outbound webhooks let an external app subscribe to events (task.created /
+// updated / deleted). Each webhook is bound to an ApiKey so revoking the key
+// also revokes the webhook. Deliveries are kept for retry + audit visibility.
+Webhook.belongsTo(ApiKey, { foreignKey: 'apiKeyId', as: 'apiKey', onDelete: 'CASCADE' });
+ApiKey.hasMany(Webhook, { foreignKey: 'apiKeyId', as: 'webhooks' });
+Webhook.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'CASCADE' });
+Webhook.hasMany(WebhookDelivery, { foreignKey: 'webhookId', as: 'deliveries', onDelete: 'CASCADE' });
+WebhookDelivery.belongsTo(Webhook, { foreignKey: 'webhookId', as: 'webhook', onDelete: 'CASCADE' });
 
 // ─── TeamsNotificationLog <-> User/Task ────────────────────
 TeamsNotificationLog.belongsTo(User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });

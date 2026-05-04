@@ -41,6 +41,44 @@ const {
 } = require('../models');
 const socketService = require('./socketService');
 const taskVisibility = require('./taskVisibilityService');
+// Outbound webhooks. Fire-and-forget: a slow/broken receiver must never
+// block or fail the realtime fan-out. webhookService swallows its own errors.
+const webhookService = require('./webhookService');
+
+function fireWebhook(event, data) {
+  try {
+    webhookService.dispatch(event, data).catch((err) => {
+      console.error(`[realtime] webhook dispatch (${event}) failed:`, err.message);
+    });
+  } catch (err) {
+    console.error(`[realtime] webhook dispatch (${event}) threw:`, err.message);
+  }
+}
+
+function taskToWebhookPayload(task) {
+  if (!task) return null;
+  const t = typeof task.toJSON === 'function' ? task.toJSON() : task;
+  // Slim payload — only the fields an external receiver needs to mirror the
+  // row. Avoid leaking internal join data (board members, watchers, etc).
+  return {
+    id: t.id,
+    boardId: t.boardId,
+    title: t.title,
+    description: t.description,
+    status: t.status,
+    priority: t.priority,
+    progress: t.progress,
+    assignedTo: t.assignedTo,
+    createdBy: t.createdBy,
+    dueDate: t.dueDate,
+    startDate: t.startDate,
+    isArchived: t.isArchived,
+    tags: t.tags,
+    labels: t.labels,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+  };
+}
 
 // ── envelope ───────────────────────────────────────────────────
 
@@ -133,6 +171,7 @@ const emitTaskCreated = fnf('emitTaskCreated', async (task, opts = {}) => {
     task,
   };
   socketService.emitToUsers('task:created', payload, userIds);
+  fireWebhook('task.created', { task: taskToWebhookPayload(task), actorId: opts.actorId });
 });
 
 const emitTaskUpdated = fnf('emitTaskUpdated', async (task, opts = {}) => {
@@ -153,6 +192,11 @@ const emitTaskUpdated = fnf('emitTaskUpdated', async (task, opts = {}) => {
     task,
   };
   socketService.emitToUsers('task:updated', payload, userIds);
+  fireWebhook('task.updated', {
+    task: taskToWebhookPayload(task),
+    changedFields: opts.changedFields || [],
+    actorId: opts.actorId,
+  });
 });
 
 const emitTaskDeleted = fnf('emitTaskDeleted', async ({ taskId, boardId, affectedUserIds }, opts = {}) => {
@@ -165,6 +209,7 @@ const emitTaskDeleted = fnf('emitTaskDeleted', async ({ taskId, boardId, affecte
     ...envelope({ taskId, boardId, actorId: opts.actorId }),
   };
   socketService.emitToUsers('task:deleted', payload, userIds);
+  fireWebhook('task.deleted', { taskId, boardId, actorId: opts.actorId });
 });
 
 const emitTaskMoved = fnf('emitTaskMoved', async (task, opts = {}) => {

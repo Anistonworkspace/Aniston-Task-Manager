@@ -142,6 +142,52 @@ router.put(
 // ─── POST /api/auth/refresh ─────────────────────────────────
 router.post('/refresh', refreshTokenEndpoint);
 
+// ─── POST /api/auth/logout ──────────────────────────────────
+// Server-side cleanup on logout. Stateless JWT cannot truly be revoked
+// without a denylist (out of scope here), but the endpoint MUST do three
+// things so a logged-out browser stops receiving live notifications:
+//   1. Deactivate this device's web-push subscription (by endpoint, scoped
+//      to req.user.id). Other devices for the same user keep getting push.
+//   2. Force-disconnect the user's socket(s) from the realtime fan-out.
+//   3. Be tolerant of missing body fields — frontend may not have a push
+//      subscription at all.
+//
+// Body (all optional):
+//   { endpoint?: string, socketId?: string, allDevices?: boolean }
+//
+// Response is always 200 with success=true so the frontend can proceed with
+// local cleanup even if a step fails.
+router.post('/logout', authenticate, async (req, res) => {
+  const { endpoint, socketId, allDevices } = req.body || {};
+  const result = { pushDeactivated: 0, socketsDisconnected: 0 };
+
+  try {
+    const { deactivateSubscription, deactivateAllForUser } = require('../services/pushService');
+    if (allDevices) {
+      result.pushDeactivated = await deactivateAllForUser(req.user.id);
+    } else if (endpoint) {
+      result.pushDeactivated = await deactivateSubscription(req.user.id, endpoint);
+    }
+  } catch (err) {
+    console.warn('[Auth.logout] push deactivate failed:', err.message);
+  }
+
+  try {
+    const { disconnectUser } = require('../services/socketService');
+    // If the client passes socketId, disconnect just that tab. Otherwise
+    // (or with allDevices=true) drop every socket for the user — every other
+    // tab for the same user in this browser/profile will be kicked too.
+    result.socketsDisconnected = await disconnectUser(
+      req.user.id,
+      allDevices ? null : (socketId || null)
+    );
+  } catch (err) {
+    console.warn('[Auth.logout] socket disconnect failed:', err.message);
+  }
+
+  res.json({ success: true, message: 'Logged out.', data: result });
+});
+
 // ─── POST /api/auth/forgot-password ──────────────────────────
 router.post('/forgot-password', forgotPassword);
 

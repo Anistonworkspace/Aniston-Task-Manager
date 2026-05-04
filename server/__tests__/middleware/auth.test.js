@@ -16,11 +16,14 @@ jest.mock('../../models', () => ({
   User: {
     findByPk: jest.fn(),
   },
+  PermissionGrant: {
+    findAll: jest.fn().mockResolvedValue([]),
+  },
 }));
 
 const jwt = require('jsonwebtoken');
 const { User } = require('../../models');
-const { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly } = require('../../middleware/auth');
+const { authenticate, adminOnly, managerOrAdmin, assistantManagerOnly, requireRole } = require('../../middleware/auth');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -317,6 +320,70 @@ describe('assistantManagerOnly middleware', () => {
 
     assistantManagerOnly(req, res, next);
 
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+});
+
+// ─── requireRole — privilege-escalation regression guard ─────────────────────
+//
+// On 2026-05-04 we shipped a fix for a privilege-escalation in `requireRole`'s
+// Layer-3 (base-role matrix) fallback. Members had `workspaces.view = true`
+// in the matrix, and `requireRole('manager','admin')` on `GET
+// /api/workspaces/archived` would erroneously pass them through — leaking
+// archived workspace names to non-managers. The fix narrows Layer-3 to
+// elevated actions (create/edit/delete/manage) only; `view` no longer
+// bypasses an explicit role guard. These tests fail closed on regression.
+describe('requireRole middleware — privilege escalation guard', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function buildReq(role, method = 'GET', url = '/api/workspaces/archived') {
+    return buildMocks({
+      user: makeActiveUser({ role, isSuperAdmin: false, id: `${role}-uuid` }),
+      method,
+      originalUrl: url,
+    });
+  }
+
+  it('passes through admins on a manager/admin-only GET', async () => {
+    const { req, res, next } = buildReq('admin');
+    await requireRole('manager', 'admin')(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('passes through managers on a manager/admin-only GET', async () => {
+    const { req, res, next } = buildReq('manager');
+    await requireRole('manager', 'admin')(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for member on GET /api/workspaces/archived (regression)', async () => {
+    const { req, res, next } = buildReq('member');
+    await requireRole('manager', 'admin')(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('returns 403 for assistant_manager on GET /api/workspaces/archived (regression)', async () => {
+    const { req, res, next } = buildReq('assistant_manager');
+    await requireRole('manager', 'admin')(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('returns 403 for member on POST /api/workspaces (mutation, no matrix grant)', async () => {
+    const { req, res, next } = buildReq('member', 'POST', '/api/workspaces');
+    await requireRole('manager', 'admin')(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('still passes super admin even on a non-listed role', async () => {
+    const { req, res, next } = buildReq('member');
+    req.user.isSuperAdmin = true;
+    await requireRole('manager', 'admin')(req, res, next);
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.status).not.toHaveBeenCalled();
   });

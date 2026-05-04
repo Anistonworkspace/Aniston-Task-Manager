@@ -126,7 +126,50 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Push notification handler
+// Push notification handler.
+// Browsers REQUIRE a user-visible notification on every push when
+// userVisibleOnly:true is set (which we do at subscribe time). If we silently
+// drop pushes the browser will revoke the subscription. So when the user is
+// logged out we show a generic, non-revealing card and route the click to
+// /login — the message body is NOT shown, preventing leakage of task titles
+// or other details to a now-logged-out device.
+//
+// Auth check: at logout, every focused client tab clears sessionStorage AND
+// calls /api/push/unsubscribe (which deactivates the row server-side, so the
+// backend stops sending pushes here). But there's a small window between
+// "user clicks logout" and "backend deactivates the row" where an in-flight
+// push may already be on the wire. We additionally inspect the foreground
+// clients to see if any of them is still authenticated; if not, we replace
+// the body.
+async function isAnyClientAuthenticated() {
+  try {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (!all || all.length === 0) {
+      // No open tabs — we cannot ask the page. Assume authenticated to avoid
+      // accidentally hiding a notification arriving for a still-logged-in
+      // user who just closed the tab. This bias is safe because:
+      //   - logout deactivates the backend row, so further pushes don't come.
+      //   - if the user truly logged out, they're not looking at the OS
+      //     notification anyway.
+      return true;
+    }
+    // Ask each client; at least one authenticated client is enough.
+    const responses = await Promise.all(
+      all.map((c) => new Promise((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (e) => resolve(!!e.data?.authenticated);
+        try { c.postMessage({ type: 'AUTH_CHECK' }, [channel.port2]); }
+        catch { resolve(false); }
+        // Don't hang forever if the page never responds.
+        setTimeout(() => resolve(false), 250);
+      }))
+    );
+    return responses.some(Boolean);
+  } catch {
+    return true; // fail open
+  }
+}
+
 self.addEventListener('push', (event) => {
   let data = { title: 'Monday Aniston', body: 'You have a new notification' };
   try {
@@ -135,16 +178,23 @@ self.addEventListener('push', (event) => {
     data.body = event.data?.text() || data.body;
   }
 
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Monday Aniston', {
-      body: data.body || data.message || 'New notification',
+  event.waitUntil((async () => {
+    const authed = await isAnyClientAuthenticated();
+    const title = authed ? (data.title || 'Monday Aniston') : 'Monday Aniston';
+    const body = authed
+      ? (data.body || data.message || 'New notification')
+      : 'You have new activity. Sign in to view.';
+    const url = authed ? (data.url || '/') : '/login';
+
+    return self.registration.showNotification(title, {
+      body,
       icon: '/icons/anistonlogo.png',
       badge: '/icons/anistonlogo.png',
       tag: data.tag || 'default',
-      data: { url: data.url || '/' },
-      actions: data.actions || [],
-    })
-  );
+      data: { url },
+      actions: authed ? (data.actions || []) : [],
+    });
+  })());
 });
 
 // Notification click handler

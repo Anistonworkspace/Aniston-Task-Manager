@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Modal from '../common/Modal';
 import Avatar from '../common/Avatar';
+import DepartmentSelect from '../common/DepartmentSelect';
 import api from '../../services/api';
 import { HIERARCHY_LEVELS } from '../../utils/constants';
 
@@ -43,7 +44,7 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
     name: '', email: '', role: 'member', department: '', designation: '',
     hierarchyLevel: 'member', isActive: true,
   });
-  const [departments, setDepartments] = useState([]);
+  const [departmentMode, setDepartmentMode] = useState('empty');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -62,22 +63,6 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
     }
   }, [user]);
 
-  // Pull the existing department list so admins pick from the same source
-  // of truth as the Org Chart Department view, with a free-text fallback for
-  // ad-hoc values still allowed by the backend.
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    api.get('/departments')
-      .then(res => {
-        if (cancelled) return;
-        const list = res.data?.departments || res.data?.data?.departments || res.data || [];
-        setDepartments(Array.isArray(list) ? list : []);
-      })
-      .catch(() => { if (!cancelled) setDepartments([]); });
-    return () => { cancelled = true; };
-  }, [isOpen]);
-
   // Members of the modal can never see the role/status/hierarchy controls
   // for someone they do not have authority over — that decision is also
   // enforced server-side, but keeping the UI clean prevents misleading
@@ -93,6 +78,10 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
     }
     if (!form.email.trim()) {
       setError('Email is required.');
+      return;
+    }
+    if (departmentMode === 'other' && !form.department.trim()) {
+      setError('Please enter a custom department or pick "Other" again to clear it.');
       return;
     }
 
@@ -199,19 +188,12 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-1">Department</label>
-            <input
-              type="text"
-              list="edit-user-department-list"
+            <DepartmentSelect
+              key={user.id}
               value={form.department}
-              onChange={e => setForm({ ...form, department: e.target.value })}
-              className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-              placeholder="Engineering"
+              onChange={dept => setForm({ ...form, department: dept })}
+              onModeChange={setDepartmentMode}
             />
-            <datalist id="edit-user-department-list">
-              {departments.map(d => (
-                <option key={d.id || d.name} value={d.name} />
-              ))}
-            </datalist>
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-1">Designation</label>

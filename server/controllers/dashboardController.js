@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 const taskVisibility = require('../services/taskVisibilityService');
+const boardVisibility = require('../services/boardVisibilityService');
 
 /**
  * Merge the CP-3 task visibility WHERE-fragment into an existing where clause.
@@ -142,10 +143,14 @@ const getDashboardStats = async (req, res) => {
     // Board summary (if not filtering by single board)
     // CP-3 RBAC: only count tasks the viewer can see. We re-aggregate from the
     // already-filtered `tasks` array rather than running a fresh unscoped query.
+    // Additionally apply boardVisibilityService so an asst_manager / member
+    // does not see board NAMES of unrelated boards (even with zero tasks).
     let boards = [];
     if (!boardId) {
+      const visBoardWhere = await boardVisibility.buildBoardVisibilityWhere(req.user);
+      const boardWhere = { isArchived: false, ...visBoardWhere };
       const allBoards = await Board.findAll({
-        where: { isArchived: false },
+        where: boardWhere,
         attributes: ['id', 'name', 'color'],
       });
       const tasksByBoard = new Map();

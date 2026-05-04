@@ -1,6 +1,7 @@
 const { AccessRequest, User, Notification, PermissionGrant } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 
 // GET /api/access-requests — list requests (admin sees all, user sees own)
 exports.getAccessRequests = async (req, res) => {
@@ -56,19 +57,24 @@ exports.createAccessRequest = async (req, res) => {
       isTemporary: isTemporary || false,
     });
 
-    // Notify admins
+    // Notify admins. Use the dedicated enum + standard payload so the bell
+    // toast / push fire correctly (Header.jsx reads data.notification.message).
     const admins = await User.findAll({ where: { role: 'admin', isActive: true } });
+    const safeName = sanitizeNotificationField(req.user.name);
+    const safeRequestType = sanitizeNotificationField(requestType, 32);
+    const safeResourceType = sanitizeNotificationField(resourceType, 64);
+    const adminMsg = sanitizeNotificationMessage(
+      `${safeName} requested ${safeRequestType} access to ${safeResourceType}`
+    );
     for (const admin of admins) {
-      await Notification.create({
-        type: 'task_updated',
-        message: `${req.user.name} requested ${requestType} access to ${resourceType}`,
+      const notification = await Notification.create({
+        type: 'access_requested',
+        message: adminMsg,
         entityType: 'access_request',
         entityId: request.id,
         userId: admin.id,
       });
-      emitToUser(admin.id, 'notification:new', {
-        message: `${req.user.name} requested ${requestType} access to ${resourceType}`,
-      });
+      emitToUser(admin.id, 'notification:new', { notification });
     }
 
     logActivity({
@@ -118,16 +124,19 @@ exports.approveRequest = async (req, res) => {
     });
 
     // Notify requester
-    await Notification.create({
-      type: 'task_updated',
-      message: `Your ${request.requestType} access request for ${request.resourceType} was approved`,
+    const approvedMsg = sanitizeNotificationMessage(
+      `Your ${sanitizeNotificationField(request.requestType, 32)} access request for ` +
+      `${sanitizeNotificationField(request.resourceType, 64)} was approved by ` +
+      `${sanitizeNotificationField(req.user.name)}`
+    );
+    const approvedNotif = await Notification.create({
+      type: 'access_approved',
+      message: approvedMsg,
       entityType: 'access_request',
       entityId: request.id,
       userId: request.userId,
     });
-    emitToUser(request.userId, 'notification:new', {
-      message: `Your access request was approved by ${req.user.name}`,
-    });
+    emitToUser(request.userId, 'notification:new', { notification: approvedNotif });
 
     logActivity({
       action: 'access_approved',
@@ -166,16 +175,19 @@ exports.rejectRequest = async (req, res) => {
     });
 
     // Notify requester
-    await Notification.create({
-      type: 'task_updated',
-      message: `Your ${request.requestType} access request for ${request.resourceType} was rejected`,
+    const rejectedMsg = sanitizeNotificationMessage(
+      `Your ${sanitizeNotificationField(request.requestType, 32)} access request for ` +
+      `${sanitizeNotificationField(request.resourceType, 64)} was rejected by ` +
+      `${sanitizeNotificationField(req.user.name)}`
+    );
+    const rejectedNotif = await Notification.create({
+      type: 'access_rejected',
+      message: rejectedMsg,
       entityType: 'access_request',
       entityId: request.id,
       userId: request.userId,
     });
-    emitToUser(request.userId, 'notification:new', {
-      message: `Your access request was rejected by ${req.user.name}`,
-    });
+    emitToUser(request.userId, 'notification:new', { notification: rejectedNotif });
 
     logActivity({
       action: 'access_rejected',

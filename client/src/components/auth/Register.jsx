@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../../services/api';
-import { FolderKanban, Mail, Lock, User, Building, ArrowRight, CheckCircle2, Clock } from 'lucide-react';
+import { FolderKanban, Mail, Lock, User, ArrowRight, CheckCircle2, Clock } from 'lucide-react';
+import DepartmentSelect from '../common/DepartmentSelect';
 
 export default function Register() {
   const [name, setName] = useState('');
@@ -100,11 +101,7 @@ export default function Register() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-text-primary mb-1.5">Department</label>
-                  <div className="relative">
-                    <Building size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
-                    <input type="text" value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="e.g. Engineering"
-                      className="w-full pl-10 pr-4 py-2.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
-                  </div>
+                  <DepartmentSelect value={department} onChange={setDepartment} />
                 </div>
                 <button type="submit" disabled={loading}
                   className="w-full bg-primary hover:bg-primary-hover text-white py-2.5 rounded-lg font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60 mt-1">

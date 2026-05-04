@@ -3,7 +3,7 @@ const { validationResult } = require('express-validator');
 const { emitToBoard, emitToUser, emitToUsers } = require('../services/socketService');
 const teamsWebhook = require('../services/teamsWebhook');
 const teamsNotif = require('../services/teamsNotificationService');
-const { sanitizeInput } = require('../utils/sanitize');
+const { sanitizeInput, sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const taskVisibility = require('../services/taskVisibilityService');
 
 /**
@@ -17,7 +17,7 @@ const addComment = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { content: rawContent, taskId, attachments } = req.body;
+    const { content: rawContent, taskId, attachments, mentionedUserIds } = req.body;
     const content = sanitizeInput(rawContent);
 
     const task = await Task.findByPk(taskId, {
@@ -41,11 +41,19 @@ const addComment = async (req, res) => {
       ],
     });
 
+    // Pre-compute the safe text fragments used in every notification message.
+    const safeActor = sanitizeNotificationField(req.user.name);
+    const safeTitle = sanitizeNotificationField(task.title);
+    const commentMsg = sanitizeNotificationMessage(`${safeActor} commented on "${safeTitle}"`);
+    const mentionMsg = sanitizeNotificationMessage(
+      `${safeActor} mentioned you in a comment on "${safeTitle}"`
+    );
+
     // Notify task assignee (if different from commenter)
     if (task.assignedTo && task.assignedTo !== req.user.id) {
       const notification = await Notification.create({
         type: 'comment_added',
-        message: `${req.user.name} commented on "${task.title}"`,
+        message: commentMsg,
         entityType: 'task',
         entityId: taskId,
         userId: task.assignedTo,
@@ -53,24 +61,37 @@ const addComment = async (req, res) => {
       emitToUser(task.assignedTo, 'notification:new', { notification });
     }
 
-    // Detect @mentions in comment content
-    const mentionRegex = /@(\w+(?:\s\w+)?)/g;
-    const mentions = [];
-    let match;
-    while ((match = mentionRegex.exec(content)) !== null) {
-      mentions.push(match[1]);
-    }
-    if (mentions.length > 0) {
-      const mentionedUsers = await User.findAll({
-        where: { name: { [require('sequelize').Op.iLike]: mentions.map(m => `%${m}%`) } },
+    // ── Mentions (RBAC-safe) ──────────────────────────────────
+    // Frontend SHOULD send a structured mentionedUserIds array. We accept it,
+    // validate every id is a real, active user, AND filter every id through
+    // taskVisibilityService.getAuthorizedRealtimeRecipients(task) — so a
+    // commenter cannot @-mention a user who has no visibility into the task
+    // and leak the title to them.
+    //
+    // The previous regex+iLike scan matched arbitrary substrings of names
+    // across the whole users table and bypassed RBAC entirely. It is removed.
+    // If a backwards-compatible client sends only @name mentions in text and
+    // no mentionedUserIds array, no notification fires — this is the SAFE
+    // behaviour. The frontend can be updated to send the structured field.
+    const requestedMentionIds = Array.isArray(mentionedUserIds) ? mentionedUserIds.filter(Boolean) : [];
+    if (requestedMentionIds.length > 0) {
+      const authorizedRecipients = new Set(
+        await taskVisibility.getAuthorizedRealtimeRecipients(task)
+      );
+      const validMentioned = await User.findAll({
+        where: {
+          id: { [require('sequelize').Op.in]: requestedMentionIds },
+          isActive: true,
+        },
         attributes: ['id', 'name'],
       });
-      for (const mu of mentionedUsers) {
-        if (mu.id === req.user.id) continue; // Don't notify self
-        if (mu.id === task.assignedTo) continue; // Already notified above
+      for (const mu of validMentioned) {
+        if (mu.id === req.user.id) continue; // self-mention noop
+        if (mu.id === task.assignedTo) continue; // already notified above
+        if (!authorizedRecipients.has(mu.id)) continue; // RBAC: skip users who can't see the task
         const n = await Notification.create({
           type: 'mention',
-          message: `${req.user.name} mentioned you in a comment on "${task.title}"`,
+          message: mentionMsg,
           entityType: 'task',
           entityId: taskId,
           userId: mu.id,
@@ -83,7 +104,7 @@ const addComment = async (req, res) => {
     if (task.createdBy !== req.user.id && task.createdBy !== task.assignedTo) {
       const notification = await Notification.create({
         type: 'comment_added',
-        message: `${req.user.name} commented on "${task.title}"`,
+        message: commentMsg,
         entityType: 'task',
         entityId: taskId,
         userId: task.createdBy,

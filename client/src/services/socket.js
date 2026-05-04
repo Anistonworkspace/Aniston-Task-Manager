@@ -2,6 +2,11 @@ import { io } from 'socket.io-client';
 
 let socket = null;
 
+// Set when the user logs out so the auto-reconnect logic refuses to bring the
+// socket back up before a fresh login. Cleared on next successful connect()
+// call (which only happens with a valid token).
+let logoutLatch = false;
+
 // Board rooms the app wants to be in. We keep this on the module so we can
 // re-join after a reconnect, AND so a joinBoard() call that happens before
 // the socket finishes its initial handshake doesn't get silently dropped
@@ -23,6 +28,12 @@ export function connect(token) {
     return socket;
   }
 
+  // Logout latch is cleared the moment connect() is called with a token —
+  // the only legitimate caller is AuthContext.login / loadUser after the
+  // user is authenticated. Without this, a stale token in storage could
+  // technically reconnect after logout.
+  logoutLatch = false;
+
   socket = io(window.location.origin, {
     auth: { token },
     transports: ['websocket', 'polling'],
@@ -33,6 +44,14 @@ export function connect(token) {
 
   // Fires on initial connect AND after every successful reconnect.
   socket.on('connect', () => {
+    // If a logout happened between the network reconnect attempt and the
+    // upgrade completing, refuse to stay connected — even though the server
+    // accepted the handshake. Belt-and-suspenders for the "stale token in
+    // storage" case.
+    if (logoutLatch) {
+      try { socket.disconnect(); } catch { /* ignore */ }
+      return;
+    }
     console.log('[Socket] connected:', socket.id);
     // Re-join every board room the app wants to be in. This covers two
     // critical cases:
@@ -58,7 +77,41 @@ export function connect(token) {
     console.error('[Socket] connection error:', err.message);
   });
 
+  // Server-side logout signal — when the backend force-disconnects this
+  // user's sockets (logout endpoint, password change, deactivation), the
+  // server emits 'auth:logout' just before closing. We latch the local
+  // flag so the auto-reconnect machinery doesn't bring the socket back up
+  // with the now-revoked-context token.
+  socket.on('auth:logout', () => {
+    logoutLatch = true;
+    try { socket.disconnect(); } catch { /* ignore */ }
+  });
+
   return socket;
+}
+
+/**
+ * Hard-disconnect the current socket and forbid auto-reconnect until the next
+ * connect() call (which only happens after a fresh login). Used by the
+ * AuthContext logout flow.
+ *
+ * Differs from disconnect() in that:
+ *   - It sets the logoutLatch — even if some background timer or stale
+ *     event tries to reconnect, the on-connect handler will refuse.
+ *   - It clears desiredBoardRooms and the socket reference.
+ */
+export function disconnectForLogout() {
+  logoutLatch = true;
+  if (socket) {
+    try {
+      socket.removeAllListeners();
+      socket.disconnect();
+    } catch (err) {
+      console.warn('[Socket] disconnectForLogout failed:', err.message);
+    }
+    socket = null;
+  }
+  desiredBoardRooms.clear();
 }
 
 export function disconnect() {
@@ -72,6 +125,10 @@ export function disconnect() {
 
 export function getSocket() {
   return socket;
+}
+
+export function getSocketId() {
+  return socket?.id || null;
 }
 
 export function emit(event, data) {

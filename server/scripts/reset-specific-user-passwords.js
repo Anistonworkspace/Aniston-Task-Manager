@@ -142,6 +142,7 @@ function parseArgs(argv) {
     clientUrl: null, // null = use process.env.CLIENT_URL
     allowLocalhostUrl: false,
     maintenanceKey: null,
+    rerunKey: null,
     executedBy: null,
     execute: false,
     allowAny: false,
@@ -185,6 +186,11 @@ function parseArgs(argv) {
       i += 1;
     } else if (a.startsWith('--maintenance-key=')) {
       args.maintenanceKey = a.slice('--maintenance-key='.length).trim();
+    } else if (a === '--rerun-key') {
+      args.rerunKey = takeValue(argv, i, '--rerun-key');
+      i += 1;
+    } else if (a.startsWith('--rerun-key=')) {
+      args.rerunKey = a.slice('--rerun-key='.length).trim();
     } else if (a === '--executed-by') {
       args.executedBy = takeValue(argv, i, '--executed-by');
       i += 1;
@@ -290,9 +296,23 @@ Strict-deployment flags (recommended for CI/CD):
                              --allow-localhost-url at your own risk).
   --maintenance-key <key>    Insert a one-time row into system_maintenance_runs.
                              If a row with this key already exists, the script
-                             exits 0 with "already completed — skipping" so
-                             repeat deploys are safe no-ops. Auto-creates the
-                             table on first run.
+                             cross-checks the actual state of the target users:
+                              • if both are in expected post-reset OR
+                                post-redeem state, exits 0 (safe skip).
+                              • if any user is in a "needs-reset / forgot-
+                                again" state (password set + hasLocalPassword
+                                true), exits NON-ZERO with instructions to
+                                pass --rerun-key. Auto-creates the table on
+                                first run.
+  --rerun-key <key>          Use this fresh, never-before-used key as the
+                             marker for THIS reset, bypassing the original
+                             --maintenance-key marker even if it exists.
+                             Refused if a row with this rerun key already
+                             exists, so a single rerun key can fire exactly
+                             once. Recommended pattern for a controlled
+                             second reset:
+                               --maintenance-key password-reset-sunny-muskan-2026-05
+                               --rerun-key      password-reset-sunny-muskan-2026-05-rerun-1
   --executed-by <label>      Free-form label stored in the marker row
                              (e.g. github-actions, ops@anistonav.com).
 `);
@@ -376,6 +396,9 @@ async function main() {
   if (args.maintenanceKey) {
     console.log(`  Maintenance key  : ${args.maintenanceKey}`);
   }
+  if (args.rerunKey) {
+    console.log(`  Rerun key        : ${args.rerunKey} (overrides maintenance key for THIS run)`);
+  }
   console.log(`  Executed by      : ${args.executedBy || '(unset)'}`);
   console.log(`  TTL hours        : ${args.ttlHours}`);
   console.log(`  Mode             : ${args.execute ? 'EXECUTE (writes)' : 'DRY-RUN (read-only)'}`);
@@ -390,10 +413,20 @@ async function main() {
   }
   console.log('[reset-specific-user-passwords] Connected to database.');
 
-  // ── Maintenance marker: short-circuit on a successful past run ────────
-  // This runs BEFORE the user lookup so a re-deploy is cheap and obviously
-  // safe. We auto-create the table here so a first-time deploy works.
-  if (args.maintenanceKey) {
+  // ── Maintenance marker / rerun key: state-aware short-circuit ─────────
+  // The "effective key" is the row we INSERT after a successful reset. When
+  // a rerun key is supplied, it takes precedence — the original maintenance
+  // key marker is treated as informational, not blocking. When NO rerun key
+  // is supplied and the maintenance-key marker already exists, we cross-
+  // check the actual user state before deciding whether to skip:
+  //   • both users in post-reset (token pending) or post-redeem (cleared)
+  //     state → safe skip with exit 0.
+  //   • any user back in pre-reset / forgot-again state → exit NON-ZERO
+  //     with instructions to pass --rerun-key.
+  const effectiveKey = args.rerunKey || args.maintenanceKey;
+  const usingRerunKey = !!args.rerunKey;
+
+  if (effectiveKey) {
     try {
       await ensureMaintenanceTable();
     } catch (err) {
@@ -403,20 +436,159 @@ async function main() {
       );
       process.exit(1);
     }
-    const existing = await maintenanceMarkerExists(args.maintenanceKey);
-    if (existing) {
-      console.log('');
-      console.log(
-        `[reset-specific-user-passwords] Maintenance key "${args.maintenanceKey}" already executed at ` +
-          `${new Date(existing.executed_at).toISOString()} by "${existing.executed_by || '(unknown)'}".`
-      );
-      console.log('[reset-specific-user-passwords] Already completed — skipping.');
-      console.log(
-        '  ↑ This is the safe re-run path. Disable RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN'
-      );
-      console.log('    in your CI variables to keep deployment logs quieter.');
-      await sequelize.close();
-      process.exit(0);
+
+    // Two distinct paths:
+    //
+    //   (A) RERUN-KEY path: the operator explicitly supplied a fresh key
+    //       to override the original marker. Only the rerun key matters.
+    //       If it already exists in the table, exit 0 with a clear message
+    //       telling the operator to pick the next free -rerun-N suffix.
+    //
+    //   (B) ORIGINAL-KEY path: no rerun key. If the original maintenance
+    //       key marker exists, we MUST cross-check the actual user state
+    //       before silently skipping. If the state has drifted back to
+    //       "needs reset" (forgot-again), exit non-zero with instructions
+    //       to pass --rerun-key. Otherwise, idempotent safe skip.
+    if (usingRerunKey) {
+      const existingForRerun = await maintenanceMarkerExists(effectiveKey);
+      if (existingForRerun) {
+        console.log('');
+        console.log(
+          `[reset-specific-user-passwords] Marker for rerun key "${effectiveKey}" already exists at ` +
+            `${new Date(existingForRerun.executed_at).toISOString()} ` +
+            `by "${existingForRerun.executed_by || '(unknown)'}".`
+        );
+        console.log(
+          '[reset-specific-user-passwords] This rerun key has been used. To force another reset,'
+        );
+        console.log('    pick a NEW unique rerun key, e.g.');
+        console.log('      ONETIME_RESET_RERUN_KEY=password-reset-sunny-muskan-2026-05-rerun-2');
+        console.log('[reset-specific-user-passwords] Already completed — skipping.');
+        await sequelize.close();
+        process.exit(0);
+      }
+      // Fresh rerun key — proceed. (We log the original marker's state
+      // here for the audit trail but do NOT block on it.)
+      if (args.maintenanceKey) {
+        const existingForOriginal = await maintenanceMarkerExists(args.maintenanceKey);
+        if (existingForOriginal) {
+          console.log(
+            `[reset-specific-user-passwords] (audit) original maintenance key "${args.maintenanceKey}" ` +
+              `was used at ${new Date(existingForOriginal.executed_at).toISOString()}; ` +
+              `proceeding because rerun key "${effectiveKey}" is fresh.`
+          );
+        }
+      }
+    } else if (args.maintenanceKey) {
+      const existingForOriginal = await maintenanceMarkerExists(args.maintenanceKey);
+      if (existingForOriginal) {
+        console.log('');
+        console.log(
+          `[reset-specific-user-passwords] Original maintenance key "${args.maintenanceKey}" was already ` +
+            `used at ${new Date(existingForOriginal.executed_at).toISOString()} ` +
+            `by "${existingForOriginal.executed_by || '(unknown)'}".`
+        );
+        console.log(
+          '[reset-specific-user-passwords] Cross-checking current user state to decide if a re-reset is needed...'
+        );
+
+        // State of each target user, *now*. We use findAll to surface dup
+        // anomalies as the same kind of failure they would cause later.
+        const stateRows = [];
+        for (const email of args.emails) {
+          const matches = await User.findAll({ where: { email } });
+          stateRows.push({ email, matches });
+        }
+
+        const dirty = []; // users back in "forgot-again" state
+        const tokenPending = []; // users still in expected post-reset state
+        const cleared = []; // users who redeemed and now have a real password
+        const odd = []; // users in some other / unknown shape
+
+        for (const { email, matches } of stateRows) {
+          if (matches.length !== 1) {
+            odd.push({ email, reason: `expected 1 row, got ${matches.length}` });
+            continue;
+          }
+          const u = matches[0];
+          const hasPwd = !!u.password;
+          const hasFlag = !!u.hasLocalPassword;
+          const hasToken = !!u.passwordResetToken;
+          const tokenAlive =
+            u.passwordResetExpires instanceof Date &&
+            u.passwordResetExpires.getTime() > Date.now();
+
+          if (!hasPwd && !hasFlag && hasToken && tokenAlive) {
+            tokenPending.push(email);
+          } else if (hasPwd && hasFlag && !hasToken) {
+            // The user redeemed and now has a real password — and is fine.
+            // BUT: if the operator is asking for a reset, they want to
+            // clear it again. We can't distinguish "everything's fine,
+            // skip" from "I forgot it again, please reset" from state
+            // alone. Convention: this is the "forgot-again" state and
+            // requires a rerun key.
+            dirty.push(email);
+          } else if (!hasPwd && !hasFlag && !hasToken) {
+            // Cleared but never redeemed and token expired. Idempotent
+            // safe skip — but if the operator wants fresh tokens, they
+            // need a rerun key.
+            cleared.push(email);
+          } else {
+            odd.push({
+              email,
+              reason: `password=${hasPwd ? 'SET' : 'NULL'} hasLocalPassword=${hasFlag} ` +
+                `hasToken=${hasToken} tokenAlive=${tokenAlive}`,
+            });
+          }
+        }
+
+        if (dirty.length > 0 || odd.length > 0 || cleared.length > 0) {
+          console.log('');
+          console.error('[reset-specific-user-passwords] STATE DRIFT DETECTED:');
+          for (const e of dirty) {
+            console.error(
+              `    ✗ ${e}: has password set + hasLocalPassword=true ` +
+                `(forgot-again / never reset).`
+            );
+          }
+          for (const e of cleared) {
+            console.error(
+              `    ✗ ${e}: cleared but token expired or missing — fresh ` +
+                `tokens are needed.`
+            );
+          }
+          for (const o of odd) {
+            console.error(`    ✗ ${o.email}: ${o.reason}`);
+          }
+          console.error('');
+          console.error(
+            '[reset-specific-user-passwords] Refusing to silently skip. The original ' +
+              'maintenance marker is in place but at least one target user is NOT in ' +
+              'the expected post-reset / token-pending state.'
+          );
+          console.error(
+            '[reset-specific-user-passwords] To intentionally re-reset, pick a fresh, ' +
+              'never-before-used rerun key and pass it via:'
+          );
+          console.error('    --rerun-key password-reset-sunny-muskan-2026-05-rerun-1');
+          console.error(
+            '  or set ONETIME_RESET_RERUN_KEY in your CI/CD environment ' +
+              '(GitHub Actions repo Variables, or workflow_dispatch input).'
+          );
+          await sequelize.close();
+          process.exit(5);
+        }
+
+        // All target users are in the expected post-reset / token-pending
+        // state — safe idempotent skip.
+        console.log(
+          `[reset-specific-user-passwords] All ${tokenPending.length} target user(s) are in ` +
+            'expected post-reset state (token still pending). Safe skip.'
+        );
+        console.log('[reset-specific-user-passwords] Already completed — skipping.');
+        await sequelize.close();
+        process.exit(0);
+      }
     }
   }
 
@@ -502,18 +674,18 @@ async function main() {
 
   const tx = await sequelize.transaction();
   try {
-    // If a maintenance key was provided, re-check inside the transaction
-    // (defense against TOCTOU between the earlier check and this point).
-    // The UNIQUE constraint on `key` is the actual race-safe guarantee;
-    // this read is for a clean error message.
-    if (args.maintenanceKey) {
+    // If a marker key (rerun or original) is in flight, re-check inside the
+    // transaction (defense against TOCTOU between the earlier check and
+    // this point). The UNIQUE constraint on `key` is the actual race-safe
+    // guarantee; this read is just for a clean error message.
+    if (effectiveKey) {
       const [rows] = await sequelize.query(
         'SELECT id FROM system_maintenance_runs WHERE key = $1 LIMIT 1',
-        { bind: [args.maintenanceKey], transaction: tx }
+        { bind: [effectiveKey], transaction: tx }
       );
       if (rows && rows.length > 0) {
         throw new Error(
-          `Maintenance key "${args.maintenanceKey}" was inserted by a concurrent run.`
+          `Marker key "${effectiveKey}" was inserted by a concurrent run.`
         );
       }
     }
@@ -551,11 +723,14 @@ async function main() {
       });
     }
 
-    // Insert the maintenance marker INSIDE the same transaction so either
-    // both the password updates AND the marker land, or neither does.
-    if (args.maintenanceKey) {
+    // Insert the marker INSIDE the same transaction so either both the
+    // password updates AND the marker land, or neither does. We always
+    // record the EFFECTIVE key (rerun key when supplied, otherwise the
+    // original maintenance key). When a rerun is in flight, we reference
+    // the original key in metadata so audit logs show the chain.
+    if (effectiveKey) {
       await insertMaintenanceMarker({
-        key: args.maintenanceKey,
+        key: effectiveKey,
         executedBy: args.executedBy,
         metadata: {
           targets: lookups.map(({ email, matches }) => ({
@@ -568,6 +743,10 @@ async function main() {
           nodeEnv: process.env.NODE_ENV || null,
           dbHost: process.env.DB_HOST || null,
           dbName: process.env.DB_NAME || null,
+          isRerun: usingRerunKey,
+          ...(usingRerunKey && args.maintenanceKey
+            ? { rerunOf: args.maintenanceKey }
+            : {}),
         },
         transaction: tx,
       });

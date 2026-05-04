@@ -28,7 +28,10 @@ export default function TaskGroup({
   const [collapsed, setCollapsed] = useState(false);
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskDescription, setNewTaskDescription] = useState('');
   const [adding, setAdding] = useState(false);
+  const [submittingTask, setSubmittingTask] = useState(false);
+  const descriptionInputRef = useRef(null);
   const [showGroupMenu, setShowGroupMenu] = useState(false);
   const groupMenuRef = useRef(null);
   const [editingColId, setEditingColId] = useState(null);
@@ -113,9 +116,66 @@ export default function TaskGroup({
     }));
   }, [tasks, statusLookup]);
 
-  function handleAddTask(e) {
-    if (e.key === 'Enter' && newTaskTitle.trim()) { onAddTask(group.id, newTaskTitle.trim()); setNewTaskTitle(''); setAdding(false); }
-    if (e.key === 'Escape') { setNewTaskTitle(''); setAdding(false); }
+  // Submit the inline new task. Guarded against duplicate submits caused by
+  // rapid Enter presses or double-clicks on the Add button. Errors bubble up
+  // via the parent `onAddTask` (BoardPage shows the toast) — on failure we
+  // keep the typed text so the user can retry without retyping.
+  async function submitNewTask() {
+    if (submittingTask) return;
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    const description = newTaskDescription.trim();
+    setSubmittingTask(true);
+    try {
+      const result = onAddTask(group.id, title, description || undefined);
+      if (result && typeof result.then === 'function') {
+        await result;
+      }
+      setNewTaskTitle('');
+      setNewTaskDescription('');
+      // Stay in "adding" mode so the user can rapid-fire create more tasks.
+      // Escape exits the inline create row.
+    } catch {
+      // Keep typed text; toast already surfaced by parent.
+    } finally {
+      setSubmittingTask(false);
+    }
+  }
+
+  function handleTitleKeyDown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      submitNewTask();
+    } else if (e.key === 'Escape') {
+      setNewTaskTitle('');
+      setNewTaskDescription('');
+      setAdding(false);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      descriptionInputRef.current?.focus();
+    }
+  }
+
+  function handleDescriptionKeyDown(e) {
+    if (e.key === 'Enter') {
+      // Single-line input: Enter saves. Shift+Enter is reserved for future
+      // multi-line support but is currently unused.
+      e.preventDefault();
+      submitNewTask();
+    } else if (e.key === 'Escape') {
+      setNewTaskTitle('');
+      setNewTaskDescription('');
+      setAdding(false);
+    }
+  }
+
+  function handleInlineBlur() {
+    // Only collapse the inline row when both inputs are empty AND we are not
+    // currently submitting. This prevents the row from snapping shut while
+    // the user clicks the Add button (which triggers blur on the input).
+    if (!submittingTask && !newTaskTitle && !newTaskDescription) {
+      setAdding(false);
+    }
   }
 
   function startEditColumn(col) { setEditingColId(col.id); setEditingColTitle(col.title); }
@@ -335,14 +395,61 @@ export default function TaskGroup({
             {/* + Add task — only for users who can create tasks */}
             {canCreateTask && (
               <div className="flex items-center border-t border-[#e6e9ef] relative isolate">
-                <div className="flex items-center sticky left-0 z-[20] bg-white">
+                <div className="flex items-stretch sticky left-0 z-[20] bg-white">
                   <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color, opacity: 0.3 }} />
                   <div className="w-10 flex-shrink-0" />
                   {adding ? (
-                    <div style={{ width: taskColWidth }} className=" px-3 py-2">
-                      <input type="text" value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} onKeyDown={handleAddTask}
-                        onBlur={() => { if (!newTaskTitle) setAdding(false); }}
-                        placeholder="+ Add task" className="w-full text-[14px] border-none outline-none bg-transparent text-[#323338] placeholder:text-[#c4c4c4]" autoFocus />
+                    <div style={{ width: taskColWidth }} className="px-3 py-1.5">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 min-w-0 flex flex-col gap-1">
+                          <input
+                            type="text"
+                            value={newTaskTitle}
+                            onChange={e => setNewTaskTitle(e.target.value)}
+                            onKeyDown={handleTitleKeyDown}
+                            onBlur={handleInlineBlur}
+                            disabled={submittingTask}
+                            placeholder="Task name"
+                            className="w-full text-[14px] border-none outline-none bg-transparent text-[#323338] placeholder:text-[#c4c4c4] disabled:opacity-60"
+                            autoFocus
+                          />
+                          <input
+                            ref={descriptionInputRef}
+                            type="text"
+                            value={newTaskDescription}
+                            onChange={e => setNewTaskDescription(e.target.value)}
+                            onKeyDown={handleDescriptionKeyDown}
+                            onBlur={handleInlineBlur}
+                            disabled={submittingTask}
+                            placeholder="Add description (optional)"
+                            className="w-full text-[12px] border-none outline-none bg-transparent text-[#676879] placeholder:text-[#c4c4c4] disabled:opacity-60"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={submitNewTask}
+                          disabled={submittingTask || !newTaskTitle.trim()}
+                          title={newTaskTitle.trim() ? 'Add task (Enter)' : 'Enter a task name to add'}
+                          className={`flex-shrink-0 self-start mt-0.5 inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-md text-[12px] font-medium transition-colors ${
+                            submittingTask || !newTaskTitle.trim()
+                              ? 'bg-[#e6e9ef] text-[#c4c4c4] cursor-not-allowed'
+                              : 'bg-[#0073ea] text-white hover:bg-[#0060c0] active:bg-[#0052a3] shadow-sm'
+                          }`}
+                        >
+                          {submittingTask ? (
+                            <>
+                              <span className="inline-block w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                              <span>Adding</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={12} strokeWidth={2.5} />
+                              <span>Add</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <button onClick={() => setAdding(true)} style={{ width: taskColWidth }} className=" flex items-center gap-1.5 px-3 py-2.5 text-[14px] text-[#c4c4c4] hover:text-[#0073ea] transition-colors">

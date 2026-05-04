@@ -12,6 +12,21 @@ import ErrorBoundary from './components/common/ErrorBoundary';
 import UpdatePrompt from './components/common/UpdatePrompt';
 import './index.css';
 
+// Respond to AUTH_CHECK pings from the service worker. The SW asks every
+// open client whether the user is currently authenticated before showing
+// a push notification body — if no client is authenticated (e.g. user just
+// logged out and a stale push lands), the SW shows a generic "sign in to
+// view" card instead of the actual message body.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type !== 'AUTH_CHECK') return;
+    const port = event.ports?.[0];
+    if (!port) return;
+    const authenticated = !!(sessionStorage.getItem('token') || localStorage.getItem('token'));
+    try { port.postMessage({ authenticated }); } catch { /* ignore */ }
+  });
+}
+
 // Register Service Worker for PWA + force updates
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

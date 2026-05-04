@@ -14,12 +14,13 @@
 
 const { UserBoardOrder, Board, Workspace, sequelize } = require('../models');
 const { Op } = require('sequelize');
+const boardVisibility = require('../services/boardVisibilityService');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Resolve the set of board ids the calling user is allowed to see inside a
-// given workspace. Mirrors the visibility rules in workspaceController so
-// non-admin/manager users can only reorder their own visible boards.
+// given workspace. Delegates to boardVisibilityService so the rule matches
+// the sidebar / search / direct-URL gate exactly.
 async function getVisibleBoardIds(user, workspaceId) {
   const isAdminOrManager = !!user.isSuperAdmin || user.role === 'admin' || user.role === 'manager';
   if (isAdminOrManager) {
@@ -31,41 +32,14 @@ async function getVisibleBoardIds(user, workspaceId) {
     return new Set(rows.map(r => r.id));
   }
 
-  // Non-management roles: same access path the workspace endpoint uses.
-  const { safeUUIDList } = require('../utils/safeSql');
-  const visibleUserIds = [user.id];
-  if (user.role === 'assistant_manager') {
-    const { User } = require('../models');
-    const teamMembers = await User.findAll({ where: { managerId: user.id }, attributes: ['id'], raw: true });
-    visibleUserIds.push(...teamMembers.map(m => m.id));
-  }
-  const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
-
-  // Same OR conditions as workspaceController.buildBoardAccessCondition. We
-  // inline a minimal subset here to avoid coupling controllers; both files
-  // share the core condition and any future changes should keep them aligned.
-  const parts = [
-    `b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`,
-    `b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`,
-    `b."createdBy" IN (${userIdList})`,
-  ];
-  // Optional junction tables guarded the same way as workspaceController.
-  try {
-    await sequelize.query(`SELECT 1 FROM "task_assignees" LIMIT 0`);
-    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
-  } catch (e) { /* table missing — skip */ }
-  try {
-    await sequelize.query(`SELECT 1 FROM "task_owners" LIMIT 0`);
-    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
-  } catch (e) { /* skip */ }
-
-  const [rows] = await sequelize.query(
-    `SELECT DISTINCT b.id FROM boards b
-       WHERE b."workspaceId" = :wsId
-         AND b."isArchived" = false
-         AND (${parts.join('\n        OR ')})`,
-    { replacements: { wsId: workspaceId } }
-  );
+  const allVisible = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+  if (allVisible.size === 0) return new Set();
+  // Filter by workspace.
+  const rows = await Board.findAll({
+    where: { id: { [Op.in]: Array.from(allVisible) }, workspaceId, isArchived: false },
+    attributes: ['id'],
+    raw: true,
+  });
   return new Set(rows.map(r => r.id));
 }
 

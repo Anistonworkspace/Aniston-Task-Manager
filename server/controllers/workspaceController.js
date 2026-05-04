@@ -1,36 +1,8 @@
 const { Workspace, Board, User } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
-const { safeUUIDList } = require('../utils/safeSql');
 const boardMembershipService = require('../services/boardMembershipService');
-
-// ── Table existence cache ──
-const _tblCache = {};
-async function _tblExists(name) {
-  if (_tblCache[name] !== undefined) return _tblCache[name];
-  const { sequelize } = require('../config/db');
-  try { await sequelize.query(`SELECT 1 FROM "${name}" LIMIT 0`); _tblCache[name] = true; }
-  catch (e) { _tblCache[name] = false; }
-  return _tblCache[name];
-}
-
-/**
- * Build a SQL condition for boards accessible to a set of users.
- * Dynamically includes junction-table subqueries only if the tables exist.
- */
-async function buildBoardAccessCondition(userIdList) {
-  const parts = [
-    `b.id IN (SELECT "boardId" FROM "BoardMembers" WHERE "userId" IN (${userIdList}))`,
-    `b.id IN (SELECT DISTINCT "boardId" FROM tasks WHERE "assignedTo" IN (${userIdList}) AND ("isArchived" = false OR "isArchived" IS NULL))`,
-  ];
-  if (await _tblExists('task_assignees')) {
-    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_assignees ta ON ta."taskId" = t.id WHERE ta."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
-  }
-  if (await _tblExists('task_owners')) {
-    parts.push(`b.id IN (SELECT DISTINCT t."boardId" FROM tasks t INNER JOIN task_owners to2 ON to2."taskId" = t.id WHERE to2."userId" IN (${userIdList}) AND (t."isArchived" = false OR t."isArchived" IS NULL))`);
-  }
-  return parts.join('\n        OR ');
-}
+const boardVisibility = require('../services/boardVisibilityService');
 
 // GET /api/workspaces/mine — workspaces visible to current user
 // Admins/Managers: see all workspaces
@@ -55,36 +27,32 @@ exports.getMyWorkspaces = async (req, res) => {
       return res.json({ success: true, data: { workspaces } });
     }
 
-    // Members / assistant_managers: strict visibility based on board access
-    const { sequelize } = require('../config/db');
-
-    // Build list of user IDs whose work grants visibility
-    let visibleUserIds = [userId];
-    if (req.user.role === 'assistant_manager') {
-      const teamMembers = await User.findAll({
-        where: { managerId: userId },
-        attributes: ['id'],
+    // Members / assistant_managers: strict visibility based on board access.
+    // Delegated to boardVisibilityService so the rule matches getBoards,
+    // getBoard, and search exactly. The previous inline SQL accepted ANY
+    // BoardMembers row including stale auto-added ones — that surfaced
+    // workspaces an asst_manager had no real relationship to.
+    const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(req.user, { includeArchived: false });
+    let assignedWsIds = [];
+    if (visibleBoardIds.size > 0) {
+      const visibleBoardRows = await Board.findAll({
+        where: { id: { [Op.in]: Array.from(visibleBoardIds) } },
+        attributes: ['id', 'workspaceId'],
         raw: true,
       });
-      visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
+      assignedWsIds = [...new Set(visibleBoardRows.map((r) => r.workspaceId).filter(Boolean))];
     }
+    const accessibleBoardIds = visibleBoardIds;
 
-    const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
-
-    // Find ALL accessible board IDs for this user (or team) — used to filter both workspaces AND boards within them
-    const boardAccessParts = await buildBoardAccessCondition(userIdList);
-    const accessibleBoardCondition = `
-      b."isArchived" = false AND (
-        ${boardAccessParts}
-        OR b."createdBy" IN (${userIdList})
-      )`;
-
-    const [accessibleBoardRows] = await sequelize.query(
-      `SELECT DISTINCT b.id, b."workspaceId" FROM boards b WHERE ${accessibleBoardCondition}`,
-      { replacements: {} }
-    );
-    const accessibleBoardIds = new Set(accessibleBoardRows.map(r => r.id));
-    const assignedWsIds = [...new Set(accessibleBoardRows.map(r => r.workspaceId).filter(Boolean))];
+    // For workspaceMember-membership the asst_manager also inherits visibility
+    // through their direct-line subtree (org chart). Build the user-id set
+    // here so a workspace where a descendant is a member still surfaces.
+    let visibleUserIds = [userId];
+    try {
+      const hierarchyService = require('../services/hierarchyService');
+      const descendants = await hierarchyService.getDescendantIds(userId);
+      visibleUserIds = visibleUserIds.concat(descendants);
+    } catch { /* hierarchy walk is best-effort */ }
 
     const userRecord = await User.findByPk(userId, { attributes: ['id', 'workspaceId'] });
 
@@ -126,7 +94,7 @@ exports.getMyWorkspaces = async (req, res) => {
 
     res.json({ success: true, data: { workspaces: myWorkspaces } });
   } catch (err) {
-    console.error('[Workspace] getMyWorkspaces error:', err.message);
+    console.error('[Workspace] getMyWorkspaces error:', err.message, err.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch your workspaces.' });
   }
 };
@@ -154,13 +122,23 @@ exports.getWorkspaces = async (req, res) => {
     });
     res.json({ success: true, data: { workspaces } });
   } catch (err) {
-    console.error('[Workspace] getWorkspaces error:', err.message);
+    console.error('[Workspace] getWorkspaces error:', err.message, err.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch workspaces.' });
   }
 };
 
 // GET /api/workspaces/:id
 exports.getWorkspace = async (req, res) => {
+  // Companion tripwire to the one in updateWorkspace — see the explanatory
+  // comment there. If we get here with id="order" the workspace-order
+  // route file isn't being honored on the running backend.
+  if (req.params.id === 'order' && process.env.NODE_ENV !== 'production') {
+    console.warn('[RouteBug] /api/workspaces/order is being handled by getWorkspace. Check route order in server/routes/workspaces.js and restart the backend.');
+    return res.status(500).json({
+      success: false,
+      message: 'Workspace order route is misconfigured. Please restart the backend dev server.',
+    });
+  }
   try {
     const workspace = await Workspace.findByPk(req.params.id, {
       include: [
@@ -176,52 +154,31 @@ exports.getWorkspace = async (req, res) => {
     const isSuperAdmin = !!req.user.isSuperAdmin;
     if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
       const userId = req.user.id;
+
+      // Org subtree (self + descendants via both User.managerId AND
+      // manager_relations) — used to evaluate workspaceMember visibility.
       let visibleUserIds = [userId];
-      if (role === 'assistant_manager') {
-        const teamMembers = await User.findAll({
-          where: { managerId: userId },
-          attributes: ['id'],
-          raw: true,
-        });
-        visibleUserIds = visibleUserIds.concat(teamMembers.map(m => m.id));
-      }
+      try {
+        const hierarchyService = require('../services/hierarchyService');
+        const descendants = await hierarchyService.getDescendantIds(userId);
+        visibleUserIds = visibleUserIds.concat(descendants);
+      } catch { /* best-effort */ }
 
       const isCreator = workspace.createdBy === userId;
       const userRecord = await User.findByPk(userId, { attributes: ['id', 'workspaceId'] });
       const isAssignedWorkspace = userRecord?.workspaceId === workspace.id;
       const isWsMember = workspace.workspaceMembers?.some(m => visibleUserIds.includes(m.id));
 
-      // Check if user has any accessible boards in this workspace
-      let hasAccessibleBoard = false;
-      if (!isCreator && !isAssignedWorkspace && !isWsMember) {
-        const { sequelize } = require('../config/db');
-        const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
-        const boardAccParts = await buildBoardAccessCondition(userIdList);
-        const [rows] = await sequelize.query(
-          `SELECT 1 FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
-            ${boardAccParts}
-          ) LIMIT 1`,
-          { replacements: { wsId: workspace.id } }
-        );
-        hasAccessibleBoard = rows.length > 0;
-      }
+      // Check if user has any accessible boards in this workspace via the
+      // centralized boardVisibilityService (same rule as the sidebar).
+      const accessibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(req.user, { includeArchived: false });
+      const accessibleInThisWs = (workspace.boards || []).some(b => accessibleBoardIds.has(b.id));
 
-      if (!isCreator && !isAssignedWorkspace && !isWsMember && !hasAccessibleBoard) {
+      if (!isCreator && !isAssignedWorkspace && !isWsMember && !accessibleInThisWs) {
         return res.status(403).json({ success: false, message: 'Access denied. You do not have access to this workspace.' });
       }
 
-      // Filter boards within the workspace to only show accessible ones
-      const { sequelize } = require('../config/db');
-      const userIdList = safeUUIDList(visibleUserIds, 'visibleUserIds');
-      const boardAccParts2 = await buildBoardAccessCondition(userIdList);
-      const [accessibleBoardRows] = await sequelize.query(
-        `SELECT DISTINCT b.id FROM boards b WHERE b."workspaceId" = :wsId AND b."isArchived" = false AND (
-          ${boardAccParts2}
-          OR b."createdBy" IN (${userIdList})
-        )`,
-        { replacements: { wsId: workspace.id } }
-      );
-      const accessibleBoardIds = new Set(accessibleBoardRows.map(r => r.id));
+      // Filter boards within the workspace to only show accessible ones.
       const wsJSON = workspace.toJSON();
       wsJSON.boards = (wsJSON.boards || []).filter(b => accessibleBoardIds.has(b.id));
       return res.json({ success: true, data: { workspace: wsJSON } });
@@ -229,7 +186,7 @@ exports.getWorkspace = async (req, res) => {
 
     res.json({ success: true, data: { workspace } });
   } catch (err) {
-    console.error('[Workspace] getWorkspace error:', err.message);
+    console.error('[Workspace] getWorkspace error:', err.message, err.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch workspace.' });
   }
 };
@@ -272,6 +229,18 @@ exports.createWorkspace = async (req, res) => {
 
 // PUT /api/workspaces/:id
 exports.updateWorkspace = async (req, res) => {
+  // ─── Route-bug tripwire ───────────────────────────────────────
+  // If `:id` is the literal string "order" we got here because the
+  // /api/workspaces/order route was registered AFTER /:id (or wasn't
+  // registered at all on the running backend). Loudly signal that in dev
+  // so the regression is caught immediately. Production stays silent.
+  if (req.params.id === 'order' && process.env.NODE_ENV !== 'production') {
+    console.warn('[RouteBug] /api/workspaces/order is being handled by updateWorkspace. The literal `/order` route must be registered before `/:id` in server/routes/workspaces.js, and the backend must be restarted to pick up the change.');
+    return res.status(500).json({
+      success: false,
+      message: 'Workspace order route is misconfigured. Please restart the backend dev server.',
+    });
+  }
   try {
     const workspace = await Workspace.findByPk(req.params.id);
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
@@ -486,8 +455,23 @@ exports.removeMember = async (req, res) => {
 };
 
 // GET /api/workspaces/archived — fetch archived (inactive) workspaces
+//
+// Route is guarded by `requireRole('manager','admin')` at the route layer, so
+// in normal flow only managers/admins/super-admins reach here. The defensive
+// re-check below exists because the same controller is now also reachable from
+// internal helpers and because Layer-3 fallbacks in `requireRole` have
+// historically allowed unintended bypass — failing closed here means a future
+// regression in the auth middleware doesn't leak archived workspace names.
 exports.getArchivedWorkspaces = async (req, res) => {
   try {
+    const role = req.user?.role;
+    const isSuperAdmin = !!req.user?.isSuperAdmin;
+    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only managers and admins can view archived workspaces.',
+      });
+    }
     const workspaces = await Workspace.findAll({
       where: { isActive: false },
       include: [
@@ -498,7 +482,7 @@ exports.getArchivedWorkspaces = async (req, res) => {
     });
     res.json({ success: true, data: { workspaces } });
   } catch (err) {
-    console.error('[Workspace] getArchivedWorkspaces error:', err.message);
+    console.error('[Workspace] getArchivedWorkspaces error:', err.message, err.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch archived workspaces.' });
   }
 };

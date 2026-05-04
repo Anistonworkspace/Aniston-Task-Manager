@@ -61,11 +61,19 @@ const feedbackRoutes = require('./routes/feedback');
 const aiRoutes = require('./routes/ai');
 const transcriptionRoutes = require('./routes/transcriptionProviders');
 const apiKeyRoutes = require('./routes/apiKeys');
+const outboundWebhookRoutes = require('./routes/outboundWebhooks');
 const recurringTaskRoutes = require('./routes/recurringTasks');
 const boardOrderRoutes = require('./routes/boardOrders');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
+
+// Trust the first reverse proxy in front of the app (Nginx in deploy/nginx.conf)
+// so req.ip, X-Forwarded-For, and express-rate-limit see the real client IP
+// instead of bucketing every request under the proxy's address. Local dev (no
+// proxy) is unaffected — the hop count is exactly 1 in production.
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 
 // ─── Socket.io initialisation ────────────────────────────────
@@ -228,6 +236,7 @@ app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/transcription', transcriptionRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/outbound-webhooks', outboundWebhookRoutes);
 app.use('/api/recurring-tasks', recurringTaskRoutes);
 app.use('/api/board-orders', boardOrderRoutes);
 
@@ -261,6 +270,18 @@ try {
     console.log('[Routes] PUT  /api/workspaces/:id/board-order registered');
   } else {
     console.warn(`[Routes] MISSING board-order routes! get=${getOk} put=${putOk}. Check server/routes/workspaces.js and restart the backend.`);
+  }
+  // Workspace-order (Rearrange Workspaces) routes — same paranoia as above.
+  // The literal `/order` path MUST be registered before `/:id` in the
+  // router file or Express will route `GET /api/workspaces/order` into
+  // getWorkspace with id="order" and the 404 path won't even fire.
+  const wsoGet = has('get', '/order');
+  const wsoPut = has('put', '/order');
+  if (wsoGet && wsoPut) {
+    console.log('[Routes] GET  /api/workspaces/order registered');
+    console.log('[Routes] PUT  /api/workspaces/order registered');
+  } else {
+    console.warn(`[Routes] MISSING workspace-order routes! get=${wsoGet} put=${wsoPut}. Check server/routes/workspaces.js and restart the backend.`);
   }
   const boRouter = boardOrderRoutes;
   if (boRouter?.stack?.some(l => l.route?.path === '/mine' && l.route?.methods?.get)) {
@@ -378,13 +399,79 @@ const start = async () => {
       console.warn('[Server] task_reminders migration warning:', e.message?.slice(0, 100));
     }
 
-    // Extend notification type ENUM with deadline reminder types
-    for (const val of ['deadline_2day', 'deadline_2hour']) {
+    // Extend notification type ENUM with deadline reminder types + priority_change
+    // + governance/lifecycle types that were previously misusing 'task_updated'.
+    // All values must also be present in models/Notification.js.
+    for (const val of [
+      'deadline_2day',
+      'deadline_2hour',
+      'priority_change',
+      'access_requested',
+      'access_approved',
+      'access_rejected',
+      'extension_requested',
+      'extension_approved',
+      'extension_rejected',
+      'help_requested',
+      'help_responded',
+      'promotion',
+      'board_member_added',
+      'board_member_removed',
+    ]) {
       try {
         await sequelize.query(`ALTER TYPE "enum_notifications_type" ADD VALUE IF NOT EXISTS '${val}';`);
       } catch (e) { /* already exists or type not created yet */ }
     }
-    console.log('[Server] Notification type ENUM extended for deadline reminders.');
+    console.log('[Server] Notification type ENUM extended (reminders + priority_change + governance).');
+
+    // ── Auto-migration: push_subscriptions table ──────────────
+    // DB-backed VAPID push subscriptions. Replaces the previous in-memory Map
+    // in services/pushService.js so subscriptions survive restart and aren't
+    // split across replicas. Endpoint is globally unique — same browser maps
+    // to the same row regardless of which user signs in on it; the row gets
+    // re-linked to the new userId on subscribe, and isActive flips on logout.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId"        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        endpoint        TEXT NOT NULL,
+        p256dh          VARCHAR(255) NOT NULL,
+        auth            VARCHAR(255) NOT NULL,
+        "userAgent"     VARCHAR(500),
+        "deviceId"      VARCHAR(64),
+        "isActive"      BOOLEAN NOT NULL DEFAULT TRUE,
+        "lastSeenAt"    TIMESTAMP WITH TIME ZONE,
+        "deactivatedAt" TIMESTAMP WITH TIME ZONE,
+        "createdAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      // Endpoints can exceed VARCHAR(255) on some browsers (FCM URLs include
+      // long opaque tokens), hence TEXT. Unique index uses md5 hash to stay
+      // within Postgres btree's 8KB key limit.
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_uniq
+        ON push_subscriptions (md5(endpoint))`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx
+        ON push_subscriptions ("userId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS push_subscriptions_user_active_idx
+        ON push_subscriptions ("userId", "isActive")`);
+      console.log('[Server] push_subscriptions table ensured.');
+    } catch (e) {
+      console.warn('[Server] push_subscriptions migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: notifications performance indexes ─────
+    // Speeds up the bell list (ordered by createdAt DESC) and the unread-count
+    // query (the most-hit endpoint per page load).
+    try {
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+        ON notifications ("userId", "createdAt" DESC)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+        ON notifications ("userId") WHERE "isRead" = false`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_notifications_entity
+        ON notifications ("entityType", "entityId")`);
+    } catch (e) {
+      console.warn('[Server] notifications index migration warning:', e.message?.slice(0, 200));
+    }
 
     // Create task_owners table for multi-owner support
     try {
@@ -455,6 +542,28 @@ const start = async () => {
       console.log('[Server] user_board_orders table ensured.');
     } catch (e) {
       console.warn('[Server] user_board_orders migration warning:', e.message?.slice(0, 120));
+    }
+
+    // ── Auto-migration: user_workspace_orders table ──────────────
+    // Per-user workspace ordering for the sidebar (Rearrange Workspaces).
+    // Idempotent — safe to run on every boot. ON DELETE CASCADE is critical
+    // here so stale rows for archived/deleted workspaces don't accumulate.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS user_workspace_orders (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId"      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "workspaceId" UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        "position"    INTEGER NOT NULL DEFAULT 0,
+        "createdAt"   TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt"   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS user_workspace_orders_uniq
+        ON user_workspace_orders ("userId", "workspaceId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS user_workspace_orders_lookup
+        ON user_workspace_orders ("userId", "position")`);
+      console.log('[Server] user_workspace_orders table ensured.');
+    } catch (e) {
+      console.warn('[Server] user_workspace_orders migration warning:', e.message?.slice(0, 120));
     }
 
     // ── Auto-migration: task_approval_flows table + stage column ──
@@ -622,6 +731,51 @@ const start = async () => {
       console.log('[Server] file_attachments provider/category columns ensured.');
     } catch (e) {
       console.warn('[Server] file_attachments column migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: webhooks + webhook_deliveries ─────────
+    // Outbound webhook subscriptions registered against an API key. Receivers
+    // get task lifecycle events POSTed to their URL with HMAC-SHA256 sigs.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS webhooks (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "apiKeyId" UUID NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+        name VARCHAR(150) NOT NULL,
+        url VARCHAR(1000) NOT NULL,
+        secret VARCHAR(128) NOT NULL,
+        events JSONB NOT NULL DEFAULT '["task.created","task.updated","task.deleted"]'::jsonb,
+        "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
+        "lastDeliveredAt" TIMESTAMP WITH TIME ZONE,
+        "lastErrorAt" TIMESTAMP WITH TIME ZONE,
+        "lastErrorMessage" TEXT,
+        "createdBy" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS webhooks_api_key_idx ON webhooks("apiKeyId")`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "webhookId" UUID NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+        event VARCHAR(50) NOT NULL,
+        payload JSONB NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        "responseStatus" INTEGER,
+        "responseBody" TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        "lastAttemptAt" TIMESTAMP WITH TIME ZONE,
+        "nextRetryAt" TIMESTAMP WITH TIME ZONE,
+        "errorMessage" TEXT,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS webhook_deliveries_status_retry_idx
+        ON webhook_deliveries(status, "nextRetryAt")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook_created_idx
+        ON webhook_deliveries("webhookId", "createdAt")`);
+      console.log('[Server] webhooks + webhook_deliveries tables ensured.');
+    } catch (e) {
+      console.warn('[Server] webhooks migration warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: transcription_providers + transcript_segments ──
@@ -1195,6 +1349,10 @@ const start = async () => {
 
       const { startMissedRecurringTaskJob } = require('./jobs/missedRecurringTaskJob');
       startMissedRecurringTaskJob();
+
+      // Outbound webhook retry job (every 5 min) — drains failed deliveries
+      const { startWebhookRetryJob } = require('./jobs/webhookRetryJob');
+      startWebhookRetryJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

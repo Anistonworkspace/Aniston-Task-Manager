@@ -85,20 +85,47 @@ async function checkAssignmentAuthority(user, targetUserIds = []) {
 /**
  * Due-date gate helper.
  *
- * The product rule is "you can't put work on someone else's plate without a
- * deadline." Self-only assignment (a member creating their own personal task,
- * or self-adding to an existing task) is not "putting work on someone else"
- * and therefore is not gated by this check. An empty assignee/supervisor set
- * is also unrestricted (pure removals are always allowed).
+ * The product rule (post-fix): "a task cannot be assigned to anyone — including
+ * yourself — without a due date." The previous self-exemption was the bypass
+ * vector that let users put work on their own plate with no deadline; product
+ * now wants the same forcing function for self and other assignees, so the
+ * gate fires the moment the resulting assignee/supervisor set is non-empty
+ * and there is no due date.
+ *
+ * Pure removals (empty arrays / null) are still allowed — taking work *off*
+ * a plate doesn't need a deadline.
+ *
+ * `actorId` is kept in the signature so callers can still distinguish self
+ * vs. others for messaging/UI purposes, but it does NOT change the result.
  *
  * Returns true when the request needs a due date but doesn't have one.
  */
 function needsDueDateForAssignment(actorId, assigneeIds = [], supervisorIds = [], dueDate) {
   if (dueDate) return false;
   const targets = [...(assigneeIds || []), ...(supervisorIds || [])].filter(Boolean);
-  if (targets.length === 0) return false;
-  // Only block when at least one target is NOT the actor (i.e. assigning others).
+  return targets.length > 0;
+}
+
+/**
+ * Returns true if the given userId list contains anyone other than the actor.
+ * Used purely to refine error messaging — "assigning this task to another
+ * user" reads better when an "other" is actually involved; the self-only
+ * variant says "before assigning this task" without "to another user".
+ */
+function assignmentTargetsOther(actorId, assigneeIds = [], supervisorIds = []) {
+  const targets = [...(assigneeIds || []), ...(supervisorIds || [])].filter(Boolean);
   return targets.some((id) => id !== actorId);
+}
+
+/**
+ * Due-date gate error message — single source of truth so frontend toasts and
+ * tests can match the same string. Mirrors the message used in the React
+ * cells / TaskModal.
+ */
+function dueDateRequiredMessage(actorId, assigneeIds = [], supervisorIds = []) {
+  return assignmentTargetsOther(actorId, assigneeIds, supervisorIds)
+    ? 'Please set a due date before assigning this task to another user.'
+    : 'Please set a due date before assigning this task.';
 }
 
 /**
@@ -277,8 +304,14 @@ const createTask = async (req, res) => {
           message: 'You do not have permission to assign tasks to other users.',
         });
       }
-      // If no explicit assignee, default to self (members must own their tasks).
-      if (assigneeIds.length === 0) assigneeIds = [req.user.id];
+      // Auto-self-assign convenience: when a self-only actor creates a task
+      // without picking an assignee, default to self — but ONLY if a due date
+      // is already set. Without a due date, the task is created unassigned
+      // (the user can set the due date and self-assign later). This honors
+      // the "no assignment without a due date" rule end-to-end without
+      // breaking the "+ Add task" quick-create flow (the task still gets
+      // created; assignment happens on a follow-up edit).
+      if (assigneeIds.length === 0 && dueDate) assigneeIds = [req.user.id];
     }
 
     // Cross-target authorization: assign + hierarchy subtree check.
@@ -288,16 +321,38 @@ const createTask = async (req, res) => {
       return res.status(authCheck.status).json({ success: false, message: authCheck.message });
     }
 
-    // Due-date gate. Only fires when at least one non-self target is being
-    // assigned. Self-only personal tasks (e.g. a member using "+ Add task" and
-    // getting auto-assigned by `restrictToSelf` above) are exempt — they
-    // would otherwise get "Please set a due date before assigning this task"
-    // even though the user never opted into assigning anyone.
+    // Due-date gate. Fires whenever the resulting task would have any
+    // assignee or supervisor and no due date. Self-assignment is no longer
+    // exempt — see the helper docstring for the product rationale. The
+    // auto-self-assign branch above is gated on `dueDate`, so a self-only
+    // actor creating an undated quick task simply gets an unassigned row
+    // instead of a 400.
     if (needsDueDateForAssignment(req.user.id, assigneeIds, supervisorIds, dueDate)) {
       return res.status(400).json({
         success: false,
-        message: 'Please set a due date before assigning this task to another user.',
+        message: dueDateRequiredMessage(req.user.id, assigneeIds, supervisorIds),
       });
+    }
+
+    // Priority permission gate. The `tasks.set_priority` action lets
+    // organizations restrict who can set priority — members default to
+    // `false` (priority is a planning concern owned by leads). We only
+    // 403 when the supplied priority is NON-DEFAULT — passing the default
+    // ('medium') is treated as "no opinion" and is allowed for any actor,
+    // because clients legitimately serialize the default into their POST
+    // payloads even on the quick-create path where the user never picked a
+    // value. The result is the same task row (priority='medium') either
+    // way, so a 403 here would just be theatre. Mirrors the principle in
+    // updateTask: only block ACTUAL changes from the default.
+    const DEFAULT_PRIORITY = 'medium';
+    if (priority !== undefined && priority !== null && priority !== DEFAULT_PRIORITY) {
+      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      if (!canSetPriority) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to set task priority.',
+        });
+      }
     }
 
     // Keep backward compat: set assignedTo to first assignee
@@ -1003,15 +1058,31 @@ const updateTask = async (req, res) => {
       if (willHaveMembers) {
         // dueDate may be sent in this same payload — honor that as the effective value.
         const effectiveDueDate = updates.dueDate !== undefined ? updates.dueDate : task.dueDate;
-        // Self-only mutations (e.g. a member adding themselves as the lone
-        // assignee on their own task) skip the due-date gate; only assignments
-        // that put another user on the hook require a deadline.
+        // Updated rule: ANY assignment (including self-assignment) requires a
+        // due date. The error string distinguishes "to another user" vs the
+        // self-only case for clearer UX.
         if (needsDueDateForAssignment(req.user.id, nextAssigneeIds, nextSupervisorIds, effectiveDueDate)) {
           return res.status(400).json({
             success: false,
-            message: 'Please set a due date before assigning this task to another user.',
+            message: dueDateRequiredMessage(req.user.id, nextAssigneeIds, nextSupervisorIds),
           });
         }
+      }
+    }
+
+    // Priority permission gate. Mirrors createTask. We only check when the
+    // request actually mutates priority (changes[priority] != null) so a PUT
+    // that includes priority for echo purposes (same value as before) doesn't
+    // 403 a member who's editing OTHER fields on their own task. Backend is
+    // the source of truth; the frontend renders priority read-only when the
+    // user lacks the perm, but a forged direct PUT will still hit this gate.
+    if (changes.priority !== undefined && changes.priority !== task.priority) {
+      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      if (!canSetPriority) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to change task priority.',
+        });
       }
     }
 
@@ -1057,13 +1128,54 @@ const updateTask = async (req, res) => {
     const membersChanged = canManageMembers && (Array.isArray(req.body.assignedTo) || Array.isArray(req.body.supervisors));
     const ownerIdsChanged = canManageMembers && Array.isArray(req.body.ownerIds);
 
-    // Capture old members BEFORE syncing so we can diff later
+    // Capture old members BEFORE syncing so we can diff later. We need this
+    // for both the multi-array path (gated on canManageMembers) AND the
+    // single-string path (which now runs for member self-assign), so it's
+    // captured unconditionally whenever there's any assignee mutation.
     let oldAssigneeIds = [];
     let oldSupervisorIds = [];
-    if (membersChanged) {
+    const isAnyAssigneeMutation = req.body.assignedTo !== undefined || Array.isArray(req.body.supervisors);
+    if (isAnyAssigneeMutation) {
       const currentAssignees = taskAssignees || [];
       oldAssigneeIds = currentAssignees.filter(ta => ta.role === 'assignee').map(ta => ta.userId);
       oldSupervisorIds = currentAssignees.filter(ta => ta.role === 'supervisor').map(ta => ta.userId);
+    }
+
+    // Single-string `assignedTo` (and explicit null) ALWAYS sync — these are
+    // legacy fields and the preceding gates (`checkTaskAction('edit')` field
+    // whitelist + `checkAssignmentAuthority` + `needsDueDateForAssignment`)
+    // have already authorized the change. Without this, a member-creator who
+    // self-assigns their own task gets `task.assignedTo` updated but the
+    // `task_assignees` row never created — leaving the two tables out of
+    // sync and the visibility filters confused.
+    if (typeof updates.assignedTo === 'string' && updates.assignedTo) {
+      const removedSingleAssignees = oldAssigneeIds.filter(uid => uid !== updates.assignedTo);
+      try {
+        await TaskAssignee.destroy({
+          where: { taskId: task.id, role: 'assignee', userId: { [Op.ne]: updates.assignedTo } },
+        });
+        await TaskAssignee.findOrCreate({
+          where: { taskId: task.id, userId: updates.assignedTo, role: 'assignee' },
+          defaults: { assignedAt: new Date(), assignerId: req.user.id },
+        });
+      } catch (e) { /* task_assignees table may not exist yet */ }
+      await boardMembershipService.autoAddMember(task.boardId, updates.assignedTo);
+      if (removedSingleAssignees.length > 0) {
+        try { await boardMembershipService.cleanupMultiple(removedSingleAssignees, task.boardId); }
+        catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+      }
+    } else if (updates.assignedTo === null) {
+      try {
+        await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee' } });
+      } catch (e) { /* task_assignees table may not exist yet */ }
+      if (oldAssigneeIds.length > 0) {
+        try { await boardMembershipService.cleanupMultiple(oldAssigneeIds, task.boardId); }
+        catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+      }
+      if (previousAssignee && !oldAssigneeIds.includes(previousAssignee)) {
+        try { await boardMembershipService.cleanupIfNoTasksRemain(previousAssignee, task.boardId); }
+        catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
+      }
     }
 
     if (canManageMembers) {
@@ -1095,40 +1207,8 @@ const updateTask = async (req, res) => {
           try { await boardMembershipService.cleanupMultiple(removedAssigneeIds, task.boardId); }
           catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
         }
-      } else if (updates.assignedTo && typeof updates.assignedTo === 'string') {
-        // Single assignedTo string — sync into task_assignees (remove old assignees, add new one)
-        const removedSingleAssignees = oldAssigneeIds.filter(uid => uid !== updates.assignedTo);
-        try {
-          await TaskAssignee.destroy({
-            where: { taskId: task.id, role: 'assignee', userId: { [Op.ne]: updates.assignedTo } },
-          });
-          await TaskAssignee.findOrCreate({
-            where: { taskId: task.id, userId: updates.assignedTo, role: 'assignee' },
-            defaults: { assignedAt: new Date(), assignerId: req.user.id },
-          });
-        } catch (e) { /* task_assignees table may not exist yet */ }
-        await boardMembershipService.autoAddMember(task.boardId, updates.assignedTo);
-        // Cleanup board membership for previously assigned users
-        if (removedSingleAssignees.length > 0) {
-          try { await boardMembershipService.cleanupMultiple(removedSingleAssignees, task.boardId); }
-          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
-        }
-      } else if (updates.assignedTo === null) {
-        // Explicitly unassigned — remove all assignee entries from task_assignees
-        try {
-          await TaskAssignee.destroy({ where: { taskId: task.id, role: 'assignee' } });
-        } catch (e) { /* task_assignees table may not exist yet */ }
-        // Cleanup board membership for all previously assigned users
-        if (oldAssigneeIds.length > 0) {
-          try { await boardMembershipService.cleanupMultiple(oldAssigneeIds, task.boardId); }
-          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
-        }
-        // Also cleanup for the legacy assignedTo user (previousAssignee)
-        if (previousAssignee && !oldAssigneeIds.includes(previousAssignee)) {
-          try { await boardMembershipService.cleanupIfNoTasksRemain(previousAssignee, task.boardId); }
-          catch (err) { logger.warn('[Task] Board membership cleanup failed:', err.message); }
-        }
       }
+      // Single-string assignedTo and null are handled above (always-on path).
 
       // Handle supervisors array → sync supervisor rows in task_assignees
       if (Array.isArray(req.body.supervisors)) {
@@ -1715,6 +1795,19 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
+    // Bulk priority gate — same rule as the single PUT. We check before
+    // mutating so a denied user can't slip a priority change in alongside an
+    // otherwise-allowed bulk update (e.g. status change).
+    if (safeUpdates.priority !== undefined) {
+      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      if (!canSetPriority) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to change task priority.',
+        });
+      }
+    }
+
     // Completion → progress 100 (mirrors single-update invariant).
     if (safeUpdates.status === 'done') {
       safeUpdates.progress = 100;
@@ -1770,11 +1863,11 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
-    // Due-date gate for bulk assignment. Skipped when the bulk action is a
-    // self-assignment (e.g. a member bulk-claiming their own backlog) since
-    // the gate exists to protect *other* people from undated work — assigning
-    // to yourself isn't putting work on someone else's plate.
-    if (safeUpdates.assignedTo && safeUpdates.assignedTo !== req.user.id) {
+    // Due-date gate for bulk assignment. Updated rule applies to self-claim
+    // too — bulk-assigning a backlog of undated tasks to yourself is the same
+    // bypass we just plugged on the single-task path. The gate is satisfied
+    // for any task whose existing OR newly-supplied due date is non-null.
+    if (safeUpdates.assignedTo) {
       const tasksMissingDue = await Task.findAll({
         where: { id: { [Op.in]: taskIds } },
         attributes: ['id', 'title', 'dueDate'],
@@ -2240,15 +2333,15 @@ const manageTaskMembers = async (req, res) => {
       }
     }
 
-    // Due-date gate: refuse to register any non-self assignee/supervisor on a
-    // task that has no due date. Pure removals (empty arrays) and self-only
-    // assignment are allowed without a deadline.
+    // Due-date gate: refuse to register any assignee/supervisor (including
+    // self) on a task that has no due date. Pure removals (empty arrays) are
+    // still allowed without a deadline.
     const nextAssignees = Array.isArray(assignees) ? assignees.filter(Boolean) : [];
     const nextSupervisors = Array.isArray(supervisors) ? supervisors.filter(Boolean) : [];
     if (needsDueDateForAssignment(req.user.id, nextAssignees, nextSupervisors, task.dueDate)) {
       return res.status(400).json({
         success: false,
-        message: 'Please set a due date before assigning this task to another user.',
+        message: dueDateRequiredMessage(req.user.id, nextAssignees, nextSupervisors),
       });
     }
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import Modal from '../common/Modal';
+import DepartmentSelect from '../common/DepartmentSelect';
 import api from '../../services/api';
 
 const ROLES = [
@@ -11,18 +12,15 @@ const ROLES = [
 ];
 
 export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRole }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'member', department: '', designation: '', departmentId: '', workspaceId: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'member', department: '', designation: '', workspaceId: '' });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [departments, setDepartments] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
+  const [departmentMode, setDepartmentMode] = useState('empty');
 
   useEffect(() => {
     if (isOpen) {
-      api.get('/departments').then(res => {
-        setDepartments(res.data.departments || res.data.data?.departments || []);
-      }).catch(() => {});
       api.get('/workspaces').then(res => {
         setWorkspaces(res.data.workspaces || res.data.data?.workspaces || []);
       }).catch(() => {});
@@ -32,7 +30,7 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
   const availableRoles = creatorRole === 'admin' ? ROLES : ROLES.filter(r => r.value === 'member');
 
   function resetForm() {
-    setForm({ name: '', email: '', password: '', role: 'member', department: '', designation: '', departmentId: '', workspaceId: '' });
+    setForm({ name: '', email: '', password: '', role: 'member', department: '', designation: '', workspaceId: '' });
     setError('');
     setShowPass(false);
   }
@@ -61,6 +59,10 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
     if (!/[!@#$%^&*(),.?":{}|<>]/.test(form.password)) pwdErrors.push('a special character');
     if (pwdErrors.length > 0) {
       setError(`Password must contain: ${pwdErrors.join(', ')}.`);
+      return;
+    }
+    if (departmentMode === 'other' && !form.department.trim()) {
+      setError('Please enter a custom department name or pick one from the list.');
       return;
     }
 
@@ -156,22 +158,11 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
           </div>
           <div>
             <label className="block text-sm font-medium text-text-secondary mb-1">Department</label>
-            {departments.length > 0 ? (
-              <select
-                value={form.departmentId || ''}
-                onChange={e => {
-                  const dept = departments.find(d => d.id === e.target.value);
-                  setForm({ ...form, departmentId: e.target.value, department: dept?.name || '' });
-                }}
-                className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white"
-              >
-                <option value="">Select department</option>
-                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
-            ) : (
-              <input type="text" value={form.department} onChange={e => setForm({ ...form, department: e.target.value })}
-                className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" placeholder="Engineering" />
-            )}
+            <DepartmentSelect
+              value={form.department}
+              onChange={dept => setForm({ ...form, department: dept })}
+              onModeChange={setDepartmentMode}
+            />
           </div>
         </div>
 

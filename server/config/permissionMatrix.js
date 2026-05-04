@@ -51,6 +51,7 @@ const ACTIONS = {
   delete:            { label: 'Delete',               description: 'Delete/archive records' },
   assign:            { label: 'Assign Self',          description: 'Assign self as owner/assignee' },
   assign_others:     { label: 'Assign Others',        description: 'Assign tasks to other users' },
+  set_priority:      { label: 'Set Priority',         description: 'Change task priority (low/medium/high/critical)' },
   approve:           { label: 'Approve/Reject',       description: 'Approve or reject requests' },
   export:            { label: 'Export',               description: 'Export/download data' },
   manage:            { label: 'Manage',               description: 'Full management access' },
@@ -69,7 +70,7 @@ const RESOURCE_ACTIONS = {
   admin_settings:   ['view', 'manage'],
   workspaces:       ['view', 'create', 'edit', 'delete', 'manage_members'],
   boards:           ['view', 'create', 'edit', 'delete', 'manage_members', 'manage_settings', 'export'],
-  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'change_status', 'comment', 'upload', 'approve'],
+  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'set_priority', 'change_status', 'comment', 'upload', 'approve'],
   subtasks:         ['view', 'create', 'edit', 'delete'],
   task_comments:    ['view', 'create', 'edit', 'delete'],
   task_files:       ['view', 'upload', 'delete'],
@@ -105,7 +106,7 @@ const ROLE_PERMISSIONS = {
     admin_settings:   { view: true, manage: true },
     workspaces:       { view: true, create: true, edit: true, delete: true, manage_members: true },
     boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true },
-    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, change_status: true, comment: true, upload: true, approve: true },
+    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
@@ -137,7 +138,7 @@ const ROLE_PERMISSIONS = {
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: true, edit: true, delete: true, manage_members: true },
     boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true },
-    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, change_status: true, comment: true, upload: true, approve: true },
+    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
@@ -169,7 +170,7 @@ const ROLE_PERMISSIONS = {
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
     boards:           { view: true, create: false, edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
-    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, change_status: true, comment: true, upload: true, approve: false },
+    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: false },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
@@ -203,7 +204,10 @@ const ROLE_PERMISSIONS = {
     // Members can create their own tasks and self-assign. Editing applies to
     // their own/self-assigned tasks only — controllers enforce the field-level
     // whitelist; assigning OTHERS requires the explicit assign_others grant.
-    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: false, change_status: true, comment: true, upload: true, approve: false },
+    // set_priority is reserved for management roles by default — members
+    // should not set priority on a task (mirrors the product rule that
+    // priority is a planning concern owned by leads).
+    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: false, set_priority: false, change_status: true, comment: true, upload: true, approve: false },
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },

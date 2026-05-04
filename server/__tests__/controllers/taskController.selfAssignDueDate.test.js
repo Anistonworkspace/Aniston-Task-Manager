@@ -1,18 +1,18 @@
 'use strict';
 
 /**
- * Tests for taskController.createTask — self-assignment due-date gate.
+ * Tests for taskController.createTask — assignment due-date gate.
  *
- * Background: the previous implementation rejected member self-task creation
- * with "Please set a due date before assigning this task" because the
- * controller auto-assigns members to themselves and then ran the same
- * due-date gate that protects assignments to *other* users.
- *
- * The new behavior:
- *   - Members get auto-self-assigned when they don't pick an assignee.
- *   - Self-only assignment is exempt from the due-date gate.
- *   - Assigning another user without a due date still 400s.
- *   - Members are still 403'd if they try to assign someone else.
+ * Background (post-fix):
+ *   - The product rule is now "no assignment without a due date" — including
+ *     self-assignment. The earlier carve-out for self-only assignment was a
+ *     bypass vector and has been removed.
+ *   - The "+ Add task" quick-create flow still works because the auto-self-
+ *     assign branch for members is now gated on `dueDate`: if no due date is
+ *     supplied, the task is created UNASSIGNED instead of auto-self-assigned.
+ *   - Explicit self-assignment (a member POSTing { assignedTo: [me] } with no
+ *     due date) is now a 400.
+ *   - Members still 403 if they try to assign anyone other than themselves.
  *   - Manager assigning a non-member without a due date still 400s.
  */
 
@@ -197,8 +197,8 @@ beforeEach(() => {
   Task.max.mockResolvedValue(0);
 });
 
-describe('createTask — self-assignment due-date gate', () => {
-  it('Scenario A: member with no assignee + no due date → auto-self-assigns and creates', async () => {
+describe('createTask — assignment due-date gate (no self-exemption)', () => {
+  it('Scenario A: member with no assignee + no due date → creates UNASSIGNED (no auto-self-assign)', async () => {
     configurePermissions({ canAssignOthers: false });
     configureBoardAndCreate();
 
@@ -208,28 +208,50 @@ describe('createTask — self-assignment due-date gate', () => {
     await taskController.createTask(req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
+    // The "+ Add task" quick-create still succeeds, but the auto-self-assign
+    // is suppressed when there's no due date. The task row is created with
+    // assignedTo: null so the user can set a due date and self-assign as a
+    // follow-up edit.
     expect(Task.create).toHaveBeenCalledWith(
-      expect.objectContaining({ assignedTo: MEMBER_ID, dueDate: null }),
+      expect.objectContaining({ assignedTo: null, dueDate: null }),
     );
-    expect(TaskAssignee.bulkCreate).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ userId: MEMBER_ID, role: 'assignee' }),
-      ]),
-      expect.any(Object),
+    expect(TaskAssignee.bulkCreate).not.toHaveBeenCalled();
+  });
+
+  it('Scenario A2: member with no assignee + due date → auto-self-assigns', async () => {
+    // The auto-self-assign convenience still kicks in when a due date IS set
+    // — the gate is satisfied so we can default the assignee to the actor.
+    configurePermissions({ canAssignOthers: false });
+    configureBoardAndCreate();
+
+    const req = makeMemberReq({ dueDate: '2026-12-31' });
+    const res = buildRes();
+
+    await taskController.createTask(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(Task.create).toHaveBeenCalledWith(
+      expect.objectContaining({ assignedTo: MEMBER_ID, dueDate: '2026-12-31' }),
     );
   });
 
-  it('Scenario B: member explicitly self-assigns + no due date → allowed', async () => {
+  it('Scenario B: member explicitly self-assigns + no due date → 400 (new rule)', async () => {
     configurePermissions({ canAssignOthers: false });
-    configureBoardAndCreate();
+    Board.findByPk.mockResolvedValue({ id: BOARD_ID, name: 'Test Board', groups: [], columns: [] });
 
     const req = makeMemberReq({ assignedTo: [MEMBER_ID] });
     const res = buildRes();
 
     await taskController.createTask(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(Task.create).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        message: expect.stringMatching(/due date before assigning this task/i),
+      }),
+    );
+    expect(Task.create).not.toHaveBeenCalled();
   });
 
   it('Scenario C: member tries to assign another user → 403, no task written', async () => {
@@ -251,7 +273,7 @@ describe('createTask — self-assignment due-date gate', () => {
     expect(Task.create).not.toHaveBeenCalled();
   });
 
-  it('Scenario D: manager assigns OTHER user without due date → 400 with the (refined) message', async () => {
+  it('Scenario D: manager assigns OTHER user without due date → 400 with the "another user" message', async () => {
     configurePermissions({ canAssignOthers: true });
     Board.findByPk.mockResolvedValue({ id: BOARD_ID, name: 'Test Board', groups: [], columns: [] });
 
@@ -285,18 +307,23 @@ describe('createTask — self-assignment due-date gate', () => {
     );
   });
 
-  it('manager self-assigning without due date is also exempt from the gate', async () => {
-    // Manager creating their own personal task — same self-only exemption applies
-    // because the gate exists to protect *other* people from undated work.
+  it('Scenario E: manager self-assigning without due date is also blocked (no self-exemption)', async () => {
     configurePermissions({ canAssignOthers: true });
-    configureBoardAndCreate({ taskOverrides: { assignedTo: MEMBER_ID } });
+    Board.findByPk.mockResolvedValue({ id: BOARD_ID, name: 'Test Board', groups: [], columns: [] });
 
     const req = makeManagerReq({ assignedTo: [MEMBER_ID] /* no dueDate */ });
     const res = buildRes();
 
     await taskController.createTask(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        message: expect.stringMatching(/due date before assigning this task/i),
+      }),
+    );
+    expect(Task.create).not.toHaveBeenCalled();
   });
 
   it('member without create permission is rejected with 403', async () => {
@@ -310,5 +337,105 @@ describe('createTask — self-assignment due-date gate', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(Task.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('createTask — set_priority permission gate', () => {
+  // Member explicitly setting NON-DEFAULT priority → blocked by the gate
+  // (members default to set_priority=false in the permission matrix).
+  it('member providing non-default priority is rejected with 403 when set_priority=false', async () => {
+    permissionEngine.hasPermission.mockImplementation(async (_user, resource, action) => {
+      if (resource === 'tasks' && action === 'create') return true;
+      if (resource === 'tasks' && action === 'assign') return true;
+      if (resource === 'tasks' && action === 'assign_others') return false;
+      if (resource === 'tasks' && action === 'set_priority') return false;
+      return false;
+    });
+    Board.findByPk.mockResolvedValue({ id: BOARD_ID, name: 'Test Board', groups: [], columns: [] });
+
+    const req = makeMemberReq({ priority: 'high', dueDate: '2026-12-31' });
+    const res = buildRes();
+
+    await taskController.createTask(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        message: expect.stringMatching(/permission to set task priority/i),
+      }),
+    );
+    expect(Task.create).not.toHaveBeenCalled();
+  });
+
+  // Regression: a member who quick-creates a task with the DEFAULT priority
+  // ('medium') in the request body must NOT be rejected. Some clients
+  // serialize the default into the POST payload; treating that as a
+  // forbidden priority mutation broke the quick-add flow on the board.
+  it('member providing the DEFAULT priority value is allowed (no 403)', async () => {
+    permissionEngine.hasPermission.mockImplementation(async (_user, resource, action) => {
+      if (resource === 'tasks' && action === 'create') return true;
+      if (resource === 'tasks' && action === 'assign') return true;
+      if (resource === 'tasks' && action === 'assign_others') return false;
+      if (resource === 'tasks' && action === 'set_priority') return false;
+      return false;
+    });
+    configureBoardAndCreate();
+
+    const req = makeMemberReq({ priority: 'medium' /* no dueDate */ });
+    const res = buildRes();
+
+    await taskController.createTask(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    // No assignee set: dueDate omitted → auto-self-assign suppressed (per
+    // earlier rule), task is created unassigned with the default priority.
+    expect(Task.create).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 'medium', assignedTo: null }),
+    );
+  });
+
+  // Same as above but no priority field at all — also allowed.
+  it('member quick-create with NO priority field is allowed', async () => {
+    permissionEngine.hasPermission.mockImplementation(async (_user, resource, action) => {
+      if (resource === 'tasks' && action === 'create') return true;
+      if (resource === 'tasks' && action === 'assign') return true;
+      if (resource === 'tasks' && action === 'assign_others') return false;
+      if (resource === 'tasks' && action === 'set_priority') return false;
+      return false;
+    });
+    configureBoardAndCreate();
+
+    const req = makeMemberReq({ /* no priority, no dueDate */ });
+    const res = buildRes();
+
+    await taskController.createTask(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(Task.create).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 'medium' }),
+    );
+  });
+
+  // Manager / admin path — set_priority=true → priority change goes through.
+  it('manager with set_priority=true can supply explicit priority', async () => {
+    permissionEngine.hasPermission.mockImplementation(async (_user, resource, action) => {
+      if (resource === 'tasks' && action === 'create') return true;
+      if (resource === 'tasks' && action === 'assign') return true;
+      if (resource === 'tasks' && action === 'assign_others') return true;
+      if (resource === 'tasks' && action === 'set_priority') return true;
+      return false;
+    });
+    configureBoardAndCreate({ taskOverrides: { priority: 'critical' } });
+
+    const req = makeManagerReq({ priority: 'critical', assignedTo: [OTHER_ID], dueDate: '2026-12-31' });
+    const res = buildRes();
+
+    await taskController.createTask(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(Task.create).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 'critical' }),
+    );
   });
 });

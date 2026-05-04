@@ -16,11 +16,23 @@ const {
   restoreWorkspace,
 } = require('../controllers/workspaceController');
 const { getForWorkspace, setOrder } = require('../controllers/boardOrderController');
+const {
+  getMine: getMyWorkspaceOrder,
+  setOrder: setMyWorkspaceOrder,
+} = require('../controllers/workspaceOrderController');
 
 const router = express.Router();
 
 // Workspace mutation guard: manager and admin only (assistant_manager cannot manage workspaces)
 const workspaceMutate = requireRole('manager', 'admin');
+
+// ─── Per-user workspace ordering ────────────────────────────────
+// These literal-path routes MUST be registered before any `/:id` route
+// otherwise Express will match `/order` against the `/:id` catch-all. The
+// controller enforces per-workspace visibility internally — a member can
+// reorder their own visible workspaces even if they can't manage them.
+router.get('/order', authenticate, getMyWorkspaceOrder);
+router.put('/order', authenticate, setMyWorkspaceOrder);
 
 router.get('/', authenticate, getWorkspaces);
 router.get('/mine', authenticate, getMyWorkspaces);   // must be before /:id

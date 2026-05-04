@@ -190,3 +190,31 @@ export const HIERARCHY_LEVELS = [
   { value: 'vp', label: 'Vice President' },
   { value: 'ceo', label: 'CEO' },
 ];
+
+// Single source of truth for the company's department/team list, sourced from
+// the official org chart. Used by every user-facing department picker (Edit
+// User, Create User, Profile, Register). Keep this list in sync with the
+// printed org chart — the backend stores the raw string, so any value chosen
+// here (or typed via "Other") is persisted as-is.
+export const OFFICIAL_DEPARTMENTS = [
+  'Leadership',
+  'Administration',
+  'Accounts Team',
+  'Embedded & Firmware Team',
+  'AI ML Team',
+  'IT Team',
+  'HR Team',
+  'Software Team',
+  'Sales & Marketing Team',
+  'Sales',
+  'Marketing',
+  'Pre Sales Team',
+  'Project Team',
+];
+
+export const DEPARTMENT_OTHER = 'Other';
+
+export function isOfficialDepartment(value) {
+  if (typeof value !== 'string') return false;
+  return OFFICIAL_DEPARTMENTS.includes(value.trim());
+}

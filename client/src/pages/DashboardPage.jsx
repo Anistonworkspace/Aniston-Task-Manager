@@ -515,17 +515,17 @@ export default function DashboardPage() {
                 )}
               </div>
             ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto rounded-lg border border-border/50">
               <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left py-2 px-3 text-text-secondary font-medium">Member</th>
-                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Total</th>
-                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Done</th>
-                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Working</th>
-                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Stuck</th>
-                    <th className="text-center py-2 px-2 text-text-secondary font-medium">Overdue</th>
-                    <th className="text-left py-2 px-3 text-text-secondary font-medium">Progress</th>
+                <thead className="bg-surface/40">
+                  <tr className="border-b border-border/50">
+                    <th className="text-left py-2.5 px-4 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Member</th>
+                    <th className="text-center py-2.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[72px]">Total</th>
+                    <th className="text-center py-2.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[72px]">Done</th>
+                    <th className="text-center py-2.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[80px]">Working</th>
+                    <th className="text-center py-2.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[72px]">Stuck</th>
+                    <th className="text-center py-2.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[80px]">Overdue</th>
+                    <th className="text-left py-2.5 px-4 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary w-[180px]">Progress</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -534,11 +534,11 @@ export default function DashboardPage() {
                       {/* Department header — visually distinct band, with top
                           breathing room before each group except the first. */}
                       <tr>
-                        <td colSpan={7} className={`${deptIdx === 0 ? 'pt-2' : 'pt-5'} pb-2 px-0`}>
-                          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-surface/80 border border-border/60">
+                        <td colSpan={7} className={`${deptIdx === 0 ? 'pt-0' : 'pt-2'} pb-0 px-0`}>
+                          <div className="flex items-center gap-2.5 px-4 h-9 bg-surface/50 border-y border-border/40">
                             <span className="w-1 h-3.5 rounded-sm bg-primary/70 flex-shrink-0" />
                             <span className="text-[11px] font-bold uppercase tracking-wider text-text-secondary">{dept}</span>
-                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-primary/10 text-primary ml-1">
+                            <span className="text-[10px] font-semibold leading-[16px] px-1.5 rounded-full bg-primary/10 text-primary">
                               {byDept[dept].length} {byDept[dept].length === 1 ? 'member' : 'members'}
                             </span>
                           </div>
@@ -553,13 +553,13 @@ export default function DashboardPage() {
                         // space placeholder.
                         const secondary = member.designation || member.role || ' ';
                         return (
-                          <tr key={member.id} onClick={() => setSelectedMember(member.id)} className="border-b border-border/40 hover:bg-primary/5 cursor-pointer transition-colors group/row">
-                            <td className="py-2 px-3 align-middle relative">
-                              <div className="flex items-center gap-2.5 min-h-[44px]">
+                          <tr key={member.id} onClick={() => setSelectedMember(member.id)} className="border-b border-border/30 last:border-b-0 hover:bg-primary/5 cursor-pointer transition-colors group/row">
+                            <td className="py-2.5 px-4 align-middle relative">
+                              <div className="flex items-center gap-3 min-h-[40px]">
                                 <Avatar name={member.name} size="sm" />
                                 <div className="min-w-0 flex-1">
-                                  <p className="font-medium text-text-primary group-hover/row:text-primary truncate leading-tight">{member.name}</p>
-                                  <p className="text-[10px] text-text-tertiary truncate leading-tight mt-0.5">{secondary}</p>
+                                  <p className="text-[13px] font-medium text-text-primary group-hover/row:text-primary truncate leading-snug">{member.name}</p>
+                                  <p className="text-[11px] text-text-tertiary truncate leading-snug mt-0.5">{secondary}</p>
                                 </div>
                                 <ChevronRight size={14} className="text-text-tertiary opacity-0 group-hover/row:opacity-100 transition-opacity flex-shrink-0" />
                               </div>
@@ -596,17 +596,17 @@ export default function DashboardPage() {
                                 )}
                               </div>
                             </td>
-                            <td className="text-center py-2 px-2 align-middle font-semibold">{member.total}</td>
-                            <td className="text-center py-2 px-2 align-middle"><span className="text-success font-semibold">{member.done}</span></td>
-                            <td className="text-center py-2 px-2 align-middle"><span className="text-warning font-semibold">{member.working}</span></td>
-                            <td className="text-center py-2 px-2 align-middle"><span className={member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.stuck}</span></td>
-                            <td className="text-center py-2 px-2 align-middle"><span className={member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}>{member.overdue}</span></td>
-                            <td className="py-2 px-3 align-middle w-[140px]">
-                              <div className="flex items-center gap-2">
-                                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <td className="text-center py-2.5 px-2 align-middle text-[13px] font-semibold tabular-nums">{member.total}</td>
+                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-success font-semibold text-[13px]">{member.done}</span></td>
+                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-warning font-semibold text-[13px]">{member.working}</span></td>
+                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.stuck}</span></td>
+                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.overdue}</span></td>
+                            <td className="py-2.5 px-4 align-middle">
+                              <div className="flex items-center gap-2.5">
+                                <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
                                   <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#00c875' : '#0073ea' }} />
                                 </div>
-                                <span className="text-xs text-text-tertiary w-8 text-right">{pct}%</span>
+                                <span className="text-[11px] font-semibold text-text-secondary w-9 text-right tabular-nums">{pct}%</span>
                               </div>
                             </td>
                           </tr>

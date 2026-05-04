@@ -289,6 +289,40 @@ const forceUserLeaveBoard = async (userId, boardId) => {
   return count;
 };
 
+/**
+ * Force-disconnect every active socket for a given user. Called by the logout
+ * endpoint so the just-logged-out browser stops receiving live events even if
+ * the JWT it presents is technically still valid (1h TTL).
+ *
+ * If `socketId` is provided, only the specific socket disconnects — used for
+ * single-tab logout when the client reports its own socket id.
+ *
+ * Returns the count of sockets disconnected.
+ */
+const disconnectUser = async (userId, socketId = null) => {
+  if (!ioInstance || !userId) return 0;
+  let count = 0;
+  try {
+    const sockets = await ioInstance.in(`user:${userId}`).fetchSockets();
+    for (const s of sockets) {
+      const sUserId = s.user?.id || s.data?.userId;
+      if (sUserId !== userId) continue; // defensive
+      if (socketId && s.id !== socketId) continue;
+      try {
+        // Tell the client first so it can disable auto-reconnect, then close.
+        s.emit('auth:logout', { reason: 'user_logged_out' });
+        s.disconnect(true);
+        count += 1;
+      } catch (err) {
+        console.warn('[Socket] disconnectUser per-socket failed:', err.message);
+      }
+    }
+  } catch (err) {
+    console.warn('[Socket] disconnectUser fetchSockets failed:', err.message);
+  }
+  return count;
+};
+
 module.exports = {
   initializeSocket,
   getIO,
@@ -297,4 +331,5 @@ module.exports = {
   emitToUsers,
   emitToBoardAndUsers,
   forceUserLeaveBoard,
+  disconnectUser,
 };

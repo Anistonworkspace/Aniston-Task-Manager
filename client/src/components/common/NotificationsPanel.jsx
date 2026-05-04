@@ -1,20 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { X, Bell, Check, CheckCheck, Clock, AlertTriangle } from 'lucide-react';
-import { format, parseISO, formatDistanceToNow } from 'date-fns';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { X, Bell, CheckCheck, Clock, AlertTriangle, Trash2 } from 'lucide-react';
+import { parseISO, formatDistanceToNow } from 'date-fns';
 import api from '../../services/api';
 import { openTaskFromAnywhere } from '../../utils/taskNavigation';
-import Avatar from './Avatar';
+import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 
 export default function NotificationsPanel({ onClose }) {
   const [notifications, setNotifications] = useState([]);
   const [tab, setTab] = useState('all');
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const location = useLocation();
 
-  useEffect(() => { loadNotifications(); }, []);
-
-  async function loadNotifications() {
+  const loadNotifications = useCallback(async () => {
     try {
       const res = await api.get('/notifications');
       setNotifications(res.data.notifications || res.data || []);
@@ -23,29 +22,53 @@ export default function NotificationsPanel({ onClose }) {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  // Initial load.
+  useEffect(() => { loadNotifications(); }, [loadNotifications]);
+
+  // Live refresh — when a new notification arrives or a notification is
+  // marked read on another tab, the realtime router fires
+  // 'notifications.list' which we re-fetch. Without this the panel would
+  // stay stale until the user closes and reopens it.
+  useRealtimeQuery({ queryKey: 'notifications.list', refetch: loadNotifications });
 
   async function markAsRead(id) {
     try {
       await api.put(`/notifications/${id}/read`);
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
-    } catch {}
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
+    } catch { /* ignore — UI will reconcile on next refetch */ }
   }
 
   async function markAllRead() {
     try {
       await api.put('/notifications/read-all');
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
-    } catch {}
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    } catch { /* ignore */ }
   }
 
+  async function deleteOne(id, e) {
+    e.stopPropagation();
+    try {
+      await api.delete(`/notifications/${id}`);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+    } catch { /* ignore */ }
+  }
+
+  async function clearRead() {
+    try {
+      const res = await api.delete('/notifications/clear-read');
+      const removed = res?.data?.deleted ?? 0;
+      if (removed > 0) {
+        setNotifications((prev) => prev.filter((n) => !n.isRead));
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Type-aware click-through. Falls back to /my-work for unknown types.
   async function handleNotificationClick(n) {
     markAsRead(n.id);
 
-    // Navigate to the correct entity. For task notifications we use the
-    // shared openTaskFromAnywhere helper so the destination board opens the
-    // exact TaskModal via the ?taskId= deep link consumed by BoardPage —
-    // matching Dashboard Overdue, MemberDrillDown, and Home My Tasks.
     if (n.entityType === 'task' && n.entityId) {
       const opened = await openTaskFromAnywhere(navigate, {
         taskId: n.entityId,
@@ -56,24 +79,37 @@ export default function NotificationsPanel({ onClose }) {
       navigate(`/boards/${n.entityId}`);
     } else if (n.entityType === 'meeting' && n.entityId) {
       navigate('/meetings');
+    } else if (n.entityType === 'access_request') {
+      navigate('/access-requests');
     } else if (n.entityType === 'help_request') {
       navigate('/cross-team');
+    } else if (n.entityType === 'dependency_request' && n.entityId) {
+      // Dependency requests live on /cross-team or in TaskModal — prefer
+      // cross-team since we don't always have parentTaskId here.
+      navigate('/cross-team');
+    } else if (n.entityType === 'user') {
+      // Open the Profile overlay-modal on top of whatever page the user
+      // is currently on (App.jsx mounts the modal route when state.background
+      // is set). On a direct visit this background is undefined and the
+      // route falls back to the page-variant ProfilePage.
+      navigate('/profile', { state: { background: location } });
     }
 
     onClose();
   }
 
+  // Type-aware leading icon. Falls back to a small dot when no icon fits.
   function getNotificationIcon(n) {
-    if (n.message?.includes('due in 2 hours') || n.message?.includes('2 hours remaining')) {
+    if (n.type === 'deadline_2hour' || n.type === 'priority_change') {
       return <AlertTriangle size={16} className="text-red-500 mt-0.5 flex-shrink-0" />;
     }
-    if (n.message?.includes('due in 2 days') || n.message?.includes('2 days remaining')) {
+    if (n.type === 'deadline_2day' || n.type === 'due_date') {
       return <Clock size={16} className="text-amber-500 mt-0.5 flex-shrink-0" />;
     }
     return null;
   }
 
-  const filtered = tab === 'unread' ? notifications.filter(n => !n.isRead) : notifications;
+  const filtered = tab === 'unread' ? notifications.filter((n) => !n.isRead) : notifications;
 
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
@@ -83,10 +119,11 @@ export default function NotificationsPanel({ onClose }) {
           <button onClick={onClose} className="p-1 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
         </div>
         <div className="flex items-center gap-4 px-5 py-2 border-b border-border">
-          {['all', 'unread'].map(t => (
+          {['all', 'unread'].map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`text-sm font-medium pb-1 capitalize ${tab === t ? 'text-primary border-b-2 border-primary' : 'text-text-secondary hover:text-text-primary'}`}>{t}</button>
           ))}
           <button onClick={markAllRead} className="ml-auto text-xs text-primary hover:underline flex items-center gap-1"><CheckCheck size={13} /> Mark all read</button>
+          <button onClick={clearRead} title="Clear read notifications" className="text-xs text-text-secondary hover:text-text-primary flex items-center gap-1"><Trash2 size={13} /></button>
         </div>
         <div className="overflow-y-auto h-[calc(100%-110px)]">
           {loading ? (
@@ -97,8 +134,8 @@ export default function NotificationsPanel({ onClose }) {
               <p className="text-sm">No notifications</p>
             </div>
           ) : (
-            filtered.map(n => (
-              <div key={n.id} onClick={() => handleNotificationClick(n)} className={`flex items-start gap-3 px-5 py-3.5 border-b border-border cursor-pointer hover:bg-surface/50 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
+            filtered.map((n) => (
+              <div key={n.id} onClick={() => handleNotificationClick(n)} className={`group flex items-start gap-3 px-5 py-3.5 border-b border-border cursor-pointer hover:bg-surface/50 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
                 {getNotificationIcon(n) || <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${!n.isRead ? 'bg-primary' : 'bg-transparent'}`} />}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-text-primary leading-snug">{n.message}</p>
@@ -106,11 +143,19 @@ export default function NotificationsPanel({ onClose }) {
                     <p className="text-xs text-text-secondary">
                       {n.createdAt ? formatDistanceToNow(parseISO(n.createdAt), { addSuffix: true }) : ''}
                     </p>
-                    {n.entityType && (
-                      <span className="text-[9px] text-primary/60 bg-primary/5 px-1.5 py-0.5 rounded capitalize">{n.entityType.replace('_', ' ')}</span>
+                    {n.type && (
+                      <span className="text-[9px] text-primary/60 bg-primary/5 px-1.5 py-0.5 rounded capitalize">{String(n.type).replace(/_/g, ' ')}</span>
                     )}
                   </div>
                 </div>
+                <button
+                  onClick={(e) => deleteOne(n.id, e)}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-text-secondary hover:text-danger"
+                  title="Delete"
+                  aria-label="Delete notification"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             ))
           )}

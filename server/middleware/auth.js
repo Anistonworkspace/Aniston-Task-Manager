@@ -253,16 +253,35 @@ const requireRole = (...allowedRoles) => {
         }
       }
 
-      // Layer 3: Check new permission engine for base role permissions
-      // This handles the case where route uses requireRole('admin') but the user's
-      // role has base permission via the new matrix
+      // Layer 3: Base-role matrix fallback.
+      //
+      // Original intent: a route guarded by `requireRole('admin')` could still
+      // pass for other roles whose matrix entry granted that action (e.g. the
+      // matrix knew managers had base meeting-management rights even on a
+      // legacy `adminOnly` route).
+      //
+      // Bug found 2026-05-04: this fallback turned every `requireRole('manager',
+      // 'admin')` GET route into "any authenticated user with base view"
+      // because `member.workspaces.view = true` in the matrix → bypass on
+      // `GET /api/workspaces/archived`. That leaked archived workspace names
+      // to members despite the explicit role guard.
+      //
+      // Fix: only fall through for management actions (create/edit/delete/
+      // manage). `view` was the bypass surface — base-role *read* permission
+      // must NEVER override an explicit `requireRole(...)` directive that
+      // listed only manager-tier roles. PermissionGrant (Layer 2) remains the
+      // proper escape hatch for individual elevation.
       try {
         const { isBasePermission } = require('../config/permissionMatrix');
-        const newResourceTypes = deriveResourceTypes(req.originalUrl).filter(r => !['workspace', 'board', 'task', 'team'].includes(r));
+        const newResourceTypes = deriveResourceTypes(req.originalUrl)
+          .filter(r => !['workspace', 'board', 'task', 'team'].includes(r));
         const actionNeeded2 = deriveAction(req.method);
-        for (const rt of newResourceTypes) {
-          if (isBasePermission(req.user.role, rt, actionNeeded2)) {
-            return next();
+        const isElevatedAction = actionNeeded2 !== 'view';
+        if (isElevatedAction) {
+          for (const rt of newResourceTypes) {
+            if (isBasePermission(req.user.role, rt, actionNeeded2)) {
+              return next();
+            }
           }
         }
       } catch (e) {

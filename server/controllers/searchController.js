@@ -2,6 +2,7 @@ const { Task, Board, User } = require('../models');
 const { Op } = require('sequelize');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 const taskVisibility = require('../services/taskVisibilityService');
+const boardVisibility = require('../services/boardVisibilityService');
 
 /**
  * GET /api/search?q=...&limit=20
@@ -50,30 +51,27 @@ const globalSearch = async (req, res) => {
       limit: maxResults,
     });
 
-    // Search boards — RBAC at query-time for members
+    // Search boards — RBAC delegated to boardVisibilityService so this
+    // matches the sidebar / direct-URL rule. Previously only `member` was
+    // scoped here; assistant_manager fell through to "see all" and leaked
+    // every board name in the org via the global search results.
+    //
+    // The fragment is keyed on `Op.or` (a Symbol). Object.assign copies
+    // Symbol keys, but Object.keys() does NOT — so we must merge
+    // unconditionally (for admin/manager the service returns `{}`, making
+    // the assign a no-op).
     const boardWhere = {
       isArchived: false,
       name: { [Op.iLike]: `%${searchTerm}%` },
     };
-
-    let boardInclude = [
-      { model: User, as: 'members', attributes: ['id'], through: { attributes: [] } },
-    ];
-
-    // Members: only return boards they are a member of (query-time filter)
-    if (req.user.role === 'member') {
-      boardInclude = [
-        {
-          model: User, as: 'members', attributes: ['id'], through: { attributes: [] },
-          where: { id: req.user.id },
-          required: true,  // INNER JOIN — only boards where user is a member
-        },
-      ];
-    }
+    const boardVisWhere = await boardVisibility.buildBoardVisibilityWhere(req.user);
+    Object.assign(boardWhere, boardVisWhere || {});
 
     const boards = await Board.findAll({
       where: boardWhere,
-      include: boardInclude,
+      include: [
+        { model: User, as: 'members', attributes: ['id'], through: { attributes: [] } },
+      ],
       attributes: ['id', 'name', 'color', 'description', 'updatedAt'],
       order: [['updatedAt', 'DESC']],
       limit: 10,

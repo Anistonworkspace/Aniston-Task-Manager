@@ -245,6 +245,17 @@ const delegateTask = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the assigned user or admin can delegate this task.' });
     }
 
+    // Mirror the global "no assignment without a due date" rule. Delegation
+    // is just "reassign to someone else" — same protections apply, including
+    // when the actor is delegating to themselves (a no-op the UI shouldn't
+    // generate, but we still enforce on the server).
+    if (!task.dueDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please set a due date before assigning this task to another user.',
+      });
+    }
+
     const toUser = await User.findByPk(toUserId, { attributes: ['id', 'name', 'email'] });
     if (!toUser) return res.status(404).json({ success: false, message: 'Target user not found.' });
 

@@ -2,6 +2,7 @@ const { DueDateExtension, Task, User, Notification } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { getDescendantIds } = require('../services/hierarchyService');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 
 // POST /api/extensions — request due date extension
 exports.requestExtension = async (req, res) => {
@@ -43,12 +44,15 @@ exports.requestExtension = async (req, res) => {
     // Remove the requester themselves
     recipientIds.delete(req.user.id);
 
+    const reqMsg = sanitizeNotificationMessage(
+      `${sanitizeNotificationField(req.user.name)} requested due date extension for "${sanitizeNotificationField(task.title)}"`
+    );
     for (const recipientId of recipientIds) {
-      await Notification.create({
-        type: 'task_updated', message: `${req.user.name} requested due date extension for "${task.title}"`,
+      const notification = await Notification.create({
+        type: 'extension_requested', message: reqMsg,
         entityType: 'task', entityId: taskId, userId: recipientId,
       });
-      emitToUser(recipientId, 'notification:new', { message: `Due date extension requested for "${task.title}"` });
+      emitToUser(recipientId, 'notification:new', { notification });
     }
 
     logActivity({ action: 'extension_requested', description: `${req.user.name} requested due date extension for "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id });
@@ -110,11 +114,14 @@ exports.approveExtension = async (req, res) => {
     // Update task due date
     await ext.task.update({ dueDate: newDate });
 
-    await Notification.create({
-      type: 'task_updated', message: `Your due date extension for "${ext.task.title}" was approved`,
+    const approvedMsg = sanitizeNotificationMessage(
+      `Your due date extension for "${sanitizeNotificationField(ext.task.title)}" was approved`
+    );
+    const approvedNotif = await Notification.create({
+      type: 'extension_approved', message: approvedMsg,
       entityType: 'task', entityId: ext.taskId, userId: ext.requestedBy,
     });
-    emitToUser(ext.requestedBy, 'notification:new', { message: `Due date extension approved for "${ext.task.title}"` });
+    emitToUser(ext.requestedBy, 'notification:new', { notification: approvedNotif });
 
     res.json({ success: true, data: { extension: ext } });
   } catch (err) {
@@ -130,11 +137,14 @@ exports.rejectExtension = async (req, res) => {
 
     await ext.update({ status: 'rejected', reviewedBy: req.user.id, reviewedAt: new Date(), reviewNote: req.body.reviewNote, suggestedDate: req.body.suggestedDate || null });
 
-    await Notification.create({
-      type: 'task_updated', message: `Your due date extension for "${ext.task.title}" was rejected`,
+    const rejectedMsg = sanitizeNotificationMessage(
+      `Your due date extension for "${sanitizeNotificationField(ext.task.title)}" was rejected`
+    );
+    const rejectedNotif = await Notification.create({
+      type: 'extension_rejected', message: rejectedMsg,
       entityType: 'task', entityId: ext.taskId, userId: ext.requestedBy,
     });
-    emitToUser(ext.requestedBy, 'notification:new', { message: `Due date extension rejected for "${ext.task.title}"` });
+    emitToUser(ext.requestedBy, 'notification:new', { notification: rejectedNotif });
 
     res.json({ success: true, data: { extension: ext } });
   } catch (err) {

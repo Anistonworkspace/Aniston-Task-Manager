@@ -59,6 +59,45 @@ export async function subscribeToPush() {
 }
 
 /**
+ * Get the current device's PushSubscription endpoint (or null if not subscribed).
+ * Used by the logout flow so the backend can deactivate the right row.
+ */
+export async function getCurrentSubscriptionEndpoint() {
+  try {
+    if (!isPushSupported()) return null;
+    const registration = await navigator.serviceWorker.ready;
+    const sub = await registration.pushManager.getSubscription();
+    return sub?.endpoint || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Unsubscribe the browser-side PushManager subscription. The backend row is
+ * deactivated separately via the /api/auth/logout endpoint (which also
+ * disconnects the socket). We unsubscribe locally so even if the backend
+ * call somehow fails the OS push channel is broken from this device.
+ *
+ * Best-effort: silently no-ops on browsers without push support, and never
+ * throws — the caller is the logout flow which must always proceed.
+ */
+export async function unsubscribeFromPush() {
+  try {
+    if (!isPushSupported()) return null;
+    const registration = await navigator.serviceWorker.ready;
+    const sub = await registration.pushManager.getSubscription();
+    if (!sub) return null;
+    const endpoint = sub.endpoint;
+    try { await sub.unsubscribe(); } catch { /* best-effort */ }
+    return endpoint;
+  } catch (err) {
+    console.warn('[Push] unsubscribeFromPush failed:', err.message);
+    return null;
+  }
+}
+
+/**
  * Show a local browser notification (when app is in foreground but tab is not focused)
  */
 export function showLocalNotification(title, options = {}) {

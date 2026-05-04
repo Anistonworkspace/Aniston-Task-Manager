@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen, Puzzle, MessageSquare, Archive, GitBranch, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { isExplicitlyDenied } from '../../utils/permissions';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import NotificationsPanel from '../common/NotificationsPanel';
@@ -14,7 +15,19 @@ import { useTheme } from '../../context/ThemeContext';
 import { requestPushPermission, showLocalNotification, isPushSupported, subscribeToPush } from '../../services/pushNotifications';
 
 export default function Header({ onToggleSidebar }) {
-  const { user, logout, canManage } = useAuth();
+  const { user, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  // Mirror the exact gates the sidebar used for these items so visibility
+  // stays identical after the move. Each menu row in the profile dropdown is
+  // gated on the same boolean its sidebar counterpart was — no role can
+  // newly access (or lose) any of these pages because of this refactor.
+  const canSeeAdminSettings = isStrictAdmin || isSuperAdmin || !!granularPermissions?.['admin_settings.view'];
+  const canSeeIntegrations  = isStrictAdmin || isSuperAdmin || !!granularPermissions?.['integrations.view'];
+  const canSeeFeedback      = isStrictAdmin || isSuperAdmin || !!granularPermissions?.['feedback.view'];
+  const canSeeArchive       = isAdmin || isSuperAdmin || !!granularPermissions?.['archive.view'];
+  // Org Chart uses an "opt-out" model in granularPermissions — the sidebar
+  // showed it unless explicitly denied. Mirror that here so a role that
+  // could see Org Chart in the sidebar can also see the new header icon.
+  const canSeeOrgChart      = !isExplicitlyDenied('org_chart', 'view', isSuperAdmin, granularPermissions);
   const { success: toastSuccess, info: toastInfo } = useToast();
   const { darkMode, toggleDarkMode } = useTheme();
   const location = useLocation();
@@ -147,6 +160,26 @@ export default function Header({ onToggleSidebar }) {
             <Link2 size={17} strokeWidth={1.8} />
           </button>
 
+          {/* Org Chart — moved from sidebar. Opt-out gate matches the
+              sidebar's previous isExplicitlyDenied check exactly. */}
+          {canSeeOrgChart && (
+            <button data-tour="nav-orgchart-header" onClick={() => navigate('/org-chart')}
+              title="Org Chart"
+              aria-label="Org Chart"
+              className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/org-chart' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
+              <GitBranch size={17} strokeWidth={1.8} />
+            </button>
+          )}
+
+          {/* Time Plan — moved from sidebar. No gate (sidebar version was
+              also unconditional). */}
+          <button data-tour="nav-timeplan-header" onClick={() => navigate('/time-plan')}
+            title="Time Plan"
+            aria-label="Time Plan"
+            className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/time-plan' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
+            <Clock size={17} strokeWidth={1.8} />
+          </button>
+
           {/* Notes — moved from sidebar */}
           <button data-tour="nav-notes-header" onClick={() => navigate('/notes')}
             title="Notes"
@@ -156,8 +189,11 @@ export default function Header({ onToggleSidebar }) {
           </button>
 
           {/* Help & SOP — moved from sidebar (BookOpen distinguishes it from
-              the existing HelpCircle which opens the keyboard shortcuts modal). */}
-          <button data-tour="nav-helpsop-header" onClick={() => navigate('/profile#sop')}
+              the existing HelpCircle which opens the keyboard shortcuts modal).
+              Opens the Profile overlay-modal at the Guide section by passing
+              the current location as `state.background` (App.jsx mounts the
+              modal route on top of the existing page). */}
+          <button data-tour="nav-helpsop-header" onClick={() => navigate('/profile#guide', { state: { background: location } })}
             title="Help & SOP"
             aria-label="Help & SOP"
             className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
@@ -218,14 +254,37 @@ export default function Header({ onToggleSidebar }) {
                   </div>
                 </div>
                 <div className="py-1">
-                  <button onClick={() => { navigate('/profile'); setShowUserMenu(false); }}
+                  <button onClick={() => { navigate('/profile', { state: { background: location } }); setShowUserMenu(false); }}
                     className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
                     <User size={15} strokeWidth={1.8} /> My Profile
                   </button>
-                  {canManage && (
+                  {/* Administration → Admin Settings page. Gate matches the
+                      sidebar's old check exactly (was canManage before; the
+                      sidebar version is stricter, so we adopt it here so a
+                      role that couldn't see Admin Settings in the sidebar
+                      can't see Administration here either). */}
+                  {canSeeAdminSettings && (
                     <button onClick={() => { navigate('/admin-settings'); setShowUserMenu(false); }}
                       className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
                       <Settings size={15} strokeWidth={1.8} /> Administration
+                    </button>
+                  )}
+                  {canSeeIntegrations && (
+                    <button onClick={() => { navigate('/integrations'); setShowUserMenu(false); }}
+                      className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
+                      <Puzzle size={15} strokeWidth={1.8} /> Integrations
+                    </button>
+                  )}
+                  {canSeeFeedback && (
+                    <button onClick={() => { navigate('/feedback'); setShowUserMenu(false); }}
+                      className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
+                      <MessageSquare size={15} strokeWidth={1.8} /> Feedback
+                    </button>
+                  )}
+                  {canSeeArchive && (
+                    <button onClick={() => { navigate('/archive'); setShowUserMenu(false); }}
+                      className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
+                      <Archive size={15} strokeWidth={1.8} /> Archive
                     </button>
                   )}
                 </div>

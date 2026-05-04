@@ -39,7 +39,27 @@ const Notification = sequelize.define(
         'dependency_started',
         'dependency_done',
         'dependency_rejected',
-        'dependency_cancelled'
+        'dependency_cancelled',
+        // Notification fix pass — keep model enum aligned with the DB enum
+        // extended in server.js boot migrations. priority_change was missing
+        // both places, breaking priorityEscalationJob silently.
+        'deadline_2day',
+        'deadline_2hour',
+        'priority_change',
+        // Governance / lifecycle events that were previously misusing
+        // 'task_updated'. The DB enum is extended at boot in server.js so
+        // existing prod DBs pick these up without an out-of-band migration.
+        'access_requested',
+        'access_approved',
+        'access_rejected',
+        'extension_requested',
+        'extension_approved',
+        'extension_rejected',
+        'help_requested',
+        'help_responded',
+        'promotion',
+        'board_member_added',
+        'board_member_removed'
       ),
       allowNull: false,
     },

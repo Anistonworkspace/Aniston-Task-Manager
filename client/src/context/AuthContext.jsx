@@ -1,10 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
-import { connect, disconnect, subscribe } from '../services/socket';
+import { connect, disconnect, disconnectForLogout, subscribe, getSocketId } from '../services/socket';
+import { unsubscribeFromPush } from '../services/pushNotifications';
 
 const AuthContext = createContext(null);
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 const WARNING_BEFORE_LOGOUT = 30 * 1000; // Warn 30 seconds before logout
+
+// Multi-tab logout sync. When one tab calls logout, every other tab in the
+// same browser context (same origin) receives a 'logout' message and tears
+// itself down identically. Falls back gracefully on browsers without
+// BroadcastChannel — the storage event below also catches the change.
+const LOGOUT_CHANNEL_NAME = 'monday-aniston-auth';
+const logoutChannel =
+  typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(LOGOUT_CHANNEL_NAME)
+    : null;
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -15,11 +26,16 @@ export function AuthProvider({ children }) {
   const inactivityTimerRef = useRef(null);
   const logoutWarningShownRef = useRef(false);
 
-  const logout = useCallback(() => {
+  /**
+   * Local-only teardown — the bit every logout path needs to do, regardless
+   * of whether it originated in this tab, another tab in the same browser,
+   * or a server-forced disconnect. Idempotent.
+   */
+  const localCleanup = useCallback(() => {
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('user');
     sessionStorage.removeItem('refreshToken');
-    // Also clear localStorage for backward compat
+    // Also clear localStorage for backward compat with older sessions.
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setToken(null);
@@ -27,8 +43,80 @@ export function AuthProvider({ children }) {
     setPermissionGrants([]);
     setEffectivePermissions({});
     setIsHierarchyManager(false);
-    disconnect();
+    // Hard disconnect — engages the logoutLatch so even an in-flight
+    // reconnect attempt with a stale token is refused. Different from the
+    // softer disconnect() used in HMR / reconnects.
+    disconnectForLogout();
   }, []);
+
+  /**
+   * Active logout — the path the user takes when they click the menu item.
+   *
+   * Order matters:
+   *   1. Snapshot endpoint + socketId BEFORE we tear anything down — once we
+   *      disconnect / unsubscribe, the values are gone.
+   *   2. Tell the backend to (a) deactivate this device's push subscription
+   *      and (b) force-disconnect every socket for this user. We do this
+   *      WHILE the auth header is still valid; clearing storage first would
+   *      make the request 401.
+   *   3. Unsubscribe the browser's PushManager so the OS-level channel
+   *      is also broken (defense in depth — backend deactivation alone is
+   *      enough, but if backend is down we still want OS push to stop).
+   *   4. Local cleanup (storage + state + socket disconnect with latch).
+   *   5. Broadcast to other tabs in the same browser so they too tear
+   *      down their own state.
+   *
+   * Every step is best-effort: a failure in one MUST NOT block the rest.
+   * The user expects to be logged out even if the network is down.
+   */
+  const logout = useCallback((opts = {}) => {
+    const { broadcast = true, allDevices = false } = opts;
+
+    // 1. Snapshot device identifiers BEFORE local teardown — disconnectForLogout
+    //    nulls the socket and unsubscribeFromPush() returns the endpoint that
+    //    was active at this moment. We do them synchronously first so the
+    //    upcoming auth call still has the right values.
+    const socketId = getSocketId();
+
+    // 2. Local cleanup IMMEDIATELY — clears storage + state + disconnects
+    //    socket synchronously. Callers that do `logout(); navigate('/login')`
+    //    can rely on auth state being gone before the next render.
+    //    Note: we keep the token snapshot for the API call below; it's pulled
+    //    from sessionStorage by the api interceptor, so we capture it first.
+    const tokenSnapshot = sessionStorage.getItem('token') || localStorage.getItem('token');
+    localCleanup();
+
+    // 3. Multi-tab broadcast so every other tab in this browser logs out too.
+    //    Done early so other tabs start tearing down in parallel.
+    if (broadcast) {
+      try {
+        if (logoutChannel) logoutChannel.postMessage({ type: 'logout', at: Date.now() });
+        localStorage.setItem('aniston:logout-at', String(Date.now()));
+      } catch { /* ignore */ }
+    }
+
+    // 4. Background: unsubscribe browser push + tell backend to deactivate
+    //    the DB row + force-disconnect any other sockets we missed. Fully
+    //    async, never awaited by the caller — if the network is down the
+    //    user is still logged out locally. We re-attach the captured token
+    //    explicitly because storage is already cleared.
+    (async () => {
+      let pushEndpoint = null;
+      try { pushEndpoint = await unsubscribeFromPush(); } catch { /* ignore */ }
+      try {
+        await api.post(
+          '/auth/logout',
+          { endpoint: pushEndpoint, socketId, allDevices },
+          {
+            _silent: true,
+            headers: tokenSnapshot ? { Authorization: `Bearer ${tokenSnapshot}` } : undefined,
+          }
+        );
+      } catch (err) {
+        console.warn('[Auth.logout] backend logout call failed:', err?.message);
+      }
+    })();
+  }, [localCleanup]);
 
   const [effectivePermissions, setEffectivePermissions] = useState({});
   const [granularPermissions, setGranularPermissions] = useState({});
@@ -96,6 +184,32 @@ export function AuthProvider({ children }) {
   }, [loadPermissions]);
 
   useEffect(() => { loadUser(); }, [loadUser]);
+
+  // Multi-tab logout sync. When another tab in the same browser logs out,
+  // tear down our local state too (no need to call the backend again — that
+  // tab already did it). We pass broadcast=false to avoid an echo storm.
+  useEffect(() => {
+    const onChannelMessage = (e) => {
+      if (e?.data?.type === 'logout') {
+        localCleanup();
+        // Navigate to login — outside React Router because we're in a context
+        // that may not be inside a Router during teardown.
+        if (window.location.pathname !== '/login') window.location.href = '/login';
+      }
+    };
+    const onStorage = (e) => {
+      if (e.key === 'aniston:logout-at') {
+        localCleanup();
+        if (window.location.pathname !== '/login') window.location.href = '/login';
+      }
+    };
+    if (logoutChannel) logoutChannel.addEventListener('message', onChannelMessage);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      if (logoutChannel) logoutChannel.removeEventListener('message', onChannelMessage);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [localCleanup]);
 
   // Live permission refresh — when an admin issues/updates/revokes an
   // override for this user, the server emits 'permissions:updated' to the

@@ -31,12 +31,18 @@ exports.promoteUser = async (req, res) => {
     if (newTitle) updates.designation = newTitle;
     await user.update(updates);
 
-    // Notify promoted user
-    await Notification.create({
-      type: 'task_updated', message: `Congratulations! You've been promoted to ${newTitle || newRole} by ${req.user.name}`,
+    // Notify promoted user — use the dedicated 'promotion' enum + standard
+    // payload shape so the bell toast/push fire correctly.
+    const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+    const promoMsg = sanitizeNotificationMessage(
+      `Congratulations! You've been promoted to ${sanitizeNotificationField(newTitle || newRole, 80)} ` +
+      `by ${sanitizeNotificationField(req.user.name)}`
+    );
+    const notification = await Notification.create({
+      type: 'promotion', message: promoMsg,
       entityType: 'user', entityId: userId, userId,
     });
-    emitToUser(userId, 'notification:new', { message: `You've been promoted to ${newTitle || newRole}!` });
+    emitToUser(userId, 'notification:new', { notification });
 
     logActivity({ action: 'user_promoted', description: `${req.user.name} promoted ${user.name} to ${newTitle || newRole}`, entityType: 'user', entityId: userId, userId: req.user.id, meta: { previousRole: user.role, newRole, newTitle } });
 

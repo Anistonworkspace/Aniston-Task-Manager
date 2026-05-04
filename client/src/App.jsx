@@ -1,10 +1,11 @@
 import React, { Suspense, lazy } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/layout/Layout';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import AccessDenied from './components/common/AccessDenied';
 import { isExplicitlyDenied } from './utils/permissions';
+import ProfileModalRoute from './components/profile/ProfileModalRoute';
 
 // Auth pages — loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login';
@@ -155,9 +156,23 @@ function PermissionRoute({ children, requiredPermission, resourceLabel = 'this p
 }
 
 export default function App() {
+  // ── Modal-route pattern (a la React Router docs) ──────────────────────
+  // When a trigger navigates to `/profile` with `state: { background: location }`,
+  // we render the existing routes against the BACKGROUND location (so the
+  // prior page — board, dashboard, whatever — stays mounted and visible)
+  // AND mount the ProfileModalRoute on top. Closing the modal pops history,
+  // which restores the URL and unmounts the overlay without ever
+  // remounting the background page.
+  //
+  // On a direct visit / refresh of `/profile`, `state.background` is absent
+  // and we render the standard route, which serves the `variant="page"`
+  // ProfilePage as a graceful fallback.
+  const location = useLocation();
+  const background = location.state?.background;
+
   return (
     <Suspense fallback={<PageLoader />}>
-      <Routes>
+      <Routes location={background || location}>
         <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
         <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
         <Route path="/reset-password" element={<ResetPassword />} />
@@ -196,6 +211,25 @@ export default function App() {
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+
+      {/* Overlay modal routes — only mounted when a navigation supplied
+          `state.background`. The Profile route here renders the actual
+          DetailModalShell-based overlay on top of whatever page the user
+          was viewing when they triggered it. Direct /profile visits do
+          NOT carry state.background, so this block is bypassed and the
+          regular route above renders the page-variant ProfilePage. */}
+      {background && (
+        <Routes>
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <ProfileModalRoute />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      )}
     </Suspense>
   );
 }

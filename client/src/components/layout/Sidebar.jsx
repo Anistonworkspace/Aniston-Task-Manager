@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
-  FolderKanban, Star, StarOff, BarChart3, Users, Clock, FileText, CalendarDays,
-  Puzzle, Archive, Settings, GitBranch, PanelLeftClose, PanelLeft,
+  FolderKanban, Star, StarOff, BarChart3, Users, FileText, CalendarDays,
+  Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown,
-  MessageSquare, RefreshCw, Pin, PinOff
+  RefreshCw, Pin, PinOff
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -14,8 +14,9 @@ import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
 import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
+import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
 import ProfileModal from '../common/ProfileModal';
-import { canUser, isExplicitlyDenied } from '../../utils/permissions';
+import { canUser } from '../../utils/permissions';
 
 // Per-user workspace usage memory (client-side only — survives reload, does
 // not sync across devices/browsers). Drives the "top 3 workspaces" sort in
@@ -42,7 +43,7 @@ function workspaceScore(entry) {
 }
 
 // Portal-based dropdown that renders outside sidebar overflow
-function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, canCreateWorkspace, canManage }) {
+function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, onRearrangeWorkspaces, canCreateWorkspace, canManage, hasMultipleWorkspaces }) {
   const menuRef = useRef(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
@@ -71,6 +72,15 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, c
         <button onClick={() => { onClose(); onAddWorkspace(); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
           <Plus size={14} strokeWidth={1.8} /> Add new workspace
+        </button>
+      )}
+      {/* Rearrange Workspaces — visible to every user since the saved order
+          is a personal preference. The button is hidden when the user has
+          fewer than two workspaces because there's nothing to reorder. */}
+      {hasMultipleWorkspaces && (
+        <button onClick={() => { onClose(); onRearrangeWorkspaces?.(); }}
+          className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
+          <ArrowUpDown size={14} strokeWidth={1.8} /> Rearrange Workspaces
         </button>
       )}
       <button onClick={() => { onClose(); onNavigate('/boards'); }}
@@ -127,8 +137,17 @@ export default function Sidebar({ collapsed, onToggle }) {
   const [showAllByWorkspace, setShowAllByWorkspace] = useState({});
   // Workspace currently open in the Rearrange Boards modal, or null when closed.
   const [rearrangeWorkspace, setRearrangeWorkspace] = useState(null);
+  // Whether the Rearrange Workspaces modal is open (toggled from the
+  // WORKSPACES header three-dot menu). The modal is shared across the
+  // whole sidebar — only one instance, no per-workspace context needed.
+  const [showRearrangeWorkspaces, setShowRearrangeWorkspaces] = useState(false);
   // Per-user board ordering: { [workspaceId]: [boardId, boardId, ...] }.
   const [boardOrders, setBoardOrders] = useState({});
+  // Per-user workspace ordering (server-persisted). Array of workspaceIds in
+  // the order the user wants them rendered. Workspaces present in this list
+  // sort first; new/unknown workspaces fall through to the recency-weighted
+  // ranking so freshly-created ones still appear without a manual save.
+  const [workspaceOrder, setWorkspaceOrder] = useState([]);
   // Per-user workspace usage memory (localStorage-backed) — drives the
   // "top 3 workspaces" sort. Pinned + recency rank, with a Show More toggle.
   const [wsUsage, setWsUsage] = useState(() => readWorkspaceUsage());
@@ -205,11 +224,17 @@ export default function Sidebar({ collapsed, onToggle }) {
 
   async function loadData() {
     try {
-      const [boardsRes, wsRes, ordersRes] = await Promise.all([
+      // The two preference fetches are marked `_silent` so a 5xx never reaches
+      // the global toast handler. They are best-effort — if the table doesn't
+      // exist on a stale deployment or the controller blips, we render the
+      // sidebar with the default order. Surfacing "Failed to fetch workspace"
+      // for a personalisation read would be misleading; the workspace list
+      // itself (`/workspaces/mine`) still produces a real error if it fails.
+      const [boardsRes, wsRes, ordersRes, wsOrderRes] = await Promise.all([
         api.get('/boards'),
         api.get('/workspaces/mine'),
-        // Best-effort — older deployments may 404 here. Treat as no ordering.
-        api.get('/board-orders/mine').catch(() => ({ data: { orders: {} } })),
+        api.get('/board-orders/mine', { _silent: true }).catch(() => ({ data: { orders: {} } })),
+        api.get('/workspaces/order', { _silent: true }).catch(() => ({ data: { workspaceIds: [] } })),
       ]);
       const allBoards = boardsRes.data.boards || boardsRes.data || [];
       setBoards(allBoards);
@@ -220,6 +245,14 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       const orders = ordersRes?.data?.orders || ordersRes?.data?.data?.orders || {};
       setBoardOrders(orders);
+
+      // The controller wraps the payload in { data: { workspaceIds } } via
+      // the standard success envelope, but the axios interceptor in some
+      // deployments strips one level — accept both shapes defensively.
+      const wsIds = wsOrderRes?.data?.workspaceIds
+        || wsOrderRes?.data?.data?.workspaceIds
+        || [];
+      setWorkspaceOrder(Array.isArray(wsIds) ? wsIds : []);
 
       // Default: open first workspace
       if (myWorkspaces.length > 0) {
@@ -404,7 +437,6 @@ export default function Sidebar({ collapsed, onToggle }) {
       {[
         { icon: Home, path: '/', label: 'Home' },
         { icon: User, path: '/my-work', label: 'My Work' },
-        { icon: Clock, path: '/time-plan', label: 'Time Plan' },
         { icon: CalendarDays, path: '/meetings', label: 'Meetings' },
       ].map(item => (
         <button key={item.path} onClick={() => navigate(item.path)}
@@ -469,10 +501,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
             {(isSuperAdmin || isAdmin) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
             {(isSuperAdmin || isAdmin) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
-            {!isExplicitlyDenied('org_chart', 'view', isSuperAdmin, granularPermissions) && (
-              <NavItem icon={GitBranch} label="Org Chart" path="/org-chart" />
-            )}
-            <NavItem icon={Clock} label="Time Plan" path="/time-plan" tourId="nav-timeplan" />
+            {/* Org Chart and Time Plan moved to header icons (see Header.jsx). */}
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label="Tasks & Workflows" path="/tasks" tourId="nav-tasks" />
@@ -493,32 +522,9 @@ export default function Sidebar({ collapsed, onToggle }) {
             </>
           )}
 
-          {(isStrictAdmin || isSuperAdmin || !!granularPermissions['admin_settings.view'] || !!granularPermissions['integrations.view'] || !!granularPermissions['feedback.view']) && (
-            <>
-              <div className="border-t border-sidebar-border mx-3 my-1" />
-              <nav className="py-1 flex flex-col gap-0.5">
-                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['admin_settings.view']) && (
-                  <NavItem icon={Settings} label="Admin Settings" path="/admin-settings" tourId="nav-admin-settings" />
-                )}
-                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['integrations.view']) && (
-                  <NavItem icon={Puzzle} label="Integrations" path="/integrations" />
-                )}
-                {/* Feedback shown when granular permission allows (manager has it
-                    by default, members get it via grant override). */}
-                {(isStrictAdmin || isSuperAdmin || !!granularPermissions['feedback.view']) && (
-                  <NavItem icon={MessageSquare} label="Feedback" path="/feedback" />
-                )}
-              </nav>
-            </>
-          )}
-
-          {(isAdmin || isSuperAdmin || !!granularPermissions['archive.view']) && (
-            <>
-              <nav className="py-1 flex flex-col gap-0.5">
-                <NavItem icon={Archive} label="Archive" path="/archive" />
-              </nav>
-            </>
-          )}
+          {/* Admin Settings, Integrations, Feedback, Archive moved to the
+              profile dropdown in the top-right header. Same permission gates
+              live there now (see Header.jsx). */}
 
           {/* Workspace section divider */}
           <div className="border-t border-sidebar-border mx-3 my-1" />
@@ -574,10 +580,24 @@ export default function Sidebar({ collapsed, onToggle }) {
               we suspend the slicing so search hits aren't hidden behind a
               collapsed list. */}
           {(() => {
+            // Sort precedence:
+            //   1. Pinned workspaces float above unpinned (existing behavior,
+            //      driven by per-user localStorage `wsUsage[id].pinned`).
+            //   2. Within each group (pinned / unpinned), the user's saved
+            //      manual order from "Rearrange Workspaces" wins. Workspaces
+            //      not present in the saved order get position=Infinity so
+            //      they fall through to the existing recency-weighted score.
+            //   3. Tie-breaker is the recency/volume score, so brand-new
+            //      workspaces that the user hasn't reordered yet still get
+            //      surfaced based on actual usage.
+            const orderIdx = new Map((workspaceOrder || []).map((id, i) => [id, i]));
             const sortedWorkspaces = [...workspaces].sort((a, b) => {
               const ea = wsUsage[a.id] || {};
               const eb = wsUsage[b.id] || {};
               if (!!ea.pinned !== !!eb.pinned) return ea.pinned ? -1 : 1;
+              const ai = orderIdx.has(a.id) ? orderIdx.get(a.id) : Infinity;
+              const bi = orderIdx.has(b.id) ? orderIdx.get(b.id) : Infinity;
+              if (ai !== bi) return ai - bi;
               return workspaceScore(eb) - workspaceScore(ea);
             });
             const activeWsId = inferCurrentWorkspaceId();
@@ -833,8 +853,10 @@ export default function Sidebar({ collapsed, onToggle }) {
         onClose={() => setWsMenuOpen(false)}
         onNavigate={(path) => navigate(path)}
         onAddWorkspace={() => setShowCreateWorkspace(true)}
+        onRearrangeWorkspaces={() => setShowRearrangeWorkspaces(true)}
         canCreateWorkspace={canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions)}
         canManage={canManage}
+        hasMultipleWorkspaces={workspaces.length > 1}
       />
 
       {/* Create Workspace Modal */}
@@ -884,6 +906,35 @@ export default function Sidebar({ collapsed, onToggle }) {
           }}
         />
       )}
+
+      {/* Rearrange Workspaces Modal — fed the workspace list pre-sorted so
+          the modal opens already matching the order the user sees in the
+          sidebar (pinned first, then saved manual order, then recency). */}
+      {showRearrangeWorkspaces && (() => {
+        const orderIdx = new Map((workspaceOrder || []).map((id, i) => [id, i]));
+        const sorted = [...workspaces].sort((a, b) => {
+          const ea = wsUsage[a.id] || {};
+          const eb = wsUsage[b.id] || {};
+          if (!!ea.pinned !== !!eb.pinned) return ea.pinned ? -1 : 1;
+          const ai = orderIdx.has(a.id) ? orderIdx.get(a.id) : Infinity;
+          const bi = orderIdx.has(b.id) ? orderIdx.get(b.id) : Infinity;
+          if (ai !== bi) return ai - bi;
+          return workspaceScore(eb) - workspaceScore(ea);
+        });
+        return (
+          <RearrangeWorkspacesModal
+            workspaces={sorted}
+            onClose={() => setShowRearrangeWorkspaces(false)}
+            onSaved={(workspaceIds) => {
+              // Optimistic local update — the sidebar re-renders immediately
+              // using the new order before loadData() refreshes from the API.
+              setWorkspaceOrder(workspaceIds);
+              setShowRearrangeWorkspaces(false);
+              loadData();
+            }}
+          />
+        );
+      })()}
 
       {/* Profile Modal (slide-over) */}
       {showProfileModal && (

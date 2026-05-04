@@ -3,6 +3,8 @@ const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+const taskVisibility = require('../services/taskVisibilityService');
 
 // POST /api/help-requests
 exports.createHelpRequest = async (req, res) => {
@@ -15,17 +17,33 @@ exports.createHelpRequest = async (req, res) => {
     const task = await Task.findByPk(taskId);
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
 
+    // RBAC: helper must be authorized to see the parent task. Without this
+    // check a member can leak a task title to any user by picking them as
+    // the helper — the helper would receive the title in the notification
+    // body even though they cannot otherwise access the task.
+    const authorized = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    if (!authorized.includes(requestedTo)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Selected helper does not have access to this task.',
+      });
+    }
+
     const hr = await HelpRequest.create({
       taskId, requestedBy: req.user.id, requestedTo, description,
       urgency: urgency || 'medium', preferredTime: preferredTime || null,
     });
 
     // Notify helper
-    await Notification.create({
-      type: 'task_updated', message: `${req.user.name} needs help with "${task.title}" (${urgency || 'medium'} urgency)`,
+    const helperMsg = sanitizeNotificationMessage(
+      `${sanitizeNotificationField(req.user.name)} needs help with "${sanitizeNotificationField(task.title)}" ` +
+      `(${sanitizeNotificationField(urgency || 'medium', 16)} urgency)`
+    );
+    const notification = await Notification.create({
+      type: 'help_requested', message: helperMsg,
       entityType: 'task', entityId: taskId, userId: requestedTo,
     });
-    emitToUser(requestedTo, 'notification:new', { message: `Help requested on "${task.title}"` });
+    emitToUser(requestedTo, 'notification:new', { notification });
 
     logActivity({ action: 'help_requested', description: `${req.user.name} requested help on "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id, meta: { urgency, requestedTo } });
 
@@ -93,11 +111,14 @@ exports.updateStatus = async (req, res) => {
     await hr.update(updates);
 
     // Notify requester
-    await Notification.create({
-      type: 'task_updated', message: `Your help request status updated to "${status}"`,
+    const respondedMsg = sanitizeNotificationMessage(
+      `Your help request status updated to "${sanitizeNotificationField(status, 32)}"`
+    );
+    const respondedNotif = await Notification.create({
+      type: 'help_responded', message: respondedMsg,
       entityType: 'help_request', entityId: hr.id, userId: hr.requestedBy,
     });
-    emitToUser(hr.requestedBy, 'notification:new', { message: `Help request ${status}` });
+    emitToUser(hr.requestedBy, 'notification:new', { notification: respondedNotif });
 
     res.json({ success: true, data: { helpRequest: hr } });
   } catch (err) {

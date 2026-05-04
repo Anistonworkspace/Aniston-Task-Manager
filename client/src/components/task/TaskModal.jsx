@@ -26,7 +26,8 @@ import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import DetailModalShell from '../common/DetailModalShell';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
-import { canEditTask as canEditTaskFn } from '../../utils/permissions';
+import { canEditTask as canEditTaskFn, canSetPriority as canSetPriorityFn } from '../../utils/permissions';
+import { formatTaskDate } from '../../utils/dateFormat';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
@@ -49,13 +50,27 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   // are hidden. Backend (assign_others permission) is the source of truth.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
 
+  // Whether the actor can change task priority. Members default to false;
+  // managers/admins/asst-mgrs default to true. Backend gate (`tasks.set_priority`)
+  // remains the source of truth — this just renders the pill read-only when
+  // disallowed so a user can't even open the dropdown.
+  const canSetPriority = canSetPriorityFn(isSuperAdmin, granularPermissions);
+
   // canEditOwnFields uses the centralized helper so explicit DENY on tasks.edit
   // wins even for members who would otherwise be allowed to edit their own
   // tasks. Mirrors the backend's `checkTaskAction('edit', …)` whitelist plus
   // permissionEngine.deny precedence.
   const canEditOwnFields = canEditTaskFn(user, task, granularPermissions);
 
-  const canEditTitle = !isApproved && (canEditAllFields || (isMember && task?.assignedTo === user?.id));
+  // Title edit gate. Mirrors backend `checkTaskAction('edit')` which permits
+  // title updates for management roles AND for any actor that is the task's
+  // assignee or creator (the "self-management whitelist"). The previous
+  // condition only allowed `isMember` ownership and excluded assistant_manager
+  // assignees — so an assistant manager couldn't rename their own task even
+  // though the API would have accepted the change. `canEditOwnFields` runs
+  // the canonical client-side helper (canEditTask in utils/permissions.js)
+  // which respects explicit DENY overrides and ownership.
+  const canEditTitle = !isApproved && (canEditAllFields || canEditOwnFields);
   const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
   // Status edit gate: only owners/management may change status. Members who
   // can view a task they don't own (e.g. via cross-team links) get a read-
@@ -116,6 +131,19 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   const [conflicts, setConflicts] = useState([]);
   const [showConflicts, setShowConflicts] = useState(false);
   const [isDependencyReceiver, setIsDependencyReceiver] = useState(false);
+  // Refs for the native date inputs so we can call showPicker() on click —
+  // avoids the two-step "type a date / click calendar icon" flow the inputs
+  // default to. See DateCell for the same pattern on the board table.
+  const dueDateInputRef = useRef(null);
+  const startDateInputRef = useRef(null);
+  function openDatePicker(ref) {
+    const el = ref?.current;
+    if (!el) return;
+    if (typeof el.showPicker === 'function') {
+      try { el.showPicker(); return; } catch { /* fall through */ }
+    }
+    el.focus();
+  }
   const { checkGrammar: checkDescGrammar, suggestion: descGrammarSuggestion, isChecking: isCheckingDescGrammar, applySuggestion: applyDescGrammar, dismissSuggestion: dismissDescGrammar } = useGrammarCorrection();
 
   useEffect(() => {
@@ -354,8 +382,28 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   async function saveTaskMembers(assignees, supervisors) {
     setSaveStatus('saving');
     try {
-      await api.put(`/tasks/${task.id}/members`, { assignees, supervisors });
-      if (onUpdate) onUpdate({ ...task, assignedTo: assignees[0] || null });
+      // The `/members` route is gated on `tasks.assign_others` because it
+      // accepts arbitrary assignee/supervisor sets. A user without that
+      // permission (member self-assigning their own task) can ONLY mutate
+      // a single self-assignee via the legacy `PUT /tasks/:id` path —
+      // that's the route comment's stated design ("Self-assign goes
+      // through PUT /:id."). Detect the self-only-from-restricted-actor
+      // case and route accordingly so members aren't dead-ended on a 403.
+      const restrictedToSelf = !canAssignOthers;
+      const isSelfOnly = (
+        Array.isArray(assignees)
+        && assignees.length <= 1
+        && (!supervisors || supervisors.length === 0)
+        && (assignees.length === 0 || assignees[0] === user?.id)
+      );
+      if (restrictedToSelf && isSelfOnly) {
+        const next = assignees[0] || null;
+        await api.put(`/tasks/${task.id}`, { assignedTo: next });
+        if (onUpdate) onUpdate({ ...task, assignedTo: next });
+      } else {
+        await api.put(`/tasks/${task.id}/members`, { assignees, supervisors });
+        if (onUpdate) onUpdate({ ...task, assignedTo: assignees[0] || null });
+      }
       setSaveStatus('saved');
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
@@ -367,13 +415,17 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
-  // Self-only assignment is exempt from the due-date gate (mirrors the
-  // backend rule in taskController.js — assigning *yourself* isn't putting
-  // work on another user's plate, so no deadline is required).
+  // Updated rule: ANY assignment requires a due date — including self-
+  // assignment. The error message is tailored: assigning someone else reads
+  // "to another user", self-assignment just reads "before assigning this
+  // task". Backend mirrors the same logic in `needsDueDateForAssignment` and
+  // `dueDateRequiredMessage` so a forged direct PUT still 400s.
   function ensureDueDateForAssignment(targetUid) {
     if (dueDate) return true;
-    if (targetUid && targetUid === user?.id) return true;
-    toastError('Please set a due date before assigning this task to another user.');
+    const isSelf = targetUid && targetUid === user?.id;
+    toastError(isSelf
+      ? 'Please set a due date before assigning this task.'
+      : 'Please set a due date before assigning this task to another user.');
     return false;
   }
 
@@ -738,10 +790,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
               )}
             </div>
 
-            {/* Priority */}
+            {/* Priority — gated by tasks.set_priority on top of the general
+                edit gate. A user with edit-on-this-task but no set_priority
+                still sees a read-only pill (not the dropdown trigger), to
+                avoid a button that would 403 on click. */}
             <span className="text-sm text-text-secondary flex items-center">Priority</span>
             <div className="relative">
-              {canEditOwnFields ? (
+              {canEditOwnFields && canSetPriority ? (
                 <>
                   <button onClick={() => setShowPriorityDrop(!showPriorityDrop)} className="status-pill" style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}>
                     {priorityCfg ? priorityCfg.label : 'None'}
@@ -755,7 +810,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                   )}
                 </>
               ) : (
-                <span className="status-pill" style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}>{priorityCfg ? priorityCfg.label : 'None'}</span>
+                <span
+                  className="status-pill select-none cursor-default"
+                  style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}
+                  title={!canSetPriority ? "You don't have permission to change priority" : undefined}
+                >
+                  {priorityCfg ? priorityCfg.label : 'None'}
+                </span>
               )}
             </div>
 
@@ -896,13 +957,40 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             </div>
             </>)}
 
-            {/* Due Date */}
+            {/* Due Date — single click opens the native calendar picker
+                (no manual-typing intermediate step). The wrapper button is
+                the visible affordance; the underlying <input type="date">
+                is sized to overlay it but kept transparent so it stays in
+                the layout flow (showPicker requires an attached element). */}
             <span className="text-sm text-text-secondary flex items-center">Due date</span>
             {canEditOwnFields ? (
-              <input type="date" value={dueDate} onChange={(e) => handleDateChange('dueDate', e.target.value)}
-                className="text-sm px-3 py-1.5 border border-border rounded-md focus:outline-none focus:border-primary w-fit" />
+              <button
+                type="button"
+                onClick={() => openDatePicker(dueDateInputRef)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(dueDateInputRef); } }}
+                className="relative text-sm px-3 py-1.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary w-fit text-left bg-white"
+                aria-label={dueDate ? `Change due date (currently ${formatTaskDate(dueDate)})` : 'Set due date'}
+              >
+                <span className={dueDate ? 'text-text-primary' : 'text-text-tertiary'}>
+                  {dueDate ? formatTaskDate(dueDate) : 'Set date'}
+                </span>
+                <input
+                  ref={dueDateInputRef}
+                  type="date"
+                  value={dueDate || ''}
+                  onChange={(e) => {
+                    handleDateChange('dueDate', e.target.value);
+                    // Pickers auto-dismiss on selection in modern browsers;
+                    // blur is a safety net for engines that keep focus.
+                    queueMicrotask(() => e.target.blur());
+                  }}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
+                />
+              </button>
             ) : (
-              <span className="text-sm px-3 py-1.5">{dueDate || '—'}</span>
+              <span className="text-sm px-3 py-1.5">{formatTaskDate(dueDate)}</span>
             )}
 
             {/* Conflict Warning */}
@@ -924,13 +1012,34 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
               </>
             )}
 
-            {/* Start Date — editable only for primary owner on non-blocked tasks */}
+            {/* Start Date — same single-click-opens-calendar UX as Due Date. */}
             <span className="text-sm text-text-secondary flex items-center">Start date</span>
             {canEditStartDate ? (
-              <input type="date" value={startDate} onChange={(e) => handleDateChange('startDate', e.target.value)}
-                className="text-sm px-3 py-1.5 border border-border rounded-md focus:outline-none focus:border-primary w-fit" />
+              <button
+                type="button"
+                onClick={() => openDatePicker(startDateInputRef)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(startDateInputRef); } }}
+                className="relative text-sm px-3 py-1.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary w-fit text-left bg-white"
+                aria-label={startDate ? `Change start date (currently ${formatTaskDate(startDate)})` : 'Set start date'}
+              >
+                <span className={startDate ? 'text-text-primary' : 'text-text-tertiary'}>
+                  {startDate ? formatTaskDate(startDate) : 'Set date'}
+                </span>
+                <input
+                  ref={startDateInputRef}
+                  type="date"
+                  value={startDate || ''}
+                  onChange={(e) => {
+                    handleDateChange('startDate', e.target.value);
+                    queueMicrotask(() => e.target.blur());
+                  }}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
+                />
+              </button>
             ) : (
-              <span className="text-sm px-3 py-1.5">{startDate || '—'}</span>
+              <span className="text-sm px-3 py-1.5">{formatTaskDate(startDate)}</span>
             )}
 
             {/* Tags */}
