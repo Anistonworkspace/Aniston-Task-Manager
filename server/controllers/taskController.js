@@ -671,10 +671,10 @@ const getTask = async (req, res) => {
 
     // Attach permission info for frontend to know what the user can do
     const taskAssignees = task.taskAssignees || [];
-    const viewCheck = checkTaskAction('view', req.user, task, taskAssignees, req);
-    const editCheck = checkTaskAction('edit', req.user, task, taskAssignees, req);
-    const reassignCheck = checkTaskAction('reassign', req.user, task, taskAssignees, req);
-    const deleteCheck = checkTaskAction('delete', req.user, task, taskAssignees, req);
+    const viewCheck = await checkTaskAction('view', req.user, task, taskAssignees, req);
+    const editCheck = await checkTaskAction('edit', req.user, task, taskAssignees, req);
+    const reassignCheck = await checkTaskAction('reassign', req.user, task, taskAssignees, req);
+    const deleteCheck = await checkTaskAction('delete', req.user, task, taskAssignees, req);
 
     const taskJSON = task.toJSON();
     taskJSON._permissions = {
@@ -721,25 +721,47 @@ const updateTask = async (req, res) => {
 
     // Layer 3: Check action permission using the new system
     const taskAssignees = task.taskAssignees || [];
-    const editPermission = checkTaskAction('edit', req.user, task, taskAssignees, req);
+    const editPermission = await checkTaskAction('edit', req.user, task, taskAssignees, req);
 
     // Archive-as-delete gate: PUT { isArchived: true|false } is the board UI's
     // way of soft-deleting / restoring. It must be authorized by tasks.delete
     // (deny-aware), not silently filtered, so a member that bypasses the UI
     // and POSTs the field directly receives a clear 403 instead of a no-op.
+    //
+    // CP-3 regression fix: archive must work for managers acting on tasks
+    // inside their subtree, even when they're not the assignee/creator. We
+    // gate by tasks.delete (engine permission) AND inSubtree — both must
+    // hold. A manager outside the subtree still can't archive (no read =
+    // no write). req._taskInSubtree was populated by the editPermission
+    // check above (or by the canViewTask middleware on read paths).
     if (req.body.isArchived !== undefined) {
       const canArchive = await enginePermission(req.user, 'tasks', 'delete');
-      if (!canArchive) {
+      const isAdminLike = req.user.isSuperAdmin || req.user.role === 'admin';
+      const archiveInScope = isAdminLike
+        || req._taskInSubtree === true
+        || task.assignedTo === req.user.id
+        || task.createdBy === req.user.id
+        || taskAssignees.some((ta) => ta.userId === req.user.id);
+      if (!canArchive || !archiveInScope) {
         return res.status(403).json({
           success: false,
           message: 'You do not have permission to archive or restore this task.',
         });
       }
+      // Allow the archive even when the broader edit permission would block
+      // the rest of the body — common case is "manager toggles isArchived
+      // on a subtree task that nobody on it is themselves". We synthesize
+      // an edit permission that only whitelists isArchived (+ archive
+      // metadata) to avoid widening the surface.
+      if (!editPermission.allowed) {
+        editPermission.allowed = true;
+        editPermission.allowedFields = ['isArchived'];
+      }
     }
 
     // If user can't edit at all, check if they can at least update status
     if (!editPermission.allowed) {
-      const statusPermission = checkTaskAction('edit_status', req.user, task, taskAssignees, req);
+      const statusPermission = await checkTaskAction('edit_status', req.user, task, taskAssignees, req);
       if (!statusPermission.allowed) {
         return res.status(403).json({
           success: false,

@@ -11,6 +11,7 @@
     "cleanup:plan:dry": "node cleanup-plan-data.js --dry-run",
     "cleanup:plan:execute": "node cleanup-plan-data.js --execute",
     "reset:dev-passwords": "node scripts/reset-dev-passwords.js",
+    "reset:specific-passwords": "node scripts/reset-specific-user-passwords.js",
     "test": "jest --forceExit --detectOpenHandles",
     "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
     "test:watch": "jest --watch"

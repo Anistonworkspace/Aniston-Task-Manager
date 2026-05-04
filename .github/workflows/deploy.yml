@@ -59,7 +59,11 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
-          envs: ENV_FILE
+          # Forward both ENV_FILE (deploy/.env contents) and the one-time
+          # password-reset feature flag into the SSH session. The flag is a
+          # GitHub Actions repository VARIABLE (not a secret), so flipping
+          # it on/off does not require rotating any secret.
+          envs: ENV_FILE,RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN
           script: |
             set -e
 
@@ -145,9 +149,34 @@ jobs:
               exit 1
             fi
 
-            echo "=== [8/8] Running database seeds (idempotent) ==="
+            echo "=== [8/9] Running database seeds (idempotent) ==="
             docker exec aph-backend node seed-users.js || true
             docker exec aph-backend node seed-hierarchy.js || true
+
+            echo "=== [9/9] One-time password reset (guarded) ==="
+            # This runs the deploy/run-onetime-password-reset.sh wrapper
+            # ONLY when RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=true is
+            # set as a GitHub Actions repo variable. The wrapper itself is
+            # the no-op fast path when the flag is unset; we still call it
+            # unconditionally so a flag flip is picked up on the next
+            # deploy without any workflow edit.
+            #
+            # The wrapper:
+            #   - validates the aph-backend container is healthy
+            #   - confirms NODE_ENV=production and CLIENT_URL is non-local
+            #     inside the container
+            #   - runs the reset script in dry-run, asserts exactly the
+            #     two expected accounts resolved
+            #   - re-runs with --execute and a DB-backed maintenance
+            #     marker so a re-deploy with the flag still on is a
+            #     clean exit-0 no-op
+            #
+            # If this step fails, deployment fails (set -e at top). The
+            # backend rollout above has already completed successfully,
+            # so the app is up regardless of the reset hook outcome.
+            chmod +x deploy/run-onetime-password-reset.sh 2>/dev/null || true
+            RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN="${RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN:-}" \
+              deploy/run-onetime-password-reset.sh
 
             echo "=== Setup daily backup cron (2 AM) ==="
             chmod +x deploy/backup.sh 2>/dev/null || true
@@ -164,3 +193,10 @@ jobs:
             echo "Previous: $PREVIOUS_SHA"
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
+          # Repo VARIABLE (not secret). Set to "true" to trigger the
+          # guarded one-time password-reset hook in deploy step [9/9].
+          # Leave unset (or set to "false"/anything else) for the normal
+          # no-op path. After a successful one-time run the in-DB
+          # marker prevents re-runs even if this remains "true", but
+          # please flip it back so deploy logs stay tidy.
+          RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN: ${{ vars.RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN }}

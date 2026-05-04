@@ -92,17 +92,28 @@ async function buildTaskVisibilityFilter(user /*, boardId */) {
 }
 
 /**
- * Layer 3 — Action Permission Check
- * Validates whether a user can perform a specific action on a specific task.
+ * Layer 3 — Action Permission Check (async).
  *
- * @param {string} action - 'view' | 'edit' | 'edit_status' | 'edit_all' | 'reassign' | 'delete' | 'create'
- * @param {object} user - The authenticated user
- * @param {object} task - The task being acted upon (with assignees loaded)
- * @param {Array} taskAssignees - Array of TaskAssignee records for this task
- * @param {object} [req] - Express request (for hierarchy manager caching)
- * @returns {{ allowed: boolean, reason: string, allowedFields: string[]|null }}
+ * Validates whether a user can perform a specific action on a specific task.
+ * "In subtree" means the task touches a user inside `viewer ∪ descendants`,
+ * decided by the centralized taskVisibilityService. The result is cached on
+ * `req._taskInSubtree` so multiple checkTaskAction calls in the same handler
+ * (e.g. getTask runs view+edit+reassign+delete) only compute once.
+ *
+ * Why async: write controllers (`updateTask`, etc.) DON'T go through the
+ * `canViewTask` middleware that pre-populates the cache, so the helper has
+ * to be capable of computing it on demand. Reverting to a sync function and
+ * relying on every caller to set `req._taskInSubtree` first is what caused
+ * the manager-archive / inline-assign regression — easy to forget.
+ *
+ * @param {string} action - 'view' | 'edit' | 'edit_status' | 'edit_all' | 'reassign' | 'delete' | 'create' | 'manage_members'
+ * @param {object} user
+ * @param {object} task
+ * @param {Array} taskAssignees
+ * @param {object} [req] - used to cache the inSubtree decision per request
+ * @returns {Promise<{ allowed: boolean, reason: string, allowedFields: string[]|null }>}
  */
-function checkTaskAction(action, user, task, taskAssignees = [], req) {
+async function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
 
@@ -118,11 +129,30 @@ function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const isTaskCreator = task.createdBy === user.id;
   const isLinked = !!userAssignment || isTaskCreator || task.assignedTo === user.id;
 
-  // For manager / assistant_manager / member, "in subtree" means the request
-  // already passed canViewTask (which calls taskVisibilityService). The flag is
-  // attached at middleware time when available; otherwise we conservatively
-  // treat the viewer as in-subtree only if they are directly linked.
-  const inSubtree = req?._taskInSubtree === true;
+  // Resolve "in subtree" — single source of truth via taskVisibilityService.
+  // Cached on the request to amortize across multiple checkTaskAction calls
+  // in one handler (getTask runs four).
+  let inSubtree = req?._taskInSubtree;
+  if (inSubtree === undefined) {
+    try {
+      // Attach the live taskAssignees so canViewTask uses the in-memory
+      // associations rather than re-querying — saves a roundtrip per call.
+      const taskWithAssignees = task && typeof task === 'object'
+        ? Object.assign(
+            task.toJSON ? task.toJSON() : { ...task },
+            { taskAssignees }
+          )
+        : task;
+      inSubtree = await taskVisibility.canViewTask(user, taskWithAssignees);
+    } catch (err) {
+      // Defensive fall-through — treat as not-in-subtree if the visibility
+      // service blew up. The user can still be allowed via assignee/creator
+      // path below.
+      logger.warn('[RBAC] inSubtree resolution failed:', err.message);
+      inSubtree = false;
+    }
+    if (req) req._taskInSubtree = inSubtree;
+  }
 
   switch (action) {
     case 'view': {
