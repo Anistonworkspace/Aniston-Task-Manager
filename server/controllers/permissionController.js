@@ -51,7 +51,18 @@ exports.getPermissions = async (req, res) => {
     });
     res.json({ success: true, data: { permissions: grants } });
   } catch (err) {
-    console.error('[Permission] getPermissions error:', err.message);
+    // Log SQL detail (PG error code, missing column, etc.) so a production
+    // failure is diagnosable without enabling DEBUG everywhere. Common cause:
+    // schema drift — a model column missing from the deployed database.
+    console.error('[Permission] getPermissions error:', {
+      message: err.message,
+      name: err.name,
+      code: err.original?.code,
+      detail: err.original?.detail,
+      column: err.original?.column,
+      table: err.original?.table,
+      sqlState: err.original?.sqlState,
+    });
     res.status(500).json({ success: false, message: 'Failed to fetch permissions.' });
   }
 };

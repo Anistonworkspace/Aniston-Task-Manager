@@ -24,6 +24,19 @@ ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS scope VARCHAR(20) DEFAULT
 -- Add 'isOverride' flag to distinguish base grants from override grants
 ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "isOverride" BOOLEAN DEFAULT true;
 
+-- Add 'notes' for free-form metadata on the grant
+ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- Add 'effect' so a row can be either a grant override or a deny override.
+-- Required by permissionEngine.js precedence (deny > grant > role default).
+-- The Sequelize model SELECTs this column on every read; without it
+-- permission_grants becomes unreadable and the Permissions tab toasts
+-- "Failed to fetch permissions". Backfill before tightening NOT NULL.
+ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS effect VARCHAR(10) DEFAULT 'grant';
+UPDATE permission_grants SET effect = 'grant' WHERE effect IS NULL;
+ALTER TABLE permission_grants ALTER COLUMN effect SET NOT NULL;
+ALTER TABLE permission_grants ALTER COLUMN effect SET DEFAULT 'grant';
+
 -- Update resourceType to support new resource types
 -- (STRING(50) is already wide enough, no ALTER needed for type)
 
@@ -31,6 +44,8 @@ ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "isOverride" BOOLEAN DEFA
 CREATE INDEX IF NOT EXISTS idx_permission_grants_action ON permission_grants(action);
 CREATE INDEX IF NOT EXISTS idx_permission_grants_resource_action ON permission_grants("resourceType", action);
 CREATE INDEX IF NOT EXISTS idx_permission_grants_user_resource_action ON permission_grants("userId", "resourceType", action);
+CREATE INDEX IF NOT EXISTS idx_permission_grants_effect ON permission_grants(effect);
+CREATE INDEX IF NOT EXISTS idx_permission_grants_user_resource_action_effect ON permission_grants("userId", "resourceType", action, effect);
 
 -- Migrate existing permission_grants to new format
 -- Existing grants with permissionLevel but no action get mapped to equivalent actions

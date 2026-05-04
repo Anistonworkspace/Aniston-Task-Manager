@@ -696,6 +696,7 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
 function PermissionsTab() {
   const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [users, setUsers] = useState([]);
   const [showGrant, setShowGrant] = useState(false);
   const [form, setForm] = useState({ userId: '', resources: [], actions: [], expiresAt: '', reason: '', scope: 'global', effect: 'grant' });
@@ -743,16 +744,46 @@ function PermissionsTab() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // Map a failed permissions request to a clear, status-aware message instead
+  // of the generic "Failed to fetch permissions." toast. Pass `_silent: true`
+  // so the global axios interceptor does not also fire its toast — we render
+  // our own inline banner with a Retry button.
+  function describePermissionsError(err) {
+    const status = err?.response?.status;
+    const serverMessage = err?.response?.data?.message;
+    if (status === 401) return 'Your session has expired or is unauthorized. Please log in again.';
+    if (status === 403) return 'You do not have permission to view permission settings.';
+    if (status === 404) return 'Permissions API route not found. This is a deployment or backend route issue — contact an administrator.';
+    if (status === 500) return serverMessage || 'Server error loading permissions. Check backend logs for details.';
+    if (!err?.response) return 'Network error. Could not reach the permissions API.';
+    return serverMessage || 'Could not load permissions.';
+  }
+
   async function fetchData() {
-    try {
-      const [permRes, usersRes] = await Promise.all([
-        api.get('/permissions'),
-        api.get('/auth/users'),
-      ]);
-      setPermissions(permRes.data.permissions || []);
-      setUsers(usersRes.data.users || usersRes.data || []);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    setLoadError('');
+    // Fetch users and permissions independently so a permissions failure does
+    // not also wipe out the user dropdown (and vice versa). We still show a
+    // banner for the permissions failure so the operator sees what broke.
+    const [permResult, usersResult] = await Promise.allSettled([
+      api.get('/permissions', { _silent: true }),
+      api.get('/auth/users', { _silent: true }),
+    ]);
+
+    if (permResult.status === 'fulfilled') {
+      setPermissions(permResult.value.data.permissions || []);
+    } else {
+      console.error('[Permissions] load failed:', permResult.reason);
+      setLoadError(describePermissionsError(permResult.reason));
+    }
+
+    if (usersResult.status === 'fulfilled') {
+      const d = usersResult.value.data;
+      setUsers(d.users || d || []);
+    } else {
+      console.error('[Permissions] users load failed:', usersResult.reason);
+    }
+
+    setLoading(false);
   }
 
   async function handleGrant() {
@@ -834,6 +865,24 @@ function PermissionsTab() {
           <Plus size={14} /> Grant / Deny
         </button>
       </div>
+
+      {loadError && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-900/20 px-4 py-3">
+          <div className="flex items-start gap-2 text-sm">
+            <AlertCircle size={16} className="text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="font-semibold text-red-700 dark:text-red-300">Could not load permissions</div>
+              <div className="text-red-600 dark:text-red-300/80 mt-0.5">{loadError}</div>
+            </div>
+          </div>
+          <button
+            onClick={() => { setLoading(true); fetchData(); }}
+            className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Grant form */}
       <AnimatePresence>

@@ -545,9 +545,20 @@ const start = async () => {
         await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS scope VARCHAR(20) DEFAULT 'global'`);
         await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS "isOverride" BOOLEAN DEFAULT true`);
         await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS notes TEXT`);
+        // 'effect' is required by permissionEngine.js (deny > grant > role default).
+        // Without it any PermissionGrant.findAll() crashes with `column "effect"
+        // does not exist` because the Sequelize model SELECTs it. Backfill any
+        // pre-existing row to 'grant' so the NOT NULL constraint is satisfied
+        // before we tighten it.
+        await sequelize.query(`ALTER TABLE permission_grants ADD COLUMN IF NOT EXISTS effect VARCHAR(10) DEFAULT 'grant'`);
+        await sequelize.query(`UPDATE permission_grants SET effect = 'grant' WHERE effect IS NULL`);
+        await sequelize.query(`ALTER TABLE permission_grants ALTER COLUMN effect SET NOT NULL`);
+        await sequelize.query(`ALTER TABLE permission_grants ALTER COLUMN effect SET DEFAULT 'grant'`);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_action ON permission_grants(action)`);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_resource_action ON permission_grants("resourceType", action)`);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_user_resource_action ON permission_grants("userId", "resourceType", action)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_effect ON permission_grants(effect)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_permission_grants_user_resource_action_effect ON permission_grants("userId", "resourceType", action, effect)`);
         console.log('[Server] permission_grants schema upgrades ensured.');
       }
     } catch (e) {
