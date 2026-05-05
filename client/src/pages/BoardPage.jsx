@@ -31,8 +31,132 @@ import { canUser as canUserFn } from '../utils/permissions';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 
+// Compact "Create new group" dialog — replaces the legacy flow that created
+// an immediate "New Group" placeholder and forced an inline rename. Same
+// visual treatment as the rest of the app: white card on light, [#1E1F23]
+// on dark, primary blue submit, ghost cancel. Validation rules:
+//   - title required (no whitespace-only)
+//   - max 80 chars (matches POST /api/boards/:id/groups validator)
+//   - Enter submits, Escape closes, click-outside closes
+//   - submit button stays disabled while the request is in flight
+function CreateGroupDialog({ open, onClose, onCreate }) {
+  const [name, setName] = React.useState('');
+  const [error, setError] = React.useState('');
+  const [submitting, setSubmitting] = React.useState(false);
+  const inputRef = React.useRef(null);
+  const dialogRef = React.useRef(null);
+  const MAX_LEN = 80;
+
+  // Reset every time the dialog (re)opens so an old error doesn't survive
+  // close → reopen, and autofocus the input for keyboard-first flow.
+  React.useEffect(() => {
+    if (open) {
+      setName('');
+      setError('');
+      setSubmitting(false);
+      // setTimeout so the input exists in the DOM before .focus() runs.
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+
+  // Escape closes; outside click closes (click-outside handler is attached
+  // to the backdrop element below). Don't intercept Esc when not open.
+  React.useEffect(() => {
+    if (!open) return undefined;
+    function onKey(e) {
+      if (e.key === 'Escape' && !submitting) onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, submitting, onClose]);
+
+  if (!open) return null;
+
+  async function handleSubmit(e) {
+    e?.preventDefault?.();
+    if (submitting) return;
+    const trimmed = (name || '').trim();
+    if (!trimmed) { setError('Group name is required.'); return; }
+    if (trimmed.length > MAX_LEN) { setError(`Group name must be ${MAX_LEN} characters or fewer.`); return; }
+    setSubmitting(true);
+    setError('');
+    try {
+      await onCreate(trimmed);
+      // Parent closes us on success.
+    } catch (err) {
+      // Keep the dialog open on failure and surface the message inline.
+      const msg = err?.response?.data?.message || err?.message || 'Failed to create group.';
+      setError(msg);
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] bg-black/40 flex items-center justify-center p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !submitting) onClose(); }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-group-dialog-title"
+        className="w-full max-w-sm bg-white dark:bg-[#1E1F23] rounded-xl shadow-xl border border-border overflow-hidden"
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4 p-5">
+          <h2
+            id="create-group-dialog-title"
+            className="text-base font-semibold text-text-primary dark:text-white"
+          >
+            Create new group
+          </h2>
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="create-group-input"
+              className="text-xs font-medium text-text-secondary dark:text-zinc-300"
+            >
+              Group name
+            </label>
+            <input
+              id="create-group-input"
+              ref={inputRef}
+              type="text"
+              value={name}
+              maxLength={MAX_LEN}
+              onChange={(e) => { setName(e.target.value); if (error) setError(''); }}
+              placeholder="e.g. Sprint 24"
+              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-white dark:bg-[#1E1F23] text-text-primary dark:text-white placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+              disabled={submitting}
+            />
+            {error && (
+              <span className="text-xs text-red-500 mt-0.5">{error}</span>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="px-3 py-1.5 text-sm rounded-md text-text-secondary hover:bg-surface-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-3 py-1.5 text-sm rounded-md bg-[#0073ea] text-white hover:bg-[#0060c2] transition-colors disabled:opacity-60 font-medium"
+            >
+              {submitting ? 'Creating…' : 'Create group'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // Monday.com-style dropdown for "New task" split button
-function NewTaskDropdown({ onNewGroup, onImport, onClose }) {
+function NewTaskDropdown({ onNewGroup, onImport, canCreateGroup, canImport, onClose }) {
   const ref = React.useRef(null);
   React.useEffect(() => {
     function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) onClose(); }
@@ -42,16 +166,20 @@ function NewTaskDropdown({ onNewGroup, onImport, onClose }) {
 
   return (
     <div ref={ref} className="absolute left-0 top-full mt-1 w-[200px] bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] z-50 dropdown-enter overflow-hidden py-1">
-      <button onClick={onNewGroup}
-        className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="7" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="11" width="12" height="2" rx="0.5" fill="#676879"/></svg>
-        New group of tasks
-      </button>
-      <button onClick={onImport}
-        className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
-        <Download size={15} className="text-[#676879]" />
-        Import tasks
-      </button>
+      {canCreateGroup && (
+        <button onClick={onNewGroup}
+          className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="7" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="11" width="12" height="2" rx="0.5" fill="#676879"/></svg>
+          New group of tasks
+        </button>
+      )}
+      {canImport && (
+        <button onClick={onImport}
+          className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
+          <Download size={15} className="text-[#676879]" />
+          Import tasks
+        </button>
+      )}
     </div>
   );
 }
@@ -63,6 +191,12 @@ export default function BoardPage() {
   const { user, canManage, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
   const canCreateTask = canUserFn(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
   const canEditBoard = canUserFn(user?.role, 'edit_board', isSuperAdmin, permissionGrants, effectivePermissions);
+  // create_group is now base-allowed for every role. The user must already be
+  // on the board page to reach this code, which means getBoard let them
+  // through, so they have at least board view access. The backend
+  // POST /boards/:id/groups controller does the canonical access check via
+  // boardVisibilityService; this flag just matches that outcome for UX.
+  const canCreateGroup = canUserFn(user?.role, 'create_group', isSuperAdmin, permissionGrants, effectivePermissions);
   // Whether the actor can assign tasks to other users. When false, the inline
   // "+ Add task" payload explicitly self-assigns so the task is created as a
   // personal task without going through the "missing owner" path on the server.
@@ -85,6 +219,9 @@ export default function BoardPage() {
   const [showCSVImport, setShowCSVImport] = useState(false);
   const [extensionTask, setExtensionTask] = useState(null);
   const [showNewTaskMenu, setShowNewTaskMenu] = useState(false);
+  // Controls the "Create new group" dialog. Replaces the legacy flow that
+  // immediately created a placeholder "New Group" and forced inline rename.
+  const [showCreateGroupDialog, setShowCreateGroupDialog] = useState(false);
   // Inline-subtask expanded set — array of task IDs that are currently
   // showing their nested subtask section in the board table. Lives on
   // BoardPage so it survives task-group re-renders.
@@ -446,15 +583,31 @@ export default function BoardPage() {
     }
   }
 
+  // Rename a single group via the dedicated PATCH endpoint so members and
+  // assistant managers (who only have create_board / rename_board, not
+  // edit_board) can rename a group on a board they can reach. Backend gates
+  // the route by boardVisibilityService.canUserSeeBoard.
   async function handleRenameGroup(groupId, newName) {
+    const trimmed = (newName || '').trim();
+    if (!trimmed) {
+      toastError('Group name is required.');
+      return;
+    }
     try {
-      const updatedGroups = groups.map(g => g.id === groupId ? { ...g, title: newName, name: newName } : g);
-      await api.put(`/boards/${boardId}`, { groups: updatedGroups });
-      setBoard(prev => ({ ...prev, groups: updatedGroups }));
+      const { data } = await api.patch(`/boards/${boardId}/groups/${groupId}`, {
+        title: trimmed,
+      });
+      // Trust the canonical groups array the server returns over an
+      // optimistic merge — it reflects sanitization and any concurrent
+      // changes the socket broadcast may surface a moment later.
+      const serverGroups = data?.data?.groups
+        || (groups.map(g => g.id === groupId ? { ...g, title: trimmed, name: trimmed } : g));
+      setBoard(prev => ({ ...prev, groups: serverGroups }));
       toastSuccess('Group renamed');
     } catch (err) {
       console.error('[BoardPage] handleRenameGroup error:', err);
-      toastError('Failed to rename group. Please try again.');
+      const msg = err?.response?.data?.message || 'Failed to rename group. Please try again.';
+      toastError(msg);
     }
   }
 
@@ -597,23 +750,32 @@ export default function BoardPage() {
     setBoard(prev => ({ ...prev, _resizeTick: Date.now() }));
   }
 
-  // Add new group/sprint to board
-  async function handleAddGroup() {
-    const newGroup = {
-      id: `group_${Date.now()}`,
-      title: 'New Group',
-      color: ['#e2445c', '#fdab3d', '#00c875', '#579bfc', '#a25ddc', '#ff642e'][Math.floor(Math.random() * 6)],
-      position: (board?.groups?.length || 0),
-    };
-    const updatedGroups = [...(board?.groups || []), newGroup];
+  // Add new group/sprint to board.
+  //
+  // Two callers:
+  //   1. handleOpenCreateGroup() — bound to the "+ New group" button. Opens
+  //      the CreateGroupDialog so the user names the group BEFORE it gets
+  //      created, replacing the legacy "auto-create then inline-rename" flow.
+  //   2. createGroupWithName(title) — invoked by the dialog's submit handler.
+  //      Hits POST /boards/:id/groups so members and assistant managers can
+  //      add a group to a board they have access to without needing the
+  //      broader edit_board permission required to rewrite the structural
+  //      groups array via PUT /:id.
+  function handleOpenCreateGroup() {
+    setShowCreateGroupDialog(true);
+  }
+
+  async function createGroupWithName(title) {
+    const palette = ['#e2445c', '#fdab3d', '#00c875', '#579bfc', '#a25ddc', '#ff642e'];
+    const color = palette[(board?.groups?.length || 0) % palette.length];
+    // The dialog catches errors itself so it can keep the modal open and
+    // surface inline validation. Don't swallow here — re-throw so it can.
+    const { data } = await api.post(`/boards/${boardId}/groups`, { title, color });
+    const updatedGroups = data?.data?.groups
+      || [...(board?.groups || []), data?.data?.group].filter(Boolean);
     setBoard(prev => ({ ...prev, groups: updatedGroups }));
-    try {
-      await api.put(`/boards/${boardId}`, { groups: updatedGroups });
-      toastSuccess('New group created');
-    } catch (err) {
-      console.error('[BoardPage] handleAddGroup error:', err);
-      toastError('Failed to add group. Please try again.');
-    }
+    setShowCreateGroupDialog(false);
+    toastSuccess('New group created');
   }
 
   function toggleHideColumn(colId) {
@@ -897,23 +1059,39 @@ export default function BoardPage() {
 
         {/* Toolbar */}
         <div className="flex items-center gap-1.5 py-1.5 flex-wrap">
-          {/* New group split button with dropdown — only for users who can edit boards */}
-          {canEditBoard && (
+          {/* New group split button with dropdown.
+              - Primary "New group" button is gated by canCreateGroup, which is
+                base-allowed for every role (member / assistant_manager /
+                manager / admin). The backend POST /boards/:id/groups still
+                enforces board access.
+              - The chevron + dropdown is shown only when the user has access
+                to at least one secondary action (currently CSV import, which
+                the backend gates to manager+/admin). Members and assistant
+                managers see the primary button only — no dangling dropdown. */}
+          {(canCreateGroup || canEditBoard) && (
             <div className="flex items-center relative">
-              <button onClick={() => handleAddGroup()}
-                className="flex items-center gap-1.5 h-[34px] px-4 bg-[#0073ea] hover:bg-[#0060c2] text-white text-[13px] font-medium rounded-l-md transition-colors">
-                <Plus size={14} strokeWidth={2.5} /> New group
-              </button>
-              <button onClick={() => setShowNewTaskMenu(!showNewTaskMenu)}
-                className="flex items-center justify-center h-[34px] w-[30px] bg-[#0060c2] hover:bg-[#004fa3] text-white rounded-r-md border-l border-white/20 transition-colors">
-                <ChevronDown size={13} className={`transition-transform duration-150 ${showNewTaskMenu ? 'rotate-180' : ''}`} />
-              </button>
-              {showNewTaskMenu && (
-                <NewTaskDropdown
-                  onNewGroup={() => { handleAddGroup(); setShowNewTaskMenu(false); }}
-                  onImport={() => { setShowCSVImport(true); setShowNewTaskMenu(false); }}
-                  onClose={() => setShowNewTaskMenu(false)}
-                />
+              {canCreateGroup && (
+                <button onClick={handleOpenCreateGroup}
+                  className={`flex items-center gap-1.5 h-[34px] px-4 bg-[#0073ea] hover:bg-[#0060c2] text-white text-[13px] font-medium transition-colors ${canEditBoard ? 'rounded-l-md' : 'rounded-md'}`}>
+                  <Plus size={14} strokeWidth={2.5} /> New group
+                </button>
+              )}
+              {canEditBoard && (
+                <>
+                  <button onClick={() => setShowNewTaskMenu(!showNewTaskMenu)}
+                    className={`flex items-center justify-center h-[34px] w-[30px] bg-[#0060c2] hover:bg-[#004fa3] text-white border-l border-white/20 transition-colors ${canCreateGroup ? 'rounded-r-md' : 'rounded-md'}`}>
+                    <ChevronDown size={13} className={`transition-transform duration-150 ${showNewTaskMenu ? 'rotate-180' : ''}`} />
+                  </button>
+                  {showNewTaskMenu && (
+                    <NewTaskDropdown
+                      canCreateGroup={canCreateGroup}
+                      canImport={canEditBoard}
+                      onNewGroup={() => { handleOpenCreateGroup(); setShowNewTaskMenu(false); }}
+                      onImport={() => { setShowCSVImport(true); setShowNewTaskMenu(false); }}
+                      onClose={() => setShowNewTaskMenu(false)}
+                    />
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1144,6 +1322,15 @@ export default function BoardPage() {
       {extensionTask && (
         <DueDateExtensionModal task={extensionTask} onClose={() => setExtensionTask(null)} onSubmit={loadTasks} />
       )}
+
+      {/* Create Group Dialog — replaces the legacy auto-create-then-rename
+          flow. Opens when the user clicks "+ New group". The dialog throws
+          on failure so it can keep itself open and surface inline errors. */}
+      <CreateGroupDialog
+        open={showCreateGroupDialog}
+        onClose={() => setShowCreateGroupDialog(false)}
+        onCreate={createGroupWithName}
+      />
 
     </div>
   );

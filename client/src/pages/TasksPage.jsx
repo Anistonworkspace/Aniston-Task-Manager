@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   ClipboardCheck, Clock, HelpCircle, ChevronDown, Check, X,
-  AlertTriangle, Calendar, MessageSquare, ExternalLink, Filter, Inbox,
+  AlertTriangle, Calendar, MessageSquare, ExternalLink, Filter, Inbox, Shield,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import api from '../services/api';
@@ -132,23 +132,55 @@ export default function TasksPage() {
     fetchMyFeedback(feedbackScope === 'mine' ? undefined : feedbackScope);
   });
 
-  // Approval actions
+  // Approval actions. Optional comment for approve, required (non-empty) for
+  // reject and request-changes — server enforces this; client matches so we
+  // don't even make the call if the user cancels the prompt.
   async function handleApprove(taskId) {
     setActionLoading(taskId);
     try {
       await api.post(`/task-extras/${taskId}/approve`, { comment: '' });
       fetchData();
-    } catch (err) { console.error(err); } finally { setActionLoading(null); }
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to approve.';
+      addToast(msg, 'error');
+      console.error(err);
+    } finally { setActionLoading(null); }
+  }
+
+  async function handleReject(taskId) {
+    const comment = prompt('Reason for rejection (required):');
+    if (comment === null) return;
+    if (!comment.trim()) {
+      addToast('A reason is required to reject.', 'warning');
+      return;
+    }
+    setActionLoading(taskId);
+    try {
+      await api.post(`/task-extras/${taskId}/reject`, { comment });
+      fetchData();
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to reject.';
+      addToast(msg, 'error');
+      console.error(err);
+    } finally { setActionLoading(null); }
   }
 
   async function handleRequestChanges(taskId) {
-    const comment = prompt('Reason for requesting changes:');
+    const comment = prompt('Reason for requesting changes (required):');
     if (comment === null) return;
+    if (!comment.trim()) {
+      addToast('A reason is required to request changes.', 'warning');
+      return;
+    }
     setActionLoading(taskId);
     try {
       await api.post(`/task-extras/${taskId}/request-changes`, { comment });
       fetchData();
-    } catch (err) { console.error(err); } finally { setActionLoading(null); }
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to request changes.';
+      addToast(msg, 'error');
+      console.error(err);
+    } finally { setActionLoading(null); }
   }
 
   // Extension actions
@@ -327,17 +359,49 @@ export default function TasksPage() {
                       </div>
                     )}
                   </div>
-                  {canManage && task.approvalStatus === 'pending_approval' && (
-                    <div className="flex items-center gap-2 ml-4">
-                      <button onClick={() => handleApprove(task.id)} disabled={actionLoading === task.id}
-                        className="px-3 py-1.5 text-xs font-medium bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 flex items-center gap-1">
-                        <Check size={12} /> Approve
-                      </button>
-                      <button onClick={() => handleRequestChanges(task.id)} disabled={actionLoading === task.id}
-                        className="px-3 py-1.5 text-xs font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center gap-1">
-                        <MessageSquare size={12} /> Request Changes
-                      </button>
-                    </div>
+                  {/* Action buttons strictly from server-supplied capability
+                      flags. The server is the single source of truth — never
+                      gate on `canManage` here, because manager+admin includes
+                      users who aren't current approvers. The capability flags
+                      already encode current-stage / higher-stage / Super Admin
+                      override, plus self-approval guard. */}
+                  {task.approvalStatus === 'pending_approval' && task.myCapabilities && (
+                    (task.myCapabilities.canApprove || task.myCapabilities.canReject || task.myCapabilities.canRequestChanges) ? (
+                      <div className="flex flex-col items-end gap-1.5 ml-4">
+                        {(task.myCapabilities.isOverrideApprover || task.myCapabilities.canApproveEarly) && (
+                          <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${task.myCapabilities.isOverrideApprover ? 'bg-purple-100 text-purple-700' : 'bg-amber-100 text-amber-700'}`}>
+                            <Shield size={9} />
+                            {task.myCapabilities.isOverrideApprover ? 'Super Admin Override' : 'Higher-Level Approver'}
+                          </span>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {task.myCapabilities.canApprove && (
+                            <button onClick={() => handleApprove(task.id)} disabled={actionLoading === task.id}
+                              className="px-3 py-1.5 text-xs font-medium bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 flex items-center gap-1">
+                              <Check size={12} /> {task.myCapabilities.canApproveEarly ? 'Approve early' : 'Approve'}
+                            </button>
+                          )}
+                          {task.myCapabilities.canReject && (
+                            <button onClick={() => handleReject(task.id)} disabled={actionLoading === task.id}
+                              className="px-3 py-1.5 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 flex items-center gap-1">
+                              <X size={12} /> Reject
+                            </button>
+                          )}
+                          {task.myCapabilities.canRequestChanges && (
+                            <button onClick={() => handleRequestChanges(task.id)} disabled={actionLoading === task.id}
+                              className="px-3 py-1.5 text-xs font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 flex items-center gap-1">
+                              <MessageSquare size={12} /> Request Changes
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : task.myCapabilities.reasonIfCannotAct ? (
+                      <div className="ml-4 text-[10px] text-text-tertiary italic max-w-[200px] text-right" title={task.myCapabilities.reasonIfCannotAct}>
+                        {task.myCapabilities.currentApproverNames?.length > 0
+                          ? `Waiting on ${task.myCapabilities.currentApproverNames.slice(0, 2).join(', ')}${task.myCapabilities.currentApproverNames.length > 2 ? ` +${task.myCapabilities.currentApproverNames.length - 2}` : ''}`
+                          : null}
+                      </div>
+                    ) : null
                   )}
                 </div>
               </div>

@@ -34,6 +34,67 @@ async function _colExists(table, column) {
 }
 
 /**
+ * Returns true iff the viewer is allowed to drop a board into this workspace.
+ *
+ * Mirrors the rule used by GET /api/workspaces/:id so creation cannot be
+ * abused to plant boards in workspaces the caller cannot otherwise see:
+ *   - admin / manager / super_admin             → unrestricted
+ *   - assistant_manager / member                → must be the workspace
+ *     creator, the user.workspaceId target, an explicit workspaceMember in
+ *     their org subtree, OR have at least one accessible board inside the
+ *     workspace (mirrors the sidebar).
+ */
+async function canUserCreateInWorkspace(user, workspace) {
+  if (!user || !workspace) return false;
+  if (user.isSuperAdmin) return true;
+  if (user.role === 'admin' || user.role === 'manager') return true;
+
+  const userId = user.id;
+
+  // Org subtree (self + descendants) — same set used in workspaceController
+  // for workspace-member visibility decisions.
+  let visibleUserIds = [userId];
+  try {
+    const hierarchyService = require('../services/hierarchyService');
+    const descendants = await hierarchyService.getDescendantIds(userId);
+    visibleUserIds = visibleUserIds.concat(descendants);
+  } catch { /* hierarchy walk is best-effort */ }
+
+  if (workspace.createdBy === userId) return true;
+
+  try {
+    const userRecord = await User.findByPk(userId, { attributes: ['id', 'workspaceId'] });
+    if (userRecord?.workspaceId === workspace.id) return true;
+  } catch { /* fall through */ }
+
+  try {
+    const wsWithMembers = await Workspace.findByPk(workspace.id, {
+      include: [{ model: User, as: 'workspaceMembers', attributes: ['id'] }],
+    });
+    if (wsWithMembers?.workspaceMembers?.some((m) => visibleUserIds.includes(m.id))) {
+      return true;
+    }
+  } catch { /* fall through */ }
+
+  // Last resort: do they have any accessible board in this workspace? This
+  // matches the "see workspace because I can see at least one of its boards"
+  // rule used by the sidebar.
+  try {
+    const accessibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+    if (accessibleBoardIds.size === 0) return false;
+    const wsBoards = await Board.findAll({
+      where: { workspaceId: workspace.id, isArchived: false },
+      attributes: ['id'],
+      raw: true,
+    });
+    return wsBoards.some((b) => accessibleBoardIds.has(b.id));
+  } catch (err) {
+    console.warn('[Board] canUserCreateInWorkspace fallback failed:', err.message);
+    return false;
+  }
+}
+
+/**
  * POST /api/boards
  */
 const createBoard = async (req, res) => {
@@ -45,15 +106,24 @@ const createBoard = async (req, res) => {
 
     const { name, description, color, columns, groups, workspaceId } = req.body;
 
-    // Validate workspace exists when one is provided. We do not enforce that
-    // the caller is a member of the workspace here — the route is already
-    // gated to manager/admin via boardMutate, and managers/admins implicitly
-    // see all workspaces in the sidebar.
+    // Validate workspace existence AND access. The route gate
+    // (requirePermission('boards','create')) lets every role through that
+    // owns boards.create in the matrix, so the controller is now the only
+    // line of defence preventing a member from creating a board inside a
+    // workspace they cannot reach. Admin / manager / super admin remain
+    // unrestricted via canUserCreateInWorkspace.
     let resolvedWorkspaceId = null;
     if (workspaceId) {
       const ws = await Workspace.findByPk(workspaceId);
       if (!ws) {
         return res.status(400).json({ success: false, message: 'Workspace not found.' });
+      }
+      const allowed = await canUserCreateInWorkspace(req.user, ws);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have access to this workspace.',
+        });
       }
       resolvedWorkspaceId = ws.id;
     }
@@ -324,21 +394,49 @@ const getBoard = async (req, res) => {
 /**
  * PUT /api/boards/:id
  *
- * Permission model:
- *   - Admin / manager / assistant_manager / super admin → may update every allowed field.
- *   - Explicit board members (any role) → may only update the MEMBER_STRUCTURAL_FIELDS
- *     subset. This is what lets a member add/rename/remove a custom column on a board
- *     they belong to without needing full board-admin rights.
- *   - Anyone else → 403.
+ * Permission model (three field tiers):
+ *   - RENAMABLE_FIELDS (name, description) → any user with board access
+ *     (boardVisibilityService.canUserSeeBoard). Renaming is treated as a
+ *     basic capability that follows access, not a management privilege:
+ *     a member who can create / reach a board can also rename it. Delete,
+ *     archive, color, columns, groups (add/remove/reorder), workspace
+ *     reassignment etc. are explicitly NOT in this tier.
+ *   - MEMBER_STRUCTURAL_FIELDS (customColumns) → any role, but only when
+ *     the caller is an EXPLICIT (non-auto-added) board member. Mirrors the
+ *     pre-existing custom-column edit rule.
+ *   - ADMIN_FIELDS (everything else) → admin / manager / assistant_manager /
+ *     super admin. Loosening of group create/rename is handled by the
+ *     dedicated POST /:id/groups and PATCH /:id/groups/:groupId routes; the
+ *     full-array update via PUT /:id remains management-only so adding /
+ *     removing / reordering groups, swapping the workspace, archiving the
+ *     board, etc. stay protected.
  *
- * Fields outside either subset in the request body are silently ignored (parity with
- * the legacy behaviour before per-field gating).
+ * Fields outside any tier in the request body are ignored.
  */
-const ALL_UPDATABLE_BOARD_FIELDS = [
-  'name', 'description', 'color', 'columns', 'groups',
-  'archivedGroups', 'customColumns', 'isArchived', 'workspaceId',
-];
+const RENAMABLE_BOARD_FIELDS = ['name', 'description'];
 const MEMBER_STRUCTURAL_FIELDS = ['customColumns'];
+const ADMIN_BOARD_FIELDS = [
+  'color', 'columns', 'groups', 'archivedGroups', 'isArchived', 'workspaceId',
+];
+const ALL_UPDATABLE_BOARD_FIELDS = [
+  ...RENAMABLE_BOARD_FIELDS,
+  ...MEMBER_STRUCTURAL_FIELDS,
+  ...ADMIN_BOARD_FIELDS,
+];
+
+async function _isExplicitBoardMember(boardId, userId) {
+  try {
+    const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
+    const sql = hasAutoAddedCol
+      ? `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId AND "autoAdded" = false LIMIT 1`
+      : `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId LIMIT 1`;
+    const [rows] = await sequelize.query(sql, { replacements: { boardId, userId } });
+    return rows.length > 0;
+  } catch (err) {
+    console.error('[Board] Membership check error:', err.message);
+    return false;
+  }
+}
 
 const updateBoard = async (req, res) => {
   try {
@@ -356,54 +454,82 @@ const updateBoard = async (req, res) => {
     const isSuperAdmin = !!req.user.isSuperAdmin;
     const isManagementRole = isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role);
 
-    // Determine which fields the caller is permitted to touch on this board.
-    let permittedFields = ALL_UPDATABLE_BOARD_FIELDS;
-    if (!isManagementRole) {
-      // Non-management role: must be an explicit (non-auto-added) board member
-      // to touch the structural subset. We check the explicit flag because an
-      // auto-added row (from a task assignment) can churn and we don't want
-      // that to implicitly grant structural edit rights.
-      let isExplicitBoardMember = false;
-      try {
-        const hasAutoAddedCol = await _colExists('BoardMembers', 'autoAdded');
-        if (hasAutoAddedCol) {
-          const [rows] = await sequelize.query(
-            `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId AND "autoAdded" = false LIMIT 1`,
-            { replacements: { boardId: board.id, userId: req.user.id } }
-          );
-          isExplicitBoardMember = rows.length > 0;
-        } else {
-          const [rows] = await sequelize.query(
-            `SELECT 1 FROM "BoardMembers" WHERE "boardId" = :boardId AND "userId" = :userId LIMIT 1`,
-            { replacements: { boardId: board.id, userId: req.user.id } }
-          );
-          isExplicitBoardMember = rows.length > 0;
+    // What did the caller actually ask to change? Discard unknown keys here so
+    // tier checks only fire on fields the controller would persist.
+    const requestedFields = Object.keys(req.body).filter(
+      (f) => ALL_UPDATABLE_BOARD_FIELDS.includes(f) && req.body[f] !== undefined
+    );
+    if (requestedFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No updatable fields were provided.',
+      });
+    }
+
+    const permittedFields = new Set();
+
+    if (isManagementRole) {
+      // Management roles retain full access to every tier — but only for
+      // boards they're entitled to see. boardVisibilityService scopes
+      // assistant_manager (and member) to {self ∪ descendants}; admin,
+      // manager and super_admin remain unrestricted. Without this gate an
+      // assistant_manager could PUT /boards/:id on ANY board id they
+      // discovered, including ones outside their hierarchy — surfaced by
+      // the rename regression as a 200 where 403 was expected.
+      if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+        const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+        if (!reachable) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have access to this board.',
+          });
         }
-      } catch (err) {
-        console.error('[Board] Membership check error:', err.message);
-        isExplicitBoardMember = false;
       }
+      ALL_UPDATABLE_BOARD_FIELDS.forEach((f) => permittedFields.add(f));
+    } else {
+      const wantsRename = requestedFields.some((f) => RENAMABLE_BOARD_FIELDS.includes(f));
+      const wantsStructural = requestedFields.some((f) => MEMBER_STRUCTURAL_FIELDS.includes(f));
+      const wantsAdmin = requestedFields.some((f) => ADMIN_BOARD_FIELDS.includes(f));
 
-      if (!isExplicitBoardMember) {
-        return res.status(403).json({
-          success: false,
-          message: 'You do not have permission to modify this board.',
-        });
-      }
-
-      // Reject the request outright if the caller tries to touch admin-only
-      // fields — so the frontend gets a clear signal instead of a silent no-op.
-      const attemptedAdminFields = Object.keys(req.body).filter(
-        (f) => ALL_UPDATABLE_BOARD_FIELDS.includes(f) && !MEMBER_STRUCTURAL_FIELDS.includes(f)
-      );
-      if (attemptedAdminFields.length > 0) {
+      // Hardest gate first: if the request includes any admin-only field
+      // (color, groups array, archivedGroups, isArchived, workspaceId,
+      // columns), reject outright with a precise message — even if the
+      // caller also included a permitted rename field. Mixing tiers in one
+      // request must NOT be a way to slip an admin field through.
+      if (wantsAdmin) {
         return res.status(403).json({
           success: false,
           message: 'Only managers or admins can change this board setting.',
         });
       }
 
-      permittedFields = MEMBER_STRUCTURAL_FIELDS;
+      // Rename tier: any user with board access (canUserSeeBoard) can edit
+      // name / description. Mirrors the sidebar visibility rule so it's
+      // impossible to rename a board the caller cannot otherwise reach.
+      if (wantsRename) {
+        const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+        if (!reachable) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have access to this board.',
+          });
+        }
+        RENAMABLE_BOARD_FIELDS.forEach((f) => permittedFields.add(f));
+      }
+
+      // Structural tier: customColumns continues to require an EXPLICIT
+      // board member row (auto-added rows from task assignments do not
+      // count — they churn and shouldn't grant structural edit rights).
+      if (wantsStructural) {
+        const isExplicit = await _isExplicitBoardMember(board.id, req.user.id);
+        if (!isExplicit) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to modify this board.',
+          });
+        }
+        MEMBER_STRUCTURAL_FIELDS.forEach((f) => permittedFields.add(f));
+      }
     }
 
     const updates = {};
@@ -648,6 +774,197 @@ const removeMember = async (req, res) => {
 };
 
 /**
+ * POST /api/boards/:id/groups
+ * Body: { title, color }
+ *
+ * Append a single group to the board's groups JSONB. Distinct from
+ * `reorderGroups` (which replaces the whole array, manager/admin only) and
+ * from `updateBoard` (which can rewrite the groups array, management roles
+ * only) so that members and assistant managers can ADD a group to a board
+ * they have access to without being able to rename / delete / reorder.
+ *
+ * Permission model:
+ *   - super_admin / admin / manager → always allowed.
+ *   - assistant_manager / member    → allowed iff
+ *       boardVisibilityService.canUserSeeBoard returns true. This matches
+ *       the sidebar visibility rule exactly so a user cannot manufacture
+ *       group additions on a board they would not otherwise see.
+ */
+const addGroup = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const board = await Board.findByPk(req.params.id);
+    if (!board) {
+      return res.status(404).json({ success: false, message: 'Board not found.' });
+    }
+
+    const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+    if (!reachable) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have access to this board.',
+      });
+    }
+
+    const { title, color } = req.body;
+    const existing = Array.isArray(board.groups) ? board.groups : [];
+    const palette = ['#e2445c', '#fdab3d', '#00c875', '#579bfc', '#a25ddc', '#ff642e'];
+    const newGroup = {
+      id: `group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      title: sanitizeInput(title),
+      color: color || palette[existing.length % palette.length],
+      position: existing.length,
+    };
+    const updatedGroups = [...existing, newGroup];
+
+    await board.update({ groups: updatedGroups });
+
+    const fullBoard = await Board.findByPk(board.id, {
+      include: [
+        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+      ],
+    });
+
+    emitToBoard(board.id, 'board:updated', { board: fullBoard });
+
+    logActivity({
+      action: 'board_group_added',
+      description: `Added group "${newGroup.title}" to board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: { groupId: newGroup.id, groupTitle: newGroup.title },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Group added successfully.',
+      data: { group: newGroup, groups: updatedGroups },
+    });
+  } catch (error) {
+    console.error('[Board] AddGroup error:', error);
+    res.status(500).json({ success: false, message: 'Server error adding group.' });
+  }
+};
+
+/**
+ * PATCH /api/boards/:id/groups/:groupId
+ * Body: { title?, color? }
+ *
+ * Rename a single group on a board. Companion to addGroup — used by members
+ * and assistant managers (and everyone else) so they can rename a group on a
+ * board they have access to without going through PUT /:id (which still
+ * blocks the structural groups-array rewrite for non-management roles).
+ *
+ * Permission model:
+ *   - super_admin / admin / manager → always allowed.
+ *   - assistant_manager / member    → allowed iff
+ *     boardVisibilityService.canUserSeeBoard returns true.
+ *
+ * Status codes:
+ *   - 200 success
+ *   - 400 invalid title
+ *   - 403 no access
+ *   - 404 board / group not found
+ */
+const renameGroup = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const board = await Board.findByPk(req.params.id);
+    if (!board) {
+      return res.status(404).json({ success: false, message: 'Board not found.' });
+    }
+
+    const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+    if (!reachable) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have access to this board.',
+      });
+    }
+
+    const groupId = req.params.groupId;
+    const groups = Array.isArray(board.groups) ? board.groups : [];
+    const idx = groups.findIndex((g) => g && g.id === groupId);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, message: 'Group not found on this board.' });
+    }
+
+    const { title, color } = req.body;
+    if (title === undefined && color === undefined) {
+      return res.status(400).json({ success: false, message: 'Provide a title or color to update.' });
+    }
+
+    const previous = groups[idx];
+    const updatedGroup = { ...previous };
+    if (title !== undefined) {
+      const cleaned = sanitizeInput(String(title)).trim();
+      if (!cleaned) {
+        return res.status(400).json({ success: false, message: 'Group name cannot be empty.' });
+      }
+      if (cleaned.length > 80) {
+        return res.status(400).json({ success: false, message: 'Group name must be 80 characters or fewer.' });
+      }
+      updatedGroup.title = cleaned;
+      // Keep `name` mirrored for any legacy code that reads either field.
+      updatedGroup.name = cleaned;
+    }
+    if (color !== undefined) {
+      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(color))) {
+        return res.status(400).json({ success: false, message: 'Color must be a valid hex code.' });
+      }
+      updatedGroup.color = color;
+    }
+
+    const updatedGroups = [...groups];
+    updatedGroups[idx] = updatedGroup;
+    await board.update({ groups: updatedGroups });
+
+    const fullBoard = await Board.findByPk(board.id, {
+      include: [
+        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+      ],
+    });
+
+    emitToBoard(board.id, 'board:updated', { board: fullBoard });
+
+    logActivity({
+      action: 'board_group_renamed',
+      description: `Renamed group "${previous.title || previous.name || groupId}" → "${updatedGroup.title}" on board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: {
+        groupId,
+        previousTitle: previous.title || previous.name,
+        newTitle: updatedGroup.title,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'Group updated successfully.',
+      data: { group: updatedGroup, groups: updatedGroups },
+    });
+  } catch (error) {
+    console.error('[Board] RenameGroup error:', error);
+    res.status(500).json({ success: false, message: 'Server error renaming group.' });
+  }
+};
+
+/**
  * PUT /api/boards/:id/groups/reorder
  * Body: { groups: [{ id, title, color, position }] }
  */
@@ -787,6 +1104,8 @@ module.exports = {
   addMember,
   removeMember,
   reorderGroups,
+  addGroup,
+  renameGroup,
   exportBoard,
   importTasks,
 };

@@ -1,0 +1,1117 @@
+- generic [ref=e5]:
+  - link "Skip to main content" [ref=e6] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - img "Monday Aniston" [ref=e10]
+      - heading "Monday Aniston" [level=1] [ref=e11]
+      - button [ref=e12] [cursor=pointer]:
+        - img [ref=e13]
+    - generic [ref=e16]:
+      - navigation [ref=e17]:
+        - button "Home" [ref=e18] [cursor=pointer]:
+          - img [ref=e19]
+          - generic [ref=e22]: Home
+        - button "My Work" [ref=e23] [cursor=pointer]:
+          - img [ref=e24]
+          - generic [ref=e27]: My Work
+        - button "My Dashboard" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - generic [ref=e34]: My Dashboard
+        - button "Dashboard (Time Plan)" [ref=e35] [cursor=pointer]:
+          - img [ref=e36]
+          - generic [ref=e38]: Dashboard (Time Plan)
+        - button "Director Plan" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+          - generic [ref=e42]: Director Plan
+        - button "Org Chart" [ref=e43] [cursor=pointer]:
+          - img [ref=e44]
+          - generic [ref=e48]: Org Chart
+        - button "Time Plan" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - generic [ref=e53]: Time Plan
+        - button "Meetings" [ref=e54] [cursor=pointer]:
+          - img [ref=e55]
+          - generic [ref=e57]: Meetings
+        - button "Reviews" [ref=e58] [cursor=pointer]:
+          - img [ref=e59]
+          - generic [ref=e62]: Reviews
+        - button "Tasks & Workflows" [ref=e63] [cursor=pointer]:
+          - img [ref=e64]
+          - generic [ref=e68]: Tasks & Workflows
+        - button "Recurring Work" [ref=e69] [cursor=pointer]:
+          - img [ref=e70]
+          - generic [ref=e75]: Recurring Work
+        - button "Dependencies" [ref=e76] [cursor=pointer]:
+          - img [ref=e77]
+          - generic [ref=e80]: Dependencies
+        - button "Notes" [ref=e81] [cursor=pointer]:
+          - img [ref=e82]
+          - generic [ref=e85]: Notes
+        - button "Help & SOP" [ref=e86] [cursor=pointer]:
+          - img [ref=e87]
+          - generic [ref=e90]: Help & SOP
+      - navigation [ref=e92]:
+        - button "Dashboard" [ref=e93] [cursor=pointer]:
+          - img [ref=e94]
+          - generic [ref=e96]: Dashboard
+        - button "Team" [ref=e97] [cursor=pointer]:
+          - img [ref=e98]
+          - generic [ref=e103]: Team
+      - navigation [ref=e105]:
+        - button "Admin Settings" [ref=e106] [cursor=pointer]:
+          - img [ref=e107]
+          - generic [ref=e110]: Admin Settings
+        - button "Integrations" [ref=e111] [cursor=pointer]:
+          - img [ref=e112]
+          - generic [ref=e114]: Integrations
+        - button "Feedback" [ref=e115] [cursor=pointer]:
+          - img [ref=e116]
+          - generic [ref=e118]: Feedback
+      - navigation [ref=e119]:
+        - button "Archive" [ref=e120] [cursor=pointer]:
+          - img [ref=e121]
+          - generic [ref=e124]: Archive
+      - generic [ref=e126]:
+        - generic [ref=e127]: Workspaces
+        - button "Workspace options" [ref=e129] [cursor=pointer]:
+          - img [ref=e130]
+      - generic [ref=e135]:
+        - img [ref=e136]
+        - textbox "Search boards..." [ref=e139]
+      - generic [ref=e141]:
+        - button "S Software Test" [ref=e142] [cursor=pointer]:
+          - generic [ref=e143]: S
+          - generic [ref=e144]: Software Test
+          - img [ref=e145]
+        - button [ref=e149] [cursor=pointer]:
+          - img [ref=e150]
+        - generic [ref=e154]:
+          - generic [ref=e155]:
+            - button "Friday" [ref=e156] [cursor=pointer]:
+              - generic [ref=e158]: Friday
+            - button "Board actions" [ref=e159] [cursor=pointer]:
+              - img [ref=e160]
+          - generic [ref=e164]:
+            - button "THURSDAY" [ref=e165] [cursor=pointer]:
+              - generic [ref=e167]: THURSDAY
+            - button "Board actions" [ref=e168] [cursor=pointer]:
+              - img [ref=e169]
+          - generic [ref=e173]:
+            - button "test again 01" [ref=e174] [cursor=pointer]:
+              - generic [ref=e176]: test again 01
+            - button "Board actions" [ref=e177] [cursor=pointer]:
+              - img [ref=e178]
+          - generic [ref=e182]:
+            - button "Wednesday Testing (Monday)" [ref=e183] [cursor=pointer]:
+              - generic [ref=e185]: Wednesday Testing (Monday)
+            - button "Board actions" [ref=e186] [cursor=pointer]:
+              - img [ref=e187]
+          - generic [ref=e191]:
+            - button "Calendar test" [ref=e192] [cursor=pointer]:
+              - generic [ref=e194]: Calendar test
+            - button "Board actions" [ref=e195] [cursor=pointer]:
+              - img [ref=e196]
+      - button "Add new workspace" [ref=e201] [cursor=pointer]:
+        - img [ref=e202]
+        - text: Add new workspace
+      - button "Create new board" [ref=e204] [cursor=pointer]:
+        - img [ref=e205]
+        - text: Create new board
+    - button "A Admin User admin" [ref=e208] [cursor=pointer]:
+      - generic [ref=e209]: A
+      - generic [ref=e210]:
+        - paragraph [ref=e211]: Admin User
+        - paragraph [ref=e212]: admin
+      - img [ref=e213]
+  - generic [ref=e217]:
+    - banner [ref=e218]:
+      - generic [ref=e219]:
+        - generic [ref=e220]:
+          - generic [ref=e221]: Monday Aniston
+          - generic [ref=e222]: /
+          - generic [ref=e223]: Board
+        - button "Search... ⌘K" [ref=e224] [cursor=pointer]:
+          - img [ref=e225]
+          - generic [ref=e228]: Search...
+          - generic [ref=e229]: ⌘K
+      - generic [ref=e230]:
+        - button "9+" [ref=e231] [cursor=pointer]:
+          - img [ref=e232]
+          - generic [ref=e235]: 9+
+        - button "Light mode" [ref=e236] [cursor=pointer]:
+          - img [ref=e237]
+        - button [ref=e243] [cursor=pointer]:
+          - img [ref=e244]
+        - button "A Admin" [ref=e249] [cursor=pointer]:
+          - generic [ref=e250]: A
+          - generic [ref=e251]: Admin
+          - img [ref=e252]
+    - main [ref=e254]:
+      - generic [ref=e256]:
+        - generic [ref=e257]:
+          - generic [ref=e258]:
+            - heading "THURSDAY" [level=1] [ref=e259]
+            - generic [ref=e260]: Software Test
+            - button "Board Settings" [ref=e261] [cursor=pointer]:
+              - img [ref=e262]
+          - generic [ref=e265]:
+            - button "Main table" [ref=e266] [cursor=pointer]
+            - button "Gantt" [ref=e267] [cursor=pointer]
+            - button "Calendar" [ref=e268] [cursor=pointer]
+            - button "Kanban" [ref=e269] [cursor=pointer]
+          - generic [ref=e270]:
+            - generic [ref=e271]:
+              - button "New group" [ref=e272] [cursor=pointer]:
+                - img [ref=e273]
+                - text: New group
+              - button [ref=e274] [cursor=pointer]:
+                - img [ref=e275]
+            - generic [ref=e277]:
+              - button "Search" [ref=e278] [cursor=pointer]:
+                - img [ref=e279]
+                - text: Search
+              - textbox "Search tasks..."
+              - button "Filter" [ref=e282] [cursor=pointer]:
+                - img [ref=e283]
+                - text: Filter
+              - button "Sort" [ref=e286] [cursor=pointer]:
+                - img [ref=e287]
+                - text: Sort
+              - button "Hide" [ref=e291] [cursor=pointer]:
+                - img [ref=e292]
+                - text: Hide
+            - generic [ref=e295]:
+              - button "Import" [ref=e296] [cursor=pointer]:
+                - img [ref=e297]
+                - text: Import
+              - button "Export" [ref=e300] [cursor=pointer]:
+                - img [ref=e301]
+                - text: Export
+              - button "Automate" [ref=e304] [cursor=pointer]:
+                - img [ref=e305]
+                - text: Automate
+              - button [ref=e307] [cursor=pointer]:
+                - img [ref=e308]
+        - generic [ref=e310]:
+          - generic [ref=e311]:
+            - generic [ref=e312]:
+              - button [ref=e313] [cursor=pointer]:
+                - img [ref=e314]
+              - heading "Backlog" [level=3] [ref=e316]
+              - generic [ref=e317]: 3 items
+              - button [ref=e319] [cursor=pointer]:
+                - img [ref=e320]
+            - generic [ref=e324]:
+              - generic [ref=e326]:
+                - generic [ref=e327]:
+                  - generic [ref=e331]: Task
+                  - generic [ref=e333]:
+                    - generic [ref=e334]:
+                      - generic [ref=e335]: Status
+                      - button [ref=e336] [cursor=pointer]:
+                        - img [ref=e337]
+                      - button "Column options" [ref=e339] [cursor=pointer]:
+                        - img [ref=e340]
+                    - generic "Resize Column" [ref=e344]
+                  - generic [ref=e346]:
+                    - generic [ref=e347]:
+                      - generic [ref=e348]: Owner
+                      - button [ref=e349] [cursor=pointer]:
+                        - img [ref=e350]
+                      - button "Column options" [ref=e352] [cursor=pointer]:
+                        - img [ref=e353]
+                    - generic "Resize Column" [ref=e357]
+                  - generic [ref=e359]:
+                    - generic [ref=e360]:
+                      - generic [ref=e361]: Due Date
+                      - button [ref=e362] [cursor=pointer]:
+                        - img [ref=e363]
+                      - button "Column options" [ref=e365] [cursor=pointer]:
+                        - img [ref=e366]
+                    - generic "Resize Column" [ref=e370]
+                  - generic [ref=e372]:
+                    - generic [ref=e373]:
+                      - generic [ref=e374]: Priority
+                      - button [ref=e375] [cursor=pointer]:
+                        - img [ref=e376]
+                      - button "Column options" [ref=e378] [cursor=pointer]:
+                        - img [ref=e379]
+                    - generic "Resize Column" [ref=e383]
+                  - generic [ref=e385]:
+                    - generic [ref=e386]:
+                      - generic [ref=e387]: Progress
+                      - button [ref=e388] [cursor=pointer]:
+                        - img [ref=e389]
+                      - button "Column options" [ref=e391] [cursor=pointer]:
+                        - img [ref=e392]
+                    - generic "Resize Column" [ref=e396]
+                  - generic [ref=e398]:
+                    - generic [ref=e399]:
+                      - generic [ref=e400]: Labels
+                      - button [ref=e401] [cursor=pointer]:
+                        - img [ref=e402]
+                      - button "Column options" [ref=e404] [cursor=pointer]:
+                        - img [ref=e405]
+                    - generic "Resize Column" [ref=e409]
+                  - generic [ref=e411]:
+                    - generic [ref=e412]:
+                      - generic [ref=e413]: Number
+                      - button [ref=e414] [cursor=pointer]:
+                        - img [ref=e415]
+                      - button "Column options" [ref=e417] [cursor=pointer]:
+                        - img [ref=e418]
+                    - generic "Resize Column" [ref=e422]
+                  - generic [ref=e424]:
+                    - generic [ref=e425]:
+                      - generic [ref=e426]: Priority
+                      - button [ref=e427] [cursor=pointer]:
+                        - img [ref=e428]
+                      - button "Column options" [ref=e430] [cursor=pointer]:
+                        - img [ref=e431]
+                    - generic "Resize Column" [ref=e435]
+                  - button [ref=e438] [cursor=pointer]:
+                    - img [ref=e439]
+                - generic [ref=e440]:
+                  - generic [ref=e442] [cursor=pointer]:
+                    - generic [ref=e443]:
+                      - button [ref=e446]:
+                        - img [ref=e447]
+                      - generic [ref=e454]:
+                        - button "Expand subitems" [ref=e455]:
+                          - img [ref=e456]
+                        - generic [ref=e458]: browser-modal-toast-1777552170423
+                        - generic "Daily Work — 2026-04-30" [ref=e460]:
+                          - img [ref=e461]
+                    - button "Not Started" [ref=e469]:
+                      - generic [ref=e470]: Not Started
+                    - button "+" [ref=e473]:
+                      - generic [ref=e475]: +
+                    - button "Apr 30" [ref=e477]
+                    - button "Medium" [ref=e480]
+                    - generic "Drag to change progress (0%)" [ref=e482]:
+                      - generic [ref=e483]:
+                        - slider "Task progress" [ref=e486]: "0"
+                        - generic [ref=e487]: 0%
+                    - generic [ref=e491]:
+                      - img [ref=e492]
+                      - text: Add
+                    - generic [ref=e497]: "-"
+                    - button "Medium" [ref=e500]
+                    - button "Archive" [ref=e502]:
+                      - img [ref=e503]
+                  - generic [ref=e507] [cursor=pointer]:
+                    - generic [ref=e508]:
+                      - button [ref=e511]:
+                        - img [ref=e512]
+                      - generic [ref=e519]:
+                        - button "Expand subitems" [ref=e520]:
+                          - img [ref=e521]
+                        - generic [ref=e523]: browser-fix-verify-1777552132834
+                        - generic "Daily Work — 2026-04-30" [ref=e525]:
+                          - img [ref=e526]
+                    - button "Not Started" [ref=e534]:
+                      - generic [ref=e535]: Not Started
+                    - button "+" [ref=e538]:
+                      - generic [ref=e540]: +
+                    - button "Apr 30" [ref=e542]
+                    - button "Medium" [ref=e545]
+                    - generic "Drag to change progress (0%)" [ref=e547]:
+                      - generic [ref=e548]:
+                        - slider "Task progress" [ref=e551]: "0"
+                        - generic [ref=e552]: 0%
+                    - generic [ref=e556]:
+                      - img [ref=e557]
+                      - text: Add
+                    - generic [ref=e562]: "-"
+                    - button "Medium" [ref=e565]
+                    - button "Archive" [ref=e567]:
+                      - img [ref=e568]
+                  - generic [ref=e572] [cursor=pointer]:
+                    - generic [ref=e573]:
+                      - button [ref=e576]:
+                        - img [ref=e577]
+                      - generic [ref=e584]:
+                        - button "Expand subitems" [ref=e585]:
+                          - img [ref=e586]
+                        - generic [ref=e588]: backlog
+                    - generic [ref=e590]:
+                      - generic [ref=e591]:
+                        - generic "Approved" [ref=e592]: ✓
+                        - button "Done" [ref=e593]:
+                          - generic [ref=e594]: Done
+                      - 'img "Approval workflow: 3 stages, 5 approvers, status approved" [ref=e595]'
+                    - button "SM" [ref=e604]:
+                      - generic "Sunny Mehta" [ref=e607]: SM
+                    - button "May 14" [ref=e609]
+                    - button "Medium" [ref=e612]
+                    - generic "100% (locked — task is done)" [ref=e614]:
+                      - generic [ref=e619]: 100%
+                    - generic [ref=e623]:
+                      - img [ref=e624]
+                      - text: Add
+                    - generic [ref=e629]: "-"
+                    - button "Medium" [ref=e632]
+                    - button "Archive" [ref=e634]:
+                      - img [ref=e635]
+                - button "Add task" [ref=e641] [cursor=pointer]:
+                  - img [ref=e642]
+                  - text: Add task
+              - generic [ref=e644]:
+                - generic [ref=e646]:
+                  - 'generic "Not Started: 2" [ref=e647]'
+                  - 'generic "Done: 1" [ref=e648]'
+                - generic [ref=e651]: —
+                - generic [ref=e654]: Apr 30 - May 14
+                - generic [ref=e660]: —
+                - generic [ref=e663]: —
+                - generic [ref=e666]: —
+          - generic [ref=e670]:
+            - generic [ref=e671]:
+              - button [ref=e672] [cursor=pointer]:
+                - img [ref=e673]
+              - heading "Sprint" [level=3] [ref=e675]
+              - generic [ref=e676]: 4 items
+              - button [ref=e678] [cursor=pointer]:
+                - img [ref=e679]
+            - generic [ref=e683]:
+              - generic [ref=e685]:
+                - generic [ref=e686]:
+                  - generic [ref=e690]: Task
+                  - generic [ref=e692]:
+                    - generic [ref=e693]:
+                      - generic [ref=e694]: Status
+                      - button [ref=e695] [cursor=pointer]:
+                        - img [ref=e696]
+                      - button "Column options" [ref=e698] [cursor=pointer]:
+                        - img [ref=e699]
+                    - generic "Resize Column" [ref=e703]
+                  - generic [ref=e705]:
+                    - generic [ref=e706]:
+                      - generic [ref=e707]: Owner
+                      - button [ref=e708] [cursor=pointer]:
+                        - img [ref=e709]
+                      - button "Column options" [ref=e711] [cursor=pointer]:
+                        - img [ref=e712]
+                    - generic "Resize Column" [ref=e716]
+                  - generic [ref=e718]:
+                    - generic [ref=e719]:
+                      - generic [ref=e720]: Due Date
+                      - button [ref=e721] [cursor=pointer]:
+                        - img [ref=e722]
+                      - button "Column options" [ref=e724] [cursor=pointer]:
+                        - img [ref=e725]
+                    - generic "Resize Column" [ref=e729]
+                  - generic [ref=e731]:
+                    - generic [ref=e732]:
+                      - generic [ref=e733]: Priority
+                      - button [ref=e734] [cursor=pointer]:
+                        - img [ref=e735]
+                      - button "Column options" [ref=e737] [cursor=pointer]:
+                        - img [ref=e738]
+                    - generic "Resize Column" [ref=e742]
+                  - generic [ref=e744]:
+                    - generic [ref=e745]:
+                      - generic [ref=e746]: Progress
+                      - button [ref=e747] [cursor=pointer]:
+                        - img [ref=e748]
+                      - button "Column options" [ref=e750] [cursor=pointer]:
+                        - img [ref=e751]
+                    - generic "Resize Column" [ref=e755]
+                  - generic [ref=e757]:
+                    - generic [ref=e758]:
+                      - generic [ref=e759]: Labels
+                      - button [ref=e760] [cursor=pointer]:
+                        - img [ref=e761]
+                      - button "Column options" [ref=e763] [cursor=pointer]:
+                        - img [ref=e764]
+                    - generic "Resize Column" [ref=e768]
+                  - generic [ref=e770]:
+                    - generic [ref=e771]:
+                      - generic [ref=e772]: Number
+                      - button [ref=e773] [cursor=pointer]:
+                        - img [ref=e774]
+                      - button "Column options" [ref=e776] [cursor=pointer]:
+                        - img [ref=e777]
+                    - generic "Resize Column" [ref=e781]
+                  - generic [ref=e783]:
+                    - generic [ref=e784]:
+                      - generic [ref=e785]: Priority
+                      - button [ref=e786] [cursor=pointer]:
+                        - img [ref=e787]
+                      - button "Column options" [ref=e789] [cursor=pointer]:
+                        - img [ref=e790]
+                    - generic "Resize Column" [ref=e794]
+                  - button [ref=e797] [cursor=pointer]:
+                    - img [ref=e798]
+                - generic [ref=e799]:
+                  - generic [ref=e801] [cursor=pointer]:
+                    - generic [ref=e802]:
+                      - button [ref=e805]:
+                        - img [ref=e806]
+                      - generic [ref=e813]:
+                        - button "Expand subitems" [ref=e814]:
+                          - img [ref=e815]
+                        - generic [ref=e817]: After fix 2
+                        - generic "Daily Work — 2026-04-30" [ref=e819]:
+                          - img [ref=e820]
+                    - button "Not Started" [ref=e828]:
+                      - generic [ref=e829]: Not Started
+                    - button "SM" [ref=e832]:
+                      - generic "Sunny Mehta" [ref=e835]: SM
+                    - button "Apr 30" [ref=e837]
+                    - button "Medium" [ref=e840]
+                    - generic "Drag to change progress (0%)" [ref=e842]:
+                      - generic [ref=e843]:
+                        - slider "Task progress" [ref=e846]: "0"
+                        - generic [ref=e847]: 0%
+                    - generic [ref=e851]:
+                      - img [ref=e852]
+                      - text: Add
+                    - generic [ref=e857]: "-"
+                    - button "Medium" [ref=e860]
+                    - button "Archive" [ref=e862]:
+                      - img [ref=e863]
+                  - generic [ref=e867] [cursor=pointer]:
+                    - generic [ref=e868]:
+                      - button [ref=e871]:
+                        - img [ref=e872]
+                      - generic [ref=e879]:
+                        - button "Expand subitems" [ref=e880]:
+                          - img [ref=e881]
+                        - generic [ref=e883]: new one
+                        - generic "Daily Work — 2026-04-30" [ref=e885]:
+                          - img [ref=e886]
+                    - generic [ref=e892]:
+                      - button "Not Started" [ref=e894]:
+                        - generic [ref=e895]: Not Started
+                      - 'img "Approval workflow: 3 stages, 5 approvers, status pending_approval" [ref=e896]'
+                    - button "SM" [ref=e905]:
+                      - generic "Sunny Mehta" [ref=e908]: SM
+                    - button "Apr 30" [ref=e910]
+                    - button "Medium" [ref=e913]
+                    - generic "Drag to change progress (0%)" [ref=e915]:
+                      - generic [ref=e916]:
+                        - slider "Task progress" [ref=e919]: "0"
+                        - generic [ref=e920]: 0%
+                    - generic [ref=e924]:
+                      - img [ref=e925]
+                      - text: Add
+                    - generic [ref=e930]: "-"
+                    - button "Medium" [ref=e933]
+                    - button "Archive" [ref=e935]:
+                      - img [ref=e936]
+                  - generic [ref=e940] [cursor=pointer]:
+                    - generic [ref=e941]:
+                      - button [ref=e944]:
+                        - img [ref=e945]
+                      - generic [ref=e952]:
+                        - button "Expand subitems" [ref=e953]:
+                          - img [ref=e954]
+                        - generic [ref=e956]: new one
+                        - generic "Daily Work — 2026-05-01" [ref=e958]:
+                          - img [ref=e959]
+                    - button "Not Started" [ref=e967]:
+                      - generic [ref=e968]: Not Started
+                    - button "SM" [ref=e971]:
+                      - generic "Sunny Mehta" [ref=e974]: SM
+                    - button "May 1" [ref=e976]
+                    - button "Medium" [ref=e979]
+                    - generic "Drag to change progress (0%)" [ref=e981]:
+                      - generic [ref=e982]:
+                        - slider "Task progress" [ref=e985]: "0"
+                        - generic [ref=e986]: 0%
+                    - generic [ref=e990]:
+                      - img [ref=e991]
+                      - text: Add
+                    - generic [ref=e996]: "-"
+                    - button "Medium" [ref=e999]
+                    - button "Archive" [ref=e1001]:
+                      - img [ref=e1002]
+                  - generic [ref=e1006] [cursor=pointer]:
+                    - generic [ref=e1007]:
+                      - button [ref=e1010]:
+                        - img [ref=e1011]
+                      - generic [ref=e1018]:
+                        - button "Expand subitems" [ref=e1019]:
+                          - img [ref=e1020]
+                        - generic [ref=e1022]: After fix 2
+                        - generic "Daily Work — 2026-05-01" [ref=e1024]:
+                          - img [ref=e1025]
+                    - button "Not Started" [ref=e1033]:
+                      - generic [ref=e1034]: Not Started
+                    - button "SM" [ref=e1037]:
+                      - generic "Sunny Mehta" [ref=e1040]: SM
+                    - button "May 1" [ref=e1042]
+                    - button "Medium" [ref=e1045]
+                    - generic "Drag to change progress (0%)" [ref=e1047]:
+                      - generic [ref=e1048]:
+                        - slider "Task progress" [ref=e1051]: "0"
+                        - generic [ref=e1052]: 0%
+                    - generic [ref=e1056]:
+                      - img [ref=e1057]
+                      - text: Add
+                    - generic [ref=e1062]: "-"
+                    - button "Medium" [ref=e1065]
+                    - button "Archive" [ref=e1067]:
+                      - img [ref=e1068]
+                - button "Add task" [ref=e1074] [cursor=pointer]:
+                  - img [ref=e1075]
+                  - text: Add task
+              - generic [ref=e1077]:
+                - 'generic "Not Started: 4" [ref=e1080]'
+                - generic [ref=e1083]: —
+                - generic [ref=e1086]: Apr 30 - May 1
+                - generic [ref=e1092]: —
+                - generic [ref=e1095]: —
+                - generic [ref=e1098]: —
+          - generic [ref=e1102]:
+            - generic [ref=e1103]:
+              - button [ref=e1104] [cursor=pointer]:
+                - img [ref=e1105]
+              - heading "In Progress" [level=3] [ref=e1107]
+              - generic [ref=e1108]: 7 items
+              - button [ref=e1110] [cursor=pointer]:
+                - img [ref=e1111]
+            - generic [ref=e1115]:
+              - generic [ref=e1117]:
+                - generic [ref=e1118]:
+                  - generic [ref=e1122]: Task
+                  - generic [ref=e1124]:
+                    - generic [ref=e1125]:
+                      - generic [ref=e1126]: Status
+                      - button [ref=e1127] [cursor=pointer]:
+                        - img [ref=e1128]
+                      - button "Column options" [ref=e1130] [cursor=pointer]:
+                        - img [ref=e1131]
+                    - generic "Resize Column" [ref=e1135]
+                  - generic [ref=e1137]:
+                    - generic [ref=e1138]:
+                      - generic [ref=e1139]: Owner
+                      - button [ref=e1140] [cursor=pointer]:
+                        - img [ref=e1141]
+                      - button "Column options" [ref=e1143] [cursor=pointer]:
+                        - img [ref=e1144]
+                    - generic "Resize Column" [ref=e1148]
+                  - generic [ref=e1150]:
+                    - generic [ref=e1151]:
+                      - generic [ref=e1152]: Due Date
+                      - button [ref=e1153] [cursor=pointer]:
+                        - img [ref=e1154]
+                      - button "Column options" [ref=e1156] [cursor=pointer]:
+                        - img [ref=e1157]
+                    - generic "Resize Column" [ref=e1161]
+                  - generic [ref=e1163]:
+                    - generic [ref=e1164]:
+                      - generic [ref=e1165]: Priority
+                      - button [ref=e1166] [cursor=pointer]:
+                        - img [ref=e1167]
+                      - button "Column options" [ref=e1169] [cursor=pointer]:
+                        - img [ref=e1170]
+                    - generic "Resize Column" [ref=e1174]
+                  - generic [ref=e1176]:
+                    - generic [ref=e1177]:
+                      - generic [ref=e1178]: Progress
+                      - button [ref=e1179] [cursor=pointer]:
+                        - img [ref=e1180]
+                      - button "Column options" [ref=e1182] [cursor=pointer]:
+                        - img [ref=e1183]
+                    - generic "Resize Column" [ref=e1187]
+                  - generic [ref=e1189]:
+                    - generic [ref=e1190]:
+                      - generic [ref=e1191]: Labels
+                      - button [ref=e1192] [cursor=pointer]:
+                        - img [ref=e1193]
+                      - button "Column options" [ref=e1195] [cursor=pointer]:
+                        - img [ref=e1196]
+                    - generic "Resize Column" [ref=e1200]
+                  - generic [ref=e1202]:
+                    - generic [ref=e1203]:
+                      - generic [ref=e1204]: Number
+                      - button [ref=e1205] [cursor=pointer]:
+                        - img [ref=e1206]
+                      - button "Column options" [ref=e1208] [cursor=pointer]:
+                        - img [ref=e1209]
+                    - generic "Resize Column" [ref=e1213]
+                  - generic [ref=e1215]:
+                    - generic [ref=e1216]:
+                      - generic [ref=e1217]: Priority
+                      - button [ref=e1218] [cursor=pointer]:
+                        - img [ref=e1219]
+                      - button "Column options" [ref=e1221] [cursor=pointer]:
+                        - img [ref=e1222]
+                    - generic "Resize Column" [ref=e1226]
+                  - button [ref=e1229] [cursor=pointer]:
+                    - img [ref=e1230]
+                - generic [ref=e1231]:
+                  - generic [ref=e1233] [cursor=pointer]:
+                    - generic [ref=e1234]:
+                      - button [ref=e1237]:
+                        - img [ref=e1238]
+                      - generic [ref=e1245]:
+                        - button "Expand subitems" [ref=e1246]:
+                          - img [ref=e1247]
+                        - generic [ref=e1249]: old one
+                        - generic "Daily Work — 2026-04-30" [ref=e1251]:
+                          - img [ref=e1252]
+                    - button "Not Started" [ref=e1260]:
+                      - generic [ref=e1261]: Not Started
+                    - button "SM" [ref=e1264]:
+                      - generic "Sunny Mehta" [ref=e1267]: SM
+                    - button "Apr 30" [ref=e1269]
+                    - button "Medium" [ref=e1272]
+                    - generic "Drag to change progress (0%)" [ref=e1274]:
+                      - generic [ref=e1275]:
+                        - slider "Task progress" [ref=e1278]: "0"
+                        - generic [ref=e1279]: 0%
+                    - generic [ref=e1283]:
+                      - img [ref=e1284]
+                      - text: Add
+                    - generic [ref=e1289]: "-"
+                    - button "Medium" [ref=e1292]
+                    - button "Archive" [ref=e1294]:
+                      - img [ref=e1295]
+                  - generic [ref=e1299] [cursor=pointer]:
+                    - generic [ref=e1300]:
+                      - button [ref=e1303]:
+                        - img [ref=e1304]
+                      - generic [ref=e1311]:
+                        - button "Expand subitems" [ref=e1312]:
+                          - img [ref=e1313]
+                        - generic [ref=e1315]: Reccuring test
+                        - generic "Daily Work — 2026-05-01" [ref=e1317]:
+                          - img [ref=e1318]
+                    - button "Not Started" [ref=e1326]:
+                      - generic [ref=e1327]: Not Started
+                    - button "SM" [ref=e1330]:
+                      - generic "Sunny Mehta" [ref=e1333]: SM
+                    - button "May 1" [ref=e1335]
+                    - button "Medium" [ref=e1338]
+                    - generic "Drag to change progress (0%)" [ref=e1340]:
+                      - generic [ref=e1341]:
+                        - slider "Task progress" [ref=e1344]: "0"
+                        - generic [ref=e1345]: 0%
+                    - generic [ref=e1349]:
+                      - img [ref=e1350]
+                      - text: Add
+                    - generic [ref=e1355]: "-"
+                    - button "Medium" [ref=e1358]
+                    - button "Archive" [ref=e1360]:
+                      - img [ref=e1361]
+                  - generic [ref=e1365] [cursor=pointer]:
+                    - generic [ref=e1366]:
+                      - button [ref=e1369]:
+                        - img [ref=e1370]
+                      - generic [ref=e1377]:
+                        - button "Expand subitems" [ref=e1378]:
+                          - img [ref=e1379]
+                        - generic [ref=e1381]: After fix
+                        - generic "Daily Work — 2026-05-01" [ref=e1383]:
+                          - img [ref=e1384]
+                    - button "Not Started" [ref=e1392]:
+                      - generic [ref=e1393]: Not Started
+                    - button "SM" [ref=e1396]:
+                      - generic "Sunny Mehta" [ref=e1399]: SM
+                    - button "May 1" [ref=e1401]
+                    - button "Medium" [ref=e1404]
+                    - generic "Drag to change progress (0%)" [ref=e1406]:
+                      - generic [ref=e1407]:
+                        - slider "Task progress" [ref=e1410]: "0"
+                        - generic [ref=e1411]: 0%
+                    - generic [ref=e1415]:
+                      - img [ref=e1416]
+                      - text: Add
+                    - generic [ref=e1421]: "-"
+                    - button "Medium" [ref=e1424]
+                    - button "Archive" [ref=e1426]:
+                      - img [ref=e1427]
+                  - generic [ref=e1431] [cursor=pointer]:
+                    - generic [ref=e1432]:
+                      - button [ref=e1435]:
+                        - img [ref=e1436]
+                      - generic [ref=e1443]:
+                        - button "Expand subitems" [ref=e1444]:
+                          - img [ref=e1445]
+                        - generic [ref=e1447]: old one
+                        - generic "Daily Work — 2026-05-01" [ref=e1449]:
+                          - img [ref=e1450]
+                    - button "Not Started" [ref=e1458]:
+                      - generic [ref=e1459]: Not Started
+                    - button "SM" [ref=e1462]:
+                      - generic "Sunny Mehta" [ref=e1465]: SM
+                    - button "May 1" [ref=e1467]
+                    - button "Medium" [ref=e1470]
+                    - generic "Drag to change progress (0%)" [ref=e1472]:
+                      - generic [ref=e1473]:
+                        - slider "Task progress" [ref=e1476]: "0"
+                        - generic [ref=e1477]: 0%
+                    - generic [ref=e1481]:
+                      - img [ref=e1482]
+                      - text: Add
+                    - generic [ref=e1487]: "-"
+                    - button "Medium" [ref=e1490]
+                    - button "Archive" [ref=e1492]:
+                      - img [ref=e1493]
+                  - generic [ref=e1497] [cursor=pointer]:
+                    - generic [ref=e1498]:
+                      - button [ref=e1501]:
+                        - img [ref=e1502]
+                      - generic [ref=e1509]:
+                        - button "Expand subitems" [ref=e1510]:
+                          - img [ref=e1511]
+                        - generic [ref=e1513]: test one two
+                    - button "Not Started" [ref=e1517]:
+                      - generic [ref=e1518]: Not Started
+                    - button "+" [ref=e1521]:
+                      - generic [ref=e1523]: +
+                    - button "—" [ref=e1525]
+                    - button "Medium" [ref=e1528]
+                    - generic "Drag to change progress (0%)" [ref=e1530]:
+                      - generic [ref=e1531]:
+                        - slider "Task progress" [ref=e1534]: "0"
+                        - generic [ref=e1535]: 0%
+                    - generic [ref=e1539]:
+                      - img [ref=e1540]
+                      - text: Add
+                    - generic [ref=e1545]: "-"
+                    - button "Medium" [ref=e1548]
+                    - button "Archive" [ref=e1550]:
+                      - img [ref=e1551]
+                  - generic [ref=e1555] [cursor=pointer]:
+                    - generic [ref=e1556]:
+                      - button [ref=e1559]:
+                        - img [ref=e1560]
+                      - generic [ref=e1567]:
+                        - button "Expand subitems" [ref=e1568]:
+                          - img [ref=e1569]
+                        - generic [ref=e1571]: After fix
+                        - generic "Daily Work — 2026-04-30" [ref=e1573]:
+                          - img [ref=e1574]
+                    - generic [ref=e1580]:
+                      - generic [ref=e1581]:
+                        - generic "Approved" [ref=e1582]: ✓
+                        - button "Done" [ref=e1583]:
+                          - generic [ref=e1584]: Done
+                      - 'img "Approval workflow: 3 stages, 5 approvers, status approved" [ref=e1585]'
+                    - button "SM" [ref=e1594]:
+                      - generic "Sunny Mehta" [ref=e1597]: SM
+                    - button "Apr 30" [ref=e1599]
+                    - button "Medium" [ref=e1602]
+                    - generic "100% (locked — task is done)" [ref=e1604]:
+                      - generic [ref=e1609]: 100%
+                    - generic [ref=e1613]:
+                      - img [ref=e1614]
+                      - text: Add
+                    - generic [ref=e1619]: "-"
+                    - button "Medium" [ref=e1622]
+                    - button "Archive" [ref=e1624]:
+                      - img [ref=e1625]
+                  - generic [ref=e1629] [cursor=pointer]:
+                    - generic [ref=e1630]:
+                      - button [ref=e1633]:
+                        - img [ref=e1634]
+                      - generic [ref=e1641]:
+                        - button "Expand subitems" [ref=e1642]:
+                          - img [ref=e1643]
+                        - generic [ref=e1645]: Reccuring test
+                        - generic "Daily Work — 2026-04-30" [ref=e1647]:
+                          - img [ref=e1648]
+                    - generic [ref=e1654]:
+                      - generic [ref=e1655]:
+                        - generic "Approved" [ref=e1656]: ✓
+                        - button "Done" [ref=e1657]:
+                          - generic [ref=e1658]: Done
+                      - 'img "Approval workflow: 3 stages, 4 approvers, status approved" [ref=e1659]'
+                    - button "SM" [ref=e1668]:
+                      - generic "Sunny Mehta" [ref=e1671]: SM
+                    - button "Apr 30" [ref=e1673]
+                    - button "Medium" [ref=e1676]
+                    - generic "100% (locked — task is done)" [ref=e1678]:
+                      - generic [ref=e1683]: 100%
+                    - generic [ref=e1687]:
+                      - img [ref=e1688]
+                      - text: Add
+                    - generic [ref=e1693]: "-"
+                    - button "Medium" [ref=e1696]
+                    - button "Archive" [ref=e1698]:
+                      - img [ref=e1699]
+                - button "Add task" [ref=e1705] [cursor=pointer]:
+                  - img [ref=e1706]
+                  - text: Add task
+              - generic [ref=e1708]:
+                - generic [ref=e1710]:
+                  - 'generic "Not Started: 5" [ref=e1711]'
+                  - 'generic "Done: 2" [ref=e1712]'
+                - generic [ref=e1715]: —
+                - generic [ref=e1718]: Apr 30 - May 1
+                - generic [ref=e1724]: —
+                - generic [ref=e1727]: —
+                - generic [ref=e1730]: —
+          - generic [ref=e1734]:
+            - generic [ref=e1735]:
+              - button [ref=e1736] [cursor=pointer]:
+                - img [ref=e1737]
+              - heading "Code Review" [level=3] [ref=e1739]
+              - generic [ref=e1740]: 2 items
+              - button [ref=e1742] [cursor=pointer]:
+                - img [ref=e1743]
+            - generic [ref=e1747]:
+              - generic [ref=e1749]:
+                - generic [ref=e1750]:
+                  - generic [ref=e1754]: Task
+                  - generic [ref=e1756]:
+                    - generic [ref=e1757]:
+                      - generic [ref=e1758]: Status
+                      - button [ref=e1759] [cursor=pointer]:
+                        - img [ref=e1760]
+                      - button "Column options" [ref=e1762] [cursor=pointer]:
+                        - img [ref=e1763]
+                    - generic "Resize Column" [ref=e1767]
+                  - generic [ref=e1769]:
+                    - generic [ref=e1770]:
+                      - generic [ref=e1771]: Owner
+                      - button [ref=e1772] [cursor=pointer]:
+                        - img [ref=e1773]
+                      - button "Column options" [ref=e1775] [cursor=pointer]:
+                        - img [ref=e1776]
+                    - generic "Resize Column" [ref=e1780]
+                  - generic [ref=e1782]:
+                    - generic [ref=e1783]:
+                      - generic [ref=e1784]: Due Date
+                      - button [ref=e1785] [cursor=pointer]:
+                        - img [ref=e1786]
+                      - button "Column options" [ref=e1788] [cursor=pointer]:
+                        - img [ref=e1789]
+                    - generic "Resize Column" [ref=e1793]
+                  - generic [ref=e1795]:
+                    - generic [ref=e1796]:
+                      - generic [ref=e1797]: Priority
+                      - button [ref=e1798] [cursor=pointer]:
+                        - img [ref=e1799]
+                      - button "Column options" [ref=e1801] [cursor=pointer]:
+                        - img [ref=e1802]
+                    - generic "Resize Column" [ref=e1806]
+                  - generic [ref=e1808]:
+                    - generic [ref=e1809]:
+                      - generic [ref=e1810]: Progress
+                      - button [ref=e1811] [cursor=pointer]:
+                        - img [ref=e1812]
+                      - button "Column options" [ref=e1814] [cursor=pointer]:
+                        - img [ref=e1815]
+                    - generic "Resize Column" [ref=e1819]
+                  - generic [ref=e1821]:
+                    - generic [ref=e1822]:
+                      - generic [ref=e1823]: Labels
+                      - button [ref=e1824] [cursor=pointer]:
+                        - img [ref=e1825]
+                      - button "Column options" [ref=e1827] [cursor=pointer]:
+                        - img [ref=e1828]
+                    - generic "Resize Column" [ref=e1832]
+                  - generic [ref=e1834]:
+                    - generic [ref=e1835]:
+                      - generic [ref=e1836]: Number
+                      - button [ref=e1837] [cursor=pointer]:
+                        - img [ref=e1838]
+                      - button "Column options" [ref=e1840] [cursor=pointer]:
+                        - img [ref=e1841]
+                    - generic "Resize Column" [ref=e1845]
+                  - generic [ref=e1847]:
+                    - generic [ref=e1848]:
+                      - generic [ref=e1849]: Priority
+                      - button [ref=e1850] [cursor=pointer]:
+                        - img [ref=e1851]
+                      - button "Column options" [ref=e1853] [cursor=pointer]:
+                        - img [ref=e1854]
+                    - generic "Resize Column" [ref=e1858]
+                  - button [ref=e1861] [cursor=pointer]:
+                    - img [ref=e1862]
+                - generic [ref=e1863]:
+                  - generic [ref=e1865] [cursor=pointer]:
+                    - generic [ref=e1866]:
+                      - button [ref=e1869]:
+                        - img [ref=e1870]
+                      - generic [ref=e1877]:
+                        - button "Expand subitems" [ref=e1878]:
+                          - img [ref=e1879]
+                        - generic [ref=e1881]: all day
+                    - button "Not Started" [ref=e1885]:
+                      - generic [ref=e1886]: Not Started
+                    - button "SM" [ref=e1889]:
+                      - generic "Sunny Mehta" [ref=e1892]: SM
+                    - button "—" [ref=e1894]
+                    - button "Medium" [ref=e1897]
+                    - generic "Drag to change progress (0%)" [ref=e1899]:
+                      - generic [ref=e1900]:
+                        - slider "Task progress" [ref=e1903]: "0"
+                        - generic [ref=e1904]: 0%
+                    - generic [ref=e1908]:
+                      - img [ref=e1909]
+                      - text: Add
+                    - generic [ref=e1914]: "-"
+                    - button "Medium" [ref=e1917]
+                    - button "Archive" [ref=e1919]:
+                      - img [ref=e1920]
+                  - generic [ref=e1924] [cursor=pointer]:
+                    - generic [ref=e1925]:
+                      - button [ref=e1928]:
+                        - img [ref=e1929]
+                      - generic [ref=e1936]:
+                        - button "Expand subitems" [ref=e1937]:
+                          - img [ref=e1938]
+                        - generic [ref=e1940]: Friday Testing
+                        - generic "Daily Work — 2026-05-01" [ref=e1942]:
+                          - img [ref=e1943]
+                    - generic [ref=e1949]:
+                      - generic [ref=e1950]:
+                        - generic "Approved" [ref=e1951]: ✓
+                        - button "Done" [ref=e1952]:
+                          - generic [ref=e1953]: Done
+                      - 'img "Approval workflow: 3 stages, 5 approvers, status approved" [ref=e1954]'
+                    - button "SM" [ref=e1963]:
+                      - generic "Sunny Mehta" [ref=e1966]: SM
+                    - button "May 1" [ref=e1968]
+                    - button "Medium" [ref=e1971]
+                    - generic "100% (locked — task is done)" [ref=e1973]:
+                      - generic [ref=e1978]: 100%
+                    - generic [ref=e1982]:
+                      - img [ref=e1983]
+                      - text: Add
+                    - generic [ref=e1988]: "-"
+                    - button "Medium" [ref=e1991]
+                    - button "Archive" [ref=e1993]:
+                      - img [ref=e1994]
+                - button "Add task" [ref=e2000] [cursor=pointer]:
+                  - img [ref=e2001]
+                  - text: Add task
+              - generic [ref=e2003]:
+                - generic [ref=e2005]:
+                  - 'generic "Not Started: 1" [ref=e2006]'
+                  - 'generic "Done: 1" [ref=e2007]'
+                - generic [ref=e2010]: —
+                - generic [ref=e2013]: May 1 - May 1
+                - generic [ref=e2019]: —
+                - generic [ref=e2022]: —
+                - generic [ref=e2025]: —
+          - generic [ref=e2029]:
+            - generic [ref=e2030]:
+              - button [ref=e2031] [cursor=pointer]:
+                - img [ref=e2032]
+              - heading "Done" [level=3] [ref=e2034]
+              - generic [ref=e2035]: 1 items
+              - button [ref=e2037] [cursor=pointer]:
+                - img [ref=e2038]
+            - generic [ref=e2042]:
+              - generic [ref=e2044]:
+                - generic [ref=e2045]:
+                  - generic [ref=e2049]: Task
+                  - generic [ref=e2051]:
+                    - generic [ref=e2052]:
+                      - generic [ref=e2053]: Status
+                      - button [ref=e2054] [cursor=pointer]:
+                        - img [ref=e2055]
+                      - button "Column options" [ref=e2057] [cursor=pointer]:
+                        - img [ref=e2058]
+                    - generic "Resize Column" [ref=e2062]
+                  - generic [ref=e2064]:
+                    - generic [ref=e2065]:
+                      - generic [ref=e2066]: Owner
+                      - button [ref=e2067] [cursor=pointer]:
+                        - img [ref=e2068]
+                      - button "Column options" [ref=e2070] [cursor=pointer]:
+                        - img [ref=e2071]
+                    - generic "Resize Column" [ref=e2075]
+                  - generic [ref=e2077]:
+                    - generic [ref=e2078]:
+                      - generic [ref=e2079]: Due Date
+                      - button [ref=e2080] [cursor=pointer]:
+                        - img [ref=e2081]
+                      - button "Column options" [ref=e2083] [cursor=pointer]:
+                        - img [ref=e2084]
+                    - generic "Resize Column" [ref=e2088]
+                  - generic [ref=e2090]:
+                    - generic [ref=e2091]:
+                      - generic [ref=e2092]: Priority
+                      - button [ref=e2093] [cursor=pointer]:
+                        - img [ref=e2094]
+                      - button "Column options" [ref=e2096] [cursor=pointer]:
+                        - img [ref=e2097]
+                    - generic "Resize Column" [ref=e2101]
+                  - generic [ref=e2103]:
+                    - generic [ref=e2104]:
+                      - generic [ref=e2105]: Progress
+                      - button [ref=e2106] [cursor=pointer]:
+                        - img [ref=e2107]
+                      - button "Column options" [ref=e2109] [cursor=pointer]:
+                        - img [ref=e2110]
+                    - generic "Resize Column" [ref=e2114]
+                  - generic [ref=e2116]:
+                    - generic [ref=e2117]:
+                      - generic [ref=e2118]: Labels
+                      - button [ref=e2119] [cursor=pointer]:
+                        - img [ref=e2120]
+                      - button "Column options" [ref=e2122] [cursor=pointer]:
+                        - img [ref=e2123]
+                    - generic "Resize Column" [ref=e2127]
+                  - generic [ref=e2129]:
+                    - generic [ref=e2130]:
+                      - generic [ref=e2131]: Number
+                      - button [ref=e2132] [cursor=pointer]:
+                        - img [ref=e2133]
+                      - button "Column options" [ref=e2135] [cursor=pointer]:
+                        - img [ref=e2136]
+                    - generic "Resize Column" [ref=e2140]
+                  - generic [ref=e2142]:
+                    - generic [ref=e2143]:
+                      - generic [ref=e2144]: Priority
+                      - button [ref=e2145] [cursor=pointer]:
+                        - img [ref=e2146]
+                      - button "Column options" [ref=e2148] [cursor=pointer]:
+                        - img [ref=e2149]
+                    - generic "Resize Column" [ref=e2153]
+                  - button [ref=e2156] [cursor=pointer]:
+                    - img [ref=e2157]
+                - generic [ref=e2160] [cursor=pointer]:
+                  - generic [ref=e2161]:
+                    - button [ref=e2164]:
+                      - img [ref=e2165]
+                    - generic [ref=e2172]:
+                      - button "Expand subitems" [ref=e2173]:
+                        - img [ref=e2174]
+                      - generic [ref=e2176]: jack
+                  - button "Done" [ref=e2180]:
+                    - generic [ref=e2181]: Done
+                  - button "SS" [ref=e2184]:
+                    - generic "shubhanshu saadhiyaan" [ref=e2187]: SS
+                  - button "May 13" [ref=e2189]
+                  - button "Medium" [ref=e2192]
+                  - generic "100% (locked — task is done)" [ref=e2194]:
+                    - generic [ref=e2199]: 100%
+                  - generic [ref=e2203]:
+                    - img [ref=e2204]
+                    - text: Add
+                  - generic [ref=e2209]: "-"
+                  - button "Medium" [ref=e2212]
+                  - button "Archive" [ref=e2214]:
+                    - img [ref=e2215]
+                - button "Add task" [ref=e2221] [cursor=pointer]:
+                  - img [ref=e2222]
+                  - text: Add task
+              - generic [ref=e2224]:
+                - 'generic "Done: 1" [ref=e2227]'
+                - generic [ref=e2230]: —
+                - generic [ref=e2233]: May 13 - May 13
+                - generic [ref=e2239]: —
+                - generic [ref=e2242]: —
+                - generic [ref=e2245]: —
+  - generic:
+    - button "Quick Tools" [ref=e2249] [cursor=pointer]:
+      - img [ref=e2250]
+    - generic:
+      - button "AI Assistant":
+        - img
+    - generic:
+      - button "Voice Notes":
+        - img
+    - generic:
+      - button "Send Feedback":
+        - img

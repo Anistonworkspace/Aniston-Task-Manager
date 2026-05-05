@@ -77,7 +77,7 @@ const RecurringTaskTemplate = sequelize.define(
           msg: 'Frequency must be one of daily, weekdays, weekly, monthly, custom',
         },
       },
-      comment: 'daily: every day. weekdays: Mon–Fri. weekly: weekdays array. monthly: dayOfMonth. custom: weekdays array.',
+      comment: 'daily: every day. weekdays: Mon–Sat. weekly: weekdays array. monthly: daysOfMonth array (legacy dayOfMonth still honoured). custom: weekdays array.',
     },
     weekdays: {
       type: DataTypes.JSONB,
@@ -89,7 +89,13 @@ const RecurringTaskTemplate = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
       validate: { min: 1, max: 31 },
-      comment: 'Used by monthly frequency. If 31 and month has fewer days, last day of month is used.',
+      comment: 'Legacy single-day field retained for backward compatibility. New code reads daysOfMonth (array). Writers continue to populate this with daysOfMonth[0] so old read paths still work.',
+    },
+    daysOfMonth: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+      comment: 'Array of day-of-month integers (1–31). Used by monthly frequency. Multi-day support — e.g. [5, 10, 15, 25]. Days exceeding the actual month length collapse to the last day; duplicate occurrence dates are blocked by the partial unique index on (recurringTemplateId, occurrenceDate).',
     },
     startDate: {
       type: DataTypes.DATEONLY,

@@ -1,0 +1,762 @@
+- generic [ref=e5]:
+  - link "Skip to main content" [ref=e6] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - img "Monday Aniston" [ref=e10]
+      - heading "Monday Aniston" [level=1] [ref=e11]
+      - button [ref=e12] [cursor=pointer]:
+        - img [ref=e13]
+    - generic [ref=e16]:
+      - navigation [ref=e17]:
+        - button "Home" [ref=e18] [cursor=pointer]:
+          - img [ref=e19]
+          - generic [ref=e22]: Home
+        - button "My Work" [ref=e23] [cursor=pointer]:
+          - img [ref=e24]
+          - generic [ref=e27]: My Work
+        - button "My Dashboard" [ref=e28] [cursor=pointer]:
+          - img [ref=e29]
+          - generic [ref=e34]: My Dashboard
+        - button "Dashboard (Time Plan)" [ref=e35] [cursor=pointer]:
+          - img [ref=e36]
+          - generic [ref=e38]: Dashboard (Time Plan)
+        - button "Director Plan" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+          - generic [ref=e42]: Director Plan
+        - button "Meetings" [ref=e43] [cursor=pointer]:
+          - img [ref=e44]
+          - generic [ref=e46]: Meetings
+        - button "Reviews" [ref=e47] [cursor=pointer]:
+          - img [ref=e48]
+          - generic [ref=e51]: Reviews
+        - button "Tasks & Workflows" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+          - generic [ref=e57]: Tasks & Workflows
+        - button "Recurring Work" [ref=e58] [cursor=pointer]:
+          - img [ref=e59]
+          - generic [ref=e64]: Recurring Work
+      - navigation [ref=e66]:
+        - button "Dashboard" [ref=e67] [cursor=pointer]:
+          - img [ref=e68]
+          - generic [ref=e70]: Dashboard
+        - button "Team" [ref=e71] [cursor=pointer]:
+          - img [ref=e72]
+          - generic [ref=e77]: Team
+      - generic [ref=e79]:
+        - generic [ref=e80]: Workspaces
+        - button "Workspace options" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+      - generic [ref=e88]:
+        - img [ref=e89]
+        - textbox "Search boards..." [ref=e92]
+      - generic [ref=e93]:
+        - generic [ref=e94]:
+          - button "S Software Test 1" [ref=e95] [cursor=pointer]:
+            - generic [ref=e96]: S
+            - generic [ref=e97]: Software Test
+            - generic [ref=e98]: "1"
+            - img [ref=e99]
+          - button [ref=e103] [cursor=pointer]:
+            - img [ref=e104]
+          - generic [ref=e108]:
+            - generic [ref=e109]:
+              - button "workspace 3" [ref=e110] [cursor=pointer]:
+                - generic [ref=e112]: workspace 3
+              - button "Board actions" [ref=e113] [cursor=pointer]:
+                - img [ref=e114]
+            - generic [ref=e118]:
+              - button "something new" [ref=e119] [cursor=pointer]:
+                - generic [ref=e121]: something new
+              - button "Board actions" [ref=e122] [cursor=pointer]:
+                - img [ref=e123]
+            - generic [ref=e127]:
+              - button "For test" [ref=e128] [cursor=pointer]:
+                - generic [ref=e130]: For test
+              - button "Board actions" [ref=e131] [cursor=pointer]:
+                - img [ref=e132]
+            - button "Show 6 more" [ref=e136] [cursor=pointer]:
+              - img [ref=e137]
+              - text: Show 6 more
+        - generic [ref=e139]:
+          - button "S Sales CRM Pipeline" [ref=e140] [cursor=pointer]:
+            - generic [ref=e141]: S
+            - generic [ref=e142]: Sales CRM Pipeline
+            - img [ref=e143]
+          - button [ref=e147] [cursor=pointer]:
+            - img [ref=e148]
+          - generic [ref=e152]:
+            - generic [ref=e153]:
+              - button "Client Management" [ref=e154] [cursor=pointer]:
+                - generic [ref=e156]: Client Management
+              - button "Board actions" [ref=e157] [cursor=pointer]:
+                - img [ref=e158]
+            - generic [ref=e162]:
+              - button "Sales Pipeline" [ref=e163] [cursor=pointer]:
+                - generic [ref=e165]: Sales Pipeline
+              - button "Board actions" [ref=e166] [cursor=pointer]:
+                - img [ref=e167]
+        - generic [ref=e171]:
+          - button "T test rearrange" [ref=e172] [cursor=pointer]:
+            - generic [ref=e173]: T
+            - generic [ref=e174]: test rearrange
+            - img [ref=e175]
+          - button [ref=e179] [cursor=pointer]:
+            - img [ref=e180]
+          - generic [ref=e185]:
+            - button "Marketing board test" [ref=e186] [cursor=pointer]:
+              - generic [ref=e188]: Marketing board test
+            - button "Board actions" [ref=e189] [cursor=pointer]:
+              - img [ref=e190]
+        - button "Show 2 more workspaces" [ref=e194] [cursor=pointer]:
+          - img [ref=e195]
+          - text: Show 2 more workspaces
+      - button "Add new workspace" [ref=e198] [cursor=pointer]:
+        - img [ref=e199]
+        - text: Add new workspace
+      - button "Create new board" [ref=e201] [cursor=pointer]:
+        - img [ref=e202]
+        - text: Create new board
+    - button "A Admin User admin" [ref=e205] [cursor=pointer]:
+      - generic [ref=e206]: A
+      - generic [ref=e207]:
+        - paragraph [ref=e208]: Admin User
+        - paragraph [ref=e209]: admin
+      - img [ref=e210]
+  - generic [ref=e214]:
+    - banner [ref=e215]:
+      - generic [ref=e216]:
+        - generic [ref=e217]:
+          - generic [ref=e218]: Monday Aniston
+          - generic [ref=e219]: /
+          - generic [ref=e220]: Admin Settings
+        - button "Search... ⌘K" [ref=e221] [cursor=pointer]:
+          - img [ref=e222]
+          - generic [ref=e225]: Search...
+          - generic [ref=e226]: ⌘K
+      - generic [ref=e227]:
+        - button "Dependencies" [ref=e228] [cursor=pointer]:
+          - img [ref=e229]
+        - button "Org Chart" [ref=e232] [cursor=pointer]:
+          - img [ref=e233]
+        - button "Time Plan" [ref=e238] [cursor=pointer]:
+          - img [ref=e239]
+        - button "Notes" [ref=e242] [cursor=pointer]:
+          - img [ref=e243]
+        - button "Help & SOP" [ref=e246] [cursor=pointer]:
+          - img [ref=e247]
+        - button "9+" [ref=e251] [cursor=pointer]:
+          - img [ref=e252]
+          - generic [ref=e255]: 9+
+        - button "Dark mode" [ref=e256] [cursor=pointer]:
+          - img [ref=e257]
+        - button [ref=e259] [cursor=pointer]:
+          - img [ref=e260]
+        - button "A Admin" [ref=e265] [cursor=pointer]:
+          - generic [ref=e266]: A
+          - generic [ref=e267]: Admin
+          - img [ref=e268]
+    - main [ref=e270]:
+      - generic [ref=e272]:
+        - generic [ref=e273]:
+          - heading "Admin Settings" [level=1] [ref=e274]:
+            - img [ref=e275]
+            - text: Admin Settings
+          - paragraph [ref=e278]: Manage users, workspaces, permissions, and access control
+        - generic [ref=e279]:
+          - button "Users" [ref=e280] [cursor=pointer]:
+            - img [ref=e281]
+            - text: Users
+          - button "Workspaces" [ref=e286] [cursor=pointer]:
+            - img [ref=e287]
+            - text: Workspaces
+          - button "Permissions" [ref=e292] [cursor=pointer]:
+            - img [ref=e293]
+            - text: Permissions
+          - button "Access Requests" [ref=e295] [cursor=pointer]:
+            - img [ref=e296]
+            - text: Access Requests
+          - button "Templates" [ref=e300] [cursor=pointer]:
+            - img [ref=e301]
+            - text: Templates
+        - generic [ref=e304]:
+          - generic [ref=e305]:
+            - heading "User Management" [level=2] [ref=e306]
+            - button "Create User" [ref=e307] [cursor=pointer]:
+              - img [ref=e308]
+              - text: Create User
+          - generic [ref=e311]:
+            - generic [ref=e312]:
+              - paragraph [ref=e313]: "27"
+              - paragraph [ref=e314]: Total
+            - generic [ref=e315]:
+              - paragraph [ref=e316]: "3"
+              - paragraph [ref=e317]: Admin
+            - generic [ref=e318]:
+              - paragraph [ref=e319]: "1"
+              - paragraph [ref=e320]: Manager
+            - generic [ref=e321]:
+              - paragraph [ref=e322]: "22"
+              - paragraph [ref=e323]: Member
+          - generic [ref=e324]:
+            - generic [ref=e325]:
+              - button "All (27)" [ref=e326] [cursor=pointer]
+              - button "admins (3)" [ref=e327] [cursor=pointer]
+              - button "managers (1)" [ref=e328] [cursor=pointer]
+              - button "members (22)" [ref=e329] [cursor=pointer]
+            - generic [ref=e330]:
+              - img [ref=e331]
+              - textbox "Search name, email..." [ref=e334]
+          - generic [ref=e335]:
+            - table [ref=e336]:
+              - rowgroup [ref=e337]:
+                - row "User Department Role Status Actions" [ref=e338]:
+                  - columnheader "User" [ref=e339]
+                  - columnheader "Department" [ref=e340]
+                  - columnheader "Role" [ref=e341]
+                  - columnheader "Status" [ref=e342]
+                  - columnheader "Actions" [ref=e343]
+              - rowgroup [ref=e344]:
+                - row "MM MD Munawwar munawwar@anistonav.com Marketing Graphic Designer Member Active" [ref=e345]:
+                  - cell "MM MD Munawwar munawwar@anistonav.com" [ref=e346]:
+                    - generic [ref=e347]:
+                      - generic "MD Munawwar" [ref=e348]: MM
+                      - generic [ref=e349]:
+                        - paragraph [ref=e350]: MD Munawwar
+                        - paragraph [ref=e351]: munawwar@anistonav.com
+                  - cell "Marketing Graphic Designer" [ref=e352]:
+                    - text: Marketing
+                    - paragraph [ref=e353]: Graphic Designer
+                  - cell "Member" [ref=e354]:
+                    - combobox [ref=e355] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e356]:
+                    - generic [ref=e357]: Active
+                  - cell [ref=e359]:
+                    - button [ref=e361] [cursor=pointer]:
+                      - img [ref=e362]
+                - row "FK Fardeen Khan fardeen@anistonav.com IT & Software Full Stack Developer Intern Member Active" [ref=e366]:
+                  - cell "FK Fardeen Khan fardeen@anistonav.com" [ref=e367]:
+                    - generic [ref=e368]:
+                      - generic "Fardeen Khan" [ref=e369]: FK
+                      - generic [ref=e370]:
+                        - paragraph [ref=e371]: Fardeen Khan
+                        - paragraph [ref=e372]: fardeen@anistonav.com
+                  - cell "IT & Software Full Stack Developer Intern" [ref=e373]:
+                    - text: IT & Software
+                    - paragraph [ref=e374]: Full Stack Developer Intern
+                  - cell "Member" [ref=e375]:
+                    - combobox [ref=e376] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e377]:
+                    - generic [ref=e378]: Active
+                  - cell [ref=e380]:
+                    - button [ref=e382] [cursor=pointer]:
+                      - img [ref=e383]
+                - row "AU Admin User admin@aniston.com Management Administrator Admin Active" [ref=e387]:
+                  - cell "AU Admin User admin@aniston.com" [ref=e388]:
+                    - generic [ref=e389]:
+                      - generic "Admin User" [ref=e390]: AU
+                      - generic [ref=e391]:
+                        - paragraph [ref=e392]: Admin User
+                        - paragraph [ref=e393]: admin@aniston.com
+                  - cell "Management Administrator" [ref=e394]:
+                    - text: Management
+                    - paragraph [ref=e395]: Administrator
+                  - cell "Admin" [ref=e396]:
+                    - combobox [ref=e397] [cursor=pointer]:
+                      - option "Member"
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin" [selected]
+                  - cell "Active" [ref=e398]:
+                    - generic [ref=e399]: Active
+                  - cell [ref=e401]:
+                    - button [ref=e403] [cursor=pointer]:
+                      - img [ref=e404]
+                - row "SM Sunny Mehta mehta.sunny@anistonav.com IT & Software Full Stack Developer Intern Member Active" [ref=e408]:
+                  - cell "SM Sunny Mehta mehta.sunny@anistonav.com" [ref=e409]:
+                    - generic [ref=e410]:
+                      - generic "Sunny Mehta" [ref=e411]: SM
+                      - generic [ref=e412]:
+                        - paragraph [ref=e413]: Sunny Mehta
+                        - paragraph [ref=e414]: mehta.sunny@anistonav.com
+                  - cell "IT & Software Full Stack Developer Intern" [ref=e415]:
+                    - text: IT & Software
+                    - paragraph [ref=e416]: Full Stack Developer Intern
+                  - cell "Member" [ref=e417]:
+                    - combobox [ref=e418] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e419]:
+                    - generic [ref=e420]: Active
+                  - cell [ref=e422]:
+                    - button [ref=e424] [cursor=pointer]:
+                      - img [ref=e425]
+                - row "NV Nandeesh Verma verma.nandeesh@anistonav.com Embedded Electronic Engineer Member Active" [ref=e429]:
+                  - cell "NV Nandeesh Verma verma.nandeesh@anistonav.com" [ref=e430]:
+                    - generic [ref=e431]:
+                      - generic "Nandeesh Verma" [ref=e432]: NV
+                      - generic [ref=e433]:
+                        - paragraph [ref=e434]: Nandeesh Verma
+                        - paragraph [ref=e435]: verma.nandeesh@anistonav.com
+                  - cell "Embedded Electronic Engineer" [ref=e436]:
+                    - text: Embedded
+                    - paragraph [ref=e437]: Electronic Engineer
+                  - cell "Member" [ref=e438]:
+                    - combobox [ref=e439] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e440]:
+                    - generic [ref=e441]: Active
+                  - cell [ref=e443]:
+                    - button [ref=e445] [cursor=pointer]:
+                      - img [ref=e446]
+                - row "AT Anuj Tiwari tiwari.anuj@anistonav.com Marketing Graphic Designer Member Active" [ref=e450]:
+                  - cell "AT Anuj Tiwari tiwari.anuj@anistonav.com" [ref=e451]:
+                    - generic [ref=e452]:
+                      - generic "Anuj Tiwari" [ref=e453]: AT
+                      - generic [ref=e454]:
+                        - paragraph [ref=e455]: Anuj Tiwari
+                        - paragraph [ref=e456]: tiwari.anuj@anistonav.com
+                  - cell "Marketing Graphic Designer" [ref=e457]:
+                    - text: Marketing
+                    - paragraph [ref=e458]: Graphic Designer
+                  - cell "Member" [ref=e459]:
+                    - combobox [ref=e460] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e461]:
+                    - generic [ref=e462]: Active
+                  - cell [ref=e464]:
+                    - button [ref=e466] [cursor=pointer]:
+                      - img [ref=e467]
+                - row "SS shubhanshu saadhiyaan shubhanshu@anistonav.com IT & Software Full Stack Developer Assistant Manager Active" [ref=e471]:
+                  - cell "SS shubhanshu saadhiyaan shubhanshu@anistonav.com" [ref=e472]:
+                    - generic [ref=e473]:
+                      - generic "shubhanshu saadhiyaan" [ref=e474]: SS
+                      - generic [ref=e475]:
+                        - paragraph [ref=e476]: shubhanshu saadhiyaan
+                        - paragraph [ref=e477]: shubhanshu@anistonav.com
+                  - cell "IT & Software Full Stack Developer" [ref=e478]:
+                    - text: IT & Software
+                    - paragraph [ref=e479]: Full Stack Developer
+                  - cell "Assistant Manager" [ref=e480]:
+                    - combobox [ref=e481] [cursor=pointer]:
+                      - option "Member"
+                      - option "Assistant Manager" [selected]
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e482]:
+                    - generic [ref=e483]: Active
+                  - cell [ref=e485]:
+                    - button [ref=e487] [cursor=pointer]:
+                      - img [ref=e488]
+                - row "HS himanshu sharma sharma.himanshu@anistonav.com — Member Active" [ref=e492]:
+                  - cell "HS himanshu sharma sharma.himanshu@anistonav.com" [ref=e493]:
+                    - generic [ref=e494]:
+                      - generic "himanshu sharma" [ref=e495]: HS
+                      - generic [ref=e496]:
+                        - paragraph [ref=e497]: himanshu sharma
+                        - paragraph [ref=e498]: sharma.himanshu@anistonav.com
+                  - cell "—" [ref=e499]
+                  - cell "Member" [ref=e500]:
+                    - combobox [ref=e501] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e502]:
+                    - generic [ref=e503]: Active
+                  - cell [ref=e505]:
+                    - button [ref=e507] [cursor=pointer]:
+                      - img [ref=e508]
+                - row "MS Mayank Saxena saxena.mayank@anistonav.com Sales Head of Strategic Sales Member Active" [ref=e512]:
+                  - cell "MS Mayank Saxena saxena.mayank@anistonav.com" [ref=e513]:
+                    - generic [ref=e514]:
+                      - generic "Mayank Saxena" [ref=e515]: MS
+                      - generic [ref=e516]:
+                        - paragraph [ref=e517]: Mayank Saxena
+                        - paragraph [ref=e518]: saxena.mayank@anistonav.com
+                  - cell "Sales Head of Strategic Sales" [ref=e519]:
+                    - text: Sales
+                    - paragraph [ref=e520]: Head of Strategic Sales
+                  - cell "Member" [ref=e521]:
+                    - combobox [ref=e522] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e523]:
+                    - generic [ref=e524]: Active
+                  - cell [ref=e526]:
+                    - button [ref=e528] [cursor=pointer]:
+                      - img [ref=e529]
+                - row "MR Muskan Rawat rawat.muskan@anistonav.com Admin Executive Assistant Manager Active" [ref=e533]:
+                  - cell "MR Muskan Rawat rawat.muskan@anistonav.com" [ref=e534]:
+                    - generic [ref=e535]:
+                      - generic "Muskan Rawat" [ref=e536]: MR
+                      - generic [ref=e537]:
+                        - paragraph [ref=e538]: Muskan Rawat
+                        - paragraph [ref=e539]: rawat.muskan@anistonav.com
+                  - cell "Admin Executive Assistant" [ref=e540]:
+                    - text: Admin
+                    - paragraph [ref=e541]: Executive Assistant
+                  - cell "Manager" [ref=e542]:
+                    - combobox [ref=e543] [cursor=pointer]:
+                      - option "Member"
+                      - option "Assistant Manager"
+                      - option "Manager" [selected]
+                      - option "Admin"
+                  - cell "Active" [ref=e544]:
+                    - generic [ref=e545]: Active
+                  - cell [ref=e547]:
+                    - button [ref=e549] [cursor=pointer]:
+                      - img [ref=e550]
+                - row "LR Lalit Rawat rawat.lalit@anistonav.com AV Av engineer Member Active" [ref=e554]:
+                  - cell "LR Lalit Rawat rawat.lalit@anistonav.com" [ref=e555]:
+                    - generic [ref=e556]:
+                      - generic "Lalit Rawat" [ref=e557]: LR
+                      - generic [ref=e558]:
+                        - paragraph [ref=e559]: Lalit Rawat
+                        - paragraph [ref=e560]: rawat.lalit@anistonav.com
+                  - cell "AV Av engineer" [ref=e561]:
+                    - text: AV
+                    - paragraph [ref=e562]: Av engineer
+                  - cell "Member" [ref=e563]:
+                    - combobox [ref=e564] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e565]:
+                    - generic [ref=e566]: Active
+                  - cell [ref=e568]:
+                    - button [ref=e570] [cursor=pointer]:
+                      - img [ref=e571]
+                - row "N no-reply no-reply@teams.mail.microsoft — Member Active" [ref=e575]:
+                  - cell "N no-reply no-reply@teams.mail.microsoft" [ref=e576]:
+                    - generic [ref=e577]:
+                      - generic "no-reply" [ref=e578]: "N"
+                      - generic [ref=e579]:
+                        - paragraph [ref=e580]: no-reply
+                        - paragraph [ref=e581]: no-reply@teams.mail.microsoft
+                  - cell "—" [ref=e582]
+                  - cell "Member" [ref=e583]:
+                    - combobox [ref=e584] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e585]:
+                    - generic [ref=e586]: Active
+                  - cell [ref=e588]:
+                    - button [ref=e590] [cursor=pointer]:
+                      - img [ref=e591]
+                - row "MS mansi singh mansi@anistonav.com hr hr Member Active" [ref=e595]:
+                  - cell "MS mansi singh mansi@anistonav.com" [ref=e596]:
+                    - generic [ref=e597]:
+                      - generic "mansi singh" [ref=e598]: MS
+                      - generic [ref=e599]:
+                        - paragraph [ref=e600]: mansi singh
+                        - paragraph [ref=e601]: mansi@anistonav.com
+                  - cell "hr hr" [ref=e602]:
+                    - text: hr
+                    - paragraph [ref=e603]: hr
+                  - cell "Member" [ref=e604]:
+                    - combobox [ref=e605] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e606]:
+                    - generic [ref=e607]: Active
+                  - cell [ref=e609]:
+                    - button [ref=e611] [cursor=pointer]:
+                      - img [ref=e612]
+                - row "SK Sanjay Kumar kumar.sanjay@anistonav.com Sales Government sales manager Member Active" [ref=e616]:
+                  - cell "SK Sanjay Kumar kumar.sanjay@anistonav.com" [ref=e617]:
+                    - generic [ref=e618]:
+                      - generic "Sanjay Kumar" [ref=e619]: SK
+                      - generic [ref=e620]:
+                        - paragraph [ref=e621]: Sanjay Kumar
+                        - paragraph [ref=e622]: kumar.sanjay@anistonav.com
+                  - cell "Sales Government sales manager" [ref=e623]:
+                    - text: Sales
+                    - paragraph [ref=e624]: Government sales manager
+                  - cell "Member" [ref=e625]:
+                    - combobox [ref=e626] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e627]:
+                    - generic [ref=e628]: Active
+                  - cell [ref=e630]:
+                    - button [ref=e632] [cursor=pointer]:
+                      - img [ref=e633]
+                - row "KC Khushi Chadha khushi.chadha@anistonav.com Tech AI ML Member Active" [ref=e637]:
+                  - cell "KC Khushi Chadha khushi.chadha@anistonav.com" [ref=e638]:
+                    - generic [ref=e639]:
+                      - generic "Khushi Chadha" [ref=e640]: KC
+                      - generic [ref=e641]:
+                        - paragraph [ref=e642]: Khushi Chadha
+                        - paragraph [ref=e643]: khushi.chadha@anistonav.com
+                  - cell "Tech AI ML" [ref=e644]:
+                    - text: Tech
+                    - paragraph [ref=e645]: AI ML
+                  - cell "Member" [ref=e646]:
+                    - combobox [ref=e647] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e648]:
+                    - generic [ref=e649]: Active
+                  - cell [ref=e651]:
+                    - button [ref=e653] [cursor=pointer]:
+                      - img [ref=e654]
+                - row "MJ mehak juneja juneja.mehak@anistonav.com marketing marketing executive Member Active" [ref=e658]:
+                  - cell "MJ mehak juneja juneja.mehak@anistonav.com" [ref=e659]:
+                    - generic [ref=e660]:
+                      - generic "mehak juneja" [ref=e661]: MJ
+                      - generic [ref=e662]:
+                        - paragraph [ref=e663]: mehak juneja
+                        - paragraph [ref=e664]: juneja.mehak@anistonav.com
+                  - cell "marketing marketing executive" [ref=e665]:
+                    - text: marketing
+                    - paragraph [ref=e666]: marketing executive
+                  - cell "Member" [ref=e667]:
+                    - combobox [ref=e668] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e669]:
+                    - generic [ref=e670]: Active
+                  - cell [ref=e672]:
+                    - button [ref=e674] [cursor=pointer]:
+                      - img [ref=e675]
+                - row "NJ Nitin jindal jindal.nitin@anistonav.com — Member Active" [ref=e679]:
+                  - cell "NJ Nitin jindal jindal.nitin@anistonav.com" [ref=e680]:
+                    - generic [ref=e681]:
+                      - generic "Nitin jindal" [ref=e682]: NJ
+                      - generic [ref=e683]:
+                        - paragraph [ref=e684]: Nitin jindal
+                        - paragraph [ref=e685]: jindal.nitin@anistonav.com
+                  - cell "—" [ref=e686]
+                  - cell "Member" [ref=e687]:
+                    - combobox [ref=e688] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e689]:
+                    - generic [ref=e690]: Active
+                  - cell [ref=e692]:
+                    - button [ref=e694] [cursor=pointer]:
+                      - img [ref=e695]
+                - row "J Jatin jatin@anistonav.com IT Department IT Support Member Active" [ref=e699]:
+                  - cell "J Jatin jatin@anistonav.com" [ref=e700]:
+                    - generic [ref=e701]:
+                      - generic "Jatin" [ref=e702]: J
+                      - generic [ref=e703]:
+                        - paragraph [ref=e704]: Jatin
+                        - paragraph [ref=e705]: jatin@anistonav.com
+                  - cell "IT Department IT Support" [ref=e706]:
+                    - text: IT Department
+                    - paragraph [ref=e707]: IT Support
+                  - cell "Member" [ref=e708]:
+                    - combobox [ref=e709] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e710]:
+                    - generic [ref=e711]: Active
+                  - cell [ref=e713]:
+                    - button [ref=e715] [cursor=pointer]:
+                      - img [ref=e716]
+                - row "SG shikha gupta gupta.shikha@anistonav.com — Managing Partner Member Active" [ref=e720]:
+                  - cell "SG shikha gupta gupta.shikha@anistonav.com" [ref=e721]:
+                    - generic [ref=e722]:
+                      - generic "shikha gupta" [ref=e723]: SG
+                      - generic [ref=e724]:
+                        - paragraph [ref=e725]: shikha gupta
+                        - paragraph [ref=e726]: gupta.shikha@anistonav.com
+                  - cell "— Managing Partner" [ref=e727]:
+                    - text: —
+                    - paragraph [ref=e728]: Managing Partner
+                  - cell "Member" [ref=e729]:
+                    - combobox [ref=e730] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e731]:
+                    - generic [ref=e732]: Active
+                  - cell [ref=e734]:
+                    - button [ref=e736] [cursor=pointer]:
+                      - img [ref=e737]
+                - row "DR durgesh raghav durgesh.raghav@anistonav.com reasearch data analyst Member Active" [ref=e741]:
+                  - cell "DR durgesh raghav durgesh.raghav@anistonav.com" [ref=e742]:
+                    - generic [ref=e743]:
+                      - generic "durgesh raghav" [ref=e744]: DR
+                      - generic [ref=e745]:
+                        - paragraph [ref=e746]: durgesh raghav
+                        - paragraph [ref=e747]: durgesh.raghav@anistonav.com
+                  - cell "reasearch data analyst" [ref=e748]:
+                    - text: reasearch
+                    - paragraph [ref=e749]: data analyst
+                  - cell "Member" [ref=e750]:
+                    - combobox [ref=e751] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e752]:
+                    - generic [ref=e753]: Active
+                  - cell [ref=e755]:
+                    - button [ref=e757] [cursor=pointer]:
+                      - img [ref=e758]
+                - row "MD monika demrot demrot.monika@anistonav.com research senior research lead Member Active" [ref=e762]:
+                  - cell "MD monika demrot demrot.monika@anistonav.com" [ref=e763]:
+                    - generic [ref=e764]:
+                      - generic "monika demrot" [ref=e765]: MD
+                      - generic [ref=e766]:
+                        - paragraph [ref=e767]: monika demrot
+                        - paragraph [ref=e768]: demrot.monika@anistonav.com
+                  - cell "research senior research lead" [ref=e769]:
+                    - text: research
+                    - paragraph [ref=e770]: senior research lead
+                  - cell "Member" [ref=e771]:
+                    - combobox [ref=e772] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e773]:
+                    - generic [ref=e774]: Active
+                  - cell [ref=e776]:
+                    - button [ref=e778] [cursor=pointer]:
+                      - img [ref=e779]
+                - row "JB Jyoti Bhayana bhayana.jyoti@anistonav.com HR HR Executive Member Active" [ref=e783]:
+                  - cell "JB Jyoti Bhayana bhayana.jyoti@anistonav.com" [ref=e784]:
+                    - generic [ref=e785]:
+                      - generic "Jyoti Bhayana" [ref=e786]: JB
+                      - generic [ref=e787]:
+                        - paragraph [ref=e788]: Jyoti Bhayana
+                        - paragraph [ref=e789]: bhayana.jyoti@anistonav.com
+                  - cell "HR HR Executive" [ref=e790]:
+                    - text: HR
+                    - paragraph [ref=e791]: HR Executive
+                  - cell "Member" [ref=e792]:
+                    - combobox [ref=e793] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e794]:
+                    - generic [ref=e795]: Active
+                  - cell [ref=e797]:
+                    - button [ref=e799] [cursor=pointer]:
+                      - img [ref=e800]
+                - row "A avdesh avdhesh@anistonav.com — Member Active" [ref=e804]:
+                  - cell "A avdesh avdhesh@anistonav.com" [ref=e805]:
+                    - generic [ref=e806]:
+                      - generic "avdesh" [ref=e807]: A
+                      - generic [ref=e808]:
+                        - paragraph [ref=e809]: avdesh
+                        - paragraph [ref=e810]: avdhesh@anistonav.com
+                  - cell "—" [ref=e811]
+                  - cell "Member" [ref=e812]:
+                    - combobox [ref=e813] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e814]:
+                    - generic [ref=e815]: Active
+                  - cell [ref=e817]:
+                    - button [ref=e819] [cursor=pointer]:
+                      - img [ref=e820]
+                - row "AK ashok kumar ashok@anistonav.com sales department presales engineer Member Active" [ref=e824]:
+                  - cell "AK ashok kumar ashok@anistonav.com" [ref=e825]:
+                    - generic [ref=e826]:
+                      - generic "ashok kumar" [ref=e827]: AK
+                      - generic [ref=e828]:
+                        - paragraph [ref=e829]: ashok kumar
+                        - paragraph [ref=e830]: ashok@anistonav.com
+                  - cell "sales department presales engineer" [ref=e831]:
+                    - text: sales department
+                    - paragraph [ref=e832]: presales engineer
+                  - cell "Member" [ref=e833]:
+                    - combobox [ref=e834] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e835]:
+                    - generic [ref=e836]: Active
+                  - cell [ref=e838]:
+                    - button [ref=e840] [cursor=pointer]:
+                      - img [ref=e841]
+                - row "A admin admin@anistonav.com — Member Active" [ref=e845]:
+                  - cell "A admin admin@anistonav.com" [ref=e846]:
+                    - generic [ref=e847]:
+                      - generic "admin" [ref=e848]: A
+                      - generic [ref=e849]:
+                        - paragraph [ref=e850]: admin
+                        - paragraph [ref=e851]: admin@anistonav.com
+                  - cell "—" [ref=e852]
+                  - cell "Member" [ref=e853]:
+                    - combobox [ref=e854] [cursor=pointer]:
+                      - option "Member" [selected]
+                      - option "Assistant Manager"
+                      - option "Manager"
+                      - option "Admin"
+                  - cell "Active" [ref=e855]:
+                    - generic [ref=e856]: Active
+                  - cell [ref=e858]:
+                    - button [ref=e860] [cursor=pointer]:
+                      - img [ref=e861]
+            - button "Show more (2 remaining)" [ref=e866] [cursor=pointer]
+  - generic:
+    - button "Quick Tools" [ref=e867] [cursor=pointer]:
+      - img [ref=e868]
+    - generic:
+      - button "AI Assistant":
+        - img
+    - generic:
+      - button "Voice Notes":
+        - img
+    - generic:
+      - button "Send Feedback":
+        - img
+  - generic [ref=e871]:
+    - generic [ref=e874]:
+      - generic [ref=e875]: 1 / 14
+      - button "Close tour" [ref=e876] [cursor=pointer]:
+        - img [ref=e877]
+    - generic [ref=e880]:
+      - generic [ref=e881]:
+        - generic [ref=e882]: 🎉
+        - heading "Welcome to Monday Aniston!" [level=4] [ref=e883]
+      - paragraph [ref=e884]: Let us give you a quick tour of the platform. We'll highlight each feature so you know exactly where everything is.
+    - generic [ref=e885]:
+      - button "Skip tour" [ref=e886] [cursor=pointer]
+      - button "Next" [ref=e887] [cursor=pointer]:
+        - text: Next
+        - img [ref=e888]

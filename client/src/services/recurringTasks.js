@@ -99,9 +99,9 @@ export async function generateNow(id) {
 
 export const FREQUENCIES = [
   { value: 'daily', label: 'Daily', hint: 'Every day' },
-  { value: 'weekdays', label: 'Weekdays', hint: 'Mon – Fri' },
+  { value: 'weekdays', label: 'Weekdays', hint: 'Mon – Sat' },
   { value: 'weekly', label: 'Weekly', hint: 'Pick days of the week' },
-  { value: 'monthly', label: 'Monthly', hint: 'On a specific day each month' },
+  { value: 'monthly', label: 'Monthly', hint: 'On specific days each month' },
   { value: 'custom', label: 'Custom', hint: 'Custom day-of-week pattern' },
 ];
 
@@ -131,9 +131,15 @@ export function formatSchedule(template) {
     return `${days || '—'} at ${dueTime}${tzPart}`;
   }
   if (template.frequency === 'monthly') {
-    const dom = template.dayOfMonth || '—';
-    const suffix = ['th','st','nd','rd'][((dom - 1) % 10 < 4 && Math.floor((dom - 1) % 100 / 10) !== 1) ? Math.min((dom - 1) % 10 + 1, 3) : 0];
-    return `Day ${dom}${suffix} of each month at ${dueTime}${tzPart}`;
+    // Prefer the modern multi-day array; fall back to the legacy single-day
+    // integer for templates that pre-date multi-day support.
+    const list = getMonthlyDaysFromTemplate(template);
+    if (list.length === 0) return `Monthly at ${dueTime}${tzPart}`;
+    if (list.length === 1) {
+      const dom = list[0];
+      return `Monthly on day ${dom}${ordinalSuffix(dom)} at ${dueTime}${tzPart}`;
+    }
+    return `Monthly on days ${list.join(', ')} at ${dueTime}${tzPart}`;
   }
   return template.frequency;
 }
@@ -147,6 +153,39 @@ export function formatDueTime12h(dueTime) {
   const ampm = h >= 12 ? 'PM' : 'AM';
   h = ((h + 11) % 12) + 1;
   return `${h}:${mm} ${ampm}`;
+}
+
+/**
+ * Normalise a recurring template's monthly day configuration into a sorted,
+ * deduped int[] (1–31). Mirrors the server-side helper in
+ * recurringTaskService.getMonthlyDays — frontend code should never have to
+ * worry about whether a template is using the new `daysOfMonth` array or the
+ * legacy `dayOfMonth` integer.
+ */
+export function getMonthlyDaysFromTemplate(template) {
+  if (!template) return [];
+  const arr = Array.isArray(template.daysOfMonth) ? template.daysOfMonth : [];
+  const cleaned = arr
+    .map((d) => parseInt(d, 10))
+    .filter((d) => Number.isInteger(d) && d >= 1 && d <= 31);
+  if (cleaned.length > 0) {
+    return [...new Set(cleaned)].sort((a, b) => a - b);
+  }
+  const legacy = parseInt(template.dayOfMonth, 10);
+  if (Number.isInteger(legacy) && legacy >= 1 && legacy <= 31) return [legacy];
+  return [];
+}
+
+/** "1" → "st", "2" → "nd", "3" → "rd", everything else → "th". Locale-agnostic. */
+function ordinalSuffix(n) {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return 'th';
+  switch (n % 10) {
+    case 1: return 'st';
+    case 2: return 'nd';
+    case 3: return 'rd';
+    default: return 'th';
+  }
 }
 
 /** "HH:mm" (24h) — used to populate <input type="time"> from server "HH:mm:ss". */
@@ -172,4 +211,5 @@ export default {
   formatSchedule,
   formatDueTime12h,
   dueTimeToInputValue,
+  getMonthlyDaysFromTemplate,
 };

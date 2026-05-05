@@ -5,7 +5,7 @@ import api from '../../services/api';
 import { useToast } from '../common/Toast';
 
 /**
- * Bottom-sheet modal that intercepts a "Done" status change and submits the
+ * Centered modal that intercepts a "Done" status change and submits the
  * task for hierarchical approval instead of marking it complete directly.
  *
  * Props:
@@ -106,44 +106,45 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
   return (
     <DetailModalShell
       onClose={submitting ? () => {} : onClose}
-      placement="bottom"
+      placement="center"
       size="narrow"
       ariaLabelledBy={headlineId}
       closeOnBackdrop={!submitting}
+      className="sm:!max-w-[460px]"
     >
-      {/* Header — compact: 28px chip, single-line title, smaller subtitle */}
-      <div className="modal-header-compact">
+      {/* Header — slim 24px chip + tight px-3.5 py-2 padding */}
+      <div className="flex items-center justify-between px-3.5 py-2 border-b border-zinc-200 dark:border-zinc-800">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="modal-title-chip bg-emerald-50 dark:bg-emerald-500/15">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+          <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 bg-emerald-50 dark:bg-emerald-500/15">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
           </div>
-          <div className="min-w-0">
-            <h2 id={headlineId} className="modal-title-text">
+          <div className="min-w-0 leading-tight">
+            <h2 id={headlineId} className="text-[13px] font-semibold text-zinc-900 dark:text-white leading-tight">
               Submit for approval
             </h2>
-            <p className="modal-title-sub max-w-[380px]">{task.title}</p>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate max-w-[260px] leading-tight">{task.title}</p>
           </div>
         </div>
         <button
           type="button"
           onClick={onClose}
           disabled={submitting}
-          className="modal-close-btn"
+          className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 transition-colors disabled:opacity-40"
           aria-label="Close"
         >
-          <X className="w-4 h-4" />
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Body — denser stack (space-y-3), capped textarea, inline attachment row */}
-      <div className="modal-body-compact space-y-3">
+      {/* Body — px-3.5 py-2.5 + space-y-2 between sections */}
+      <div className="px-3.5 py-2.5 space-y-2 overflow-y-auto">
         {/* Comment — required */}
-        <div className="form-field-compact">
+        <div className="space-y-1">
           <div className="flex items-center justify-between">
-            <label className="form-label-compact">
+            <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
               What did you complete? <span className="text-red-500">*</span>
             </label>
-            <span className="form-helper-compact tabular-nums">
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 tabular-nums">
               {comment.length}/2000
             </span>
           </div>
@@ -154,15 +155,14 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
             disabled={submitting}
             placeholder="Brief note for the reviewer — what was done, anything they should check…"
             rows={2}
-            className="form-textarea-compact"
             maxLength={2000}
+            className="w-full px-3 py-2 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none disabled:opacity-60 min-h-[56px] max-h-[96px] leading-snug"
           />
         </div>
 
-        {/* Attachment — optional. Single-row dashed button collapses into a
-            file pill once selected; both states stay ~32px tall. */}
-        <div className="form-field-compact">
-          <label className="form-label-compact">
+        {/* Attachment — optional. ~32px tall in both empty and selected states. */}
+        <div className="space-y-1">
+          <label className="block text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Attachment <span className="text-zinc-400 font-normal normal-case">(optional)</span>
           </label>
           {!file ? (
@@ -170,17 +170,17 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={submitting}
-              className="compact-upload"
+              className="w-full inline-flex items-center justify-center gap-1.5 h-8 rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 text-[13px] text-zinc-600 dark:text-zinc-300 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors disabled:opacity-50"
             >
               <Paperclip className="w-3.5 h-3.5" />
               Attach a file
             </button>
           ) : (
-            <div className="compact-upload-row">
+            <div className="flex items-center justify-between gap-2 h-8 px-2.5 rounded-md bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700">
               <div className="flex items-center gap-2 min-w-0">
                 <Paperclip className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
                 <span className="text-[12px] text-zinc-700 dark:text-zinc-200 truncate">{file.name}</span>
-                <span className="form-helper-compact flex-shrink-0">
+                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 flex-shrink-0">
                   {(file.size / 1024).toFixed(0)} KB
                 </span>
               </div>
@@ -203,9 +203,9 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
           />
         </div>
 
-        {/* Approver preview — compact card, 24px avatar */}
-        <div className="compact-card">
-          <div className="flex items-center gap-1.5 form-label-compact mb-1.5">
+        {/* Approver preview — px-2.5 py-1.5 card */}
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/40 px-2.5 py-1.5">
+          <div className="flex items-center gap-1.5 mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             <ArrowRight className="w-3 h-3" />
             Next reviewer
           </div>
@@ -229,20 +229,20 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
             // Admin). Show every approver — any one of them can approve to
             // complete the chain.
             <div>
-              <p className="form-helper-compact uppercase tracking-wide mb-1">
+              <p className="text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500 mb-0.5">
                 Final stage · any one approves
               </p>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-0.5">
                 {preview.nextStage.approvers.map((a) => (
-                  <div key={a.userId || a.userName} className="flex items-center gap-2">
+                  <div key={a.userId || a.userName} className="flex items-center gap-1.5">
                     <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
                       {a.userName?.[0]?.toUpperCase() || '?'}
                     </div>
                     <div className="min-w-0 flex-1 flex items-baseline gap-1.5">
-                      <p className="text-[12px] font-medium text-zinc-900 dark:text-white truncate">
+                      <p className="text-[13px] font-medium text-zinc-900 dark:text-white truncate">
                         {a.userName}
                       </p>
-                      <p className="form-helper-compact capitalize truncate">
+                      <p className="text-[11px] text-zinc-400 dark:text-zinc-500 capitalize truncate">
                         {a.isSuperAdmin ? 'super admin' : (a.role?.replace('_', ' ') || 'reviewer')}
                       </p>
                     </div>
@@ -251,15 +251,15 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
               </div>
             </div>
           ) : preview?.nextApprover && (
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
+            <div className="flex items-center gap-1.5">
+              <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
                 {preview.nextApprover.userName?.[0]?.toUpperCase() || '?'}
               </div>
               <div className="min-w-0 flex items-baseline gap-1.5">
-                <p className="text-[12px] font-medium text-zinc-900 dark:text-white truncate">
+                <p className="text-[13px] font-medium text-zinc-900 dark:text-white truncate">
                   {preview.nextApprover.userName}
                 </p>
-                <p className="form-helper-compact capitalize truncate">
+                <p className="text-[11px] text-zinc-400 dark:text-zinc-500 capitalize truncate">
                   {preview.nextApprover.role?.replace('_', ' ') || 'reviewer'}
                 </p>
               </div>
@@ -268,13 +268,13 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
         </div>
       </div>
 
-      {/* Footer actions — compact buttons, no longer text-sm font-semibold */}
-      <div className="modal-footer-compact">
+      {/* Footer — px-3.5 py-2 + smaller buttons */}
+      <div className="flex items-center justify-end gap-2 px-3.5 py-2 border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/40">
         <button
           type="button"
           onClick={onClose}
           disabled={submitting}
-          className="btn-compact-ghost"
+          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40 transition-colors disabled:cursor-not-allowed"
         >
           Cancel
         </button>
@@ -282,9 +282,9 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
           type="button"
           onClick={handleSubmit}
           disabled={submitting || !comment.trim()}
-          className="btn-compact-primary"
+          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 transition-colors disabled:cursor-not-allowed"
         >
-          {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+          {submitting && <Loader2 className="w-3 h-3 animate-spin" />}
           {submitting ? 'Submitting…' : 'Submit for approval'}
         </button>
       </div>

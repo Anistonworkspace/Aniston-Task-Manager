@@ -484,106 +484,53 @@ async function main() {
       if (existingForOriginal) {
         console.log('');
         console.log(
-          `[reset-specific-user-passwords] Original maintenance key "${args.maintenanceKey}" was already ` +
+          `[reset-specific-user-passwords] Maintenance key "${args.maintenanceKey}" was already ` +
             `used at ${new Date(existingForOriginal.executed_at).toISOString()} ` +
             `by "${existingForOriginal.executed_by || '(unknown)'}".`
         );
-        console.log(
-          '[reset-specific-user-passwords] Cross-checking current user state to decide if a re-reset is needed...'
-        );
 
-        // State of each target user, *now*. We use findAll to surface dup
-        // anomalies as the same kind of failure they would cause later.
-        const stateRows = [];
+        // Light data-integrity check before we skip: are the target rows
+        // still resolvable cleanly? "Forgot-again" (password set + flag
+        // true + no token) and "redeemed-and-happy" are STATE-IDENTICAL,
+        // so we no longer treat that shape as drift — we'd block every
+        // deploy after a successful redeem otherwise. The only thing we
+        // genuinely refuse to silently skip on is data-integrity issues
+        // (missing rows, duplicate rows). The operator can force a
+        // re-reset at any time by passing --rerun-key.
+        const integrityIssues = [];
         for (const email of args.emails) {
           const matches = await User.findAll({ where: { email } });
-          stateRows.push({ email, matches });
-        }
-
-        const dirty = []; // users back in "forgot-again" state
-        const tokenPending = []; // users still in expected post-reset state
-        const cleared = []; // users who redeemed and now have a real password
-        const odd = []; // users in some other / unknown shape
-
-        for (const { email, matches } of stateRows) {
-          if (matches.length !== 1) {
-            odd.push({ email, reason: `expected 1 row, got ${matches.length}` });
-            continue;
-          }
-          const u = matches[0];
-          const hasPwd = !!u.password;
-          const hasFlag = !!u.hasLocalPassword;
-          const hasToken = !!u.passwordResetToken;
-          const tokenAlive =
-            u.passwordResetExpires instanceof Date &&
-            u.passwordResetExpires.getTime() > Date.now();
-
-          if (!hasPwd && !hasFlag && hasToken && tokenAlive) {
-            tokenPending.push(email);
-          } else if (hasPwd && hasFlag && !hasToken) {
-            // The user redeemed and now has a real password — and is fine.
-            // BUT: if the operator is asking for a reset, they want to
-            // clear it again. We can't distinguish "everything's fine,
-            // skip" from "I forgot it again, please reset" from state
-            // alone. Convention: this is the "forgot-again" state and
-            // requires a rerun key.
-            dirty.push(email);
-          } else if (!hasPwd && !hasFlag && !hasToken) {
-            // Cleared but never redeemed and token expired. Idempotent
-            // safe skip — but if the operator wants fresh tokens, they
-            // need a rerun key.
-            cleared.push(email);
-          } else {
-            odd.push({
-              email,
-              reason: `password=${hasPwd ? 'SET' : 'NULL'} hasLocalPassword=${hasFlag} ` +
-                `hasToken=${hasToken} tokenAlive=${tokenAlive}`,
-            });
+          if (matches.length === 0) {
+            integrityIssues.push(`${email}: row missing in users table`);
+          } else if (matches.length > 1) {
+            integrityIssues.push(
+              `${email}: ${matches.length} rows match ` +
+                `(unique-email constraint anomaly; ids=[${matches.map((u) => u.id).join(', ')}])`
+            );
           }
         }
 
-        if (dirty.length > 0 || odd.length > 0 || cleared.length > 0) {
+        if (integrityIssues.length > 0) {
           console.log('');
-          console.error('[reset-specific-user-passwords] STATE DRIFT DETECTED:');
-          for (const e of dirty) {
-            console.error(
-              `    ✗ ${e}: has password set + hasLocalPassword=true ` +
-                `(forgot-again / never reset).`
-            );
-          }
-          for (const e of cleared) {
-            console.error(
-              `    ✗ ${e}: cleared but token expired or missing — fresh ` +
-                `tokens are needed.`
-            );
-          }
-          for (const o of odd) {
-            console.error(`    ✗ ${o.email}: ${o.reason}`);
-          }
+          console.error('[reset-specific-user-passwords] DATA INTEGRITY ISSUE — refusing to skip:');
+          for (const i of integrityIssues) console.error(`    ✗ ${i}`);
           console.error('');
           console.error(
-            '[reset-specific-user-passwords] Refusing to silently skip. The original ' +
-              'maintenance marker is in place but at least one target user is NOT in ' +
-              'the expected post-reset / token-pending state.'
-          );
-          console.error(
-            '[reset-specific-user-passwords] To intentionally re-reset, pick a fresh, ' +
-              'never-before-used rerun key and pass it via:'
-          );
-          console.error('    --rerun-key password-reset-sunny-muskan-2026-05-rerun-1');
-          console.error(
-            '  or set ONETIME_RESET_RERUN_KEY in your CI/CD environment ' +
-              '(GitHub Actions repo Variables, or workflow_dispatch input).'
+            '[reset-specific-user-passwords] The marker says we already reset these users, ' +
+              'but the user table no longer matches the expected shape. Investigate the ' +
+              'users table directly before re-running.'
           );
           await sequelize.close();
           process.exit(5);
         }
 
-        // All target users are in the expected post-reset / token-pending
-        // state — safe idempotent skip.
         console.log(
-          `[reset-specific-user-passwords] All ${tokenPending.length} target user(s) are in ` +
-            'expected post-reset state (token still pending). Safe skip.'
+          '[reset-specific-user-passwords] Both target users still resolve to one row each. ' +
+            'Idempotent skip (the marker says we already did the reset for these emails).'
+        );
+        console.log(
+          '[reset-specific-user-passwords] To force a controlled re-reset, pass ' +
+            '--rerun-key <fresh-key> (or set ONETIME_RESET_RERUN_KEY).'
         );
         console.log('[reset-specific-user-passwords] Already completed — skipping.');
         await sequelize.close();

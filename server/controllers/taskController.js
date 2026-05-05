@@ -742,6 +742,18 @@ const getTask = async (req, res) => {
     };
     taskJSON._receipt = receiptService.buildSummary(taskJSON, req.user.id);
 
+    // Approval capability flags for the calling user. Same source of truth the
+    // approval action endpoints use server-side, so the modal can render the
+    // Approve / Reject / Request Changes buttons without ever guessing.
+    if (taskJSON.approvalStatus) {
+      const { computeApprovalCapabilities } = require('../services/approvalCapabilityService');
+      taskJSON.myApprovalCapabilities = computeApprovalCapabilities({
+        task: taskJSON,
+        flows: taskJSON.approvalFlows || [],
+        user: req.user,
+      });
+    }
+
     res.json({ success: true, data: { task: taskJSON } });
   } catch (error) {
     logger.error('[Task] GetTask error:', error);

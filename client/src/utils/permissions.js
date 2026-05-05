@@ -100,12 +100,27 @@ const PERMISSIONS = {
   create_workspace:    ['manager', 'admin'],
   edit_workspace:      ['manager', 'admin'],
   delete_workspace:    ['manager', 'admin'],
-  create_board:        ['manager', 'admin'],
+  // All roles can now create boards. The backend createBoard controller still
+  // verifies workspace access for assistant_manager / member, so a member
+  // who tries to create a board in a workspace they cannot see will receive
+  // a 403 even though the UI lets them open the create-board modal.
+  create_board:        ['member', 'assistant_manager', 'manager', 'admin'],
+  // RENAME is open to all authenticated roles when the user has access to
+  // the board. Backend updateBoard splits "rename" (name/description) from
+  // structural settings (color, columns, archived, members, etc.) — the
+  // latter remain manager+/admin only via edit_board / delete_board.
+  rename_board:        ['member', 'assistant_manager', 'manager', 'admin'],
+  rename_group:        ['member', 'assistant_manager', 'manager', 'admin'],
   edit_board:          ['manager', 'admin'],
   delete_board:        ['manager', 'admin'],
   // All roles can create their own tasks. Assigning OTHERS is gated separately
   // via assign_members / tasks.assign_others below.
   create_task:         ['member', 'assistant_manager', 'manager', 'admin'],
+  // All roles can add a group to boards they can access. The backend route
+  // (POST /boards/:id/groups) enforces board-access via boardVisibilityService;
+  // RENAMING / DELETING / REORDERING groups remains manager+/assistant_manager+
+  // (gated by edit_board on PUT /boards/:id and PUT /boards/:id/groups/reorder).
+  create_group:        ['member', 'assistant_manager', 'manager', 'admin'],
   assign_members:      ['assistant_manager', 'manager', 'admin'],
   edit_others_tasks:   ['manager', 'admin'],
   manage_settings:     ['manager', 'admin'],

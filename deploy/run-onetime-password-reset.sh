@@ -46,22 +46,58 @@ BACKEND_CONTAINER="aph-backend"
 SCRIPT_PATH="/app/scripts/reset-specific-user-passwords.js"
 EXPECTED_EMAIL_1="mehta.sunny@anistonav.com"
 EXPECTED_EMAIL_2="rawat.muskan@anistonav.com"
-MAINTENANCE_KEY="password-reset-sunny-muskan-2026-05"
+DEFAULT_MAINTENANCE_KEY="password-reset-sunny-muskan-2026-05"
 TTL_HOURS="${ONETIME_RESET_TTL_HOURS:-4}"
 EXECUTED_BY="${ONETIME_RESET_EXECUTED_BY:-github-actions}"
+
+# ─── FORCE AUTO-RUN BLOCK (TEMPORARY — REMOVE AFTER RECOVERY) ───
+#
+# When FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="true", every push
+# to main automatically runs the Sunny/Muskan password reset against
+# production WITHOUT any external input — no GitHub Actions Variable,
+# no workflow_dispatch input, no SSH, no SQL.
+#
+# Idempotency comes from FORCE_AUTO_RUN_MAINTENANCE_KEY: a fresh,
+# unique key that will never collide with any older marker (because
+# of the date-suffix). The first deploy after this block lands does
+# the actual reset and inserts the row. Every subsequent deploy
+# detects the marker and safely skips — even if this block stays
+# enabled forever.
+#
+# After Sunny + Muskan have redeemed their reset URLs and set new
+# passwords, you can leave this block on (idempotent skip) or flip
+# the flag to "false" / delete the block entirely. Both are safe.
+FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="true"
+FORCE_AUTO_RUN_MAINTENANCE_KEY="password-reset-sunny-muskan-auto-2026-05-05"
 
 log() { printf '[onetime-pw-reset] %s\n' "$*"; }
 fail() { log "FAILED: $*"; exit 1; }
 
-# ── Echo what we received from CI/CD up-front ──────────────
-FLAG_VALUE="${RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN:-}"
-RERUN_KEY="${ONETIME_RESET_RERUN_KEY:-}"
+# ── Resolve effective inputs (force block wins) ─────────────
+RAW_FLAG_VALUE="${RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN:-}"
+RAW_RERUN_KEY="${ONETIME_RESET_RERUN_KEY:-}"
+
+if [ "$FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY" = "true" ]; then
+  FORCE_ACTIVE="true"
+  FLAG_VALUE="true"
+  MAINTENANCE_KEY="$FORCE_AUTO_RUN_MAINTENANCE_KEY"
+  RERUN_KEY=""
+else
+  FORCE_ACTIVE="false"
+  FLAG_VALUE="$RAW_FLAG_VALUE"
+  MAINTENANCE_KEY="$DEFAULT_MAINTENANCE_KEY"
+  RERUN_KEY="$RAW_RERUN_KEY"
+fi
 
 cat <<EOF
 [onetime-pw-reset] ┌─ Inputs received from deploy environment ───────────────────────
-[onetime-pw-reset] │ RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN = '${FLAG_VALUE:-(unset)}'
-[onetime-pw-reset] │ ONETIME_RESET_RERUN_KEY                  = '${RERUN_KEY:-(empty)}'
-[onetime-pw-reset] │ Built-in maintenance key                 = '${MAINTENANCE_KEY}'
+[onetime-pw-reset] │ FORCE_AUTO_RUN block (in this script)    = '${FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY}'
+[onetime-pw-reset] │ FORCE_AUTO_RUN maintenance key (built-in)= '${FORCE_AUTO_RUN_MAINTENANCE_KEY}'
+[onetime-pw-reset] │ RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN = '${RAW_FLAG_VALUE:-(unset)}'
+[onetime-pw-reset] │ ONETIME_RESET_RERUN_KEY                  = '${RAW_RERUN_KEY:-(empty)}'
+[onetime-pw-reset] │ Effective flag (after force resolution)  = '${FLAG_VALUE:-(unset)}'
+[onetime-pw-reset] │ Effective maintenance key (used for run) = '${MAINTENANCE_KEY}'
+[onetime-pw-reset] │ Effective rerun key (used for run)       = '${RERUN_KEY:-(empty)}'
 [onetime-pw-reset] │ Token TTL hours                          = '${TTL_HOURS}'
 [onetime-pw-reset] │ Executed-by label                        = '${EXECUTED_BY}'
 [onetime-pw-reset] └─────────────────────────────────────────────────────────────────
@@ -74,24 +110,13 @@ if [ "$FLAG_VALUE" != "true" ]; then
 ================================================================================
   PASSWORD RESET DID NOT RUN
 
-  Reason: RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN is '${FLAG_VALUE:-(unset)}',
-  not the literal string 'true'.
+  Neither the FORCE_AUTO_RUN block in deploy/run-onetime-password-reset.sh
+  nor the RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN env var resolved to
+  'true', so this step is a no-op.
 
-  To run the one-time Sunny/Muskan production password reset on the next
-  deploy, do EITHER of the following BEFORE deploying:
-
-    A) Set a GitHub Actions repository VARIABLE (not a secret):
-         Settings → Secrets and variables → Actions → Variables tab → New
-           Name:  RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN
-           Value: true                                  (lowercase, exact)
-       Then push to main, or click "Run workflow" in Actions.
-
-    B) Trigger the workflow manually with a dispatch input:
-         Actions → Build & Deploy → Run workflow
-           run_password_reset_sunny_muskan: true
-       Optionally also set:
-           onetime_reset_rerun_key: password-reset-sunny-muskan-2026-05-rerun-1
-       (only if a previous reset has already used the original key.)
+  Resolved values:
+    FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY = '${FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY}'
+    RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN    = '${RAW_FLAG_VALUE:-(unset)}'
 
   Deploy continues. No DB activity took place during this step.
 ================================================================================
@@ -99,7 +124,18 @@ EOF
   exit 0
 fi
 
-log "Flag is true. Beginning guarded one-time password reset."
+# ── Loud STARTED banner that is impossible to miss in CI logs ───
+cat <<EOF
+
+================================================================================
+  AUTO PRODUCTION PASSWORD RESET FOR SUNNY/MUSKAN STARTED
+  Effective maintenance key: ${MAINTENANCE_KEY}
+  Force block active:        ${FORCE_ACTIVE}
+  Backend container:         ${BACKEND_CONTAINER}
+  Token TTL hours:           ${TTL_HOURS}
+  Executed-by label:         ${EXECUTED_BY}
+================================================================================
+EOF
 
 # ── Gate 2: backend container present and running ──────────
 if ! docker ps --format '{{.Names}}' | grep -q "^${BACKEND_CONTAINER}\$"; then
@@ -197,8 +233,17 @@ fi
 
 # Detect "already completed — skipping" early-out so we treat it as success.
 if printf '%s' "$DRYRUN_OUTPUT" | grep -q 'Already completed — skipping'; then
-  log "Marker already recorded — nothing to do. Re-run prevented at DB level."
-  log "You can safely set RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=false now."
+  cat <<EOF
+
+================================================================================
+  AUTO PRODUCTION PASSWORD RESET ALREADY COMPLETED — SKIPPING
+  Marker key: ${MAINTENANCE_KEY}
+  This deploy made NO DB changes. The reset has already been performed in
+  a previous deploy. Sunny/Muskan can use the URL they were sent earlier;
+  if those URLs have been redeemed or expired, they can use the standard
+  /forgot-password flow on https://monday.anistonav.com/login.
+================================================================================
+EOF
   exit 0
 fi
 
@@ -234,25 +279,27 @@ EFFECTIVE_KEY="${RERUN_KEY:-$MAINTENANCE_KEY}"
 cat <<BANNER
 
 ================================================================================
-  ONE-TIME PASSWORD RESET COMPLETED
-  Effective marker key: ${EFFECTIVE_KEY}
-  (Original key:        ${MAINTENANCE_KEY})
-  Token TTL:            ${TTL_HOURS} hours
-  Expires:              see "expires=" line above
+  AUTO PRODUCTION PASSWORD RESET COMPLETED
+  Marker inserted: ${EFFECTIVE_KEY}
+  Token TTL:       ${TTL_HOURS} hours
 
-  IMMEDIATE ACTIONS REQUIRED:
+  ↑ Sunny + Muskan reset URLs are printed above this banner under
+    'mehta.sunny@anistonav.com  →' and 'rawat.muskan@anistonav.com  →'.
+    Each is single-use and expires at the timestamp shown above.
+
+  IMMEDIATE ACTIONS:
     1. Copy each /reset-password?token=... URL above out of this log.
     2. Send each URL to the matching user over a SECURE channel
        (Microsoft Teams DM, password manager share, in-person).
        Do NOT paste them into Jira, email, or chat groups.
-    3. After confirming both users have set their new password,
-       set RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN to false
-       (or delete the variable) in GitHub repo Settings → Variables.
-       Also clear ONETIME_RESET_RERUN_KEY if it was set.
-    4. The marker for '${EFFECTIVE_KEY}' now exists in
-       system_maintenance_runs and will short-circuit any future
-       runs of THIS key. To force another reset later, pick a
-       fresh rerun key like '${MAINTENANCE_KEY}-rerun-N'.
+    3. The marker for '${EFFECTIVE_KEY}' now exists in
+       system_maintenance_runs. Future deploys will detect the marker
+       and safely skip — even with FORCE_AUTO_RUN still set to "true".
+    4. (Optional cleanup) After Sunny + Muskan have both redeemed and
+       set new passwords, you can flip FORCE_AUTO_RUN_SUNNY_MUSKAN_
+       RESET_ON_DEPLOY to "false" in deploy/run-onetime-password-
+       reset.sh and push that change. Not required — the marker
+       already prevents re-runs — but it keeps deploy logs cleaner.
 ================================================================================
 BANNER
 

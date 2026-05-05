@@ -3,7 +3,6 @@ import Modal from '../common/Modal';
 import Avatar from '../common/Avatar';
 import DepartmentSelect from '../common/DepartmentSelect';
 import api from '../../services/api';
-import { HIERARCHY_LEVELS } from '../../utils/constants';
 
 const ROLES = [
   { value: 'member', label: 'Member' },
@@ -14,7 +13,8 @@ const ROLES = [
 
 // Build the payload that the PUT /users/:id endpoint accepts. Sending only
 // the diff keeps the audit log meaningful and avoids triggering hierarchy
-// re-balancing logic on no-op fields.
+// re-balancing logic on no-op fields. hierarchyLevel is intentionally
+// excluded — this dialog must never mutate it (managed elsewhere).
 function buildDiff(form, user) {
   const diff = {};
   const trimOrNull = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -24,9 +24,6 @@ function buildDiff(form, user) {
     diff.email = form.email.trim();
   }
   if ((user.role || 'member') !== form.role) diff.role = form.role;
-  if ((user.hierarchyLevel || 'member') !== form.hierarchyLevel) {
-    diff.hierarchyLevel = form.hierarchyLevel;
-  }
   if ((user.department || '') !== (form.department || '')) {
     diff.department = trimOrNull(form.department);
   }
@@ -36,13 +33,14 @@ function buildDiff(form, user) {
   if (Boolean(user.isActive) !== Boolean(form.isActive)) {
     diff.isActive = Boolean(form.isActive);
   }
+  delete diff.hierarchyLevel;
   return diff;
 }
 
 export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmin, onToast }) {
   const [form, setForm] = useState({
     name: '', email: '', role: 'member', department: '', designation: '',
-    hierarchyLevel: 'member', isActive: true,
+    isActive: true,
   });
   const [departmentMode, setDepartmentMode] = useState('empty');
   const [loading, setLoading] = useState(false);
@@ -56,7 +54,6 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
         role: user.role || 'member',
         department: user.department || '',
         designation: user.designation || '',
-        hierarchyLevel: user.hierarchyLevel || 'member',
         isActive: user.isActive !== false,
       });
       setError('');
@@ -155,34 +152,19 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
           {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only admins can change emails</p>}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Role</label>
-            <select
-              value={form.role}
-              onChange={e => setForm({ ...form, role: e.target.value })}
-              disabled={!canEditPrivileged}
-              className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {ROLES.map(r => (
-                <option key={r.value} value={r.value}>{r.label}</option>
-              ))}
-            </select>
-            {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only admins can change roles</p>}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Hierarchy Level</label>
-            <select
-              value={form.hierarchyLevel}
-              onChange={e => setForm({ ...form, hierarchyLevel: e.target.value })}
-              disabled={!canEditPrivileged}
-              className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {HIERARCHY_LEVELS.map(h => (
-                <option key={h.value} value={h.value}>{h.label}</option>
-              ))}
-            </select>
-          </div>
+        <div>
+          <label className="block text-sm font-medium text-text-secondary mb-1">Role</label>
+          <select
+            value={form.role}
+            onChange={e => setForm({ ...form, role: e.target.value })}
+            disabled={!canEditPrivileged}
+            className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {ROLES.map(r => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+          {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only admins can change roles</p>}
         </div>
 
         <div className="grid grid-cols-2 gap-3">

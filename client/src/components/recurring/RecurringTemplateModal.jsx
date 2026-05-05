@@ -11,6 +11,7 @@ import {
   WEEKDAY_LABELS,
   ESCALATION_TARGETS,
   dueTimeToInputValue,
+  getMonthlyDaysFromTemplate,
 } from '../../services/recurringTasks';
 
 /**
@@ -128,6 +129,16 @@ export default function RecurringTemplateModal({
     });
   }
 
+  function toggleMonthlyDay(d) {
+    setForm((f) => {
+      const has = f.daysOfMonth.includes(d);
+      const next = has
+        ? f.daysOfMonth.filter((x) => x !== d)
+        : [...new Set([...f.daysOfMonth, d])].sort((a, b) => a - b);
+      return { ...f, daysOfMonth: next };
+    });
+  }
+
   function toggleEscalationTarget(t) {
     setForm((f) => {
       const has = f.escalationTargets.includes(t);
@@ -143,8 +154,12 @@ export default function RecurringTemplateModal({
     if (!form.startDate) return 'Pick a start date.';
     if (form.endDate && form.endDate < form.startDate) return 'End date must be on or after start date.';
     if (requiresWeekdays && form.weekdays.length === 0) return 'Pick at least one weekday.';
-    if (requiresDayOfMonth && (!form.dayOfMonth || form.dayOfMonth < 1 || form.dayOfMonth > 31)) {
-      return 'Day of month must be between 1 and 31.';
+    if (requiresDayOfMonth) {
+      if (!Array.isArray(form.daysOfMonth) || form.daysOfMonth.length === 0) {
+        return 'Pick at least one day of the month.';
+      }
+      const bad = form.daysOfMonth.find((d) => !Number.isInteger(d) || d < 1 || d > 31);
+      if (bad !== undefined) return 'Days of month must be integers between 1 and 31.';
     }
     if (form.escalateIfMissed && form.escalationTargets.length === 0) {
       return 'Pick at least one escalation target, or turn off "Notify if missed".';
@@ -178,7 +193,13 @@ export default function RecurringTemplateModal({
       isActive: form.isActive,
     };
     if (requiresWeekdays) payload.weekdays = form.weekdays;
-    if (requiresDayOfMonth) payload.dayOfMonth = form.dayOfMonth;
+    if (requiresDayOfMonth) {
+      // New monthly templates always send the multi-day array. The server
+      // mirrors `daysOfMonth[0]` onto the legacy `dayOfMonth` integer column,
+      // so older code paths that still read `dayOfMonth` keep working without
+      // any migration.
+      payload.daysOfMonth = form.daysOfMonth;
+    }
 
     setSubmitting(true);
     try {
@@ -378,15 +399,31 @@ export default function RecurringTemplateModal({
           )}
 
           {requiresDayOfMonth && (
-            <Field label="Day of month *" hint="If the chosen day exceeds the month length, the last day of the month is used.">
-              <input
-                type="number"
-                min="1"
-                max="31"
-                value={form.dayOfMonth || ''}
-                onChange={(e) => set('dayOfMonth', e.target.value ? parseInt(e.target.value, 10) : null)}
-                className={inputCls + ' w-24'}
+            <Field
+              label="Days of month *"
+              hint="Tap any day to toggle it. If a chosen day exceeds the month length (e.g. 31 in February), the last day of the month is used."
+            >
+              <MonthDayPicker
+                selected={form.daysOfMonth}
+                onToggle={toggleMonthlyDay}
               />
+              {form.daysOfMonth.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-text-tertiary">
+                  <span className="font-medium text-text-secondary">Selected:</span>
+                  {form.daysOfMonth.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => toggleMonthlyDay(d)}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors"
+                      title={`Remove day ${d}`}
+                    >
+                      {d}
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </Field>
           )}
 
@@ -551,10 +588,56 @@ function Toggle({ label, description, checked, onChange }) {
   );
 }
 
+/**
+ * MonthDayPicker — 7-column grid of clickable day-of-month chips (1–31).
+ *
+ * Toggling a chip adds/removes it from the selection. Visual styling mirrors
+ * the existing weekday chips so the modal stays cohesive in both light and
+ * dark themes (uses the same `border-primary` / `bg-primary/10` accents and
+ * `border-border` / `text-text-secondary` neutrals as the weekday picker
+ * directly above it). Pure render component — selection state lives in the
+ * parent form so payload reconciliation stays in one place.
+ */
+function MonthDayPicker({ selected, onToggle }) {
+  const days = Array.from({ length: 31 }, (_, i) => i + 1);
+  const selectedSet = new Set(selected || []);
+  return (
+    <div
+      role="group"
+      aria-label="Days of month"
+      className="grid grid-cols-7 gap-1.5"
+    >
+      {days.map((d) => {
+        const isOn = selectedSet.has(d);
+        return (
+          <button
+            key={d}
+            type="button"
+            aria-pressed={isOn}
+            onClick={() => onToggle(d)}
+            className={
+              `h-8 text-xs font-medium rounded-md border transition-colors `
+              + (isOn
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'border-border hover:bg-surface-100 text-text-secondary')
+            }
+          >
+            {d}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Form initial state ────────────────────────────────────────────────────
 
 function buildInitialForm(template, ctx) {
   if (template) {
+    // getMonthlyDaysFromTemplate returns the modern array if present, else
+    // wraps the legacy `dayOfMonth` integer — so editing an existing
+    // single-day monthly template loads naturally as `[5]` in the new picker.
+    const daysOfMonth = getMonthlyDaysFromTemplate(template);
     return {
       title: template.title || '',
       description: template.description || '',
@@ -564,7 +647,7 @@ function buildInitialForm(template, ctx) {
       priority: template.priority || 'medium',
       frequency: template.frequency || 'daily',
       weekdays: Array.isArray(template.weekdays) ? template.weekdays : [],
-      dayOfMonth: template.dayOfMonth || null,
+      daysOfMonth,
       startDate: template.startDate || todayStr(),
       endDate: template.endDate || '',
       dueTime: dueTimeToInputValue(template.dueTime),
@@ -587,7 +670,7 @@ function buildInitialForm(template, ctx) {
     priority: 'medium',
     frequency: 'daily',
     weekdays: [],
-    dayOfMonth: null,
+    daysOfMonth: [],
     startDate: todayStr(),
     endDate: '',
     dueTime: '18:00',

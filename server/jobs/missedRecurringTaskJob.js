@@ -256,6 +256,18 @@ async function tickOnce(now = new Date()) {
         missedEscalationSentAt: new Date(),
       });
       escalated += 1;
+      logger.info('[RecurringMiss] escalated', {
+        event: 'recurring_missed',
+        recurringTemplateId: tpl.id,
+        boardId: task.boardId,
+        groupId: task.groupId,
+        assigneeId: task.assignedTo,
+        occurrenceDate: task.occurrenceDate,
+        generatedTaskId: task.id,
+        recipients: recipients.length,
+        source: 'missedRecurringTaskJob',
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       errors += 1;
       logger.error('[MissedRecurringJob] task processing failed', {

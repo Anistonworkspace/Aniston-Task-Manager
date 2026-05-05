@@ -60,7 +60,10 @@ async function tickOnce(now = new Date()) {
   let errors = 0;
   for (const tpl of candidates) {
     try {
-      const result = await recurringTaskService.runTemplateOnce(tpl, { fromDate: now });
+      const result = await recurringTaskService.runTemplateOnce(tpl, {
+        fromDate: now,
+        source: 'recurringTemplateGenerationJob',
+      });
       if (result.error) {
         errors += 1;
         logger.warn('[RecurringGenJob] Template error', { templateId: tpl.id, msg: result.error });

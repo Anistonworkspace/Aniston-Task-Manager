@@ -147,6 +147,7 @@ const TaskRow = React.memo(function TaskRow({
             onOwnersChange={personEditable ? (ids => onUpdate({ ownerIds: ids })) : undefined}
             assignSelfOnly={lockToSelf}
             currentUserId={user?.id}
+            assigneeFallback={task.assignee || null}
           />
         );
       }

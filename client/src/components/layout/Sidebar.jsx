@@ -691,7 +691,13 @@ export default function Sidebar({ collapsed, onToggle }) {
                               <Plus size={12} /> Create Board
                             </button>
                           )}
-                          {canCreateBoardPerm && (
+                          {/* "Rearrange Boards" is intentionally gated by
+                              canManage (admin / manager / super admin) and NOT
+                              by canCreateBoardPerm. Loosening create_board to
+                              all roles must NOT also expose the workspace
+                              board-rearrange action; that one stays
+                              management-only as it was before. */}
+                          {canManage && (
                             <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
                               className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
                               <ArrowUpDown size={12} /> Rearrange Boards

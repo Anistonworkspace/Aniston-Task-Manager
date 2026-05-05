@@ -14,6 +14,13 @@ const { logActivity } = require('../services/activityService');
 const realtime = require('../services/realtimeService');
 const { deriveApprovalChain, previewNextApprover } = require('../services/approvalChainService');
 const approvalNotif = require('../services/approvalNotificationService');
+const { computeApprovalCapabilities } = require('../services/approvalCapabilityService');
+const {
+  applyApprovalSubmittedState,
+  applyApprovalApprovedState,
+  applyApprovalRejectedState,
+  applyApprovalChangesRequestedState,
+} = require('../services/approvalLifecycleService');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -232,6 +239,12 @@ exports.submitForApproval = async (req, res) => {
     }));
     const createdRows = await TaskApprovalFlow.bulkCreate(rowsToCreate, { transaction: t });
 
+    // Load board for status-label resolution + group movement. Cheap one-shot
+    // read inside the transaction; the lifecycle helpers are pure.
+    const board = task.boardId
+      ? await Board.findByPk(task.boardId, { attributes: ['id', 'columns', 'groups'], transaction: t })
+      : null;
+
     // Auto-approve short-circuit: submitter has no senior reviewer in the org.
     if (autoApprove) {
       // Mark every level approved (only level 0 exists, which is fine — semantically
@@ -253,8 +266,16 @@ exports.submitForApproval = async (req, res) => {
         comment: 'No senior reviewer in chain.',
         timestamp: now.toISOString(),
       });
+      // Auto-approve goes straight to the "approved" lifecycle state — Done,
+      // 100%, group→Done — without ever passing through the Waiting-for-Review
+      // intermediate, since the chain has nothing to wait for.
+      const approvedPatch = applyApprovalApprovedState(task, board);
       await task.update(
-        { approvalStatus: 'approved', approvalChain: auditChain, status: 'done' },
+        {
+          ...approvedPatch,
+          approvalStatus: 'approved',
+          approvalChain: auditChain,
+        },
         { transaction: t }
       );
     } else {
@@ -264,8 +285,16 @@ exports.submitForApproval = async (req, res) => {
         action: 'submitted',
         comment: sanitizedComment,
       });
+      // Lifecycle: snapshot current status/progress, set status to Waiting for
+      // Review, progress to 100. Board row reflects the new state immediately
+      // — no manual flip required by the user.
+      const submittedPatch = applyApprovalSubmittedState(task, board);
       await task.update(
-        { approvalStatus: 'pending_approval', approvalChain: auditChain },
+        {
+          ...submittedPatch,
+          approvalStatus: 'pending_approval',
+          approvalChain: auditChain,
+        },
         { transaction: t }
       );
     }
@@ -412,14 +441,69 @@ async function processApprovalAction(req, res, opts) {
       });
     }
 
-    // Authorization: the actor must hold a pending row.
-    //   - In the current stage: full action set (approve / reject / request_changes).
-    //   - In a HIGHER stage: only 'approve' (early completion — collapses all
-    //     lower stages with auto-approval). Reject/request_changes from above
-    //     don't make sense.
+    // Authorization. Single source of truth: approvalCapabilityService computes
+    // {canApprove,canReject,canRequestChanges,isOverrideApprover,canApproveEarly}
+    // from the loaded chain. We then resolve `actorRow` for whichever path the
+    // service authorized — including synthesizing a row for Super Admin override
+    // when the SA doesn't yet have a place in the chain.
+    //
+    //   path 1 — current-stage approver        : full action set
+    //   path 2 — higher-stage pending approver  : full action set, early action
+    //                                              (reject / request_changes are
+    //                                              treated as terminal — see
+    //                                              the corresponding branches)
+    //   path 3 — Super Admin override            : full action set; we insert a
+    //                                              synthetic flow row at the
+    //                                              current stage so the audit
+    //                                              trail records the decision
+    //
+    // Snapshot ALL chain rows once for the capability calc. We already hold the
+    // task row lock; loading rows here is safe and gives us a stable view.
+    const allChainRowsForCapability = await TaskApprovalFlow.findAll({
+      where: { taskId: task.id },
+      order: [
+        [sequelize.literal('COALESCE(stage, level)'), 'ASC'],
+        ['level', 'ASC'],
+      ],
+      transaction: t,
+    });
+    const capabilities = computeApprovalCapabilities({
+      task,
+      flows: allChainRowsForCapability.map((r) => ({
+        id: r.id,
+        level: r.level,
+        stage: stageOf(r),
+        userId: r.userId,
+        userName: r.userName,
+        status: r.status,
+      })),
+      user: req.user,
+    });
+    const capabilityKey = {
+      approve: 'canApprove',
+      reject: 'canReject',
+      request_changes: 'canRequestChanges',
+    }[opts.action];
+    if (!capabilities[capabilityKey]) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message:
+          capabilities.reasonIfCannotAct ||
+          (opts.action === 'approve'
+            ? 'You are not in this approval chain.'
+            : 'You are not a current approver for this task.'),
+      });
+    }
+
+    // Resolve actorRow. Order matters:
+    //   1. pending row in the current stage  → straightforward current approver
+    //   2. pending row in a HIGHER stage     → early action (isEarlyCompletion)
+    //   3. SA with no row at all             → synthesize at current stage
     let actorRow = pendingStageRows.find((r) => r.userId === req.user.id) || null;
     let isEarlyCompletion = false;
-    if (!actorRow && opts.action === 'approve') {
+    let isOverride = false;
+    if (!actorRow) {
       actorRow = await TaskApprovalFlow.findOne({
         where: { taskId: task.id, status: 'pending', userId: req.user.id },
         order: [
@@ -431,13 +515,47 @@ async function processApprovalAction(req, res, opts) {
       });
       if (actorRow) isEarlyCompletion = true;
     }
+    if (!actorRow && capabilities.isOverrideApprover) {
+      // Super Admin override path. SA isn't in the chain at all — typically only
+      // happens when the SA was added or promoted after the chain was built.
+      // We persist a fresh row at the current stage so audit, notifications, and
+      // peer-skipping logic all see a real actor row to operate on.
+      const maxLevelRow = await TaskApprovalFlow.findOne({
+        where: { taskId: task.id },
+        order: [['level', 'DESC']],
+        attributes: ['level'],
+        transaction: t,
+      });
+      const newLevel = (maxLevelRow ? maxLevelRow.level : 0) + 1;
+      actorRow = await TaskApprovalFlow.create(
+        {
+          taskId: task.id,
+          userId: req.user.id,
+          userName: req.user.name,
+          // Synthetic role marker — distinguishes override rows from genuine
+          // chain membership in the audit trail.
+          role: 'super_admin_override',
+          level: newLevel,
+          stage: currentStage,
+          status: 'pending',
+        },
+        { transaction: t }
+      );
+      isOverride = true;
+    }
     if (!actorRow) {
+      // Defensive: capabilities said yes but we couldn't resolve a row. Log so
+      // we can investigate; never reach here in practice.
       await t.rollback();
-      return res.status(403).json({
+      console.error('[Approval] capability/actor mismatch', {
+        taskId: task.id,
+        userId: req.user.id,
+        action: opts.action,
+        capabilities,
+      });
+      return res.status(500).json({
         success: false,
-        message: opts.action === 'approve'
-          ? 'You are not in this approval chain.'
-          : 'You are not a current approver for this task.',
+        message: 'Internal error resolving approval actor.',
       });
     }
 
@@ -510,6 +628,28 @@ async function processApprovalAction(req, res, opts) {
         );
       }
 
+      // Super Admin override approve: SA was not in the chain so we synthesized
+      // a row at the current stage. Their authority is full — every still-pending
+      // row in HIGHER stages is auto-skipped so the chain completes here, not
+      // advances to a stage SA was never in.
+      if (isOverride) {
+        await TaskApprovalFlow.update(
+          {
+            status: 'skipped_parallel',
+            actionAt: now,
+            comment: `Auto-skipped: Super Admin override approval by ${req.user.name}.`,
+          },
+          {
+            where: {
+              taskId: task.id,
+              status: 'pending',
+              id: { [Op.ne]: actorRow.id },
+            },
+            transaction: t,
+          }
+        );
+      }
+
       // Final approval check: any pending rows left in the entire chain?
       const remaining = await TaskApprovalFlow.count({
         where: { taskId: task.id, status: 'pending' },
@@ -524,18 +664,41 @@ async function processApprovalAction(req, res, opts) {
     } else if (opts.action === 'reject') {
       const peerIdsInMyStage = pendingStageRows.filter((r) => r.id !== actorRow.id).map((r) => r.id);
 
-      if (currentStage <= 1) {
-        // Rejected at the first stage — terminal. Cancel peers (audit trail in
-        // approvalChain JSONB) and end the cycle. Submitter must re-submit,
-        // which wipes the chain and rebuilds.
-        if (peerIdsInMyStage.length > 0) {
+      // Terminal rejection paths:
+      //   - currentStage <= 1: rejecting at stage 1 ends the cycle (existing rule)
+      //   - isEarlyCompletion (higher-stage actor): an authority above the current
+      //     stage said no — bouncing to the previous stage is meaningless because
+      //     they bypassed it.
+      //   - isOverride (Super Admin override): always terminal.
+      //   - req.user.isSuperAdmin: SA reject is always terminal authority,
+      //     regardless of where they sit in the chain.
+      const isTerminalReject =
+        isEarlyCompletion || isOverride || req.user.isSuperAdmin || currentStage <= 1;
+
+      if (isTerminalReject) {
+        // Cancel every still-pending row in the chain (across all stages) so
+        // the chain's terminal state is consistent. Submitter will rebuild via
+        // re-submit if they choose to retry; until then nothing in the chain
+        // sits in a stale 'pending' state.
+        const allOtherPending = (
+          await TaskApprovalFlow.findAll({
+            where: {
+              taskId: task.id,
+              status: 'pending',
+              id: { [Op.ne]: actorRow.id },
+            },
+            attributes: ['id'],
+            transaction: t,
+          })
+        ).map((r) => r.id);
+        if (allOtherPending.length > 0) {
           await TaskApprovalFlow.update(
             {
               status: 'cancelled_peer',
               actionAt: now,
               comment: `Stage cancelled: ${req.user.name} rejected.`,
             },
-            { where: { id: { [Op.in]: peerIdsInMyStage } }, transaction: t }
+            { where: { id: { [Op.in]: allOtherPending } }, transaction: t }
           );
         }
         await actorRow.update(
@@ -554,6 +717,7 @@ async function processApprovalAction(req, res, opts) {
         // and after S-1 re-approves the count of pending rows would be 0 —
         // auto-completing the task incorrectly. Resetting the whole stage
         // keeps the cycle navigable.
+        void peerIdsInMyStage;
         await TaskApprovalFlow.update(
           { status: 'pending', actionAt: null, comment: null },
           {
@@ -572,16 +736,31 @@ async function processApprovalAction(req, res, opts) {
         // Approval status stays 'pending_approval' — the chain is still active.
       }
     } else if (opts.action === 'request_changes') {
-      // Cancel parallel peers in the same stage.
-      const peerIdsInMyStage = pendingStageRows.filter((r) => r.id !== actorRow.id).map((r) => r.id);
-      if (peerIdsInMyStage.length > 0) {
+      // Request-changes is terminal disposition: the chain stops, the submitter
+      // must re-submit. So cancel every other pending row across the whole
+      // chain (not just same-stage peers). For a current-stage actor this is
+      // identical to the previous behavior (no rows pending in lower or higher
+      // stages); for higher-stage / SA override it correctly tears down lower
+      // stages too.
+      const allOtherPending = (
+        await TaskApprovalFlow.findAll({
+          where: {
+            taskId: task.id,
+            status: 'pending',
+            id: { [Op.ne]: actorRow.id },
+          },
+          attributes: ['id'],
+          transaction: t,
+        })
+      ).map((r) => r.id);
+      if (allOtherPending.length > 0) {
         await TaskApprovalFlow.update(
           {
             status: 'cancelled_peer',
             actionAt: now,
             comment: `Stage cancelled: ${req.user.name} requested changes.`,
           },
-          { where: { id: { [Op.in]: peerIdsInMyStage } }, transaction: t }
+          { where: { id: { [Op.in]: allOtherPending } }, transaction: t }
         );
       }
       await actorRow.update(
@@ -597,11 +776,38 @@ async function processApprovalAction(req, res, opts) {
       action: opts.auditAction,
       comment: sanitizedComment,
     });
+
+    // Lifecycle transitions for the visible task fields (status / progress /
+    // groupId). Loaded once here so each action branch only declares the
+    // patch it needs. Board attributes are minimal — `columns` for label
+    // resolution, `groups` for group movement.
+    const board = task.boardId
+      ? await Board.findByPk(task.boardId, { attributes: ['id', 'columns', 'groups'], transaction: t })
+      : null;
+
+    let lifecyclePatch = {};
+    if (resultingApprovalStatus === 'approved') {
+      // Final approval: status='done', progress=100, group→Done, snapshot cleared.
+      lifecyclePatch = applyApprovalApprovedState(task, board);
+    } else if (resultingApprovalStatus === 'rejected') {
+      // Terminal reject: restore snapshot (or fall back to Not Started / 0).
+      lifecyclePatch = applyApprovalRejectedState(task, board);
+    } else if (resultingApprovalStatus === 'changes_requested') {
+      // Bounced back to submitter: restore snapshot (or fall back to Not Started / 0).
+      lifecyclePatch = applyApprovalChangesRequestedState(task, board);
+    }
+    // else: chain still active (mid-stage approve), no field changes needed.
+
     const taskUpdates = {
+      ...lifecyclePatch,
       approvalStatus: resultingApprovalStatus,
       approvalChain: auditChain,
     };
-    if (resultingTaskStatus) taskUpdates.status = resultingTaskStatus;
+    // resultingTaskStatus is the legacy single-key signal. The lifecycle
+    // patch above already supplies status when relevant; keep this as a
+    // safety net for any path that sets resultingTaskStatus without going
+    // through the lifecycle (none currently, but defensive).
+    if (resultingTaskStatus && !taskUpdates.status) taskUpdates.status = resultingTaskStatus;
     await task.update(taskUpdates, { transaction: t });
 
     await t.commit();
@@ -798,12 +1004,25 @@ exports.getApprovalPreview = async (req, res) => {
 //
 // Returns the full ordered chain for a task. Used by the Approvals tab in the
 // task modal (Phase 7) and the multi-step indicator on the task row (Phase 6).
+//
+// Includes `myCapabilities` so the modal renders Approve/Reject/Request Changes
+// buttons strictly from server-supplied flags. Frontend never re-derives auth
+// — eliminates the "buttons visible but click 403s" class of bug.
 exports.getApprovalChain = async (req, res) => {
   try {
     const task = await Task.findByPk(req.params.id, { attributes: ['id', 'boardId', 'approvalStatus'] });
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
     const flows = await loadChainForResponse(task.id);
-    res.json({ success: true, data: { taskId: task.id, approvalStatus: task.approvalStatus, flows } });
+    const myCapabilities = computeApprovalCapabilities({ task, flows, user: req.user });
+    res.json({
+      success: true,
+      data: {
+        taskId: task.id,
+        approvalStatus: task.approvalStatus,
+        flows,
+        myCapabilities,
+      },
+    });
   } catch (err) {
     console.error('[Approval] getApprovalChain error:', err);
     res.status(500).json({ success: false, message: 'Failed to load approval chain.' });
@@ -1161,6 +1380,20 @@ exports.getWorkflowItems = async (req, res) => {
       order: [['updatedAt', 'DESC']],
       limit: 100,
     });
+    // Per-task capability flags. Computed against the included approvalFlows so
+    // the frontend renders Approve / Reject / Request Changes strictly from
+    // server-supplied authorization. Without this, TasksPage renders buttons
+    // from a coarse role check (canManage), which produces the classic
+    // "Admin sees Request Changes button → click → 403" UX bug.
+    const approvalsWithCapabilities = approvals.map((task) => {
+      const taskJSON = task.toJSON();
+      taskJSON.myCapabilities = computeApprovalCapabilities({
+        task,
+        flows: taskJSON.approvalFlows || [],
+        user,
+      });
+      return taskJSON;
+    });
 
     const extWhere = {};
     if (isMember) extWhere.requestedBy = user.id;
@@ -1202,7 +1435,7 @@ exports.getWorkflowItems = async (req, res) => {
 
     res.json({
       success: true,
-      data: { approvals, extensions, delegations, helpRequests },
+      data: { approvals: approvalsWithCapabilities, extensions, delegations, helpRequests },
     });
   } catch (err) {
     console.error('[WorkflowItems] Error:', err);

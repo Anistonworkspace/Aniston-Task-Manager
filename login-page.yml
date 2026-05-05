@@ -1,0 +1,36 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - img "Monday Aniston" [ref=e7]
+      - generic [ref=e8]:
+        - heading "Monday Aniston" [level=1] [ref=e9]
+        - paragraph [ref=e10]: Work Management
+    - heading "Welcome back!" [level=2] [ref=e11]
+    - paragraph [ref=e12]: Log in to your account to continue
+    - generic [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]: Email
+        - generic [ref=e16]:
+          - img [ref=e17]
+          - textbox "name@company.com" [ref=e20]
+      - generic [ref=e21]:
+        - generic [ref=e22]: Password
+        - generic [ref=e23]:
+          - img [ref=e24]
+          - textbox "Enter your password" [ref=e27]
+          - button [ref=e28] [cursor=pointer]:
+            - img [ref=e29]
+      - button "Log in" [ref=e32] [cursor=pointer]:
+        - generic [ref=e33]: Log in
+        - img [ref=e34]
+    - generic [ref=e47]: or
+    - button "Sign in with Microsoft" [ref=e49] [cursor=pointer]:
+      - img [ref=e50]
+      - generic [ref=e55]: Sign in with Microsoft
+    - link "Forgot password?" [ref=e37] [cursor=pointer]:
+      - /url: /forgot-password
+    - paragraph [ref=e38]: Need an account? Contact your administrator.
+  - generic [ref=e40]:
+    - img "Monday Aniston" [ref=e42]
+    - heading "Manage your team's work" [level=2] [ref=e43]
+    - paragraph [ref=e44]: Track tasks, collaborate with your team, and deliver projects on time with Monday Aniston.

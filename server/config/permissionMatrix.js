@@ -169,7 +169,14 @@ const ROLE_PERMISSIONS = {
     roles:            { view: false, manage: false },
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
-    boards:           { view: true, create: false, edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
+    // boards.create is now base-allowed: assistant managers can spin up a
+    // board inside a workspace they can access. The createBoard controller
+    // still verifies workspace access for non-admin/manager actors so they
+    // cannot drop a board into a workspace they are not entitled to see.
+    // edit/delete/manage_members/manage_settings/export remain false — those
+    // are management-only actions (rename/archive/reorder groups, member
+    // management, settings, exports) and have not been loosened.
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
     tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: false },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
@@ -200,7 +207,13 @@ const ROLE_PERMISSIONS = {
     roles:            { view: false, manage: false },
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
-    boards:           { view: true, create: false, edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
+    // boards.create is now base-allowed: members can create their own board
+    // inside a workspace they can already access. The createBoard controller
+    // verifies workspace access for non-admin/manager actors. boards.edit
+    // remains false so members cannot rename/archive/reorder groups via
+    // PUT /boards/:id — addGroup uses a separate per-board route guarded by
+    // boardVisibilityService.canUserSeeBoard instead.
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
     // Members can create their own tasks and self-assign. Editing applies to
     // their own/self-assigned tasks only — controllers enforce the field-level
     // whitelist; assigning OTHERS requires the explicit assign_others grant.

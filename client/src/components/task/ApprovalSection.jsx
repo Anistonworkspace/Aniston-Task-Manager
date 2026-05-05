@@ -62,6 +62,13 @@ export default function ApprovalSection({ task, onUpdate }) {
   // stays current even when another user acts.
   const [flows, setFlows] = useState(() => task?.approvalFlows || []);
   const [approvalStatus, setApprovalStatus] = useState(task?.approvalStatus || null);
+  // Server-supplied capability flags. Primary source of truth for which action
+  // buttons render — kept in sync with backend authorization. Falls back to
+  // local derivation if the server didn't include them (older endpoints, or
+  // older clients holding stale task props).
+  const [serverCapabilities, setServerCapabilities] = useState(
+    () => task?.myApprovalCapabilities || null
+  );
 
   // Action UI state
   const [showActionPanel, setShowActionPanel] = useState(null); // 'approve' | 'reject' | 'request_changes' | null
@@ -75,13 +82,55 @@ export default function ApprovalSection({ task, onUpdate }) {
   useEffect(() => {
     setFlows(task?.approvalFlows || []);
     setApprovalStatus(task?.approvalStatus || null);
-  }, [task?.id, task?.approvalStatus, task?.approvalFlows]);
+    setServerCapabilities(task?.myApprovalCapabilities || null);
+  }, [task?.id, task?.approvalStatus, task?.approvalFlows, task?.myApprovalCapabilities]);
+
+  // Authoritative capability fetch.
+  //
+  // The modal opens with whatever task object the parent supplies. Two paths:
+  //   - From TasksPage.openTask: the task came from `GET /api/tasks/:id`,
+  //     which now ships `myApprovalCapabilities`. Buttons render correctly.
+  //   - From BoardPage: the task came from the board's list (`GET /tasks`),
+  //     which does NOT include capabilities — only the modal/chain endpoint
+  //     does. Without this fetch, the component falls back to local derivation,
+  //     which doesn't know about Super Admin override / higher-stage Reject &
+  //     Request Changes.
+  //
+  // To guarantee the modal always renders the same buttons as the /tasks page
+  // (the user-facing invariant we're enforcing), we fetch the canonical caps
+  // from the approval-chain endpoint whenever the task is in an active cycle
+  // and we don't already have server caps. This adds one cheap GET per modal
+  // open in the BoardPage path; the TasksPage path skips it because caps are
+  // already present.
+  useEffect(() => {
+    if (!task?.id) return;
+    if (task.approvalStatus !== 'pending_approval') return;
+    if (task.myApprovalCapabilities) return; // already authoritative
+    let cancelled = false;
+    api.get(`/task-extras/${task.id}/approval-chain`)
+      .then((res) => {
+        if (cancelled) return;
+        const payload = res.data?.data || res.data;
+        if (payload?.myCapabilities) setServerCapabilities(payload.myCapabilities);
+        if (Array.isArray(payload?.flows)) setFlows(payload.flows);
+      })
+      .catch(() => { /* non-fatal — local fallback covers */ });
+    return () => { cancelled = true; };
+  }, [task?.id, task?.approvalStatus, task?.myApprovalCapabilities]);
 
   // Live updates from the backend (emitted by approvalController on every
   // submit/approve/reject/changes_requested). Filtered to this task only.
   useRealtimeEvent('task:approval-updated', (data) => {
     if (data?.taskId !== task?.id) return;
     if (Array.isArray(data.flows)) setFlows(data.flows);
+    // Approval action mutated the chain — re-pull capabilities so a stale
+    // server snapshot doesn't keep buttons rendered after they no longer apply.
+    api.get(`/task-extras/${task.id}/approval-chain`)
+      .then((res) => {
+        const payload = res.data?.data || res.data;
+        if (payload?.myCapabilities) setServerCapabilities(payload.myCapabilities);
+      })
+      .catch(() => { /* non-fatal — local derivation will cover */ });
   });
   useRealtimeEvent('task:updated', (data) => {
     if (data?.task?.id !== task?.id) return;
@@ -99,7 +148,7 @@ export default function ApprovalSection({ task, onUpdate }) {
   const currentStageGroup = stageGroups.find((g) => g.stage === currentStageKey);
   const currentStageRows = (currentStageGroup?.rows || []).filter((r) => r.status === 'pending');
   const currentPendingRow = currentStageRows[0] || null;
-  const isCurrentApprover = !!user?.id && currentStageRows.some((r) => r.userId === user.id);
+  const isCurrentApproverLocal = !!user?.id && currentStageRows.some((r) => r.userId === user.id);
 
   // Early-completion eligibility: the actor holds a pending row in a stage
   // LATER than the current one. Today the only meaningful "earlier vs later"
@@ -110,12 +159,45 @@ export default function ApprovalSection({ task, onUpdate }) {
   const myStageKey = myAnyPendingRow
     ? (stageGroups.find((g) => g.rows.some((r) => r === myAnyPendingRow || r.id === myAnyPendingRow.id))?.stage)
     : null;
-  const canEarlyComplete =
+  const canEarlyCompleteLocal =
     !!myAnyPendingRow
     && currentStageKey
     && myStageKey
     && stageRank[myStageKey] > stageRank[currentStageKey];
   const isInActiveCycle = approvalStatus === 'pending_approval';
+
+  // ── Server-driven authorization (preferred) ────────────────────────────────
+  //
+  // If the backend included capability flags on the task (or on the
+  // approval-chain refetch), use them verbatim. They cover three paths the
+  // local derivation handled inconsistently:
+  //   1. Current-stage approver       → approve / reject / request_changes
+  //   2. Higher-stage approver (early) → approve / reject / request_changes
+  //   3. Super Admin override          → approve / reject / request_changes
+  //
+  // Local fallbacks are used briefly before the mount-fetch above resolves
+  // and as a defense for any future opener that forgets to include caps. The
+  // fallback mirrors the server's three paths so the modal renders the same
+  // buttons as `/tasks` even before the fetch returns:
+  //   - current-stage approver   → all three (matches isCurrentApproverLocal)
+  //   - higher-stage approver    → all three (matches canEarlyCompleteLocal —
+  //                                 SA at final stage while asst-mgr is current
+  //                                 lands here, which is the bug we're fixing)
+  //   - Super Admin (any state)  → all three (override authority — backend
+  //                                 still enforces; the worst case is a 403
+  //                                 toast, never a silent privilege bypass)
+  //
+  // Backend remains the source of truth for every action call: a permissive
+  // fallback only widens what's offered, never what's accepted.
+  const isPotentialApprover = isCurrentApproverLocal || canEarlyCompleteLocal || isSuperAdmin;
+  const caps = serverCapabilities;
+  const canApprove = caps ? !!caps.canApprove : isPotentialApprover;
+  const canReject  = caps ? !!caps.canReject  : isPotentialApprover;
+  const canRequestChanges = caps ? !!caps.canRequestChanges : isPotentialApprover;
+  const isOverrideApprover = caps ? !!caps.isOverrideApprover : (isSuperAdmin && !myAnyPendingRow);
+  const isHigherLevelApprover = caps ? !!caps.canApproveEarly : !!canEarlyCompleteLocal;
+  const showActionButtons = isInActiveCycle && (canApprove || canReject || canRequestChanges);
+  const isCurrentApprover = caps ? !!caps.isCurrentApprover : isCurrentApproverLocal;
 
   // Resubmit button rules:
   //   - rejected / changes_requested: only the original submitter (the L0 row's
@@ -400,59 +482,65 @@ export default function ApprovalSection({ task, onUpdate }) {
         </div>
       )}
 
-      {/* Action buttons row — visible to the current pending approver (full
-          action set) OR to any higher-level pending approver (approve only,
-          for early completion). Reject + request_changes always require being
-          the current approver since they don't make sense from above. */}
-      {!showActionPanel && isInActiveCycle && isCurrentApprover && (
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            onClick={() => openActionPanel('approve')}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
-          >
-            <Check size={11} /> Approve
-          </button>
-          <button
-            onClick={() => openActionPanel('reject')}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold rounded-md transition-colors"
-          >
-            <X size={11} /> Reject
-          </button>
-          <button
-            onClick={() => openActionPanel('request_changes')}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-[11px] font-semibold rounded-md transition-colors"
-          >
-            <MessageSquare size={11} /> Request changes
-          </button>
-        </div>
-      )}
-
-      {/* Early-completion: actor is a higher-stage pending approver. Only
-          Approve is offered — confirming auto-approves all lower pending
-          stages (backend handles the cascade). */}
-      {!showActionPanel && isInActiveCycle && !isCurrentApprover && canEarlyComplete && currentPendingRow && (
+      {/* Action buttons — rendered strictly from server-supplied capability
+          flags when present, else from local derivation. Three paths, all
+          unified into one button row:
+            - Current-stage approver  (canApprove + canReject + canRequestChanges)
+            - Higher-stage approver   (canApproveEarly → same three actions)
+            - Super Admin override    (isOverrideApprover → same three actions)
+          A small chip above the buttons explains override / higher-level so the
+          user knows the action is a privileged path. */}
+      {!showActionPanel && showActionButtons && (
         <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-            <Clock size={11} className="text-amber-500" />
-            Currently with{' '}
-            <span className="font-medium text-zinc-700 dark:text-zinc-200">
-              {currentStageRows.length > 1
-                ? `${currentStageRows.length} parallel approvers`
-                : currentPendingRow.userName}
-            </span>
-            . As a higher-level approver, you may approve early:
+          {(isOverrideApprover || isHigherLevelApprover) && currentPendingRow && (
+            <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <Clock size={11} className="text-amber-500" />
+              Currently with{' '}
+              <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                {currentStageRows.length > 1
+                  ? `${currentStageRows.length} parallel approvers`
+                  : currentPendingRow.userName}
+              </span>
+              .{' '}
+              {isOverrideApprover
+                ? 'As Super Admin you may act with full override authority:'
+                : 'As a higher-level approver, you may act early:'}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {canApprove && (
+              <button
+                onClick={() => openActionPanel('approve')}
+                className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+              >
+                <Check size={11} />{' '}
+                {isHigherLevelApprover && !isOverrideApprover
+                  ? 'Approve early (skip lower stages)'
+                  : 'Approve'}
+              </button>
+            )}
+            {canReject && (
+              <button
+                onClick={() => openActionPanel('reject')}
+                className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+              >
+                <X size={11} /> Reject
+              </button>
+            )}
+            {canRequestChanges && (
+              <button
+                onClick={() => openActionPanel('request_changes')}
+                className="inline-flex items-center gap-1 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+              >
+                <MessageSquare size={11} /> Request changes
+              </button>
+            )}
           </div>
-          <button
-            onClick={() => openActionPanel('approve')}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
-          >
-            <Check size={11} /> Approve early (skip lower stages)
-          </button>
         </div>
       )}
 
       {/* Plain hint for users who are downstream watchers but not in the chain */}
-      {isInActiveCycle && !isCurrentApprover && !canEarlyComplete && currentPendingRow && (
+      {isInActiveCycle && !showActionButtons && currentPendingRow && (
         <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
           <Clock size={11} className="text-amber-500" />
           {currentStageRows.length > 1 ? (

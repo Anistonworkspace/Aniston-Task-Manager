@@ -73,6 +73,10 @@ router.post(
     body('escalationTargets').optional().isArray(),
     body('weekdays').optional().isArray(),
     body('dayOfMonth').optional({ nullable: true }).isInt({ min: 1, max: 31 }),
+    body('daysOfMonth').optional({ nullable: true }).isArray()
+      .withMessage('daysOfMonth must be an array of integers 1–31'),
+    body('daysOfMonth.*').optional().isInt({ min: 1, max: 31 })
+      .withMessage('daysOfMonth values must be integers between 1 and 31'),
     body('timezone').optional().isString().isLength({ min: 1, max: 64 }),
   ],
   createTemplate
@@ -97,6 +101,10 @@ router.patch(
     body('escalationTargets').optional().isArray(),
     body('weekdays').optional().isArray(),
     body('dayOfMonth').optional({ nullable: true }).isInt({ min: 1, max: 31 }),
+    body('daysOfMonth').optional({ nullable: true }).isArray()
+      .withMessage('daysOfMonth must be an array of integers 1–31'),
+    body('daysOfMonth.*').optional().isInt({ min: 1, max: 31 })
+      .withMessage('daysOfMonth values must be integers between 1 and 31'),
     body('timezone').optional().isString().isLength({ min: 1, max: 64 }),
     body('isActive').optional().isBoolean(),
   ],

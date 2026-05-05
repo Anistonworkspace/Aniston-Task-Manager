@@ -1,0 +1,415 @@
+- generic [ref=e5]:
+  - link "Skip to main content" [ref=e6] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - img "Monday Aniston" [ref=e10]
+      - heading "Monday Aniston" [level=1] [ref=e11]
+      - button [ref=e12] [cursor=pointer]:
+        - img [ref=e13]
+    - generic [ref=e16]:
+      - navigation [ref=e17]:
+        - button "Home" [ref=e289] [cursor=pointer]:
+          - img [ref=e290]
+          - generic [ref=e293]: Home
+        - button "My Work" [ref=e294] [cursor=pointer]:
+          - img [ref=e295]
+          - generic [ref=e298]: My Work
+        - button "My Dashboard" [ref=e299] [cursor=pointer]:
+          - img [ref=e300]
+          - generic [ref=e305]: My Dashboard
+        - button "Dashboard (Time Plan)" [ref=e306] [cursor=pointer]:
+          - img [ref=e307]
+          - generic [ref=e309]: Dashboard (Time Plan)
+        - button "Director Plan" [ref=e310] [cursor=pointer]:
+          - img [ref=e311]
+          - generic [ref=e313]: Director Plan
+        - button "Org Chart" [ref=e314] [cursor=pointer]:
+          - img [ref=e315]
+          - generic [ref=e319]: Org Chart
+        - button "Time Plan" [ref=e320] [cursor=pointer]:
+          - img [ref=e321]
+          - generic [ref=e324]: Time Plan
+        - button "Meetings" [ref=e325] [cursor=pointer]:
+          - img [ref=e326]
+          - generic [ref=e328]: Meetings
+        - button "Reviews" [ref=e329] [cursor=pointer]:
+          - img [ref=e330]
+          - generic [ref=e333]: Reviews
+        - button "Tasks & Workflows" [ref=e334] [cursor=pointer]:
+          - img [ref=e335]
+          - generic [ref=e339]: Tasks & Workflows
+        - button "Dependencies" [ref=e340] [cursor=pointer]:
+          - img [ref=e341]
+          - generic [ref=e344]: Dependencies
+        - button "Notes" [ref=e345] [cursor=pointer]:
+          - img [ref=e346]
+          - generic [ref=e349]: Notes
+        - button "Help & SOP" [ref=e350] [cursor=pointer]:
+          - img [ref=e351]
+          - generic [ref=e354]: Help & SOP
+      - navigation [ref=e85]:
+        - button "Dashboard" [ref=e355] [cursor=pointer]:
+          - img [ref=e356]
+          - generic [ref=e358]: Dashboard
+        - button "Team" [ref=e359] [cursor=pointer]:
+          - img [ref=e360]
+          - generic [ref=e365]: Team
+      - navigation [ref=e98]:
+        - button "Admin Settings" [ref=e366] [cursor=pointer]:
+          - img [ref=e367]
+          - generic [ref=e370]: Admin Settings
+        - button "Integrations" [ref=e371] [cursor=pointer]:
+          - img [ref=e372]
+          - generic [ref=e374]: Integrations
+        - button "Feedback" [ref=e375] [cursor=pointer]:
+          - img [ref=e376]
+          - generic [ref=e378]: Feedback
+      - navigation [ref=e112]:
+        - button "Archive" [ref=e379] [cursor=pointer]:
+          - img [ref=e380]
+          - generic [ref=e383]: Archive
+      - generic [ref=e119]:
+        - generic [ref=e120]: Workspaces
+        - button "Workspace options" [ref=e122] [cursor=pointer]:
+          - img [ref=e123]
+      - generic [ref=e128]:
+        - img [ref=e129]
+        - textbox "Search boards..." [ref=e132]
+      - generic [ref=e134]:
+        - button "S Software Test" [ref=e135] [cursor=pointer]:
+          - generic [ref=e136]: S
+          - generic [ref=e137]: Software Test
+          - img [ref=e138]
+        - button [ref=e142] [cursor=pointer]:
+          - img [ref=e143]
+        - generic [ref=e147]:
+          - generic [ref=e148]:
+            - button "test again 01" [ref=e149] [cursor=pointer]:
+              - generic [ref=e151]: test again 01
+            - button "Board actions" [ref=e152] [cursor=pointer]:
+              - img [ref=e153]
+          - generic [ref=e157]:
+            - button "Wednesday Testing (Monday)" [ref=e158] [cursor=pointer]:
+              - generic [ref=e160]: Wednesday Testing (Monday)
+            - button "Board actions" [ref=e161] [cursor=pointer]:
+              - img [ref=e162]
+          - generic [ref=e166]:
+            - button "Calendar test" [ref=e167] [cursor=pointer]:
+              - generic [ref=e169]: Calendar test
+            - button "Board actions" [ref=e170] [cursor=pointer]:
+              - img [ref=e171]
+      - button "Add new workspace" [ref=e176] [cursor=pointer]:
+        - img [ref=e177]
+        - text: Add new workspace
+      - button "Create new board" [ref=e179] [cursor=pointer]:
+        - img [ref=e180]
+        - text: Create new board
+    - button "A Admin User admin" [ref=e183] [cursor=pointer]:
+      - generic [ref=e184]: A
+      - generic [ref=e185]:
+        - paragraph [ref=e186]: Admin User
+        - paragraph [ref=e187]: admin
+      - img [ref=e188]
+  - generic [ref=e192]:
+    - banner [ref=e193]:
+      - generic [ref=e194]:
+        - generic [ref=e195]:
+          - generic [ref=e196]: Monday Aniston
+          - generic [ref=e197]: /
+          - generic [ref=e384]: Board
+        - button "Search... ⌘K" [ref=e198] [cursor=pointer]:
+          - img [ref=e199]
+          - generic [ref=e202]: Search...
+          - generic [ref=e203]: ⌘K
+      - generic [ref=e204]:
+        - button "6" [ref=e205] [cursor=pointer]:
+          - img [ref=e206]
+          - generic [ref=e209]: "6"
+        - button "Light mode" [ref=e210] [cursor=pointer]:
+          - img [ref=e211]
+        - button [ref=e217] [cursor=pointer]:
+          - img [ref=e218]
+        - button "A Admin" [ref=e223] [cursor=pointer]:
+          - generic [ref=e224]: A
+          - generic [ref=e225]: Admin
+          - img [ref=e226]
+    - main [ref=e385]:
+      - generic [ref=e387]:
+        - generic [ref=e388]:
+          - generic [ref=e389]:
+            - heading "Wednesday Testing (Monday)" [level=1] [ref=e390]
+            - generic [ref=e391]: Software Test
+            - button "Board Settings" [ref=e392] [cursor=pointer]:
+              - img [ref=e393]
+          - generic [ref=e396]:
+            - button "Main table" [ref=e397] [cursor=pointer]
+            - button "Gantt" [ref=e398] [cursor=pointer]
+            - button "Calendar" [ref=e399] [cursor=pointer]
+            - button "Kanban" [ref=e400] [cursor=pointer]
+          - generic [ref=e401]:
+            - generic [ref=e402]:
+              - button "New group" [ref=e403] [cursor=pointer]:
+                - img [ref=e404]
+                - text: New group
+              - button [ref=e405] [cursor=pointer]:
+                - img [ref=e406]
+            - generic [ref=e408]:
+              - button "Search" [ref=e409] [cursor=pointer]:
+                - img [ref=e410]
+                - text: Search
+              - textbox "Search tasks..."
+              - button "Filter" [ref=e413] [cursor=pointer]:
+                - img [ref=e414]
+                - text: Filter
+              - button "Sort" [ref=e417] [cursor=pointer]:
+                - img [ref=e418]
+                - text: Sort
+              - button "Hide" [ref=e422] [cursor=pointer]:
+                - img [ref=e423]
+                - text: Hide
+            - generic [ref=e426]:
+              - button "Import" [ref=e427] [cursor=pointer]:
+                - img [ref=e428]
+                - text: Import
+              - button "Export" [ref=e431] [cursor=pointer]:
+                - img [ref=e432]
+                - text: Export
+              - button "Automate" [ref=e435] [cursor=pointer]:
+                - img [ref=e436]
+                - text: Automate
+              - button [ref=e438] [cursor=pointer]:
+                - img [ref=e439]
+        - generic [ref=e441]:
+          - generic [ref=e442]:
+            - img [ref=e444]
+            - heading "No tasks assigned to you" [level=3] [ref=e447]
+            - paragraph [ref=e448]: You don't have any tasks on this board yet. Tasks will appear here once a manager assigns them to you.
+          - generic [ref=e449]:
+            - generic [ref=e450]:
+              - button [ref=e451] [cursor=pointer]:
+                - img [ref=e452]
+              - heading "New" [level=3] [ref=e454]
+              - generic [ref=e455]: 0 items
+              - button [ref=e457] [cursor=pointer]:
+                - img [ref=e458]
+            - generic [ref=e462]:
+              - generic [ref=e464]:
+                - generic [ref=e465]:
+                  - generic [ref=e469]: Task
+                  - generic [ref=e471]:
+                    - generic [ref=e472]:
+                      - generic [ref=e473]: Status
+                      - button [ref=e474] [cursor=pointer]:
+                        - img [ref=e475]
+                      - button "Column options" [ref=e477] [cursor=pointer]:
+                        - img [ref=e478]
+                    - generic "Resize Column" [ref=e482]
+                  - generic [ref=e484]:
+                    - generic [ref=e485]:
+                      - generic [ref=e486]: Owner
+                      - button [ref=e487] [cursor=pointer]:
+                        - img [ref=e488]
+                      - button "Column options" [ref=e490] [cursor=pointer]:
+                        - img [ref=e491]
+                    - generic "Resize Column" [ref=e495]
+                  - generic [ref=e497]:
+                    - generic [ref=e498]:
+                      - generic [ref=e499]: Due Date
+                      - button [ref=e500] [cursor=pointer]:
+                        - img [ref=e501]
+                      - button "Column options" [ref=e503] [cursor=pointer]:
+                        - img [ref=e504]
+                    - generic "Resize Column" [ref=e508]
+                  - generic [ref=e510]:
+                    - generic [ref=e511]:
+                      - generic [ref=e512]: Priority
+                      - button [ref=e513] [cursor=pointer]:
+                        - img [ref=e514]
+                      - button "Column options" [ref=e516] [cursor=pointer]:
+                        - img [ref=e517]
+                    - generic "Resize Column" [ref=e521]
+                  - generic [ref=e523]:
+                    - generic [ref=e524]:
+                      - generic [ref=e525]: Progress
+                      - button [ref=e526] [cursor=pointer]:
+                        - img [ref=e527]
+                      - button "Column options" [ref=e529] [cursor=pointer]:
+                        - img [ref=e530]
+                    - generic "Resize Column" [ref=e534]
+                  - generic [ref=e536]:
+                    - generic [ref=e537]:
+                      - generic [ref=e538]: Labels
+                      - button [ref=e539] [cursor=pointer]:
+                        - img [ref=e540]
+                      - button "Column options" [ref=e542] [cursor=pointer]:
+                        - img [ref=e543]
+                    - generic "Resize Column" [ref=e547]
+                  - button [ref=e550] [cursor=pointer]:
+                    - img [ref=e551]
+                - button "Add task" [ref=e556] [cursor=pointer]:
+                  - img [ref=e557]
+                  - text: Add task
+              - generic [ref=e559]:
+                - generic [ref=e562]: —
+                - generic [ref=e565]: —
+                - generic [ref=e568]: —
+                - generic [ref=e571]: —
+                - generic [ref=e574]: —
+                - generic [ref=e577]: —
+          - generic [ref=e578]:
+            - generic [ref=e579]:
+              - button [ref=e580] [cursor=pointer]:
+                - img [ref=e581]
+              - heading "In Progress" [level=3] [ref=e583]
+              - generic [ref=e584]: 0 items
+              - button [ref=e586] [cursor=pointer]:
+                - img [ref=e587]
+            - generic [ref=e591]:
+              - generic [ref=e593]:
+                - generic [ref=e594]:
+                  - generic [ref=e598]: Task
+                  - generic [ref=e600]:
+                    - generic [ref=e601]:
+                      - generic [ref=e602]: Status
+                      - button [ref=e603] [cursor=pointer]:
+                        - img [ref=e604]
+                      - button "Column options" [ref=e606] [cursor=pointer]:
+                        - img [ref=e607]
+                    - generic "Resize Column" [ref=e611]
+                  - generic [ref=e613]:
+                    - generic [ref=e614]:
+                      - generic [ref=e615]: Owner
+                      - button [ref=e616] [cursor=pointer]:
+                        - img [ref=e617]
+                      - button "Column options" [ref=e619] [cursor=pointer]:
+                        - img [ref=e620]
+                    - generic "Resize Column" [ref=e624]
+                  - generic [ref=e626]:
+                    - generic [ref=e627]:
+                      - generic [ref=e628]: Due Date
+                      - button [ref=e629] [cursor=pointer]:
+                        - img [ref=e630]
+                      - button "Column options" [ref=e632] [cursor=pointer]:
+                        - img [ref=e633]
+                    - generic "Resize Column" [ref=e637]
+                  - generic [ref=e639]:
+                    - generic [ref=e640]:
+                      - generic [ref=e641]: Priority
+                      - button [ref=e642] [cursor=pointer]:
+                        - img [ref=e643]
+                      - button "Column options" [ref=e645] [cursor=pointer]:
+                        - img [ref=e646]
+                    - generic "Resize Column" [ref=e650]
+                  - generic [ref=e652]:
+                    - generic [ref=e653]:
+                      - generic [ref=e654]: Progress
+                      - button [ref=e655] [cursor=pointer]:
+                        - img [ref=e656]
+                      - button "Column options" [ref=e658] [cursor=pointer]:
+                        - img [ref=e659]
+                    - generic "Resize Column" [ref=e663]
+                  - generic [ref=e665]:
+                    - generic [ref=e666]:
+                      - generic [ref=e667]: Labels
+                      - button [ref=e668] [cursor=pointer]:
+                        - img [ref=e669]
+                      - button "Column options" [ref=e671] [cursor=pointer]:
+                        - img [ref=e672]
+                    - generic "Resize Column" [ref=e676]
+                  - button [ref=e679] [cursor=pointer]:
+                    - img [ref=e680]
+                - button "Add task" [ref=e685] [cursor=pointer]:
+                  - img [ref=e686]
+                  - text: Add task
+              - generic [ref=e688]:
+                - generic [ref=e691]: —
+                - generic [ref=e694]: —
+                - generic [ref=e697]: —
+                - generic [ref=e700]: —
+                - generic [ref=e703]: —
+                - generic [ref=e706]: —
+          - generic [ref=e707]:
+            - generic [ref=e708]:
+              - button [ref=e709] [cursor=pointer]:
+                - img [ref=e710]
+              - heading "Done" [level=3] [ref=e712]
+              - generic [ref=e713]: 0 items
+              - button [ref=e715] [cursor=pointer]:
+                - img [ref=e716]
+            - generic [ref=e720]:
+              - generic [ref=e722]:
+                - generic [ref=e723]:
+                  - generic [ref=e727]: Task
+                  - generic [ref=e729]:
+                    - generic [ref=e730]:
+                      - generic [ref=e731]: Status
+                      - button [ref=e732] [cursor=pointer]:
+                        - img [ref=e733]
+                      - button "Column options" [ref=e735] [cursor=pointer]:
+                        - img [ref=e736]
+                    - generic "Resize Column" [ref=e740]
+                  - generic [ref=e742]:
+                    - generic [ref=e743]:
+                      - generic [ref=e744]: Owner
+                      - button [ref=e745] [cursor=pointer]:
+                        - img [ref=e746]
+                      - button "Column options" [ref=e748] [cursor=pointer]:
+                        - img [ref=e749]
+                    - generic "Resize Column" [ref=e753]
+                  - generic [ref=e755]:
+                    - generic [ref=e756]:
+                      - generic [ref=e757]: Due Date
+                      - button [ref=e758] [cursor=pointer]:
+                        - img [ref=e759]
+                      - button "Column options" [ref=e761] [cursor=pointer]:
+                        - img [ref=e762]
+                    - generic "Resize Column" [ref=e766]
+                  - generic [ref=e768]:
+                    - generic [ref=e769]:
+                      - generic [ref=e770]: Priority
+                      - button [ref=e771] [cursor=pointer]:
+                        - img [ref=e772]
+                      - button "Column options" [ref=e774] [cursor=pointer]:
+                        - img [ref=e775]
+                    - generic "Resize Column" [ref=e779]
+                  - generic [ref=e781]:
+                    - generic [ref=e782]:
+                      - generic [ref=e783]: Progress
+                      - button [ref=e784] [cursor=pointer]:
+                        - img [ref=e785]
+                      - button "Column options" [ref=e787] [cursor=pointer]:
+                        - img [ref=e788]
+                    - generic "Resize Column" [ref=e792]
+                  - generic [ref=e794]:
+                    - generic [ref=e795]:
+                      - generic [ref=e796]: Labels
+                      - button [ref=e797] [cursor=pointer]:
+                        - img [ref=e798]
+                      - button "Column options" [ref=e800] [cursor=pointer]:
+                        - img [ref=e801]
+                    - generic "Resize Column" [ref=e805]
+                  - button [ref=e808] [cursor=pointer]:
+                    - img [ref=e809]
+                - button "Add task" [ref=e814] [cursor=pointer]:
+                  - img [ref=e815]
+                  - text: Add task
+              - generic [ref=e817]:
+                - generic [ref=e820]: —
+                - generic [ref=e823]: —
+                - generic [ref=e826]: —
+                - generic [ref=e829]: —
+                - generic [ref=e832]: —
+                - generic [ref=e835]: —
+  - generic:
+    - button "Quick Tools" [ref=e287] [cursor=pointer]:
+      - img [ref=e288]
+    - generic:
+      - button "AI Assistant":
+        - img
+    - generic:
+      - button "Voice Notes":
+        - img
+    - generic:
+      - button "Send Feedback":
+        - img

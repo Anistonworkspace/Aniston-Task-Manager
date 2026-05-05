@@ -39,7 +39,8 @@ const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const VALID_ESCALATION_TARGETS = ['assignee', 'manager', 'admin'];
 const TEMPLATE_FIELDS_PUBLIC = [
   'id', 'title', 'description', 'boardId', 'groupId', 'assigneeId', 'createdBy',
-  'priority', 'frequency', 'weekdays', 'dayOfMonth', 'startDate', 'endDate',
+  'priority', 'frequency', 'weekdays', 'dayOfMonth', 'daysOfMonth',
+  'startDate', 'endDate',
   'dueTime', 'timezone', 'escalateIfMissed', 'escalationTargets', 'isActive',
   'lastGeneratedDate', 'nextRunAt', 'archivedAt', 'createdAt', 'updatedAt',
 ];
@@ -111,6 +112,31 @@ async function canManageTemplate(actor, template, mode = 'view') {
   return { allowed: true };
 }
 
+/**
+ * Reconcile the multi-day `daysOfMonth` array vs the legacy `dayOfMonth`
+ * integer from a validated input bag. Whichever side the caller populated
+ * wins, then the other column is mirrored so both stay consistent. Returns
+ * `{ daysOfMonth: int[], dayOfMonth: int|null }`.
+ *
+ * Used at create-time and patch-time. For partial PATCHes where neither field
+ * was sent, both keys are `undefined` so the caller can spread the result and
+ * leave the existing values untouched.
+ */
+function resolveMonthlyFields(v) {
+  const haveArray = Array.isArray(v.daysOfMonth) && v.daysOfMonth.length > 0;
+  const haveLegacy = Number.isInteger(v.dayOfMonth);
+
+  if (haveArray) {
+    const sorted = [...new Set(v.daysOfMonth)].sort((a, b) => a - b);
+    return { daysOfMonth: sorted, dayOfMonth: sorted[0] };
+  }
+  if (haveLegacy) {
+    return { daysOfMonth: [v.dayOfMonth], dayOfMonth: v.dayOfMonth };
+  }
+  // Neither sent — preserve null/empty for fresh creates.
+  return { daysOfMonth: [], dayOfMonth: null };
+}
+
 function publicTemplate(template) {
   if (!template) return null;
   const json = template.toJSON ? template.toJSON() : template;
@@ -178,6 +204,19 @@ function validateTemplateBody(body, { partial = false } = {}) {
         'dayOfMonth must be an integer 1–31.');
       v.dayOfMonth = dom;
     }
+    // New multi-day monthly support. Accepts an array of 1–31 ints; dedupes
+    // and sorts ascending. The legacy `dayOfMonth` integer remains accepted
+    // (above) for backward compatibility — when both are present the array
+    // wins. When only `daysOfMonth` is sent, we mirror the first day onto
+    // `dayOfMonth` so any pre-migration read path keeps returning a value.
+    if (body.daysOfMonth !== undefined && body.daysOfMonth !== null) {
+      must(Array.isArray(body.daysOfMonth),
+        'daysOfMonth must be an array of integers 1–31.');
+      const cleaned = body.daysOfMonth.map((d) => parseInt(d, 10));
+      must(cleaned.every((d) => Number.isInteger(d) && d >= 1 && d <= 31),
+        'daysOfMonth values must be integers between 1 and 31.');
+      v.daysOfMonth = [...new Set(cleaned)].sort((a, b) => a - b);
+    }
     if (!partial || body.startDate !== undefined) {
       must(typeof body.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.startDate),
         'startDate must be YYYY-MM-DD.');
@@ -222,8 +261,12 @@ function validateTemplateBody(body, { partial = false } = {}) {
     if (v.startDate && v.endDate && v.endDate < v.startDate) {
       throw new Error('endDate must be on or after startDate.');
     }
-    if (v.frequency === 'monthly' && partial !== true && v.dayOfMonth === undefined) {
-      throw new Error('dayOfMonth is required for monthly frequency.');
+    if (v.frequency === 'monthly' && partial !== true) {
+      const haveArray = Array.isArray(v.daysOfMonth) && v.daysOfMonth.length > 0;
+      const haveLegacy = Number.isInteger(v.dayOfMonth);
+      if (!haveArray && !haveLegacy) {
+        throw new Error('Monthly frequency requires at least one day-of-month (1–31).');
+      }
     }
     if ((v.frequency === 'weekly' || v.frequency === 'custom')
         && partial !== true
@@ -269,6 +312,12 @@ const createTemplate = async (req, res) => {
       return res.status(403).json({ success: false, message: targetCheck.reason });
     }
 
+    // Reconcile multi-day vs legacy single-day monthly fields. Whichever the
+    // caller supplied wins; we mirror it onto the other field so both column
+    // shapes stay consistent and pre-migration code that still reads
+    // `dayOfMonth` continues to see a valid value.
+    const monthlyFields = resolveMonthlyFields(v);
+
     const template = await RecurringTaskTemplate.create({
       title: v.title,
       description: v.description || '',
@@ -279,7 +328,8 @@ const createTemplate = async (req, res) => {
       priority: v.priority || 'medium',
       frequency: v.frequency,
       weekdays: v.weekdays || [],
-      dayOfMonth: v.dayOfMonth || null,
+      dayOfMonth: monthlyFields.dayOfMonth,
+      daysOfMonth: monthlyFields.daysOfMonth,
       startDate: v.startDate,
       endDate: v.endDate || null,
       dueTime: v.dueTime || '18:00:00',
@@ -306,7 +356,9 @@ const createTemplate = async (req, res) => {
     // lets the frontend show a different toast when today's task was created.
     let immediateGeneration = { generated: false, alreadyExisted: false, occurrenceDate: null };
     try {
-      const runResult = await recurringTaskService.runTemplateOnce(template);
+      const runResult = await recurringTaskService.runTemplateOnce(template, {
+        source: 'recurringTemplateController.create',
+      });
       // Reload so the response carries fresh nextRunAt / lastGeneratedDate.
       await template.reload();
       if (runResult && !runResult.error) {
@@ -504,12 +556,22 @@ const updateTemplate = async (req, res) => {
       }
     }
 
+    // Keep the legacy single-day and modern multi-day monthly fields in sync.
+    // Only run the reconciliation when the patch actually touches one of them
+    // — otherwise existing values are left alone.
+    if (v.daysOfMonth !== undefined || v.dayOfMonth !== undefined) {
+      const resolved = resolveMonthlyFields(v);
+      v.daysOfMonth = resolved.daysOfMonth;
+      v.dayOfMonth = resolved.dayOfMonth;
+    }
+
     await template.update(v);
 
     const scheduleChanged =
       v.frequency !== undefined ||
       v.weekdays !== undefined ||
       v.dayOfMonth !== undefined ||
+      v.daysOfMonth !== undefined ||
       v.startDate !== undefined ||
       v.endDate !== undefined ||
       v.dueTime !== undefined ||
@@ -638,7 +700,9 @@ const generateNow = async (req, res) => {
     if (!template.isActive) {
       return res.status(400).json({ success: false, message: 'Cannot generate from a paused template.' });
     }
-    const result = await recurringTaskService.runTemplateOnce(template);
+    const result = await recurringTaskService.runTemplateOnce(template, {
+      source: 'recurringTemplateController.generateNow',
+    });
     return res.json({ success: true, data: { result } });
   } catch (err) {
     logger.error('[recurringTemplateController.generateNow]', err);

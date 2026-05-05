@@ -64,8 +64,17 @@ const CREATE_TABLE_SQL = `
 // was just created above with the same shape. CREATE TABLE IF NOT EXISTS does
 // not modify an existing table, so future field additions go here.
 const ADDITIVE_COLUMNS_SQL = [
-  // (Reserved for future schema bumps. Keep this block so the next migrator
-  // knows where to add ADD COLUMN IF NOT EXISTS statements.)
+  // Multi-day monthly support. Old templates carry a single `dayOfMonth`
+  // INTEGER; the new `daysOfMonth` JSONB array supersedes it (the service
+  // reader prefers the array when non-empty, falling back to the integer for
+  // pre-migration rows). Idempotent backfill normalises legacy rows so the
+  // array is always the source of truth post-migration.
+  `ALTER TABLE recurring_task_templates
+     ADD COLUMN IF NOT EXISTS "daysOfMonth" JSONB NOT NULL DEFAULT '[]'::jsonb;`,
+  `UPDATE recurring_task_templates
+     SET "daysOfMonth" = jsonb_build_array("dayOfMonth")
+     WHERE "dayOfMonth" IS NOT NULL
+       AND ("daysOfMonth" IS NULL OR "daysOfMonth" = '[]'::jsonb);`,
 ];
 
 const INDEX_SQL = [

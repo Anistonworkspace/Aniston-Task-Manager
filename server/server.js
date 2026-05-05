@@ -908,6 +908,20 @@ const start = async () => {
             CHECK ("endDate" IS NULL OR "endDate" >= "startDate");
         END IF;
       END $$`);
+      // Multi-day monthly support — adds an array column alongside the legacy
+      // single `dayOfMonth` integer. Old templates keep working because the
+      // service-layer reader prefers `daysOfMonth` when non-empty and falls
+      // back to `[dayOfMonth]`. Backfill below normalises existing rows so the
+      // array becomes the source of truth going forward; the legacy column is
+      // still written by the controller (= daysOfMonth[0]) for any older read
+      // path we haven't migrated.
+      await sequelize.query(`ALTER TABLE recurring_task_templates
+        ADD COLUMN IF NOT EXISTS "daysOfMonth" JSONB NOT NULL DEFAULT '[]'::jsonb`);
+      await sequelize.query(`UPDATE recurring_task_templates
+        SET "daysOfMonth" = jsonb_build_array("dayOfMonth")
+        WHERE "dayOfMonth" IS NOT NULL
+          AND ("daysOfMonth" IS NULL OR "daysOfMonth" = '[]'::jsonb)`);
+
       await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_next_run_idx
         ON recurring_task_templates ("nextRunAt") WHERE "isActive" = TRUE AND "archivedAt" IS NULL`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS recurring_task_templates_assignee_idx

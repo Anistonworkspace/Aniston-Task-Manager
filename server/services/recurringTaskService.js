@@ -30,12 +30,40 @@ const {
   Task,
   RecurringTaskTemplate,
   TaskAssignee,
+  TaskOwner,
   Board,
   User,
 } = require('../models');
 const { sendNotification } = require('./notificationService');
 const { logActivity } = require('./activityService');
 const logger = require('../utils/logger');
+
+// ─── Structured per-template logging ────────────────────────────────────────
+//
+// Every generation attempt — success, skip, or error — emits a single line
+// through `logger` so prod operators can grep
+// `[RecurringGen]` and reconstruct exactly what happened to a given template
+// on a given day. Keep this stable; downstream log parsers depend on the
+// field names. `source` is the job/controller that triggered the call.
+function emitGenLog(level, status, template, fields = {}) {
+  const tplId = template?.id || fields.recurringTemplateId || null;
+  const payload = {
+    event: 'recurring_generation',
+    status,
+    recurringTemplateId: tplId,
+    boardId: fields.boardId ?? template?.boardId ?? null,
+    groupId: fields.groupId ?? template?.groupId ?? null,
+    assigneeId: fields.assigneeId ?? template?.assigneeId ?? null,
+    frequency: fields.frequency ?? template?.frequency ?? null,
+    occurrenceDate: fields.occurrenceDate ?? null,
+    generatedTaskId: fields.generatedTaskId ?? null,
+    reason: fields.reason ?? null,
+    source: fields.source ?? null,
+    timestamp: new Date().toISOString(),
+  };
+  const fn = logger[level] || logger.info;
+  fn(`[RecurringGen] ${status}`, payload);
+}
 
 // ─── Timezone-safe date helpers ─────────────────────────────────────────────
 
@@ -157,14 +185,41 @@ function addDays(year, month, day, days) {
 }
 
 /**
+ * Normalise a template's monthly day configuration into a sorted, deduped
+ * integer array (1–31).
+ *
+ * Backward compatibility: prefers the modern `daysOfMonth` JSONB array. Falls
+ * back to the legacy `dayOfMonth` integer when the array is missing/empty so
+ * pre-migration templates keep working without a data backfill on the read
+ * path. Returns [] when neither is set.
+ */
+function getMonthlyDays(template) {
+  const arr = Array.isArray(template.daysOfMonth) ? template.daysOfMonth : [];
+  const cleaned = arr
+    .map((d) => parseInt(d, 10))
+    .filter((d) => Number.isInteger(d) && d >= 1 && d <= 31);
+  if (cleaned.length > 0) {
+    return [...new Set(cleaned)].sort((a, b) => a - b);
+  }
+  const legacy = parseInt(template.dayOfMonth, 10);
+  if (Number.isInteger(legacy) && legacy >= 1 && legacy <= 31) return [legacy];
+  return [];
+}
+
+/**
  * Does this template generate an instance for the calendar date represented by
  * { year, month, day, weekday } in its own timezone?
  *
  * - daily         → always yes
- * - weekdays      → Mon–Fri (weekday in 1..5)
+ * - weekdays      → Mon–Sat (weekday in 1..6)
  * - weekly        → weekday must appear in template.weekdays array
- * - monthly       → day must equal template.dayOfMonth, OR (dayOfMonth > last
- *                   day of month AND day is the last day) — handles 31st on Feb
+ * - monthly       → day must equal one of getMonthlyDays(template), with each
+ *                   target day capped at the month's last day (31 collapses to
+ *                   28/29/30). Multiple configured days that collapse to the
+ *                   same effective day yield ONE eligibility hit per calendar
+ *                   day; the partial unique index
+ *                   `tasks_recurring_template_occurrence_unique` is the final
+ *                   guard against duplicate task rows.
  * - custom        → same semantics as `weekly`
  */
 function isOccurrenceEligible(template, parts) {
@@ -172,7 +227,7 @@ function isOccurrenceEligible(template, parts) {
     case 'daily':
       return true;
     case 'weekdays':
-      return parts.weekday >= 1 && parts.weekday <= 5;
+      return parts.weekday >= 1 && parts.weekday <= 6;
     case 'weekly':
     case 'custom': {
       const list = Array.isArray(template.weekdays) ? template.weekdays : [];
@@ -180,11 +235,13 @@ function isOccurrenceEligible(template, parts) {
       return list.includes(parts.weekday);
     }
     case 'monthly': {
-      const target = parseInt(template.dayOfMonth, 10);
-      if (!target || target < 1 || target > 31) return false;
+      const days = getMonthlyDays(template);
+      if (days.length === 0) return false;
       const lastDay = lastDayOfMonth(parts.year, parts.month);
-      const effective = Math.min(target, lastDay);
-      return parts.day === effective;
+      // Collapse out-of-range days (e.g. 31 in Feb) onto the last day of the
+      // month. A Set handles the 30+31 case in Feb both collapsing to 28.
+      const effectiveSet = new Set(days.map((d) => Math.min(d, lastDay)));
+      return effectiveSet.has(parts.day);
     }
     default:
       return false;
@@ -302,6 +359,51 @@ async function recomputeNextRunAt(template, options = {}) {
 // ─── Public: instance generation ────────────────────────────────────────────
 
 /**
+ * Pre-flight validation before generation. Verifies that the template's
+ * referenced board / assignee / group are still in a state where we can
+ * safely insert a Task row. Returns { ok: true } when generation can proceed,
+ * else { ok: false, reason } so the caller can log and skip rather than
+ * half-creating data.
+ *
+ * NB: We deliberately do these checks OUTSIDE the transaction. They're pure
+ * reads, they're cheap, and a failure here means we don't want to even open a
+ * tx — keeps the abort surface small.
+ */
+async function validateTemplateForGeneration(template) {
+  if (!template) return { ok: false, reason: 'template-missing' };
+  if (!template.isActive) return { ok: false, reason: 'template-paused' };
+  if (template.archivedAt) return { ok: false, reason: 'template-archived' };
+  if (!template.boardId) return { ok: false, reason: 'template-missing-boardId' };
+  if (!template.assigneeId) return { ok: false, reason: 'template-missing-assigneeId' };
+  if (!template.createdBy) return { ok: false, reason: 'template-missing-createdBy' };
+
+  const board = await Board.findByPk(template.boardId, {
+    attributes: ['id', 'isArchived', 'groups'],
+  });
+  if (!board) return { ok: false, reason: 'board-missing' };
+  if (board.isArchived) return { ok: false, reason: 'board-archived' };
+
+  // groupId is a string referencing a group inside `board.groups` JSONB.
+  // Convention from CreateBoardModal: `'new'` is the implicit "default group"
+  // and is allowed even if it doesn't appear explicitly in `board.groups` —
+  // matches taskController.createTask which also accepts 'new' as a fallback.
+  const gid = template.groupId || 'new';
+  const groups = Array.isArray(board.groups) ? board.groups : [];
+  if (gid !== 'new' && groups.length > 0 && !groups.some((g) => g && g.id === gid)) {
+    return { ok: false, reason: 'group-missing-on-board' };
+  }
+
+  const assignee = await User.findOne({
+    where: { id: template.assigneeId },
+    attributes: ['id', 'isActive'],
+  });
+  if (!assignee) return { ok: false, reason: 'assignee-missing' };
+  if (assignee.isActive === false) return { ok: false, reason: 'assignee-inactive' };
+
+  return { ok: true };
+}
+
+/**
  * Idempotently generate a Task instance for the given (template, occurrenceDate).
  *
  * Returns one of:
@@ -309,48 +411,81 @@ async function recomputeNextRunAt(template, options = {}) {
  *   { ok: true, created: false, task }    — instance already existed (no-op)
  *   { ok: false, reason: '...' }          — pre-condition failed (e.g. paused)
  *
- * Wrapped in a transaction. If a unique-violation is raised on the Task insert
- * (concurrent worker won the race), we re-fetch the existing row and return it
- * with created=false. Either way, the caller MUST update the template's
- * lastGeneratedDate / nextRunAt afterward — that's the cron job's job, not
- * this function's — so the same template+date isn't reconsidered every minute.
+ * Transaction model:
+ *   The Task row + the task_assignees row + the task_owners row all live in a
+ *   SINGLE Sequelize transaction. If ANY of them fails (FK violation, schema
+ *   drift, unique conflict, etc.) the entire write is rolled back — we never
+ *   leave a half-created instance. The DB partial unique index
+ *   (recurringTemplateId, occurrenceDate) guarantees at-most-once on retry.
+ *
+ * Why this is safer than the earlier "log-and-continue inside the tx":
+ *   In Postgres, a single failed statement aborts the whole transaction; any
+ *   later statement (including COMMIT) raises "current transaction is aborted".
+ *   Catch-and-continue inside a tx is a footgun. We let the error bubble out
+ *   so the caller sees a clean "this attempt failed" signal and the cron will
+ *   retry on the next tick (idempotency-protected).
  */
 async function generateInstance(template, occurrenceDate, options = {}) {
-  if (!template) return { ok: false, reason: 'Template missing.' };
-  if (!template.isActive) return { ok: false, reason: 'Template is paused.' };
-  if (template.archivedAt) return { ok: false, reason: 'Template is archived.' };
-  if (!occurrenceDate) return { ok: false, reason: 'occurrenceDate missing.' };
+  const source = options.source || null;
+
+  if (!template) {
+    emitGenLog('warn', 'error', null, { reason: 'template-missing', source });
+    return { ok: false, reason: 'Template missing.' };
+  }
+  if (!occurrenceDate) {
+    emitGenLog('warn', 'error', template, { reason: 'occurrenceDate-missing', source });
+    return { ok: false, reason: 'occurrenceDate missing.' };
+  }
 
   // Date-window guard: caller may have computed a date outside [start, end].
   if (String(occurrenceDate) < String(template.startDate)) {
+    emitGenLog('info', 'skipped', template, { occurrenceDate, reason: 'before-start-date', source });
     return { ok: false, reason: 'occurrenceDate is before template.startDate.' };
   }
   if (template.endDate && String(occurrenceDate) > String(template.endDate)) {
+    emitGenLog('info', 'skipped', template, { occurrenceDate, reason: 'after-end-date', source });
     return { ok: false, reason: 'occurrenceDate is after template.endDate.' };
   }
 
+  // Pre-flight validation outside the tx — keeps the abort surface tight.
+  const pre = await validateTemplateForGeneration(template);
+  if (!pre.ok) {
+    emitGenLog('warn', 'skipped', template, { occurrenceDate, reason: pre.reason, source });
+    return { ok: false, reason: pre.reason };
+  }
+
+  // Fast-path: instance already exists — avoid the unique-violation path
+  // (Sequelize's SequelizeUniqueConstraintError aborts the entire tx, which
+  // would clobber sibling work in an external tx and leave us re-rolling).
   const externalTx = options.transaction;
+  try {
+    const existing = await Task.findOne({
+      where: { recurringTemplateId: template.id, occurrenceDate },
+      transaction: externalTx,
+    });
+    if (existing) {
+      emitGenLog('info', 'skipped', template, {
+        occurrenceDate,
+        generatedTaskId: existing.id,
+        reason: 'already-exists',
+        source,
+      });
+      return { ok: true, created: false, task: existing };
+    }
+  } catch (err) {
+    emitGenLog('error', 'error', template, {
+      occurrenceDate,
+      reason: `fast-path-failed: ${err.message}`,
+      source,
+    });
+    throw err;
+  }
+
+  // Open the write transaction. Everything Task-side is one atomic unit so a
+  // failure anywhere inside leaves the DB clean and lets cron retry.
   const t = externalTx || (await sequelize.transaction());
 
   try {
-    // Fast path: row already exists. Avoids touching the unique-violation path
-    // when we can. Critical because Sequelize's unique-violation also rolls
-    // back the entire transaction — we'd lose any sibling work in the same tx.
-    const existing = await Task.findOne({
-      where: {
-        recurringTemplateId: template.id,
-        occurrenceDate,
-      },
-      transaction: t,
-    });
-    if (existing) {
-      if (!externalTx) await t.commit();
-      return { ok: true, created: false, task: existing };
-    }
-
-    // Insert. The partial unique index on (recurringTemplateId, occurrenceDate)
-    // is the last line of defense against races between fast-path read and
-    // this insert.
     let task;
     try {
       task = await Task.create(
@@ -374,41 +509,60 @@ async function generateInstance(template, occurrenceDate, options = {}) {
         { transaction: t }
       );
     } catch (err) {
-      // Unique-violation = concurrent insert won the race. Re-fetch and treat
-      // as "already existed". Anything else is a real error.
       const isUniqueViolation = err.name === 'SequelizeUniqueConstraintError'
         || /unique/i.test(err.message)
         || /duplicate key/i.test(err?.parent?.message || '');
       if (!isUniqueViolation) throw err;
+      // Concurrent worker won the race. Roll back this tx (Postgres has
+      // already aborted it) and re-fetch the canonical winner row.
       if (!externalTx) {
-        // Sequelize aborted this tx on the constraint failure. Open a fresh
-        // mini-tx to fetch the canonical row.
-        await t.rollback();
-        const winner = await Task.findOne({
-          where: { recurringTemplateId: template.id, occurrenceDate },
-        });
-        return { ok: true, created: false, task: winner };
+        try { await t.rollback(); } catch (_) { /* ignore */ }
       }
-      // External tx: signal to caller that this generation is a no-op. Do NOT
-      // commit/rollback — caller owns lifecycle.
-      return { ok: true, created: false, task: null, raceLost: true };
+      const winner = await Task.findOne({
+        where: { recurringTemplateId: template.id, occurrenceDate },
+      });
+      emitGenLog('info', 'skipped', template, {
+        occurrenceDate,
+        generatedTaskId: winner?.id || null,
+        reason: 'race-lost-unique',
+        source,
+      });
+      // External-tx callers must NOT see a committed/rolled-back signal — let
+      // them know it was a no-op via raceLost so they can carry on.
+      if (externalTx) {
+        return { ok: true, created: false, task: null, raceLost: true };
+      }
+      return { ok: true, created: false, task: winner };
     }
 
-    // Mirror the assignee into task_assignees for parity with normal task
-    // creation (TaskModal, dashboard queries, etc. expect this row to exist).
-    try {
-      await TaskAssignee.create(
+    // task_assignees row — used by TaskModal, dashboard queries, the workflow
+    // page, etc. Failures here ROLL BACK the parent tx (no half-created Task).
+    // `assignedAt`, `assignerId` are nullable / defaulted at the model level
+    // so a minimal payload is safe.
+    await TaskAssignee.create(
+      {
+        taskId: task.id,
+        userId: template.assigneeId,
+        role: 'assignee',
+        assignedAt: new Date(),
+        assignerId: template.createdBy,
+      },
+      { transaction: t }
+    );
+
+    // task_owners row — parity with normal task creation
+    // (taskController.createTask). PersonCell, exports, dashboards that read
+    // ownership from `task_owners` need this. isPrimary=true so the assignee
+    // is rendered with the star indicator like a normal task.
+    if (TaskOwner) {
+      await TaskOwner.create(
         {
           taskId: task.id,
           userId: template.assigneeId,
-          role: 'assignee',
+          isPrimary: true,
         },
         { transaction: t }
       );
-    } catch (e) {
-      // Junction table may not exist on a very old install. Log and continue —
-      // assignedTo column on tasks is the legacy fallback that always works.
-      logger.warn('[recurringTaskService] task_assignees insert skipped', { msg: e.message });
     }
 
     if (!externalTx) await t.commit();
@@ -417,11 +571,22 @@ async function generateInstance(template, occurrenceDate, options = {}) {
     // notification failure can never roll back the generated instance.
     await afterInstanceCreated(template, task);
 
+    emitGenLog('info', 'success', template, {
+      occurrenceDate,
+      generatedTaskId: task.id,
+      source,
+    });
+
     return { ok: true, created: true, task };
   } catch (err) {
     if (!externalTx) {
       try { await t.rollback(); } catch (_) { /* ignore double-rollback */ }
     }
+    emitGenLog('error', 'error', template, {
+      occurrenceDate,
+      reason: err.message,
+      source,
+    });
     throw err;
   }
 }
@@ -484,6 +649,7 @@ function formatDueTimeForHumans(dueTime) {
  */
 async function runTemplateOnce(template, options = {}) {
   const fromDate = options.fromDate || new Date();
+  const source = options.source || null;
   const tz = template.timezone || 'UTC';
   const todayParts = partsInZone(fromDate, tz);
   const todayStr = formatDateOnly(todayParts.year, todayParts.month, todayParts.day);
@@ -493,10 +659,16 @@ async function runTemplateOnce(template, options = {}) {
     if (todayStr < String(template.startDate)) {
       // Not yet started — schedule nextRunAt to startDate@00:05.
       await recomputeNextRunAt(template, { fromDate });
+      emitGenLog('info', 'skipped', template, {
+        occurrenceDate: todayStr, reason: 'before-start-date', source,
+      });
       return { templateId: template.id, generated: false, reason: 'before-start-date' };
     }
     if (template.endDate && todayStr > String(template.endDate)) {
       await template.update({ nextRunAt: null });
+      emitGenLog('info', 'skipped', template, {
+        occurrenceDate: todayStr, reason: 'after-end-date', source,
+      });
       return { templateId: template.id, generated: false, reason: 'after-end-date' };
     }
 
@@ -509,7 +681,7 @@ async function runTemplateOnce(template, options = {}) {
 
     let result = null;
     if (eligible) {
-      result = await generateInstance(template, todayStr);
+      result = await generateInstance(template, todayStr, { source });
       // Update lastGeneratedDate even if a duplicate already existed (raceLost
       // OR fast-path-found). This keeps the template clock advancing and
       // prevents the cron from rechecking the same date forever.
@@ -519,6 +691,10 @@ async function runTemplateOnce(template, options = {}) {
           await template.update({ lastGeneratedDate: desiredLastGenerated });
         }
       }
+    } else {
+      emitGenLog('info', 'skipped', template, {
+        occurrenceDate: todayStr, reason: 'not-eligible-today', source,
+      });
     }
 
     // Always recompute nextRunAt — covers (a) generated today, advance to
@@ -539,6 +715,9 @@ async function runTemplateOnce(template, options = {}) {
       msg: err.message,
       stack: err.stack,
     });
+    emitGenLog('error', 'error', template, {
+      occurrenceDate: todayStr, reason: err.message, source,
+    });
     return { templateId: template.id, generated: false, error: err.message };
   }
 }
@@ -552,6 +731,7 @@ module.exports = {
   zonedTimeToUtc,
   parseDueTime,
   isOccurrenceEligible,
+  getMonthlyDays,
   nextOccurrenceDate,
   generationRunAtUtc,
   dueAtUtc,
@@ -560,4 +740,7 @@ module.exports = {
   recomputeNextRunAt,
   generateInstance,
   runTemplateOnce,
+
+  // Diagnostics (read-only)
+  validateTemplateForGeneration,
 };

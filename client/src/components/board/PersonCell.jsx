@@ -19,6 +19,14 @@ export default function PersonCell({
    */
   assignSelfOnly = false,
   currentUserId = null,
+  /**
+   * Server-populated assignee object (User include from /api/tasks). Used as
+   * a display fallback when `value` is set but the user is not present in
+   * `members` — e.g. a recurring task assigned by an admin to someone outside
+   * the current viewer's RBAC subtree. The picker is still gated by `members`
+   * (RBAC stays intact); this prop ONLY influences the rendered avatar.
+   */
+  assigneeFallback = null,
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -64,7 +72,18 @@ export default function PersonCell({
     }
   }, [open]);
 
-  const assignee = value ? members.find(m => (m.id || m.user?.id) === (value?.id || value)) : null;
+  // Resolve the assignee for display. Order:
+  //   1. members lookup (preferred — picks up live changes to name/avatar)
+  //   2. server-populated assigneeFallback (covers RBAC scoping where `value`
+  //      points to a user the viewer can't see in the picker)
+  //   3. raw `value` if it's already an object with name/avatar
+  const valueId = value?.id || value;
+  const memberMatch = valueId ? members.find(m => (m.id || m.user?.id) === valueId) : null;
+  const fallbackMatch = !memberMatch && valueId && assigneeFallback
+    && (assigneeFallback.id === valueId)
+    ? assigneeFallback
+    : null;
+  const assignee = memberMatch || fallbackMatch || (typeof value === 'object' ? value : null);
   const assigneeName = assignee?.name || assignee?.user?.name || value?.name;
 
   // When the actor cannot assign others, restrict the picker to just them.

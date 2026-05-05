@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen, Puzzle, MessageSquare, Archive, GitBranch, Clock } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { isExplicitlyDenied } from '../../utils/permissions';
 import api from '../../services/api';
@@ -167,7 +167,7 @@ export default function Header({ onToggleSidebar }) {
               title="Org Chart"
               aria-label="Org Chart"
               className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/org-chart' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
-              <GitBranch size={17} strokeWidth={1.8} />
+              <Network size={17} strokeWidth={1.8} aria-hidden="true" />
             </button>
           )}
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 const {
   createBoard,
   getBoards,
@@ -10,6 +11,8 @@ const {
   addMember,
   removeMember,
   reorderGroups,
+  addGroup,
+  renameGroup,
   exportBoard,
   importTasks,
 } = require('../controllers/boardController');
@@ -19,13 +22,22 @@ const router = express.Router();
 // All board routes require authentication
 router.use(authenticate);
 
-// Board mutation guard: manager and admin only (assistant_manager cannot manage boards)
+// Board mutation guard: manager and admin only. Used for STRUCTURAL board
+// changes (member management, group reordering, CSV import) where members
+// and assistant managers must NOT be able to act. boards.create is gated
+// separately via requirePermission so the permission matrix can flip it on
+// per-role without weakening the structural guard.
 const boardMutate = requireRole('manager', 'admin');
 
-// ─── POST /api/boards (manager/admin only) ───────────────────
+// ─── POST /api/boards (any authenticated user with boards.create) ─────────
+//   Members and assistant managers now get boards.create=true by default in
+//   the permission matrix. The controller still verifies that non-admin /
+//   non-manager actors have access to the target workspace before persisting,
+//   so the API cannot be used to drop a board into a workspace the caller
+//   cannot see. Admin / manager / super admin retain unrestricted creation.
 router.post(
   '/',
-  boardMutate,
+  requirePermission('boards', 'create'),
   [
     body('name')
       .trim()
@@ -71,6 +83,48 @@ router.put(
 
 // ─── DELETE /api/boards/:id (manager/admin only) ─
 router.delete('/:id', requireRole('manager', 'admin'), deleteBoard);
+
+// ─── POST /api/boards/:id/groups (any authenticated user with board access) ─
+//   Appends a single group to the board's groups JSONB. Permitted for any
+//   user the boardVisibilityService says can REACH this board — including
+//   members and assistant managers — so they can add a sprint/section to a
+//   board they are working on. The controller validates board access via
+//   boardVisibilityService.canUserSeeBoard so the API matches sidebar
+//   visibility exactly. Renaming, archiving and reordering groups continue
+//   to require the structural board guard (PUT /:id and the route below).
+router.post(
+  '/:id/groups',
+  [
+    body('title')
+      .trim()
+      .notEmpty().withMessage('Group title is required')
+      .isLength({ min: 1, max: 80 }).withMessage('Group title must be between 1 and 80 characters'),
+    body('color')
+      .optional()
+      .matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).withMessage('Color must be a valid hex code'),
+  ],
+  addGroup
+);
+
+// ─── PATCH /api/boards/:id/groups/:groupId ───────────────────
+//   Rename / recolor a single group on a board. Permitted for any user the
+//   boardVisibilityService.canUserSeeBoard rule lets through (members /
+//   assistant managers / managers / admins / super admin). Distinct from the
+//   structural PUT /:id endpoint so we can grant rename without granting
+//   add/remove/reorder via the same permission tier.
+router.patch(
+  '/:id/groups/:groupId',
+  [
+    body('title')
+      .optional()
+      .trim()
+      .isLength({ min: 1, max: 80 }).withMessage('Group title must be between 1 and 80 characters'),
+    body('color')
+      .optional()
+      .matches(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).withMessage('Color must be a valid hex code'),
+  ],
+  renameGroup
+);
 
 // ─── PUT /api/boards/:id/groups/reorder (manager/admin only) ─
 router.put('/:id/groups/reorder', boardMutate, reorderGroups);
