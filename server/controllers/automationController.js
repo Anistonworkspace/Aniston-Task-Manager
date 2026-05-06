@@ -49,6 +49,16 @@ const deleteAutomation = async (req, res) => {
   try {
     const auto = await Automation.findByPk(req.params.id);
     if (!auto) return res.status(404).json({ success: false, message: 'Not found.' });
+
+    // Phase 5d — destructive-action gate. Automations are board-level
+    // shared config; T2 cannot delete (decision #4), T1 always.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = auto.createdBy === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'automation', { isOwnResource }))) return;
+    }
+
     await auto.destroy();
     res.json({ success: true, message: 'Automation deleted.' });
   } catch (error) {

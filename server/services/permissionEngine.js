@@ -24,10 +24,47 @@ const {
   RESOURCE_ACTIONS,
   getBasePermissions,
   isBasePermission,
+  getTierPermissions,
+  isTierBasePermission,
   getResourcesByCategory,
 } = require('../config/permissionMatrix');
+const { resolveTier, isValidTier } = require('../config/tiers');
 
 const VALID_EFFECTS = ['grant', 'deny'];
+
+/**
+ * Resolve a user's BASE matrix lookup (Phase 5b of role -> tier migration).
+ *
+ * Prefers the tier-keyed matrix when the user has a valid `tier` column
+ * (post migration 014 + Phase 3 hook); falls back to the legacy role-keyed
+ * matrix for users that haven't been migrated yet so an environment without
+ * migration 014 applied keeps working.
+ *
+ * `resolveTier` itself derives a tier even from purely legacy fields, so
+ * this function is the SINGLE place where the engine decides whether to
+ * authoritatively use the tier matrix or hedge with the role matrix.
+ */
+function getEffectiveBasePermission(user, resource, action) {
+  if (!user) return false;
+  if (isValidTier(user.tier)) {
+    return isTierBasePermission(user.tier, resource, action);
+  }
+  // Legacy path — only fires for pre-migration users. After migration 014
+  // + the User-model beforeSave hook (Phase 3), every user has a valid tier
+  // column and this branch is unreachable.
+  return isBasePermission(user.role, resource, action);
+}
+
+/**
+ * Flat-form variant for computeEffectivePermissions seeding.
+ * Same precedence as getEffectiveBasePermission.
+ */
+function getEffectiveBasePermissions(user) {
+  if (user && isValidTier(user.tier)) {
+    return getTierPermissions(user.tier);
+  }
+  return getBasePermissions(user?.role);
+}
 
 /**
  * Fetch all active, non-expired permission grants for a user. Includes both
@@ -94,8 +131,11 @@ function normalizeEffect(effect) {
 async function computeEffectivePermissions(user) {
   const role = user.role || 'member';
   const isSuperAdmin = !!user.isSuperAdmin;
+  const tier = resolveTier(user);
 
-  const basePerms = getBasePermissions(role);
+  // Tier-aware base lookup (Phase 5b). Users with a valid tier column use
+  // the tier matrix; pre-migration users fall back to the role matrix.
+  const basePerms = getEffectiveBasePermissions(user);
 
   if (isSuperAdmin) {
     const allPerms = {};
@@ -111,6 +151,7 @@ async function computeEffectivePermissions(user) {
       denials: [],
       grants: [],
       role,
+      tier,
       isSuperAdmin: true,
     };
   }
@@ -159,6 +200,7 @@ async function computeEffectivePermissions(user) {
       isTemporary: !!g.expiresAt,
     })),
     role,
+    tier,
     isSuperAdmin: false,
   };
 }
@@ -209,7 +251,9 @@ async function hasPermission(user, resource, action, resourceId) {
     return false;
   }
 
-  if (isBasePermission(user.role, resource, action)) return true;
+  // Tier-aware base lookup (Phase 5b). Users with a valid tier column use
+  // the tier matrix; pre-migration users fall back to the role matrix.
+  if (getEffectiveBasePermission(user, resource, action)) return true;
 
   return rows.some((r) => normalizeEffect(r.effect) === 'grant' && matchesRow(r));
 }
@@ -285,7 +329,9 @@ async function canGrantPermission(granter, resource, action, effect = 'grant') {
   }
 
   if (granter.role === 'manager') {
-    const granterHas = isBasePermission('manager', resource, action);
+    // Tier-aware base lookup so a granter with a populated tier column is
+    // checked against the new matrix; otherwise legacy behavior is preserved.
+    const granterHas = getEffectiveBasePermission(granter, resource, action);
     if (!granterHas) {
       const has = await hasPermission(granter, resource, action);
       if (!has) {
@@ -317,5 +363,10 @@ module.exports = {
   fetchActiveGrants,
   getPermissionMetadata,
   mapLegacyLevelToActions,
+  // Phase 5b helpers — tier-aware base lookup (single source of truth for
+  // the engine's matrix decision). Exposed so middleware (auth.js
+  // requireRole Layer 3) can use the same semantics without duplicating it.
+  getEffectiveBasePermission,
+  getEffectiveBasePermissions,
   VALID_EFFECTS,
 };

@@ -3,6 +3,45 @@ const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const hierarchy = require('../services/hierarchyService');
+const {
+  TIER_1,
+  TierError,
+  isValidTier,
+  resolveTier,
+  tierFromLegacy,
+  assertNotLastTier1Change,
+} = require('../config/tiers');
+
+/**
+ * Phase 5c — Last Tier-1 protection helper.
+ *
+ * Wraps `assertNotLastTier1Change` so the three destructive user-mgmt
+ * paths (updateUser demotion, toggleUserStatus deactivation, deleteUser)
+ * fail with the same machine-readable code/status without re-implementing
+ * the try/catch each time.
+ *
+ * Returns true when a 4xx response was sent — caller MUST `return` after
+ * to skip the destructive operation. Returns false to proceed.
+ *
+ * Non-TierError exceptions are re-thrown so the controller's outer
+ * try/catch can log them as 500s.
+ */
+async function lastTier1Blocked(res, target, intent) {
+  try {
+    await assertNotLastTier1Change(target, intent, User);
+    return false;
+  } catch (err) {
+    if (err instanceof TierError) {
+      res.status(err.status).json({
+        success: false,
+        message: err.message,
+        code: err.code,
+      });
+      return true;
+    }
+    throw err;
+  }
+}
 
 /**
  * POST /api/users
@@ -201,6 +240,37 @@ const updateUser = async (req, res) => {
       updates.localStatusOverride = true;
     }
 
+    // Phase 5c — Last Tier-1 protection.
+    //
+    // If the target is currently Tier 1 and this update would land them at
+    // anything other than Tier 1, refuse unless another active Tier 1 user
+    // exists. We compute the "proposed tier" from whichever fields the
+    // request is touching and compare against the live user.
+    //
+    // Demotion paths covered:
+    //   - role flipped to a non-Tier-2-equivalent value (e.g. 'member')
+    //     while isSuperAdmin remains true would actually KEEP tier=1 in
+    //     tierFromLegacy (isSuperAdmin wins) — those updates are not
+    //     demotions; the real demotion is clearing isSuperAdmin.
+    //   - isSuperAdmin flipped to false while role drops below 'admin'.
+    //   - tier explicitly set to a value other than 1.
+    //   - isActive flipped to false while staying Tier 1 — handled by
+    //     toggleUserStatus / via the deactivate intent below.
+    if (resolveTier(user) === TIER_1) {
+      const proposedRole         = updates.role         !== undefined ? updates.role         : user.role;
+      const proposedIsSuperAdmin = updates.isSuperAdmin !== undefined ? updates.isSuperAdmin : user.isSuperAdmin;
+      const proposedTier         = isValidTier(updates.tier)
+        ? updates.tier
+        : tierFromLegacy(proposedRole, proposedIsSuperAdmin);
+      const isDemotion = proposedTier !== TIER_1;
+      const isDeactivation = updates.isActive === false;
+
+      if (isDemotion || isDeactivation) {
+        const intent = isDemotion ? 'demote' : 'deactivate';
+        if (await lastTier1Blocked(res, user, intent)) return;
+      }
+    }
+
     // Email uniqueness (only relevant when 'email' is in the permitted set).
     if (updates.email && updates.email !== user.email.toLowerCase()) {
       const existing = await User.findOne({
@@ -274,6 +344,16 @@ const resetPassword = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
+    // Phase 5e — closes audit P1-8. Only Tier 1 may reset another Tier 1's
+    // password — without this guard a non-super-admin could reset a super
+    // admin's password and impersonate them.
+    if (resolveTier(user) === TIER_1 && resolveTier(req.user) !== TIER_1) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only a Tier 1 user can reset another Tier 1 user\'s password.',
+      });
+    }
+
     const { newPassword } = req.body;
     await user.update({ password: newPassword });
 
@@ -320,6 +400,13 @@ const toggleUserStatus = async (req, res) => {
     }
 
     const newStatus = !user.isActive;
+
+    // Phase 5c — Last Tier-1 protection. A deactivation that would leave
+    // zero active Tier 1 users is refused (decision #12).
+    if (newStatus === false) {
+      if (await lastTier1Blocked(res, user, 'deactivate')) return;
+    }
+
     // Persist the override flag so Microsoft sync respects this manual choice.
     await user.update({ isActive: newStatus, localStatusOverride: true });
 
@@ -420,6 +507,13 @@ const deleteUser = async (req, res) => {
         message: 'Admins cannot delete other admin accounts. A super admin must perform this action.',
       });
     }
+
+    // Phase 5c — Last Tier-1 protection. Defense in depth: today the
+    // hard "super admin accounts cannot be deleted via this endpoint"
+    // rule above already prevents Tier-1 deletion entirely. If that rule
+    // is ever loosened, this guard ensures a successor T1 must exist
+    // first. No-op for non-Tier-1 targets.
+    if (await lastTier1Blocked(res, user, 'delete')) return;
 
     const userName = user.name;
     await user.destroy();

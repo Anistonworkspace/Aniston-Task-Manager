@@ -1,6 +1,7 @@
 const { DataTypes } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const { sequelize } = require('../config/db');
+const { syncTierAndLegacyOnUser } = require('./userTierSync');
 
 const User = sequelize.define(
   'User',
@@ -102,6 +103,27 @@ const User = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: false,
     },
+    // Phase 2/3 of the tier-based RBAC migration. The canonical privilege
+    // level going forward; `role` + `isSuperAdmin` are kept in sync via the
+    // beforeSave hook below for the duration of the compatibility window.
+    //
+    // Mapping (see server/config/tiers.js — single source of truth):
+    //   1 = full system access  (legacy: isSuperAdmin=true)
+    //   2 = broad management    (legacy: role IN ('admin','manager'))
+    //   3 = subtree management  (legacy: role='assistant_manager')
+    //   4 = self-scoped         (legacy: role='member')
+    //
+    // REQUIRES migration 014 to be applied first (`node server/migrations/run_014.js`).
+    tier: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 4,
+      validate: {
+        isInt: { msg: 'tier must be an integer' },
+        min: { args: [1], msg: 'tier must be between 1 and 4' },
+        max: { args: [4], msg: 'tier must be between 1 and 4' },
+      },
+    },
     accountStatus: {
       type: DataTypes.STRING(20),
       defaultValue: 'approved',
@@ -171,6 +193,12 @@ const User = sequelize.define(
           const salt = await bcrypt.genSalt(12);
           user.password = await bcrypt.hash(user.password, salt);
         }
+      },
+      // Tier ↔ legacy sync. Runs on both create and update, AFTER the password
+      // hooks above. Loop-safe: only mutates fields when at least one side has
+      // explicitly changed; never calls .save(). See models/userTierSync.js.
+      beforeSave: (user) => {
+        syncTierAndLegacyOnUser(user);
       },
     },
   }

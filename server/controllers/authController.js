@@ -326,9 +326,18 @@ const getAllUsers = async (req, res) => {
       where.department = { [Op.iLike]: `%${department}%` };
     }
 
+    // Phase 5e — closes audit P0-10. Redact sensitive fields (email, role)
+    // for non-management tiers. T1/T2 see the full directory; T3/T4 see only
+    // the minimum needed to pick someone in an assignable-users dropdown.
+    const { hasTierAtLeast } = require('../config/tiers');
+    const isManagement = hasTierAtLeast(req.user, 2);
+    const attributes = isManagement
+      ? ['id', 'name', 'email', 'avatar', 'role', 'department']
+      : ['id', 'name', 'avatar', 'department'];
+
     const users = await User.findAll({
       where,
-      attributes: ['id', 'name', 'email', 'avatar', 'role', 'department'],
+      attributes,
       order: [['name', 'ASC']],
     });
 

@@ -138,9 +138,13 @@ router.delete(
 );
 
 // Admin-only utility: force a generation cycle for one template. Useful for
-// tests and for catch-up after cron downtime.
+// tests and for catch-up after cron downtime. Phase 5e — closes audit P0-9
+// (route was previously authenticated only; the comment promised admin-only
+// but the middleware did not enforce it). Tier 1 only.
+const { requireTier } = require('../middleware/tier');
 router.post(
   '/:id/generate-now',
+  requireTier(1),
   [param('id').isUUID()],
   generateNow
 );

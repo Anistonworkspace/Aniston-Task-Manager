@@ -343,6 +343,15 @@ const deleteSubtask = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the creator can delete a subtask.' });
     }
 
+    // Phase 5d — destructive-action gate. T2 cannot delete subtasks (even
+    // own); T3/T4 may delete their own; T1 always.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = subtask.createdBy === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'subtask', { isOwnResource }))) return;
+    }
+
     const subtaskId = subtask.id;
     const taskId = subtask.taskId;
     const boardId = task?.boardId;

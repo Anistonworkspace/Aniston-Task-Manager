@@ -47,6 +47,7 @@ const BoardMember = require('./BoardMember');
 const UserBoardOrder = require('./UserBoardOrder');
 const UserWorkspaceOrder = require('./UserWorkspaceOrder');
 const PushSubscription = require('./PushSubscription');
+const SystemSetting = require('./SystemSetting');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -426,6 +427,7 @@ module.exports = {
   UserBoardOrder,
   UserWorkspaceOrder,
   PushSubscription,
+  SystemSetting,
 };
 
 // ─── PushSubscription <-> User ───────────────────────────────
@@ -513,6 +515,9 @@ IntegrationConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer'
 
 // ─── AIConfig <-> User (configuredBy) ───────────────────────
 AIConfig.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });
+
+// ─── SystemSetting <-> User (updatedBy) ─────────────────────
+SystemSetting.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater', onDelete: 'SET NULL' });
 
 // ─── AIProvider <-> User (configuredBy) ─────────────────────
 AIProvider.belongsTo(User, { foreignKey: 'configuredBy', as: 'configurer', onDelete: 'SET NULL' });

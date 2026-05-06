@@ -16,12 +16,25 @@ import DepartmentModal from '../components/department/DepartmentModal';
 import WorkspaceAssignModal from '../components/workspace/WorkspaceAssignModal';
 import TeamPlannerModal from '../components/workspace/TeamPlannerModal';
 
-const ROLE_BADGE = {
-  superadmin: { bg: 'bg-red-100', text: 'text-red-700', label: 'Super Admin', icon: ShieldCheck },
-  admin: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Admin', icon: ShieldCheck },
-  manager: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Manager', icon: Shield },
-  member: { bg: 'bg-green-100', text: 'text-green-700', label: 'Member', icon: UsersIcon },
+// Phase 6 — tier-based badge map. Keyed by numeric tier (1..4); old role
+// names are no longer rendered.
+const TIER_BADGE = {
+  1: { bg: 'bg-red-100',    text: 'text-red-700',    label: 'Tier 1', icon: ShieldCheck },
+  2: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Tier 2', icon: ShieldCheck },
+  3: { bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Tier 3', icon: Shield },
+  4: { bg: 'bg-green-100',  text: 'text-green-700',  label: 'Tier 4', icon: UsersIcon },
 };
+
+// Helper: derive tier from a user object (works during the migration window
+// — falls back to legacy fields when the tier column is missing).
+function tierOf(u) {
+  if (!u) return 4;
+  if (Number.isInteger(u.tier) && u.tier >= 1 && u.tier <= 4) return u.tier;
+  if (u.isSuperAdmin) return 1;
+  if (u.role === 'admin' || u.role === 'manager') return 2;
+  if (u.role === 'assistant_manager') return 3;
+  return 4;
+}
 
 export default function UserManagementPage() {
   const { user: currentUser, isAdmin, canManage } = useAuth();
@@ -156,7 +169,15 @@ export default function UserManagementPage() {
 
   // Derive designations and roles from user data
   const designations = [...new Set(users.map(u => u.designation).filter(Boolean))].sort();
-  const roleGroups = { admin: users.filter(u => u.role === 'admin'), manager: users.filter(u => u.role === 'manager'), member: users.filter(u => u.role === 'member') };
+  // Phase 6 — group users by tier (1..4) for the Tiers tab. Old role
+  // grouping is replaced; tierOf() resolves from user.tier with legacy
+  // fallback so this works during the migration window.
+  const tierGroups = {
+    1: users.filter(u => tierOf(u) === 1),
+    2: users.filter(u => tierOf(u) === 2),
+    3: users.filter(u => tierOf(u) === 3),
+    4: users.filter(u => tierOf(u) === 4),
+  };
 
   async function handleSyncDepartments() {
     try {
@@ -330,7 +351,9 @@ export default function UserManagementPage() {
                   </thead>
                   <tbody>
                     {users.map(u => {
-                      const roleBadge = u.isSuperAdmin ? ROLE_BADGE.superadmin : (ROLE_BADGE[u.role] || ROLE_BADGE.member);
+                      // Phase 6 — tier-based badge.
+                      const userTier = tierOf(u);
+                      const roleBadge = TIER_BADGE[userTier] || TIER_BADGE[4];
                       const RoleIcon = roleBadge.icon;
                       const isSelf = u.id === currentUser?.id;
                       // Find workspace this user is assigned to
@@ -583,25 +606,26 @@ export default function UserManagementPage() {
         </div>
       )}
 
-      {/* ═══ ROLES TAB ═══ */}
+      {/* ═══ TIERS TAB ═══ Phase 6: shows tier groups, never role names. */}
       {activeTab === 'roles' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {Object.entries(roleGroups).map(([role, roleUsers]) => {
-            const badge = ROLE_BADGE[role] || {};
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Object.entries(tierGroups).map(([tierStr, tierUsers]) => {
+            const tierKey = Number(tierStr);
+            const badge = TIER_BADGE[tierKey] || TIER_BADGE[4];
             const Icon = badge.icon || UsersIcon;
             return (
-              <div key={role} className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
+              <div key={tierKey} className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
                 <div className={`px-5 py-4 ${badge.bg || 'bg-surface'} border-b border-border`}>
                   <div className="flex items-center gap-2">
                     <Icon size={18} className={badge.text || 'text-text-primary'} />
-                    <h3 className={`text-lg font-bold ${badge.text || 'text-text-primary'} capitalize`}>{role}s</h3>
-                    <span className={`ml-auto text-2xl font-bold ${badge.text || 'text-text-primary'}`}>{roleUsers.length}</span>
+                    <h3 className={`text-lg font-bold ${badge.text || 'text-text-primary'}`}>{badge.label}</h3>
+                    <span className={`ml-auto text-2xl font-bold ${badge.text || 'text-text-primary'}`}>{tierUsers.length}</span>
                   </div>
                 </div>
                 <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
-                  {roleUsers.length === 0 ? (
-                    <p className="text-sm text-text-tertiary text-center py-6">No {role}s</p>
-                  ) : roleUsers.map(u => (
+                  {tierUsers.length === 0 ? (
+                    <p className="text-sm text-text-tertiary text-center py-6">No users at {badge.label}</p>
+                  ) : tierUsers.map(u => (
                     <div key={u.id} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface/30">
                       <Avatar name={u.name} size="xs" />
                       <div className="flex-1 min-w-0">

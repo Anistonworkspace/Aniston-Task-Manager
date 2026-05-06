@@ -15,7 +15,8 @@ import { useTheme } from '../../context/ThemeContext';
 import { requestPushPermission, showLocalNotification, isPushSupported, subscribeToPush } from '../../services/pushNotifications';
 
 export default function Header({ onToggleSidebar }) {
-  const { user, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  const { user, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions,
+    isTier1, isTier2, isTier3, isTier4, tierLabel } = useAuth();
   // Mirror the exact gates the sidebar used for these items so visibility
   // stays identical after the move. Each menu row in the profile dropdown is
   // gated on the same boolean its sidebar counterpart was — no role can
@@ -247,9 +248,16 @@ export default function Header({ onToggleSidebar }) {
                   <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
                   <p className="text-xs text-text-tertiary mt-0.5">{user?.email}</p>
                   <div className="flex items-center gap-1.5 mt-2">
+                    {/* Phase 6 — tier-based badge. Color reflects privilege:
+                        Tier 1 = danger (most privileged), Tier 2 = warning,
+                        Tier 3 = primary, Tier 4 = neutral. Old role names are
+                        no longer rendered anywhere in the UI. */}
                     <span className={`badge ${
-                      user?.role === 'admin' ? 'badge-danger' : user?.role === 'manager' ? 'badge-warning' : 'badge-primary'
-                    }`}>{user?.role}</span>
+                      isTier1 ? 'badge-danger'
+                      : isTier2 ? 'badge-warning'
+                      : isTier3 ? 'badge-primary'
+                      : 'badge-neutral'
+                    }`}>{tierLabel}</span>
                     {user?.department && <span className="badge badge-neutral">{user.department}</span>}
                   </div>
                 </div>

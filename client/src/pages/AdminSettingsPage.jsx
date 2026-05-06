@@ -10,6 +10,7 @@ import {
   UserCheck, UserX, KeyRound, ShieldCheck
 } from 'lucide-react';
 import Avatar from '../components/common/Avatar';
+import Modal from '../components/common/Modal';
 import CreateUserModal from '../components/user/CreateUserModal';
 import EditUserModal from '../components/user/EditUserModal';
 import ResetPasswordModal from '../components/user/ResetPasswordModal';
@@ -22,6 +23,8 @@ const TABS = [
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'access_requests', label: 'Access Requests', icon: Key },
   { id: 'templates', label: 'Templates', icon: BookmarkCheck },
+  // 'security' is super-admin only and is filtered into the visible list at render time.
+  { id: 'security', label: 'Security', icon: Lock, superAdminOnly: true },
 ];
 
 const ROLE_BADGE = {
@@ -45,6 +48,11 @@ export default function AdminSettingsPage() {
   const { user, isSuperAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('users');
 
+  // Filter out super-admin-only tabs for regular admins. The Security tab is
+  // intentionally invisible to admins/managers/members — they cannot read or
+  // write the system inactivity timeout. Backend enforces the same on PUT.
+  const visibleTabs = TABS.filter(t => !t.superAdminOnly || isSuperAdmin);
+
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -57,7 +65,7 @@ export default function AdminSettingsPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 dark:bg-zinc-800 rounded-lg p-1 mb-6 w-fit">
-        {TABS.map(tab => (
+        {visibleTabs.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition-all ${
               activeTab === tab.id ? 'bg-white dark:bg-zinc-700 text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -72,6 +80,7 @@ export default function AdminSettingsPage() {
       {activeTab === 'permissions' && <PermissionsTab />}
       {activeTab === 'access_requests' && <AccessRequestsTab />}
       {activeTab === 'templates' && <TemplatesTab />}
+      {activeTab === 'security' && isSuperAdmin && <SecurityTab />}
     </div>
   );
 }
@@ -88,6 +97,11 @@ function UsersTab() {
   const [editUser, setEditUser] = useState(null);
   const [actionMenu, setActionMenu] = useState(null);
   const [roleChanging, setRoleChanging] = useState(null);
+  // Staged role change awaiting Super Admin / Admin confirmation. Holds the
+  // target user, their current role token, and the requested new role token.
+  // The select stays bound to the canonical user.role, so cancelling the modal
+  // requires no manual revert — React renders the original value.
+  const [pendingRoleChange, setPendingRoleChange] = useState(null);
   const [visibleCount, setVisibleCount] = useState(25);
 
   // Admins (and super admins) get the privileged edit form (role / status /
@@ -105,20 +119,48 @@ function UsersTab() {
     } catch (err) { console.error(err); } finally { setLoading(false); }
   }
 
-  async function handleChangeRole(userId, newRole) {
-    setRoleChanging(userId);
+  // Stage the role change — does NOT hit the API. Confirmation modal calls
+  // confirmRoleChange() to actually mutate. Bail early if the dropdown
+  // re-emits the user's current role (e.g. after cancel + reopen).
+  function requestRoleChange(u, newRole) {
+    const currentRole = u.isSuperAdmin ? 'superadmin' : u.role;
+    if (newRole === currentRole) return;
+    setPendingRoleChange({ user: u, oldRole: currentRole, newRole });
+  }
+
+  async function confirmRoleChange() {
+    if (!pendingRoleChange) return;
+    const { user: target, newRole } = pendingRoleChange;
+    // Guard against double-click / duplicate submits while the request is
+    // in flight. setRoleChanging is the same lock the dropdown disable
+    // uses, so we share the existing UX hook.
+    if (roleChanging === target.id) return;
+    setRoleChanging(target.id);
     try {
       if (newRole === 'superadmin') {
-        await api.put(`/users/${userId}`, { role: 'admin', isSuperAdmin: true });
+        await api.put(`/users/${target.id}`, { role: 'admin', isSuperAdmin: true });
       } else {
-        await api.put(`/users/${userId}`, { role: newRole, isSuperAdmin: false });
+        await api.put(`/users/${target.id}`, { role: newRole, isSuperAdmin: false });
       }
-      fetchUsers();
+      await fetchUsers();
       toast.success('Role updated.');
+      setPendingRoleChange(null);
     } catch (err) {
       console.error(err);
       toast.error(err.response?.data?.message || 'Failed to change role');
-    } finally { setRoleChanging(null); setActionMenu(null); }
+      // Refetch so the dropdown reflects the canonical server state in case
+      // the server already partially applied or the local copy is stale.
+      fetchUsers();
+      setPendingRoleChange(null);
+    } finally {
+      setRoleChanging(null);
+      setActionMenu(null);
+    }
+  }
+
+  function cancelRoleChange() {
+    if (roleChanging) return; // ignore close attempts while submitting
+    setPendingRoleChange(null);
   }
 
   async function handleDelete(userId, name) {
@@ -240,7 +282,7 @@ function UsersTab() {
                     {u.designation && <p className="text-[10px] text-gray-400">{u.designation}</p>}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <select value={u.isSuperAdmin ? 'superadmin' : u.role} onChange={e => handleChangeRole(u.id, e.target.value)}
+                    <select value={u.isSuperAdmin ? 'superadmin' : u.role} onChange={e => requestRoleChange(u, e.target.value)}
                       disabled={roleChanging === u.id}
                       className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text}`}>
                       <option value="member">Member</option>
@@ -320,7 +362,86 @@ function UsersTab() {
           onToast={({ type, message }) => (toast[type] || toast.info)(message)}
         />
       )}
+      <RoleChangeConfirmModal
+        pending={pendingRoleChange}
+        isSubmitting={!!pendingRoleChange && roleChanging === pendingRoleChange.user.id}
+        onCancel={cancelRoleChange}
+        onConfirm={confirmRoleChange}
+      />
     </div>
+  );
+}
+
+function RoleChangeConfirmModal({ pending, isSubmitting, onCancel, onConfirm }) {
+  if (!pending) return null;
+  const { user, oldRole, newRole } = pending;
+  const oldBadge = ROLE_BADGE[oldRole] || ROLE_BADGE.member;
+  const newBadge = ROLE_BADGE[newRole] || ROLE_BADGE.member;
+
+  return (
+    <Modal
+      isOpen={!!pending}
+      onClose={onCancel}
+      title="Confirm Role Change"
+      size="sm"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-200 dark:border-zinc-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isSubmitting}
+            className="px-3 py-1.5 text-xs font-medium rounded-md bg-primary text-white hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+          >
+            {isSubmitting && <RefreshCw size={12} className="animate-spin" />}
+            {isSubmitting ? 'Updating…' : 'Confirm Changes'}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <Avatar name={user.name} size="md" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{user.name}</p>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-gray-100 dark:border-zinc-700 bg-gray-50/60 dark:bg-zinc-900/40 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase tracking-wider text-gray-400">Current</span>
+              <span className={`mt-1 inline-flex items-center self-start text-[11px] font-semibold px-2 py-0.5 rounded-full ${oldBadge.bg} ${oldBadge.text}`}>
+                {oldBadge.label}
+              </span>
+            </div>
+            <ChevronRight size={16} className="text-gray-400 shrink-0" />
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase tracking-wider text-gray-400">New</span>
+              <span className={`mt-1 inline-flex items-center self-start text-[11px] font-semibold px-2 py-0.5 rounded-full ${newBadge.bg} ${newBadge.text}`}>
+                {newBadge.label}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
+          <AlertCircle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+          <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
+            This will change the user's permissions and access level immediately.
+            They may gain or lose the ability to manage boards, users, or sensitive settings.
+          </p>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1508,6 +1629,338 @@ function TemplatesTab() {
             <Check size={12} /> Template applied successfully!
           </motion.p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Security & Session ──────────────────────────────────────
+// Super-admin-only tab. Controls platform-wide auth/session policy. Currently
+// surfaces just the inactivity auto-logout duration; future security knobs
+// (password rotation, session lifetime, MFA enforcement) belong here too.
+//
+// The selector is a number + unit (minutes/hours) — internally everything is
+// stored and shipped to the backend in MINUTES. Hours mode is purely a display
+// affordance so a Super Admin doesn't have to translate "24 hours = 1440" by hand.
+
+// Format a minute count for human display. 60 → "1 hour", 120 → "2 hours",
+// 45 → "45 minutes". Keeps singular/plural correct.
+function formatMinutesReadable(m) {
+  const n = Number(m);
+  if (!Number.isFinite(n) || n <= 0) return '0 minutes';
+  if (n >= 60 && n % 60 === 0) {
+    const h = n / 60;
+    return `${h} hour${h === 1 ? '' : 's'}`;
+  }
+  return `${n} minute${n === 1 ? '' : 's'}`;
+}
+
+// Pick the most natural display unit for a saved minute value. If it's an
+// exact non-zero hour, show it as hours; otherwise show as minutes.
+function pickInitialUnit(totalMinutes) {
+  const m = Number(totalMinutes);
+  if (Number.isFinite(m) && m >= 60 && m % 60 === 0) {
+    return { unit: 'hours', count: String(m / 60) };
+  }
+  return { unit: 'minutes', count: String(Number.isFinite(m) ? m : 5) };
+}
+
+// Curated quick-select presets covering everyday windows from a coffee break
+// (5 min) through a full workday (8 hr) up to the daily-rotation max (24 hr).
+// Each preset stores its display unit so clicking "1 hr" puts the selector in
+// hours mode rather than showing "60 minutes".
+const SECURITY_PRESETS = [
+  { label: '5 min',  unit: 'minutes', count: 5 },
+  { label: '10 min', unit: 'minutes', count: 10 },
+  { label: '15 min', unit: 'minutes', count: 15 },
+  { label: '30 min', unit: 'minutes', count: 30 },
+  { label: '1 hr',   unit: 'hours',   count: 1 },
+  { label: '2 hr',   unit: 'hours',   count: 2 },
+  { label: '4 hr',   unit: 'hours',   count: 4 },
+  { label: '8 hr',   unit: 'hours',   count: 8 },
+  { label: '12 hr',  unit: 'hours',   count: 12 },
+  { label: '24 hr',  unit: 'hours',   count: 24 },
+];
+
+function SecurityTab() {
+  const toast = useToast();
+  const {
+    isSuperAdmin,
+    inactivityTimeoutMinutes,
+    refreshInactivityTimeout,
+    applyInactivityTimeoutMinutes,
+    INACTIVITY_MIN_MINUTES,
+    INACTIVITY_MAX_MINUTES,
+  } = useAuth();
+
+  // Bounds expressed in MINUTES — the canonical unit. Hours mode derives its
+  // own count bounds from these (1..24).
+  const MIN = INACTIVITY_MIN_MINUTES ?? 5;
+  const MAX = INACTIVITY_MAX_MINUTES ?? 1440;
+
+  // Stepper count is held as a raw string so the user can type freely
+  // (including transient invalid states like blank, decimals, or text); strict
+  // validation happens below. Unit is the dropdown selection.
+  const initial = pickInitialUnit(inactivityTimeoutMinutes ?? 5);
+  const [unit, setUnit] = useState(initial.unit);
+  const [countRaw, setCountRaw] = useState(initial.count);
+  const [savedValue, setSavedValue] = useState(inactivityTimeoutMinutes ?? 5);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isSuperAdmin) { setLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const minutes = await refreshInactivityTimeout();
+        if (cancelled) return;
+        const safe = Number.isFinite(minutes) ? minutes : 5;
+        const init = pickInitialUnit(safe);
+        setUnit(init.unit);
+        setCountRaw(init.count);
+        setSavedValue(safe);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshInactivityTimeout, isSuperAdmin]);
+
+  // Defense-in-depth: even if the tab somehow renders for a non-super-admin
+  // (e.g. a future routing bug), refuse to display the controls. Backend PUT
+  // is also locked, so they couldn't save anyway. Placed AFTER hooks so the
+  // rules-of-hooks invariant holds regardless of role.
+  if (!isSuperAdmin) {
+    return (
+      <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-lg p-6">
+        <p className="text-sm text-gray-600 dark:text-gray-400">Super Admin privileges are required to view this section.</p>
+      </div>
+    );
+  }
+
+  // Per-unit count bounds. In hours mode the smallest sensible count is 1
+  // (= 60 min, well above the 5-minute floor); in minutes mode it's MIN itself.
+  const unitMin = unit === 'hours' ? 1 : MIN;
+  const unitMax = unit === 'hours' ? Math.floor(MAX / 60) : MAX;
+  const unitLabel = unit === 'hours' ? 'hours' : 'minutes';
+
+  // Strict integer validation. /^\d+$/ rejects decimals (5.5), blanks,
+  // negatives, scientific notation (5e2), and any non-digit characters that
+  // Number() would silently coerce. Both the per-unit count range AND the
+  // resulting total-minutes range must hold — total minutes is what the
+  // backend enforces, so it stays the canonical gate.
+  const trimmed = String(countRaw ?? '').trim();
+  const isBlank = trimmed === '';
+  const isIntegerString = /^\d+$/.test(trimmed);
+  const countNum = Number(trimmed);
+  const totalMinutes = unit === 'hours' ? countNum * 60 : countNum;
+  const isValidDraft =
+    !isBlank &&
+    isIntegerString &&
+    countNum >= unitMin &&
+    countNum <= unitMax &&
+    totalMinutes >= MIN &&
+    totalMinutes <= MAX;
+  const isDirty = isValidDraft && totalMinutes !== savedValue;
+
+  const handleStep = (delta) => {
+    // If the current count is invalid (e.g. the user typed garbage and then
+    // hit +/-), recover by re-deriving the count from the last known-good
+    // saved value in the current unit. This makes the stepper a "rescue"
+    // path out of bad input.
+    let base;
+    if (Number.isFinite(countNum) && countNum > 0) {
+      base = Math.round(countNum);
+    } else {
+      base = unit === 'hours'
+        ? Math.max(1, Math.round(savedValue / 60))
+        : savedValue;
+    }
+    const next = Math.max(unitMin, Math.min(unitMax, base + delta));
+    setCountRaw(String(next));
+  };
+
+  const handlePresetClick = (preset) => {
+    setUnit(preset.unit);
+    setCountRaw(String(preset.count));
+  };
+
+  const handleUnitChange = (e) => {
+    // Switching units does NOT auto-convert the number. The user picked a unit
+    // for a reason; silently scaling 30 → 1800 would be more surprising than
+    // letting validation guide them. The presets and stepper are the natural
+    // ways to land on a sensible value after a unit change.
+    setUnit(e.target.value);
+  };
+
+  const handleSave = async () => {
+    if (!isValidDraft || saving) return;
+    setSaving(true);
+    try {
+      const res = await api.put('/system-settings/session-timeout', {
+        inactivityTimeoutMinutes: totalMinutes,
+      });
+      const minutes = Number(res.data?.data?.inactivityTimeoutMinutes) || totalMinutes;
+      setSavedValue(minutes);
+      // Re-derive display unit from the canonical saved value so e.g. saving
+      // "60 minutes" snaps the UI to "1 hour" on the next tick.
+      const init = pickInitialUnit(minutes);
+      setUnit(init.unit);
+      setCountRaw(init.count);
+      // Apply to the running session immediately so the new window takes effect
+      // without a page refresh — gives the super admin instant feedback.
+      applyInactivityTimeoutMinutes(minutes);
+      toast.success(`Inactivity logout set to ${formatMinutesReadable(minutes)}.`);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update inactivity timeout');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Highlight a preset chip when the currently-typed value resolves to the
+  // same total minutes AND the same display unit — so "1 hr" lights up only
+  // when you're showing 1 hour, not when you've typed 60 in minutes mode.
+  // Keeps the UI honest about which path the user took.
+  const isPresetActive = (p) =>
+    isValidDraft && unit === p.unit && countNum === p.count;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-lg p-6 max-w-2xl">
+        <div className="flex items-start gap-3 mb-5">
+          <div className="p-2 rounded-md bg-primary/10 text-primary">
+            <Lock size={18} />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-800 dark:text-gray-100">Security & Session</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Platform-wide session policy. Only Super Admins can change these values.
+            </p>
+          </div>
+        </div>
+
+        <div className="border-t border-gray-200 dark:border-zinc-800 pt-5">
+          <label className="block text-sm font-medium text-gray-800 dark:text-gray-100">
+            Auto logout after inactivity
+          </label>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">
+            Users will be automatically signed out after this period of inactivity.
+            Allowed range: {MIN} minutes – {Math.floor(MAX / 60)} hours.
+          </p>
+
+          {loading ? (
+            <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+              <RefreshCw size={12} className="animate-spin" /> Loading current setting…
+            </div>
+          ) : (
+            <>
+              {/* Stepper + unit selector */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="inline-flex items-stretch rounded-lg border border-gray-300 dark:border-zinc-700 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => handleStep(-1)}
+                    disabled={(isValidDraft && countNum <= unitMin) || saving}
+                    aria-label="Decrease"
+                    className="px-3 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={unitMin}
+                    max={unitMax}
+                    step={1}
+                    value={countRaw}
+                    onChange={(e) => setCountRaw(e.target.value)}
+                    disabled={saving}
+                    aria-label="Inactivity timeout value"
+                    aria-invalid={!isValidDraft}
+                    className={`w-20 text-center text-sm font-medium bg-white dark:bg-zinc-900 text-gray-800 dark:text-gray-100 border-l border-r focus:outline-none focus:ring-1 transition-colors ${
+                      isValidDraft || isBlank
+                        ? 'border-gray-300 dark:border-zinc-700 focus:ring-primary'
+                        : 'border-red-400 dark:border-red-700 focus:ring-red-400'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleStep(+1)}
+                    disabled={(isValidDraft && countNum >= unitMax) || saving}
+                    aria-label="Increase"
+                    className="px-3 text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                    +
+                  </button>
+                </div>
+                <select
+                  value={unit}
+                  onChange={handleUnitChange}
+                  disabled={saving}
+                  aria-label="Inactivity timeout unit"
+                  className="px-3 py-1.5 text-sm bg-white dark:bg-zinc-900 text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-primary">
+                  <option value="minutes">minutes</option>
+                  <option value="hours">hours</option>
+                </select>
+              </div>
+
+              {/* Selected timeout summary OR validation error — mutually
+                  exclusive so the card stays compact. */}
+              {isValidDraft ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  Selected timeout:{' '}
+                  <span className="font-medium text-gray-700 dark:text-gray-200">
+                    {countNum} {unitLabel}
+                  </span>
+                </p>
+              ) : (
+                <p className="text-xs text-red-600 mt-2 flex items-center gap-1">
+                  <AlertCircle size={12} />
+                  {isBlank
+                    ? 'Please enter a value.'
+                    : `Must be a whole number between ${unitMin} and ${unitMax} ${unitLabel}.`}
+                </p>
+              )}
+
+              {/* Presets */}
+              <div className="flex flex-wrap gap-2 mt-4">
+                {SECURITY_PRESETS.map(p => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => handlePresetClick(p)}
+                    disabled={saving}
+                    className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+                      isPresetActive(p)
+                        ? 'bg-primary/10 border-primary text-primary'
+                        : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-800'
+                    } disabled:opacity-40 disabled:cursor-not-allowed`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Save row */}
+              <div className="flex items-center justify-between mt-5 pt-4 border-t border-gray-100 dark:border-zinc-800">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Current saved value:{' '}
+                  <span className="font-medium text-gray-700 dark:text-gray-200">
+                    {formatMinutesReadable(savedValue)}
+                  </span>
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={!isDirty || saving}
+                  className="px-4 py-1.5 bg-primary text-white text-sm font-medium rounded-md hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5">
+                  {saving ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

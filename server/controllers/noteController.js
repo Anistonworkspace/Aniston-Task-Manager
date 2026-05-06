@@ -154,6 +154,14 @@ exports.deleteNote = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized.' });
     }
 
+    // Phase 5d — destructive-action gate. T2 cannot delete even own notes
+    // (decision #4 strict). T1/T3/T4 + own → allowed.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'note', { isOwnResource: true }))) return;
+    }
+
     await note.destroy();
     res.json({ success: true, message: 'Note deleted.' });
   } catch (err) {

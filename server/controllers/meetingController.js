@@ -233,6 +233,14 @@ const deleteMeeting = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the organizer or admin can delete this meeting.' });
     }
 
+    // Phase 5d — destructive-action gate.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = meeting.createdBy === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'meeting', { isOwnResource }))) return;
+    }
+
     // Notify participants of cancellation
     for (const p of (meeting.participants || []).filter(Boolean)) {
       if (p.userId && p.userId !== req.user.id) {

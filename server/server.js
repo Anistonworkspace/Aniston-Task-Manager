@@ -64,6 +64,7 @@ const apiKeyRoutes = require('./routes/apiKeys');
 const outboundWebhookRoutes = require('./routes/outboundWebhooks');
 const recurringTaskRoutes = require('./routes/recurringTasks');
 const boardOrderRoutes = require('./routes/boardOrders');
+const systemSettingsRoutes = require('./routes/systemSettings');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -117,10 +118,14 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ─── Static file serving (uploads) ──────────────────────────
-// Serves locally stored files.  In production, consider adding
-// authentication middleware here or switching to signed URLs.
+// Phase 5e (audit P0-1): /uploads is now AUTHENTICATED. Token is accepted
+// via Authorization: Bearer header OR ?token= query string so <img src=...>
+// tags still work once the frontend appends the JWT. Anonymous requests
+// receive 401. Per-file authorization remains a follow-up; this is the
+// baseline gate that closes the public-file-by-filename-guess vulnerability.
 const { getUploadDir } = require('./middleware/upload');
-app.use('/uploads', express.static(getUploadDir()));
+const { authenticateForStatic } = require('./middleware/staticAuth');
+app.use('/uploads', authenticateForStatic, express.static(getUploadDir()));
 
 // ─── Upload config endpoint (tells frontend what's allowed) ─
 // INTENTIONALLY PUBLIC — returns only file extension/size limits (no secrets).
@@ -239,6 +244,7 @@ app.use('/api/api-keys', apiKeyRoutes);
 app.use('/api/outbound-webhooks', outboundWebhookRoutes);
 app.use('/api/recurring-tasks', recurringTaskRoutes);
 app.use('/api/board-orders', boardOrderRoutes);
+app.use('/api/system-settings', systemSettingsRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
 const { authenticate: mrAuth, managerOrAdmin: mrMgr } = require('./middleware/auth');
@@ -1114,6 +1120,32 @@ const start = async () => {
       }
     }
     console.log('[Server] subtasks inline-table columns ensured.');
+
+    // ── Auto-migration: system_settings table ────────────────────
+    // Generic key/value store for platform-wide settings (e.g. inactivity
+    // auto-logout duration). Created here explicitly so the table exists
+    // independent of sequelize.sync timing, and so the row for inactivity
+    // timeout is seeded with the historical 5-minute default — preserving
+    // existing behavior until a Super Admin changes it.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS system_settings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        key VARCHAR(100) NOT NULL UNIQUE,
+        value JSONB NOT NULL,
+        description TEXT,
+        "updatedBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`
+        INSERT INTO system_settings (key, value, description)
+        VALUES ('inactivity_timeout_minutes', '{"minutes": 5}'::jsonb, 'Auto-logout duration after user inactivity (minutes).')
+        ON CONFLICT (key) DO NOTHING
+      `);
+      console.log('[Server] system_settings table ensured.');
+    } catch (e) {
+      console.warn('[Server] system_settings migration warning:', e.message?.slice(0, 200));
+    }
 
     // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {

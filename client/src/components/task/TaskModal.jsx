@@ -1235,24 +1235,60 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             </div>
           )}
 
-          {/* Description */}
-          <div className="mb-6">
-            <label className="text-sm font-medium text-text-primary mb-1.5 block">Description</label>
-            {canEditAllFields ? (
-              <>
-                <textarea value={description} onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }} onBlur={handleDescBlur}
-                  placeholder="Add a description..." className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px]" />
-                <GrammarSuggestion
-                  suggestion={descGrammarSuggestion}
-                  isChecking={isCheckingDescGrammar}
-                  onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
-                  onDismiss={dismissDescGrammar}
-                />
-              </>
-            ) : (
-              <p className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30">{description || 'No description'}</p>
-            )}
-          </div>
+          {/* Description — set-once. Editable while the saved value is empty;
+              once a non-empty description has been persisted it locks for every
+              role (mirrors the backend description_locked guard).
+              Edit gate matches the title field (canEditAllFields || canEditOwnFields)
+              so an assignee / creator member can add the first description —
+              backend `checkTaskAction('edit')` whitelists `description` for the
+              same actors, so this UI gate must not be narrower. */}
+          {(() => {
+            const savedDescription = typeof task?.description === 'string' ? task.description : '';
+            const isDescriptionLocked = !!savedDescription.trim();
+            const canAddFirstDescription = !isApproved && (canEditAllFields || canEditOwnFields);
+            return (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-sm font-medium text-text-primary block">Description</label>
+                  {isDescriptionLocked && (
+                    <span
+                      className="text-[11px] text-text-tertiary inline-flex items-center gap-1"
+                      title="Description is locked once added and cannot be edited."
+                    >
+                      <Lock size={11} />
+                      Locked
+                    </span>
+                  )}
+                </div>
+                {isDescriptionLocked ? (
+                  <div
+                    aria-readonly="true"
+                    className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30 whitespace-pre-wrap select-text"
+                  >
+                    {savedDescription}
+                  </div>
+                ) : canAddFirstDescription ? (
+                  <>
+                    <textarea
+                      value={description}
+                      onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }}
+                      onBlur={handleDescBlur}
+                      placeholder="Add description..."
+                      className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px]"
+                    />
+                    <GrammarSuggestion
+                      suggestion={descGrammarSuggestion}
+                      isChecking={isCheckingDescGrammar}
+                      onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
+                      onDismiss={dismissDescGrammar}
+                    />
+                  </>
+                ) : (
+                  <p className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30">No description</p>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Subtasks */}
           <SubtaskList taskId={task.id} members={members} onSubtaskCountChange={(counts) => {

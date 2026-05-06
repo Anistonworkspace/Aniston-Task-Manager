@@ -2,10 +2,29 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import api from '../services/api';
 import { connect, disconnect, disconnectForLogout, subscribe, getSocketId } from '../services/socket';
 import { unsubscribeFromPush } from '../services/pushNotifications';
+import {
+  TIER_1, TIER_2, TIER_3, TIER_4,
+  resolveTier as resolveTierFn,
+  hasTierAtLeast as hasTierAtLeastFn,
+  tierLabel as tierLabelFn,
+} from '../utils/tiers';
 
 const AuthContext = createContext(null);
-const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+// Inactivity timeout is configurable by Super Admin via /api/system-settings/session-timeout.
+// These constants are the safety bounds + the fallback used while the value is
+// being fetched (or if the fetch fails). Mirror server-side bounds.
+const DEFAULT_INACTIVITY_MINUTES = 5;
+const MIN_INACTIVITY_MINUTES = 5;
+const MAX_INACTIVITY_MINUTES = 1440; // 24 hours
 const WARNING_BEFORE_LOGOUT = 30 * 1000; // Warn 30 seconds before logout
+
+const clampInactivityMinutes = (raw) => {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_INACTIVITY_MINUTES;
+  if (n < MIN_INACTIVITY_MINUTES) return MIN_INACTIVITY_MINUTES;
+  if (n > MAX_INACTIVITY_MINUTES) return MAX_INACTIVITY_MINUTES;
+  return Math.round(n);
+};
 
 // Multi-tab logout sync. When one tab calls logout, every other tab in the
 // same browser context (same origin) receives a 'logout' message and tears
@@ -25,6 +44,44 @@ export function AuthProvider({ children }) {
   const lastActivityRef = useRef(Date.now());
   const inactivityTimerRef = useRef(null);
   const logoutWarningShownRef = useRef(false);
+  // Configured by Super Admin in Admin Settings → Security. The ref is what
+  // the running interval reads on each tick so updates take effect mid-session
+  // without restarting the timer; the state is for UI consumers (e.g. the
+  // Security tab) that need to re-render when the value changes.
+  const [inactivityTimeoutMinutes, setInactivityTimeoutMinutes] = useState(DEFAULT_INACTIVITY_MINUTES);
+  const inactivityMinutesRef = useRef(DEFAULT_INACTIVITY_MINUTES);
+
+  // Pull the latest configured timeout from the server. Safe to call repeatedly;
+  // any failure leaves the previous value intact (or the default on first run)
+  // so a transient network error never breaks login.
+  const refreshInactivityTimeout = useCallback(async () => {
+    try {
+      const res = await api.get('/system-settings/session-timeout');
+      const minutes = clampInactivityMinutes(res.data?.data?.inactivityTimeoutMinutes);
+      inactivityMinutesRef.current = minutes;
+      setInactivityTimeoutMinutes(minutes);
+      return minutes;
+    } catch (err) {
+      console.warn('[Auth] Failed to load inactivity timeout, using fallback:', err?.message);
+      return inactivityMinutesRef.current;
+    }
+  }, []);
+
+  // Apply a freshly-saved value locally — used by the Security tab right after
+  // a successful PUT so the new timeout takes effect in the current session
+  // without a round-trip or page refresh.
+  const applyInactivityTimeoutMinutes = useCallback((minutes) => {
+    const clamped = clampInactivityMinutes(minutes);
+    inactivityMinutesRef.current = clamped;
+    setInactivityTimeoutMinutes(clamped);
+    // Reset the activity clock so the new window starts now, not from whatever
+    // long-stale timestamp predated the change.
+    lastActivityRef.current = Date.now();
+    logoutWarningShownRef.current = false;
+    const banner = document.getElementById('logout-warning-banner');
+    if (banner) banner.remove();
+    return clamped;
+  }, []);
 
   /**
    * Local-only teardown — the bit every logout path needs to do, regardless
@@ -225,9 +282,16 @@ export function AuthProvider({ children }) {
     return () => { if (unsubscribe) unsubscribe(); };
   }, [user, loadPermissions]);
 
-  // Inactivity tracker — logout after 5 min of no activity
+  // Inactivity tracker — logout after the configured period of no activity.
+  // The interval reads inactivityMinutesRef on each tick, so changes made by a
+  // Super Admin take effect immediately in the current session without
+  // tearing down and rebuilding listeners.
   useEffect(() => {
     if (!user) return;
+
+    // Pull the configured value once the user is loaded. Best-effort — on
+    // failure we keep whatever value the ref already holds (default 5 min).
+    refreshInactivityTimeout();
 
     const resetActivity = () => {
       lastActivityRef.current = Date.now();
@@ -238,9 +302,10 @@ export function AuthProvider({ children }) {
     events.forEach(e => window.addEventListener(e, resetActivity, { passive: true }));
 
     inactivityTimerRef.current = setInterval(() => {
+      const timeoutMs = clampInactivityMinutes(inactivityMinutesRef.current) * 60 * 1000;
       const idle = Date.now() - lastActivityRef.current;
       // Show warning 30s before logout
-      if (idle > (INACTIVITY_TIMEOUT - WARNING_BEFORE_LOGOUT) && !logoutWarningShownRef.current) {
+      if (idle > (timeoutMs - WARNING_BEFORE_LOGOUT) && !logoutWarningShownRef.current) {
         logoutWarningShownRef.current = true;
         // Create a visible warning banner
         const banner = document.createElement('div');
@@ -258,7 +323,7 @@ export function AuthProvider({ children }) {
           events.forEach(e => window.addEventListener(e, removeBanner, { once: true }));
         }
       }
-      if (idle > INACTIVITY_TIMEOUT) {
+      if (idle > timeoutMs) {
         const el = document.getElementById('logout-warning-banner');
         if (el) el.remove();
         console.log('[Auth] Auto-logout due to inactivity');
@@ -271,7 +336,7 @@ export function AuthProvider({ children }) {
       events.forEach(e => window.removeEventListener(e, resetActivity));
       if (inactivityTimerRef.current) clearInterval(inactivityTimerRef.current);
     };
-  }, [user, logout]);
+  }, [user, logout, refreshInactivityTimeout]);
 
   const login = async (email, password) => {
     const res = await api.post('/auth/login', { email, password });
@@ -321,26 +386,43 @@ export function AuthProvider({ children }) {
     return updatedUser;
   };
 
-  // Super admin check
+  // ─── Tier-based identity (Phase 6) ────────────────────────────────────
+  // Tier is the canonical RBAC level going forward. The legacy helpers
+  // below (isAdmin, isManager, etc.) are kept as deprecated aliases so the
+  // rest of the app keeps working until each component is migrated to
+  // tier-based gates. Backend remains the source of truth — this is for
+  // UI rendering only.
+  const tier = resolveTierFn(user);
+  const isTier1 = tier === TIER_1;
+  const isTier2 = tier === TIER_2;
+  const isTier3 = tier === TIER_3;
+  const isTier4 = tier === TIER_4;
+  const hasTierAtLeast = (n) => hasTierAtLeastFn(user, n);
+  const tierLabel = tierLabelFn(tier);
+
+  // ─── Legacy aliases (deprecated — migrate callers to tier helpers) ───
+  // Kept for backward compatibility during Phase 6's per-component rollout.
   const isSuperAdmin = !!user?.isSuperAdmin;
   const effectiveRole = user?.role;
-  // Manager has all access same as admin (for most features)
-  const isAdmin = effectiveRole === 'admin' || effectiveRole === 'manager';
-  // Strict admin: actual admin role only (for Admin Settings, Integrations, Feedback)
-  const isStrictAdmin = effectiveRole === 'admin';
-  const isManager = effectiveRole === 'manager';
-  const isAssistantManager = effectiveRole === 'assistant_manager';
-  const isMember = effectiveRole === 'member';
-  // canManage = admin + manager only (NOT assistant_manager)
-  const canManage = isAdmin || isManager || user?.isSuperAdmin;
+  const isAdmin = isTier1 || isTier2;        // was: admin OR manager
+  const isStrictAdmin = isTier1;              // was: strict admin role only
+  const isManager = isTier2;                  // legacy alias — encompasses admin+manager
+  const isAssistantManager = isTier3;
+  const isMember = isTier4;
+  const canManage = isTier1 || isTier2;       // admin+manager+T1 (was already this)
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
   return (
     <AuthContext.Provider value={{
       user, token, loading, login, loginWithToken, logout, updateProfile,
+      // Tier API (canonical)
+      tier, isTier1, isTier2, isTier3, isTier4, hasTierAtLeast, tierLabel,
+      // Legacy aliases (deprecated)
       isAdmin, isStrictAdmin, isManager, isAssistantManager, isMember, canManage, isDirector,
       isSuperAdmin, isHierarchyManager, effectiveRole,
       permissionGrants, effectivePermissions, granularPermissions, permissionOverrides, loadPermissions,
+      inactivityTimeoutMinutes, refreshInactivityTimeout, applyInactivityTimeoutMinutes,
+      INACTIVITY_MIN_MINUTES: MIN_INACTIVITY_MINUTES, INACTIVITY_MAX_MINUTES: MAX_INACTIVITY_MINUTES,
     }}>
       {children}
     </AuthContext.Provider>

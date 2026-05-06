@@ -192,6 +192,14 @@ const removeDependency = async (req, res) => {
 
     const task = await Task.findByPk(taskId, { attributes: ['id', 'title', 'boardId'] });
 
+    // Phase 5d — destructive-action gate.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = dep.createdById === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'dependency', { isOwnResource }))) return;
+    }
+
     const wasBocking = ['blocks', 'required_for'].includes(dep.dependencyType);
 
     await dep.destroy();

@@ -14,10 +14,83 @@ import { getBoardStatuses } from '../utils/constants';
 
 const TABS = [
   { id: 'approvals', label: 'Approvals', icon: ClipboardCheck, color: '#8b5cf6' },
-  { id: 'myFeedback', label: 'My Feedback', icon: Inbox, color: '#10b981' },
+  // Internal id stays `myFeedback` to avoid touching API/state plumbing —
+  // only the visible label changes. Tab shows level-0 TaskApprovalFlow rows
+  // (the submitter's side of an approval), which is best read as "submissions"
+  // not "feedback received about my work."
+  { id: 'myFeedback', label: 'My Submissions', icon: Inbox, color: '#10b981' },
   { id: 'extensions', label: 'Extensions', icon: Clock, color: '#f59e0b' },
   { id: 'help', label: 'Help Requests', icon: HelpCircle, color: '#e2445c' },
 ];
+
+// Per-tab status filters. Values must EXACTLY match the backend status field
+// each tab queries against, so the filter equality check actually matches:
+//   - approvals       → Task.approvalStatus  (pending_approval | approved | rejected | changes_requested)
+//   - myFeedback      → mapped status        (pending | approved | rejected | changes_requested)
+//   - extensions      → DueDateExtension.status (pending | approved | rejected)
+//   - help            → HelpRequest.status   (pending | in_review | resolved)
+// Each tab gets its own list because the workflows are genuinely different —
+// "resolved" is only meaningful for help requests, "changes_requested" only
+// for approval flows, etc. A shared list would always be wrong somewhere.
+const STATUS_FILTERS = {
+  approvals: [
+    { value: 'all', label: 'All' },
+    { value: 'pending_approval', label: 'Pending Approval' },
+    { value: 'approved', label: 'Approved' },
+    { value: 'rejected', label: 'Rejected' },
+    { value: 'changes_requested', label: 'Changes Requested' },
+  ],
+  // Submitter-perspective labels. The `value` field MUST stay aligned with the
+  // backend status the my-feedback endpoint returns (pending | approved |
+  // rejected | changes_requested) — only the human-facing `label` is softened
+  // to read like "things I sent in" instead of "decisions I made."
+  myFeedback: [
+    { value: 'all', label: 'All' },
+    { value: 'pending', label: 'Awaiting Review' },
+    { value: 'approved', label: 'Accepted' },
+    { value: 'rejected', label: 'Declined' },
+    { value: 'changes_requested', label: 'Revision Needed' },
+  ],
+  extensions: [
+    { value: 'all', label: 'All' },
+    { value: 'pending', label: 'Pending' },
+    { value: 'approved', label: 'Approved' },
+    { value: 'rejected', label: 'Rejected' },
+  ],
+  help: [
+    { value: 'all', label: 'All' },
+    { value: 'pending', label: 'Pending' },
+    { value: 'in_review', label: 'In Review' },
+    { value: 'resolved', label: 'Resolved' },
+  ],
+};
+
+const EMPTY_ALL = {
+  approvals: 'No approval items',
+  myFeedback: 'No submissions sent for approval yet',
+  extensions: 'No extension requests',
+  help: 'No help requests',
+};
+
+// Per-tab overrides for the filtered empty state. Used when "No <label> items"
+// reads awkwardly (e.g. "No revision needed items" vs the cleaner "No
+// submissions needing revision"). Falls back to the generic builder below.
+const EMPTY_FILTERED = {
+  myFeedback: {
+    pending: 'No submissions awaiting review',
+    approved: 'No accepted submissions',
+    rejected: 'No declined submissions',
+    changes_requested: 'No submissions needing revision',
+  },
+};
+
+function getEmptyMessage(activeTab, statusFilter) {
+  if (statusFilter === 'all') return EMPTY_ALL[activeTab] || 'No items';
+  const override = EMPTY_FILTERED[activeTab]?.[statusFilter];
+  if (override) return override;
+  const filter = STATUS_FILTERS[activeTab]?.find((f) => f.value === statusFilter);
+  return filter ? `No ${filter.label.toLowerCase()} items` : EMPTY_ALL[activeTab];
+}
 
 const STATUS_COLORS = {
   pending: { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200', label: 'Pending' },
@@ -245,7 +318,7 @@ export default function TasksPage() {
         <h1 className="text-2xl font-bold text-text-primary flex items-center gap-2">
           <ClipboardCheck size={24} className="text-primary" /> Tasks & Workflows
         </h1>
-        <p className="text-sm text-text-tertiary mt-0.5">Approvals, your submitted feedback, extensions, and help requests</p>
+        <p className="text-sm text-text-tertiary mt-0.5">Approvals, your submissions, extensions, and help requests</p>
       </div>
 
       {/* Tabs */}
@@ -268,17 +341,10 @@ export default function TasksPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <Filter size={13} className="text-text-tertiary" />
         <span className="text-xs text-text-tertiary font-medium">Status:</span>
-        {(activeTab === 'myFeedback'
-          ? ['all', 'pending', 'approved', 'rejected', 'changes_requested']
-          : ['all', 'pending', 'approved', 'rejected', 'resolved']
-        ).map(s => (
-          <button key={s} onClick={() => setStatusFilter(s)}
-            className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${statusFilter === s ? 'bg-primary text-white border-primary' : 'border-border text-text-secondary hover:bg-surface'}`}>
-            {s === 'all'
-              ? 'All'
-              : s === 'changes_requested'
-                ? 'Changes Requested'
-                : s.charAt(0).toUpperCase() + s.slice(1)}
+        {(STATUS_FILTERS[activeTab] || STATUS_FILTERS.approvals).map((opt) => (
+          <button key={opt.value} onClick={() => setStatusFilter(opt.value)}
+            className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${statusFilter === opt.value ? 'bg-primary text-white border-primary' : 'border-border text-text-secondary hover:bg-surface'}`}>
+            {opt.label}
           </button>
         ))}
         {activeTab === 'myFeedback' && canViewTeamFeedback && (
@@ -308,7 +374,7 @@ export default function TasksPage() {
           {/* ═══ APPROVALS TAB ═══ */}
           {activeTab === 'approvals' && (
             filterByStatus(data.approvals || [], 'approvalStatus').length === 0 ? (
-              <EmptyState icon={ClipboardCheck} message="No approval items" />
+              <EmptyState icon={ClipboardCheck} message={getEmptyMessage('approvals', statusFilter)} />
             ) : filterByStatus(data.approvals || [], 'approvalStatus').map(task => (
               <div key={task.id} className="bg-white rounded-xl border border-border p-4 hover:shadow-sm transition-shadow">
                 <div className="flex items-start justify-between">
@@ -411,7 +477,7 @@ export default function TasksPage() {
           {/* ═══ MY FEEDBACK TAB ═══ */}
           {activeTab === 'myFeedback' && (
             filteredMyFeedback.length === 0 ? (
-              <EmptyState icon={Inbox} message="No feedback submitted yet" />
+              <EmptyState icon={Inbox} message={getEmptyMessage('myFeedback', statusFilter)} />
             ) : filteredMyFeedback.map(item => {
               const taskAvailable = !!item.task && !item.task.isArchived;
               return (
@@ -526,7 +592,7 @@ export default function TasksPage() {
           {/* ═══ EXTENSIONS TAB ═══ */}
           {activeTab === 'extensions' && (
             filterByStatus(data.extensions || []).length === 0 ? (
-              <EmptyState icon={Clock} message="No extension requests" />
+              <EmptyState icon={Clock} message={getEmptyMessage('extensions', statusFilter)} />
             ) : filterByStatus(data.extensions || []).map(ext => (
               <div key={ext.id} className="bg-white rounded-xl border border-border p-4 hover:shadow-sm transition-shadow">
                 <div className="flex items-start justify-between">
@@ -593,7 +659,7 @@ export default function TasksPage() {
           {/* ═══ HELP REQUESTS TAB ═══ */}
           {activeTab === 'help' && (
             filterByStatus(data.helpRequests || []).length === 0 ? (
-              <EmptyState icon={HelpCircle} message="No help requests" />
+              <EmptyState icon={HelpCircle} message={getEmptyMessage('help', statusFilter)} />
             ) : filterByStatus(data.helpRequests || []).map(hr => (
               <div key={hr.id} className="bg-white rounded-xl border border-border p-4 hover:shadow-sm transition-shadow">
                 <div className="flex items-start justify-between">

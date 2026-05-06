@@ -856,6 +856,34 @@ const updateTask = async (req, res) => {
     // Use Layer 3 allowedFields if set, otherwise allow all
     const allowedFields = editPermission.allowedFields || allFields;
 
+    // Description set-once lock — once a non-empty description is saved on a
+    // task it is immutable for every role (incl. super admin / admin). The
+    // intent is "captured-context that nobody can rewrite later". A no-op
+    // resend (incoming === existing) is allowed so optimistic clients that
+    // include the field in PATCH payloads don't break.
+    if (req.body.description !== undefined && allowedFields.includes('description')) {
+      const existingDesc = typeof task.description === 'string' ? task.description.trim() : '';
+      const incomingRaw = req.body.description == null ? '' : String(req.body.description);
+      const incomingDesc = incomingRaw.trim();
+      if (existingDesc && incomingDesc !== existingDesc) {
+        return res.status(400).json({
+          success: false,
+          message: 'Task description cannot be edited after it has been added.',
+          code: 'description_locked',
+        });
+      }
+      // Sanitize on first set so the persisted value matches createTask's
+      // hygiene. Whitespace-only incoming on an empty task is dropped to
+      // avoid "locking" the description to a blank string.
+      if (!existingDesc) {
+        if (incomingDesc) {
+          req.body.description = sanitizeInput(incomingRaw);
+        } else {
+          delete req.body.description;
+        }
+      }
+    }
+
     const updates = {};
     const changes = {};
     for (const field of allowedFields) {
@@ -1594,6 +1622,13 @@ const deleteTask = async (req, res) => {
       if (!isAssignedLegacy && !assigneeRecord) {
         return res.status(403).json({ success: false, message: 'You can only archive tasks assigned to you.' });
       }
+      // Phase 5d — destructive-action gate. T2 cannot archive even own tasks.
+      // T1 always passes. T3/T4 + own → allowed. Wired here so the legacy
+      // member-archive branch is captured even for users that bypass the
+      // route-level matrix (e.g. via PermissionGrant elevation).
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'task', { isOwnResource: true }))) return;
       // Remove Teams calendar event on archive (service safely skips if no mapping / no remote event)
       if (task.assignedTo) {
         calendarService.deleteTaskEvent(task.id, task.assignedTo).catch(err =>
@@ -1628,6 +1663,15 @@ const deleteTask = async (req, res) => {
       );
       return res.json({ success: true, message: 'Task archived successfully. Only managers can permanently delete tasks.' });
     }
+
+    // Phase 5d — destructive-action gate (privileged delete path).
+    // T1 always passes. T2 always blocked (decision #4 strict). T3 reaching
+    // this code (legacy asst-manager pre-migration) is also blocked because
+    // we pass isOwnResource: false — this is the permanent-delete path,
+    // not own-archive.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'task', { isOwnResource: false }))) return;
 
     // Managers/admins: permanent delete — enforce 90-day rule
     const { canPermanentlyDelete } = require('../utils/archiveHelpers');

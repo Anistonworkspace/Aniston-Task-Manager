@@ -278,6 +278,16 @@ exports.deleteWorkspace = async (req, res) => {
     const workspace = await Workspace.findByPk(req.params.id);
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
 
+    // Phase 5d — destructive-action gate. Decision #4: only Tier 1 may
+    // delete a workspace. Closes audit P0-3 / P0-4 (workspace mass-mutation)
+    // for the delete path; the assign/restore/etc. paths are tightened in
+    // Phase 5e.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'workspace', { isOwnResource: false }))) return;
+    }
+
     // Enforce 90-day rule for archived workspaces
     if (!workspace.isActive && workspace.archivedAt) {
       const { canPermanentlyDelete } = require('../utils/archiveHelpers');

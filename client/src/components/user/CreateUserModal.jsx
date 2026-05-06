@@ -3,16 +3,25 @@ import { Eye, EyeOff } from 'lucide-react';
 import Modal from '../common/Modal';
 import DepartmentSelect from '../common/DepartmentSelect';
 import api from '../../services/api';
+import { tierFromLegacy, tierLabel } from '../../utils/tiers';
 
-const ROLES = [
-  { value: 'member', label: 'Member', desc: 'Can view & update assigned tasks' },
-  { value: 'assistant_manager', label: 'Assistant Manager', desc: 'Manager + director plan management & PA duties' },
-  { value: 'manager', label: 'Manager', desc: 'Can manage boards, tasks & members' },
-  { value: 'admin', label: 'Admin', desc: 'Full access to everything' },
+// Phase 6 — tier-based dropdown options. The "role" wire field below is
+// kept for backend compat during the migration window: the form sends a
+// legacy role string derived from the chosen tier so existing user-create
+// controllers continue to work. UI labels are tier-only.
+const TIER_OPTIONS = [
+  { value: 4, role: 'member',            label: 'Tier 4', desc: 'Self-scoped contributor' },
+  { value: 3, role: 'assistant_manager', label: 'Tier 3', desc: 'Subtree-scoped management' },
+  { value: 2, role: 'manager',           label: 'Tier 2', desc: 'Broad management (no destructive ops)' },
+  { value: 1, role: 'admin',             label: 'Tier 1', desc: 'Full system access' },
 ];
 
-export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRole }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'member', department: '', designation: '', workspaceId: '' });
+export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRole, creatorTier }) {
+  // Resolve actor's tier from EITHER an explicit prop OR the legacy
+  // creatorRole prop (also accept 'super' as a synonym for super admin).
+  const actorTier = creatorTier
+    || (creatorRole === 'super' ? 1 : tierFromLegacy(creatorRole, false));
+  const [form, setForm] = useState({ name: '', email: '', password: '', tier: 4, role: 'member', department: '', designation: '', workspaceId: '' });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -27,10 +36,16 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
     }
   }, [isOpen]);
 
-  const availableRoles = creatorRole === 'admin' ? ROLES : ROLES.filter(r => r.value === 'member');
+  // Tier 1 actors may grant any tier; Tier 2 may only grant Tier 3 / Tier 4;
+  // Tier 3 / Tier 4 actors should not see this modal at all (route-gated)
+  // but defensively show the lowest tier only.
+  const availableTiers =
+    actorTier === 1 ? TIER_OPTIONS
+    : actorTier === 2 ? TIER_OPTIONS.filter(t => t.value >= 3)
+    : TIER_OPTIONS.filter(t => t.value === 4);
 
   function resetForm() {
-    setForm({ name: '', email: '', password: '', role: 'member', department: '', designation: '', workspaceId: '' });
+    setForm({ name: '', email: '', password: '', tier: 4, role: 'member', department: '', designation: '', workspaceId: '' });
     setError('');
     setShowPass(false);
   }
@@ -142,17 +157,21 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
           </div>
         </div>
 
-        {/* Role & Department row */}
+        {/* Tier & Department row — Phase 6: shows tier labels only, never role names. */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">Role</label>
+            <label className="block text-sm font-medium text-text-secondary mb-1">Tier</label>
             <select
-              value={form.role}
-              onChange={e => setForm({ ...form, role: e.target.value })}
+              value={form.tier}
+              onChange={e => {
+                const tierValue = Number(e.target.value);
+                const opt = TIER_OPTIONS.find(o => o.value === tierValue);
+                setForm({ ...form, tier: tierValue, role: opt ? opt.role : form.role });
+              }}
               className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white"
             >
-              {availableRoles.map(r => (
-                <option key={r.value} value={r.value}>{r.label}</option>
+              {availableTiers.map(t => (
+                <option key={t.value} value={t.value}>{t.label} — {t.desc}</option>
               ))}
             </select>
           </div>

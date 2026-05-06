@@ -28,7 +28,19 @@ router.post('/', authenticate, managerOrAdmin, grantPermission);
 router.post('/bulk', authenticate, adminOnly, bulkGrantPermissions);
 router.post('/multi', authenticate, managerOrAdmin, multiGrant);
 
-router.get('/effective/:userId', authenticate, getEffective);
+// Phase 5e — closes audit P1-10. Previously this was auth-only, so any
+// authenticated user could read another user's effective permissions
+// (recon disclosure). Restrict to self OR management tier.
+router.get('/effective/:userId', authenticate, (req, res, next) => {
+  const { hasTierAtLeast } = require('../config/tiers');
+  if (req.params.userId === req.user.id || hasTierAtLeast(req.user, 2)) {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: 'You may only view your own effective permissions.',
+  });
+}, getEffective);
 router.get('/history/:userId', authenticate, managerOrAdmin, getPermissionHistory);
 
 router.delete('/:id', authenticate, managerOrAdmin, revokePermission);

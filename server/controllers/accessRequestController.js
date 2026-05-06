@@ -104,6 +104,27 @@ exports.approveRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Request is not pending.' });
     }
 
+    // Phase 5e — closes audit P0-2. Verify the approver is actually
+    // entitled to grant the permission they're about to issue. Without
+    // this, a manager (T2) could approve a member's request for
+    // permissionLevel='admin' on admin_settings/roles/api_keys and
+    // create the underlying PermissionGrant directly. canGrantPermission
+    // enforces the canonical anti-escalation rules (managers cannot grant
+    // administrative permissions, etc.).
+    const { canGrantPermission } = require('../services/permissionEngine');
+    const grantCheck = await canGrantPermission(
+      req.user,
+      request.resourceType,
+      request.requestType,
+      'grant'
+    );
+    if (!grantCheck.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: grantCheck.reason || 'You are not authorized to grant this permission.',
+      });
+    }
+
     const { reviewNote } = req.body;
 
     await request.update({

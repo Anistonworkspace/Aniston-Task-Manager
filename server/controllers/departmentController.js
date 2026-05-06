@@ -164,6 +164,14 @@ const deleteDepartment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Department not found.' });
     }
 
+    // Phase 5d — destructive-action gate. Decision #4: T2 cannot delete
+    // departments (this also affects the User.departmentId nulling).
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'department', { isOwnResource: false }))) return;
+    }
+
     // Clear departmentId from all users in this department
     await User.update({ departmentId: null }, { where: { departmentId: dept.id } });
 

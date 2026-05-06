@@ -602,6 +602,16 @@ const deleteBoard = async (req, res) => {
       });
     }
 
+    // Phase 5d — global destructive-action gate. T1 always passes; T2 (the
+    // new admin+manager combined tier) is BLOCKED — decision #4 strict.
+    // This also closes audit P1-19: a member who somehow reached this point
+    // as creator is blocked too because they pass isOwnResource:false.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'board', { isOwnResource: false }))) return;
+    }
+
     // Enforce 90-day rule for archived boards
     if (board.isArchived) {
       const { canPermanentlyDelete } = require('../utils/archiveHelpers');
@@ -725,6 +735,15 @@ const removeMember = async (req, res) => {
         success: false,
         message: 'Cannot remove the board creator from membership.',
       });
+    }
+
+    // Phase 5d — destructive-action gate. Removing a board member is a
+    // soft-delete-class operation (revokes their access), so T2 is blocked
+    // per decision #4. T1 may still curate membership.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'board_member', { isOwnResource: false }))) return;
     }
 
     const removedUser = await User.findByPk(userId, { attributes: ['id', 'name'] });

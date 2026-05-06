@@ -1,6 +1,12 @@
 const jwt = require('jsonwebtoken');
 const { User } = require('../models');
 const { Op } = require('sequelize');
+const {
+  resolveTier,
+  TIER_1,
+  TIER_2,
+  TIER_3,
+} = require('../config/tiers');
 
 /**
  * Authenticate requests via Bearer token in the Authorization header.
@@ -84,25 +90,47 @@ const authenticate = async (req, res, next) => {
  * should import `managerOrAdmin` (or `adminOrManager`, an alias added below
  * for forward compatibility).
  *
+ * Tier mapping note (Phase 5a): semantically this guard admits Tier 1
+ * unconditionally PLUS Tier 2 when the legacy `role` is still 'admin'
+ * (i.e., not a former 'manager' who was merged into Tier 2). This is a
+ * COMPAT semantic — the new model treats admin and manager identically as
+ * Tier 2. After Phase 5e tightens genuinely-admin-only routes to T1 only
+ * (admin_settings, integrations, api_keys), most adminOnly call sites will
+ * be replaced per-route with `requireTier(1)`.
+ *
  * Must be used AFTER the authenticate middleware.
  */
 const adminOnly = (req, res, next) => {
-  if (!req.user || (req.user.role !== 'admin' && !req.user.isSuperAdmin)) {
+  if (!req.user) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Admin privileges required.',
     });
   }
-  next();
+  const tier = resolveTier(req.user);
+  // T1 always passes. T2 passes only when legacy role is admin (preserves
+  // pre-Phase-5a semantic that a 'manager' role did NOT pass adminOnly).
+  if (tier === TIER_1) return next();
+  if (tier === TIER_2 && req.user.role === 'admin') return next();
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied. Admin privileges required.',
+  });
 };
 
 /**
  * Restrict access to managers, admins, and super admins.
  * Assistant managers are explicitly excluded.
+ *
+ * Tier mapping (Phase 5a): equivalent to "Tier 1 or Tier 2". Implemented
+ * via `resolveTier` so the same source of truth used by the new
+ * tier-based guards (server/middleware/tier.js) governs this legacy
+ * guard too.
+ *
  * Must be used AFTER the authenticate middleware.
  */
 const managerOrAdmin = (req, res, next) => {
-  if (!req.user || (!['admin', 'manager'].includes(req.user.role) && !req.user.isSuperAdmin)) {
+  if (!req.user || resolveTier(req.user) > TIER_2) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Manager or admin privileges required.',
@@ -117,15 +145,23 @@ const adminOrManager = managerOrAdmin;
 
 /**
  * Restrict access to assistant managers and super admins only (director plan management).
+ *
+ * Tier mapping (Phase 5a): admits Tier 1 (super admin) and Tier 3
+ * (former assistant_manager). Excludes Tier 2 and Tier 4.
  */
 const assistantManagerOnly = (req, res, next) => {
-  if (!req.user || (req.user.role !== 'assistant_manager' && !req.user.isSuperAdmin)) {
+  if (!req.user) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Assistant manager privileges required.',
     });
   }
-  next();
+  const tier = resolveTier(req.user);
+  if (tier === TIER_1 || tier === TIER_3) return next();
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied. Assistant manager privileges required.',
+  });
 };
 
 /**
@@ -271,15 +307,20 @@ const requireRole = (...allowedRoles) => {
       // must NEVER override an explicit `requireRole(...)` directive that
       // listed only manager-tier roles. PermissionGrant (Layer 2) remains the
       // proper escape hatch for individual elevation.
+      //
+      // Phase 5b: the matrix lookup now goes through the engine's
+      // tier-aware `getEffectiveBasePermission`, which prefers
+      // TIER_PERMISSIONS[user.tier] when the user has a valid tier column
+      // and falls back to ROLE_PERMISSIONS[user.role] for pre-migration users.
       try {
-        const { isBasePermission } = require('../config/permissionMatrix');
+        const { getEffectiveBasePermission } = require('../services/permissionEngine');
         const newResourceTypes = deriveResourceTypes(req.originalUrl)
           .filter(r => !['workspace', 'board', 'task', 'team'].includes(r));
         const actionNeeded2 = deriveAction(req.method);
         const isElevatedAction = actionNeeded2 !== 'view';
         if (isElevatedAction) {
           for (const rt of newResourceTypes) {
-            if (isBasePermission(req.user.role, rt, actionNeeded2)) {
+            if (getEffectiveBasePermission(req.user, rt, actionNeeded2)) {
               return next();
             }
           }
@@ -305,13 +346,45 @@ const requireRole = (...allowedRoles) => {
 /**
  * Restrict access to actual admin role only (NOT manager).
  * Used for admin-only modules: Admin Settings, Integrations config, Feedback management.
+ *
+ * Tier mapping (Phase 5a): identical compat semantic to `adminOnly`. After
+ * Phase 5e replaces these guards per-route, most strictAdminOnly call sites
+ * become `requireTier(1)`.
+ *
  * Must be used AFTER the authenticate middleware.
  */
 const strictAdminOnly = (req, res, next) => {
-  if (!req.user || (req.user.role !== 'admin' && !req.user.isSuperAdmin)) {
+  if (!req.user) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. Admin privileges required.',
+    });
+  }
+  const tier = resolveTier(req.user);
+  if (tier === TIER_1) return next();
+  if (tier === TIER_2 && req.user.role === 'admin') return next();
+  return res.status(403).json({
+    success: false,
+    message: 'Access denied. Admin privileges required.',
+  });
+};
+
+/**
+ * Restrict access to Super Admins only. Regular admins are excluded — this is
+ * the right gate for system-wide platform settings (session timeout, security
+ * policy) where even an org admin must not be able to edit the value.
+ *
+ * Tier mapping (Phase 5a): equivalent to `requireTier(1)`. Implemented via
+ * `resolveTier` so the legacy guard tracks the new tier-based source of
+ * truth even before downstream callers migrate.
+ *
+ * Must be used AFTER the authenticate middleware.
+ */
+const superAdminOnly = (req, res, next) => {
+  if (!req.user || resolveTier(req.user) !== TIER_1) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Super Admin privileges required.',
     });
   }
   next();
@@ -324,5 +397,6 @@ module.exports = {
   managerOrAdmin,
   assistantManagerOnly,
   strictAdminOnly,
+  superAdminOnly,
   requireRole,
 };

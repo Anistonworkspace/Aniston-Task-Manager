@@ -87,6 +87,20 @@ const uploadFile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
+    // Phase 5e — closes audit P0-6. Verify the uploader can actually access
+    // the parent task before persisting the attachment. Previously any
+    // authenticated user could attach files to any task by guessing the
+    // taskId, which became a phishing/spam vector via the file:uploaded
+    // socket emit and a way to inject content into private boards.
+    const uploaderHasAccess = await canAccessTask(taskId, req.user);
+    if (!uploaderHasAccess) {
+      cleanupOnError(req.file);
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this task.',
+      });
+    }
+
     // Store through provider
     const { url, provider } = await storeFile({
       filePath: req.file.path,
@@ -181,6 +195,15 @@ const deleteFileHandler = async (req, res) => {
         success: false,
         message: 'You can only delete files you uploaded.',
       });
+    }
+
+    // Phase 5d — destructive-action gate. T2 always blocked (decision #4),
+    // T1 always allowed, T3/T4 allowed only when they are the uploader.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = attachment.uploadedBy === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'file', { isOwnResource }))) return;
     }
 
     // Remove through storage provider

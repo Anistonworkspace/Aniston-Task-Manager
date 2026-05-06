@@ -243,6 +243,13 @@ const deleteTimeBlock = async (req, res) => {
     if (block.userId !== req.user.id && !['admin', 'manager'].includes(req.user.role) && !req.user.isSuperAdmin) {
       return res.status(403).json({ success: false, message: 'Not authorized.' });
     }
+    // Phase 5d — destructive-action gate. T2 blocked even on own time blocks.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = block.userId === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'time_block', { isOwnResource }))) return;
+    }
     await block.destroy();
     res.json({ success: true, message: 'Time block deleted.' });
   } catch (error) {

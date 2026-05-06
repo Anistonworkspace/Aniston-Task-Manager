@@ -28,6 +28,19 @@ const addComment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
+    // Phase 5e — closes audit P1-5 (write side). Verify the commenter can
+    // actually see this task before persisting. Previously any authenticated
+    // user could attach comments to any task by guessing the taskId; the
+    // realtime fan-out correctly limited recipients but the row was created
+    // and the actor leaked the parent task's title via the response.
+    const canSeeTask = await taskVisibility.canViewTask(req.user, task);
+    if (!canSeeTask && !req.user.isSuperAdmin && req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this task.',
+      });
+    }
+
     const comment = await Comment.create({
       content,
       attachments: attachments || [],
@@ -159,6 +172,17 @@ const getComments = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
+    // Phase 5e — closes audit P1-5 (read side). Hide comments for users who
+    // can't see the parent task; otherwise any authenticated user could
+    // enumerate cross-task discussions by query string.
+    const canSeeTask = await taskVisibility.canViewTask(req.user, task);
+    if (!canSeeTask && !req.user.isSuperAdmin && req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this task.',
+      });
+    }
+
     const comments = await Comment.findAll({
       where: { taskId },
       include: [
@@ -193,6 +217,16 @@ const deleteComment = async (req, res) => {
         success: false,
         message: 'You can only delete your own comments.',
       });
+    }
+
+    // Phase 5d — destructive-action gate. T2 cannot delete ANY comment
+    // (including their own — decision #4). T1 always allowed. T3/T4 may
+    // delete own comments only (matches current member behavior).
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      const isOwnResource = comment.userId === req.user.id;
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'comment', { isOwnResource }))) return;
     }
 
     const taskId = comment.taskId;

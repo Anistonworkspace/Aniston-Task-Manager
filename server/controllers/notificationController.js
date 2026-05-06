@@ -118,6 +118,14 @@ const getUnreadCount = async (req, res) => {
  */
 const deleteNotification = async (req, res) => {
   try {
+    // Phase 5d — destructive-action gate. The Sequelize WHERE clause
+    // already restricts the row to the actor's own notifications, so the
+    // ownership predicate is unconditionally true at this call site.
+    {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'notification', { isOwnResource: true }))) return;
+    }
     const deleted = await Notification.destroy({
       where: { id: req.params.id, userId: req.user.id },
     });
