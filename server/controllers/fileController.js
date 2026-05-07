@@ -91,7 +91,11 @@ const uploadFile = async (req, res) => {
       });
     }
 
-    // Store through provider
+    // Store through provider. Two-phase: file lands in storage, then we
+    // record the metadata in DB. If the DB insert fails the file would be
+    // orphaned forever (no row → admin can't see it → can't garbage-collect).
+    // Cleanup-on-fail keeps storage and DB consistent without needing a
+    // distributed transaction across two systems (local FS / S3 vs Postgres).
     const { url, provider } = await storeFile({
       filePath: req.file.path,
       filename: req.file.filename,
@@ -101,17 +105,32 @@ const uploadFile = async (req, res) => {
       category,
     });
 
-    const attachment = await FileAttachment.create({
-      filename: req.file.filename,
-      originalName: sanitizeOriginalName(req.file.originalname),
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      url,
-      provider,
-      category,
-      taskId,
-      uploadedBy: req.user.id,
-    });
+    let attachment;
+    try {
+      attachment = await FileAttachment.create({
+        filename: req.file.filename,
+        originalName: sanitizeOriginalName(req.file.originalname),
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+        url,
+        provider,
+        category,
+        taskId,
+        uploadedBy: req.user.id,
+      });
+    } catch (dbErr) {
+      // DB insert failed AFTER the file was stored. Remove the orphan from
+      // storage so we don't leak. deleteFile is idempotent (no-throw on
+      // missing) per the storage providers we ship today, and we wrap it in
+      // try/catch anyway so a cleanup failure surfaces the original DB
+      // error rather than masking it.
+      try {
+        await deleteFile(req.file.filename, category);
+      } catch (cleanupErr) {
+        console.error('[File] Failed to clean up orphaned upload after DB error:', cleanupErr && cleanupErr.message);
+      }
+      throw dbErr;
+    }
 
     const fullAttachment = await FileAttachment.findByPk(attachment.id, {
       include: [
@@ -200,14 +219,29 @@ const deleteFileHandler = async (req, res) => {
     await deleteFile(attachment.filename, attachment.category);
 
     const taskId = attachment.taskId;
-    const boardId = attachment.task.boardId;
+    // `attachment.task` is loaded via include above, but the row CAN be null
+    // if the parent task was hard-deleted (FK on FileAttachment.taskId is
+    // ON DELETE SET NULL) or if the file was uploaded with no task. Reading
+    // .boardId on null threw a TypeError → 500. We only need boardId for
+    // diagnostic logging anyway; emitToUsers takes the per-user list.
+    const boardId = attachment.task ? attachment.task.boardId : null;
     const fileId = attachment.id;
 
     await attachment.destroy();
 
-    // CP-3 RBAC: same recipient rule as upload.
-    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(taskId);
-    emitToUsers('file:deleted', { fileId, taskId }, recipients);
+    // CP-3 RBAC: same recipient rule as upload. If the parent task is gone
+    // (orphan attachment), there is no audience to notify — skip the emit
+    // rather than letting getAuthorizedRealtimeRecipients(null) crash.
+    if (taskId) {
+      try {
+        const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(taskId);
+        emitToUsers('file:deleted', { fileId, taskId, boardId }, recipients);
+      } catch (emitErr) {
+        // Realtime is best-effort. Don't fail the API just because the
+        // socket fan-out couldn't compute its audience.
+        console.warn('[File] Delete emit failed (non-fatal):', emitErr && emitErr.message);
+      }
+    }
 
     res.json({ success: true, message: 'File deleted successfully.' });
   } catch (error) {

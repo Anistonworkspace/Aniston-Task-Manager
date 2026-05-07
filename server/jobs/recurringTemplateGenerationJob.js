@@ -23,6 +23,7 @@ const cron = require('node-cron');
 const { Op } = require('sequelize');
 const { RecurringTaskTemplate } = require('../models');
 const recurringTaskService = require('../services/recurringTaskService');
+const { withCronLock } = require('./cronLock');
 const logger = require('../utils/logger');
 
 // Cron expression: every 10 minutes, on minutes 0, 10, 20, 30, 40, 50.
@@ -88,22 +89,31 @@ async function tickOnce(now = new Date()) {
 
 function startRecurringTemplateGenerationJob() {
   cron.schedule(CRON_EXPR, async () => {
-    const start = Date.now();
-    try {
-      const result = await tickOnce(new Date());
-      if (result.processed > 0 || result.errors > 0) {
-        // Only log when there's signal — keeps quiet days quiet.
-        logger.info(
-          `[RecurringGenJob] tick: processed=${result.processed} generated=${result.generated} `
-          + `skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`
-        );
+    // The unique partial index on (recurringTemplateId, occurrenceDate) makes
+    // duplicate generation impossible at the data layer, but multiple replicas
+    // would still each fetch + iterate the candidate set, doubling DB load
+    // and producing confusing duplicate "generated"/"skipped" log lines. The
+    // advisory lock skips the entire tick on N-1 replicas — see jobs/cronLock.js.
+    await withCronLock('recurringTemplateGeneration', async () => {
+      const start = Date.now();
+      try {
+        const result = await tickOnce(new Date());
+        if (result.processed > 0 || result.errors > 0) {
+          // Only log when there's signal — keeps quiet days quiet.
+          logger.info(
+            `[RecurringGenJob] tick: processed=${result.processed} generated=${result.generated} `
+            + `skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`
+          );
+        }
+      } catch (err) {
+        logger.error('[RecurringGenJob] tick failed', { msg: err.message, stack: err.stack });
       }
-    } catch (err) {
-      logger.error('[RecurringGenJob] tick failed', { msg: err.message, stack: err.stack });
-    }
+    }).catch((err) => {
+      logger.error('[RecurringGenJob] lock-wrapped tick failed', { msg: err && err.message });
+    });
   });
 
-  logger.info(`[RecurringGenJob] Scheduled (${CRON_EXPR})`);
+  logger.info(`[RecurringGenJob] Scheduled (${CRON_EXPR}) — replica-safe via advisory lock.`);
 }
 
 module.exports = {

@@ -1,4 +1,5 @@
 const { AccessRequest, User, Notification, PermissionGrant } = require('../models');
+const { sequelize } = require('../config/db');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
@@ -39,7 +40,8 @@ exports.createAccessRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'resourceType and requestType are required.' });
     }
 
-    // Check if pending request already exists
+    // Check if pending request already exists. We do this BEFORE the
+    // transaction so the early-out 400 doesn't hold a row lock for nothing.
     const existing = await AccessRequest.findOne({
       where: { userId: req.user.id, resourceType, resourceId: resourceId || null, status: 'pending' },
     });
@@ -47,18 +49,9 @@ exports.createAccessRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'You already have a pending request for this resource.' });
     }
 
-    const request = await AccessRequest.create({
-      userId: req.user.id,
-      resourceType,
-      resourceId: resourceId || null,
-      requestType,
-      reason: reason || null,
-      expiresAt: expiresAt || null,
-      isTemporary: isTemporary || false,
-    });
-
-    // Notify admins. Use the dedicated enum + standard payload so the bell
-    // toast / push fire correctly (Header.jsx reads data.notification.message).
+    // Pre-fetch admins outside the transaction. The list rarely changes and
+    // there's no benefit to reading it within the lock window — keeps the
+    // transaction tight to just the writes.
     const admins = await User.findAll({ where: { role: 'admin', isActive: true } });
     const safeName = sanitizeNotificationField(req.user.name);
     const safeRequestType = sanitizeNotificationField(requestType, 32);
@@ -66,15 +59,64 @@ exports.createAccessRequest = async (req, res) => {
     const adminMsg = sanitizeNotificationMessage(
       `${safeName} requested ${safeRequestType} access to ${safeResourceType}`
     );
-    for (const admin of admins) {
-      const notification = await Notification.create({
-        type: 'access_requested',
-        message: adminMsg,
-        entityType: 'access_request',
-        entityId: request.id,
-        userId: admin.id,
+
+    // ── Atomic create-and-notify block ────────────────────────────────────
+    // Pre-fix: the AccessRequest.create succeeded, then a per-admin
+    // Notification.create loop. If the loop failed mid-way (e.g. one admin
+    // had a stale FK row, or DB hiccuped after admin #2) the request was
+    // visible to early-notified admins but not the rest, and the API still
+    // returned 500 to the requester — they'd retry, hitting the
+    // already-pending guard above and showing a confusing error. We bundle
+    // the create + bulk notification insert so the request is only visible
+    // once every admin has been queued for notification.
+    //
+    // Realtime emits stay OUTSIDE the transaction. Sockets are best-effort
+    // and we don't want a socket failure to roll back the persistent state.
+    let request;
+    let createdNotifications = [];
+    try {
+      const result = await sequelize.transaction(async (t) => {
+        const created = await AccessRequest.create({
+          userId: req.user.id,
+          resourceType,
+          resourceId: resourceId || null,
+          requestType,
+          reason: reason || null,
+          expiresAt: expiresAt || null,
+          isTemporary: isTemporary || false,
+        }, { transaction: t });
+
+        // Bulk insert: one round trip instead of N, and atomic with the
+        // request creation. If any admin row is invalid the whole batch
+        // (and the request) rolls back.
+        const notifPayloads = admins.map((admin) => ({
+          type: 'access_requested',
+          message: adminMsg,
+          entityType: 'access_request',
+          entityId: created.id,
+          userId: admin.id,
+        }));
+        const notifs = notifPayloads.length > 0
+          ? await Notification.bulkCreate(notifPayloads, { transaction: t, returning: true })
+          : [];
+
+        return { request: created, notifications: notifs };
       });
-      emitToUser(admin.id, 'notification:new', { notification });
+      request = result.request;
+      createdNotifications = result.notifications;
+    } catch (txErr) {
+      console.error('[AccessRequest] createAccessRequest transaction failed:', txErr.message);
+      return res.status(500).json({ success: false, message: 'Failed to create access request.' });
+    }
+
+    // Best-effort realtime fan-out post-commit. Wrapped per-emit so a single
+    // socket failure doesn't suppress the rest.
+    for (const notif of createdNotifications) {
+      try {
+        emitToUser(notif.userId, 'notification:new', { notification: notif });
+      } catch (emitErr) {
+        console.warn('[AccessRequest] notify emit failed (non-fatal):', emitErr && emitErr.message);
+      }
     }
 
     logActivity({
@@ -96,11 +138,15 @@ exports.createAccessRequest = async (req, res) => {
 // PUT /api/access-requests/:id/approve
 exports.approveRequest = async (req, res) => {
   try {
-    const request = await AccessRequest.findByPk(req.params.id, {
+    // Pre-flight check (cheap) BEFORE the transaction so we 404 / 400 / 403
+    // without holding row locks. The authoritative status check happens again
+    // inside the transaction with FOR UPDATE so two concurrent approvers
+    // don't both succeed.
+    const preReq = await AccessRequest.findByPk(req.params.id, {
       include: [{ model: User, as: 'requester', attributes: ['id', 'name'] }],
     });
-    if (!request) return res.status(404).json({ success: false, message: 'Request not found.' });
-    if (request.status !== 'pending') {
+    if (!preReq) return res.status(404).json({ success: false, message: 'Request not found.' });
+    if (preReq.status !== 'pending') {
       return res.status(400).json({ success: false, message: 'Request is not pending.' });
     }
 
@@ -114,8 +160,8 @@ exports.approveRequest = async (req, res) => {
     const { canGrantPermission } = require('../services/permissionEngine');
     const grantCheck = await canGrantPermission(
       req.user,
-      request.resourceType,
-      request.requestType,
+      preReq.resourceType,
+      preReq.requestType,
       'grant'
     );
     if (!grantCheck.allowed) {
@@ -127,22 +173,63 @@ exports.approveRequest = async (req, res) => {
 
     const { reviewNote } = req.body;
 
-    await request.update({
-      status: 'approved',
-      reviewedBy: req.user.id,
-      reviewedAt: new Date(),
-      reviewNote: reviewNote || null,
-    });
+    // ── Atomic approval block ────────────────────────────────────────────
+    // Two writes must succeed together: (1) flip the request to 'approved',
+    // (2) issue the corresponding PermissionGrant. Pre-fix, a failure on (2)
+    // (e.g. FK constraint, deactivated user, transient DB error) left the
+    // request showing 'approved' to the requester but with NO grant — the
+    // user thought they had access and the request was marked done.
+    //
+    // FOR UPDATE locks the request row so a parallel approver finds it
+    // already moved out of 'pending' and gets a clean 409 instead of
+    // both approvals succeeding.
+    let request;
+    try {
+      request = await sequelize.transaction(async (t) => {
+        const locked = await AccessRequest.findByPk(req.params.id, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!locked) {
+          const e = new Error('Request not found.');
+          e.statusCode = 404;
+          throw e;
+        }
+        if (locked.status !== 'pending') {
+          const e = new Error('Request is no longer pending (concurrent decision).');
+          e.statusCode = 409;
+          throw e;
+        }
 
-    // Auto-create permission grant
-    await PermissionGrant.create({
-      userId: request.userId,
-      resourceType: request.resourceType,
-      resourceId: request.resourceId,
-      permissionLevel: request.requestType,
-      grantedBy: req.user.id,
-      expiresAt: request.expiresAt || null,
-    });
+        await locked.update({
+          status: 'approved',
+          reviewedBy: req.user.id,
+          reviewedAt: new Date(),
+          reviewNote: reviewNote || null,
+        }, { transaction: t });
+
+        await PermissionGrant.create({
+          userId: locked.userId,
+          resourceType: locked.resourceType,
+          resourceId: locked.resourceId,
+          permissionLevel: locked.requestType,
+          grantedBy: req.user.id,
+          expiresAt: locked.expiresAt || null,
+        }, { transaction: t });
+
+        return locked;
+      });
+    } catch (txErr) {
+      const code = txErr.statusCode || 500;
+      return res.status(code).json({
+        success: false,
+        message: code === 500 ? 'Failed to approve request.' : txErr.message,
+      });
+    }
+
+    // Re-attach the requester association for the response shape callers
+    // expect. The locked instance from inside the transaction won't have it.
+    request.requester = preReq.requester;
 
     // Notify requester
     const approvedMsg = sanitizeNotificationMessage(
@@ -178,22 +265,52 @@ exports.approveRequest = async (req, res) => {
 // PUT /api/access-requests/:id/reject
 exports.rejectRequest = async (req, res) => {
   try {
-    const request = await AccessRequest.findByPk(req.params.id, {
+    const preReq = await AccessRequest.findByPk(req.params.id, {
       include: [{ model: User, as: 'requester', attributes: ['id', 'name'] }],
     });
-    if (!request) return res.status(404).json({ success: false, message: 'Request not found.' });
-    if (request.status !== 'pending') {
+    if (!preReq) return res.status(404).json({ success: false, message: 'Request not found.' });
+    if (preReq.status !== 'pending') {
       return res.status(400).json({ success: false, message: 'Request is not pending.' });
     }
 
     const { reviewNote } = req.body;
 
-    await request.update({
-      status: 'rejected',
-      reviewedBy: req.user.id,
-      reviewedAt: new Date(),
-      reviewNote: reviewNote || null,
-    });
+    // Lock-then-update so two concurrent rejecters can't both succeed and
+    // double-fire the reject notification. Same pattern as approveRequest;
+    // simpler because there is no PermissionGrant to issue on reject.
+    let request;
+    try {
+      request = await sequelize.transaction(async (t) => {
+        const locked = await AccessRequest.findByPk(req.params.id, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!locked) {
+          const e = new Error('Request not found.');
+          e.statusCode = 404;
+          throw e;
+        }
+        if (locked.status !== 'pending') {
+          const e = new Error('Request is no longer pending (concurrent decision).');
+          e.statusCode = 409;
+          throw e;
+        }
+        await locked.update({
+          status: 'rejected',
+          reviewedBy: req.user.id,
+          reviewedAt: new Date(),
+          reviewNote: reviewNote || null,
+        }, { transaction: t });
+        return locked;
+      });
+    } catch (txErr) {
+      const code = txErr.statusCode || 500;
+      return res.status(code).json({
+        success: false,
+        message: code === 500 ? 'Failed to reject request.' : txErr.message,
+      });
+    }
+    request.requester = preReq.requester;
 
     // Notify requester
     const rejectedMsg = sanitizeNotificationMessage(

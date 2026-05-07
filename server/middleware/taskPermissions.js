@@ -233,8 +233,22 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'create': {
-      if (['manager', 'assistant_manager'].includes(role)) return { allowed: true, reason: 'can_create' };
-      return { allowed: false, reason: 'members_cannot_create' };
+      // Tier 2/3 (manager, assistant_manager) — unrestricted create.
+      if (['manager', 'assistant_manager'].includes(role)) {
+        return { allowed: true, reason: 'can_create' };
+      }
+      // Tier 4 (member) — allowed to create. Downstream gates (`assign_others`
+      // permission via checkAssignmentAuthority, plus needsDueDateForAssignment)
+      // restrict member creates to *self-assigned tasks without due dates*,
+      // which is the documented "personal task" path. Blocking here outright
+      // produced a frontend/backend mismatch: the BoardPage inline "+ Add task"
+      // payload sets the creator as self-assignee, but the request was 403'd
+      // before any of those downstream checks ran. See PROGRESS audit RBAC
+      // Finding 1 + permissions matrix in client/src/utils/permissions.js.
+      if (role === 'member') {
+        return { allowed: true, reason: 'member_self_create' };
+      }
+      return { allowed: false, reason: 'unknown_role_for_create' };
     }
 
     case 'manage_members': {

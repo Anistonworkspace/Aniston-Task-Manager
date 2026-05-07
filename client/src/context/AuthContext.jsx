@@ -140,7 +140,13 @@ export function AuthProvider({ children }) {
     //    can rely on auth state being gone before the next render.
     //    Note: we keep the token snapshot for the API call below; it's pulled
     //    from sessionStorage by the api interceptor, so we capture it first.
+    //    The refresh-token snapshot is new (D-2 backend rotation/denylist) —
+    //    we pass it to /auth/logout so the backend can mark that specific
+    //    JTI revoked. Without this snapshot the backend can still log the
+    //    user out (sockets, push) but the refresh token row stays alive
+    //    until natural expiry.
     const tokenSnapshot = sessionStorage.getItem('token') || localStorage.getItem('token');
+    const refreshTokenSnapshot = sessionStorage.getItem('refreshToken') || localStorage.getItem('refreshToken');
     localCleanup();
 
     // 3. Multi-tab broadcast so every other tab in this browser logs out too.
@@ -163,7 +169,17 @@ export function AuthProvider({ children }) {
       try {
         await api.post(
           '/auth/logout',
-          { endpoint: pushEndpoint, socketId, allDevices },
+          {
+            endpoint: pushEndpoint,
+            socketId,
+            allDevices,
+            // Backend uses this to revoke the JTI in refresh_tokens.
+            // Safe to send: the endpoint is authenticated (Bearer token
+            // above) and we already passed the same token through the
+            // network on every authenticated request — including the
+            // refresh-token in this body adds no new exposure.
+            refreshToken: refreshTokenSnapshot || undefined,
+          },
           {
             _silent: true,
             headers: tokenSnapshot ? { Authorization: `Bearer ${tokenSnapshot}` } : undefined,

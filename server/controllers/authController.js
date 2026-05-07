@@ -1,10 +1,11 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const axios = require('axios');
-const { User } = require('../models');
+const { User, RefreshToken } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { getTeamsConfig } = require('../config/teams');
+const { setAuthCookies, clearAuthCookies, getRefreshTokenFromRequest } = require('../utils/authCookies');
 
 // In-memory store for per-email login rate limiting
 // Key: email, Value: { count, firstAttempt }
@@ -61,13 +62,92 @@ const generateToken = (userId) =>
     expiresIn: '1h',
   });
 
+// Refresh token lifetime kept in one place so the JWT and the DB row agree.
+const REFRESH_TOKEN_TTL_DAYS = 7;
+const REFRESH_TOKEN_TTL_MS = REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
+
 /**
- * Generate a long-lived refresh token (7 days).
+ * Issue a refresh token AND record it in the refresh_tokens table.
+ *
+ * Every refresh token now carries a `jti` (JWT ID) UUID claim. The DB row,
+ * keyed by the same JTI, is the authoritative "is this token still alive?"
+ * record consulted on `/api/auth/refresh`.
+ *
+ * Caller passes optional `req` so we capture user-agent / IP for forensics
+ * (best-effort — no failure if missing).
+ *
+ * Returns the JWT string. Backward-compatible with callers that don't await
+ * the DB write — we still issue a usable JWT even if the DB insert fails;
+ * the lookup at refresh time will then 401 the user, which is safer than
+ * the alternative (signed token with no DB record = stealth bypass).
  */
-const generateRefreshToken = (userId) =>
-  jwt.sign({ id: userId, type: 'refresh' }, process.env.JWT_SECRET, {
-    expiresIn: '7d',
-  });
+async function issueRefreshToken(userId, req) {
+  const jti = crypto.randomUUID();
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + REFRESH_TOKEN_TTL_MS);
+
+  const token = jwt.sign(
+    { id: userId, type: 'refresh', jti },
+    process.env.JWT_SECRET,
+    { expiresIn: `${REFRESH_TOKEN_TTL_DAYS}d` }
+  );
+
+  try {
+    await RefreshToken.create({
+      jti,
+      userId,
+      issuedAt,
+      expiresAt,
+      userAgent: req?.headers?.['user-agent']?.slice(0, 255) || null,
+      ip: req?.ip?.slice(0, 45) || null,
+    });
+  } catch (err) {
+    // Don't throw — but log loudly. A persistent failure here means refresh
+    // tokens are issued but unverifiable, which the refresh endpoint will
+    // catch and reject. Loudness here helps ops diagnose before users notice.
+    console.error('[Auth] Failed to record refresh token:', err && err.message);
+  }
+  return token;
+}
+
+/**
+ * Revoke a single refresh token by JTI. Idempotent (no-op if already
+ * revoked). Optionally records the JTI of the new replacement token so we
+ * can detect token-reuse on the next refresh attempt against the old JTI.
+ */
+async function revokeRefreshToken(jti, replacedByJti = null) {
+  if (!jti) return;
+  try {
+    await RefreshToken.update(
+      {
+        revokedAt: new Date(),
+        ...(replacedByJti ? { replacedByJti } : {}),
+      },
+      { where: { jti, revokedAt: null } }
+    );
+  } catch (err) {
+    console.warn('[Auth] revokeRefreshToken failed:', err && err.message);
+  }
+}
+
+/**
+ * Revoke every active refresh token for a user. Used on (a) password change,
+ * (b) detected token-reuse (chain compromise), (c) optional admin
+ * "logout everywhere" actions.
+ */
+async function revokeAllRefreshTokensForUser(userId) {
+  if (!userId) return 0;
+  try {
+    const [count] = await RefreshToken.update(
+      { revokedAt: new Date() },
+      { where: { userId, revokedAt: null } }
+    );
+    return count || 0;
+  } catch (err) {
+    console.warn('[Auth] revokeAllRefreshTokensForUser failed:', err && err.message);
+    return 0;
+  }
+}
 
 /**
  * POST /api/auth/register
@@ -194,7 +274,15 @@ const login = async (req, res) => {
     clearLoginAttempts(normalizedEmail);
 
     const token = generateToken(user.id);
-    const refreshToken = generateRefreshToken(user.id);
+    // issueRefreshToken records a refresh_tokens row with the new JTI so the
+    // refresh endpoint can verify the token wasn't already rotated/revoked.
+    const refreshToken = await issueRefreshToken(user.id, req);
+
+    // D-1: set httpOnly cookies in addition to returning tokens in the body.
+    // Body is kept for backward compat during the dual-track migration; new
+    // clients should rely on the cookies and stop storing tokens in JS-readable
+    // storage.
+    setAuthCookies(res, { accessToken: token, refreshToken });
 
     res.json({
       success: true,
@@ -479,6 +567,10 @@ const resetPassword = async (req, res) => {
       passwordResetExpires: null,
     });
 
+    // Revoke all refresh tokens too — a forgot-password recovery is a strong
+    // signal the user lost control of (or wants to reset) their sessions.
+    await revokeAllRefreshTokensForUser(user.id);
+
     res.json({ success: true, message: 'Password reset successfully. You can now login.' });
   } catch (error) {
     console.error('[Auth] ResetPassword error:', error);
@@ -588,6 +680,13 @@ const changePassword = async (req, res) => {
       passwordChangedAt: new Date(),
     });
 
+    // Revoke every active refresh token for this user. Combined with the
+    // `iat < passwordChangedAt` check in refreshTokenEndpoint this gives us
+    // belt-and-braces invalidation: even if a stolen refresh token slipped
+    // past the timestamp check (clock skew, race), the per-token denylist
+    // catches it on the next refresh attempt.
+    await revokeAllRefreshTokensForUser(user.id);
+
     res.json({
       success: true,
       message: 'Password changed successfully. Please log in again.',
@@ -654,11 +753,45 @@ const rejectAccount = async (req, res) => {
 
 /**
  * POST /api/auth/refresh
- * Exchange a valid refresh token for new access + refresh tokens.
+ *
+ * Exchange a valid refresh token for new access + refresh tokens, rotating
+ * the refresh token in the process.
+ *
+ * Validation order (each must pass):
+ *   1. JWT signature + expiry      — same as before, via jwt.verify.
+ *   2. JWT `type === 'refresh'`     — reject access-token attempts.
+ *   3. User exists and is active    — handles soft-delete / deactivation.
+ *   4. JWT iat ≥ passwordChangedAt  — broad-sweep defence against tokens
+ *                                     issued before a forced password reset.
+ *   5. JTI exists in refresh_tokens — gate against forged JWTs (signature
+ *                                     valid but not actually issued by us)
+ *                                     and against tokens we revoked
+ *                                     (logout, changePassword, etc.).
+ *   6. JTI not revoked              — the per-token denylist itself.
+ *   7. JTI not already rotated      — TOKEN-REUSE DETECTION. If the row's
+ *                                     `replacedByJti` is set, this token was
+ *                                     already exchanged. The fact that
+ *                                     someone is replaying it is a strong
+ *                                     signal of theft → we revoke EVERY
+ *                                     active token for the user, not just
+ *                                     this one.
+ *
+ * On success we revoke the presented JTI (recording the new JTI as its
+ * `replacedByJti` for the chain audit trail) and issue a new pair.
+ *
+ * Backward compatibility note (soft cutover)
+ * ------------------------------------------
+ * Tokens issued before this code shipped do NOT carry a `jti` claim. They'd
+ * fail step 5. To avoid forcing every active session to re-login on deploy
+ * we accept claim-less tokens once: they pass through with steps 1–4 and a
+ * fresh JTI'd token is issued. After the natural 7-day window all legacy
+ * tokens have expired; from then on every refresh hits the full chain.
  */
 const refreshTokenEndpoint = async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    // D-1: prefer the httpOnly cookie. Falls back to req.body.refreshToken
+    // for clients that haven't migrated yet.
+    const refreshToken = getRefreshTokenFromRequest(req);
     if (!refreshToken) {
       return res.status(400).json({ success: false, message: 'refreshToken required.' });
     }
@@ -687,8 +820,60 @@ const refreshTokenEndpoint = async (req, res) => {
       }
     }
 
+    // Soft-cutover: tokens issued before D-2 don't carry a `jti`. Treat them
+    // as legacy — let them refresh once, the new token will be tracked.
+    if (!decoded.jti) {
+      const newToken = generateToken(user.id);
+      const newRefreshToken = await issueRefreshToken(user.id, req);
+      setAuthCookies(res, { accessToken: newToken, refreshToken: newRefreshToken });
+      return res.json({
+        success: true,
+        data: { token: newToken, refreshToken: newRefreshToken },
+      });
+    }
+
+    const record = await RefreshToken.findByPk(decoded.jti);
+    if (!record) {
+      // JWT signature is valid AND user is active AND iat is newer than
+      // passwordChangedAt — but we have no record of issuing this JTI. That
+      // shouldn't happen unless the refresh_tokens row was wiped (schema
+      // reset) OR the token was forged with our secret (catastrophic, but
+      // either way we 401). Don't try to be clever.
+      return res.status(401).json({ success: false, message: 'Refresh token is no longer valid. Please log in again.', code: 'TOKEN_NOT_TRACKED' });
+    }
+
+    if (record.revokedAt) {
+      // Two cases: (a) we revoked this token (logout / changePassword) — fine,
+      // 401. (b) it was already rotated (replacedByJti is set) and someone is
+      // replaying the OLD token — strong indicator of session compromise.
+      // Burn the chain.
+      if (record.replacedByJti) {
+        await revokeAllRefreshTokensForUser(user.id);
+        return res.status(401).json({
+          success: false,
+          message: 'Session compromised — all sessions have been ended. Please log in again.',
+          code: 'TOKEN_REUSE_DETECTED',
+        });
+      }
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token has been revoked. Please log in again.',
+        code: 'TOKEN_REVOKED',
+      });
+    }
+
+    // All checks passed — issue new pair and rotate the old row.
     const newToken = generateToken(user.id);
-    const newRefreshToken = generateRefreshToken(user.id);
+    const newRefreshToken = await issueRefreshToken(user.id, req);
+    // Decode just to recover the new JTI for the chain audit trail (cheap —
+    // jwt.decode skips signature verification, but we just signed it).
+    const newDecoded = jwt.decode(newRefreshToken) || {};
+    await revokeRefreshToken(decoded.jti, newDecoded.jti || null);
+
+    // D-1: refresh the cookies so the new pair takes effect on the next
+    // request. The browser overwrites the old cookies in place because the
+    // (name, path, domain) tuple matches.
+    setAuthCookies(res, { accessToken: newToken, refreshToken: newRefreshToken });
 
     res.json({
       success: true,
@@ -960,10 +1145,22 @@ const microsoftCallback = async (req, res) => {
 
     console.log(`[Auth] SSO login resolved: user=${user.id} email=${user.email} matchedBy=${matchedBy}`);
 
-    // Generate app JWT tokens
+    // Generate app JWT tokens. The refresh token is tracked in the
+    // refresh_tokens table just like the local-login path so SSO sessions
+    // share the same revoke / rotate / reuse-detect machinery.
     const token = generateToken(user.id);
-    const appRefreshToken = generateRefreshToken(user.id);
+    const appRefreshToken = await issueRefreshToken(user.id, req);
 
+    // D-1: set httpOnly cookies BEFORE the redirect. Browsers honour
+    // Set-Cookie on a 302 response — the next request to /login (and every
+    // subsequent /api/* call) will carry the cookies automatically.
+    setAuthCookies(res, { accessToken: token, refreshToken: appRefreshToken });
+
+    // We still include the tokens in the redirect URL for the dual-track
+    // migration: a frontend that hasn't been updated to read cookies will
+    // pick the tokens out of the URL exactly as before. Once Phase 2 ships
+    // (frontend uses cookies only) we can drop the query params here, which
+    // also closes the "tokens leak into browser history / referer" issue.
     res.redirect(`${CLIENT_URL}/login?sso=success&token=${encodeURIComponent(token)}&refreshToken=${encodeURIComponent(appRefreshToken)}`);
   } catch (error) {
     console.error('[Auth] Microsoft SSO callback error:', error.response?.data || error.message);
@@ -1002,4 +1199,27 @@ const getAssignableUsersList = async (req, res) => {
   }
 };
 
-module.exports = { register, login, getProfile, updateProfile, getAllUsers, getAssignableUsersList, uploadAvatar, forgotPassword, resetPassword, createPassword, changePassword, getPendingAccounts, approveAccount, rejectAccount, refreshTokenEndpoint, microsoftAuthUrl, microsoftCallback, getSsoStatus };
+module.exports = {
+  register,
+  login,
+  getProfile,
+  updateProfile,
+  getAllUsers,
+  getAssignableUsersList,
+  uploadAvatar,
+  forgotPassword,
+  resetPassword,
+  createPassword,
+  changePassword,
+  getPendingAccounts,
+  approveAccount,
+  rejectAccount,
+  refreshTokenEndpoint,
+  microsoftAuthUrl,
+  microsoftCallback,
+  getSsoStatus,
+  // D-2 helpers exported so auth routes (logout) and other modules
+  // (admin "logout everywhere") can revoke tokens cleanly.
+  revokeRefreshToken,
+  revokeAllRefreshTokensForUser,
+};

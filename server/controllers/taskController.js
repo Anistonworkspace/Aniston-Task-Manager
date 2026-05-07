@@ -315,6 +315,26 @@ const createTask = async (req, res) => {
     let assigneeIds = requestedAssignees.filter(Boolean);
     let supervisorIds = requestedSupervisors.filter(Boolean);
 
+    // Validate every supplied user id BEFORE we do any DB work. The Postgres
+    // UUID type rejects non-UUID input with `invalid input syntax`, which
+    // surfaced as a 500 in production when callers POSTed `assignedTo:'tbd'`
+    // or similar placeholder values. Validating up front turns these into a
+    // clean 400 and prevents partial work (esp. now that the create is
+    // wrapped in a transaction further down — a 500 mid-transaction would
+    // also force a rollback for a problem the client should have caught).
+    {
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const allCandidateIds = [...assigneeIds, ...supervisorIds, ...(Array.isArray(ownerIds) ? ownerIds : [])];
+      const bad = allCandidateIds.find((id) => typeof id !== 'string' || !UUID_RE.test(id));
+      if (bad !== undefined) {
+        return res.status(400).json({
+          success: false,
+          message: 'assignedTo / supervisors / ownerIds must contain valid user UUIDs.',
+          code: 'invalid_user_id',
+        });
+      }
+    }
+
     if (restrictToSelf) {
       const triedToAssignOthers = assigneeIds.some((id) => id !== req.user.id);
       const triedToSupervise   = supervisorIds.length > 0;
@@ -412,60 +432,86 @@ const createTask = async (req, res) => {
       if (targetGroup) effectiveGroupId = targetGroup;
     }
 
-    const task = await Task.create({
-      title: sanitizeInput(title),
-      description: sanitizeInput(description) || '',
-      status: status || 'not_started',
-      statusConfig: safeStatusConfig,
-      priority: priority || 'medium',
-      groupId: effectiveGroupId,
-      dueDate: dueDate || null,
-      startDate: startDate || null,
-      plannedStartTime: plannedStartTime || null,
-      plannedEndTime: plannedEndTime || null,
-      estimatedHours: estimatedHours != null ? estimatedHours : 0,
-      progress: status === 'done' ? 100 : 0,
-      completedAt: status === 'done' ? new Date() : null,
-      position: (maxPosition || 0) + 1,
-      tags: tags || [],
-      customFields: customFields || {},
-      boardId,
-      assignedTo: primaryAssignee,
-      createdBy: req.user.id,
+    // ── Atomic create block ─────────────────────────────────────────────────
+    // Why a transaction: previously we did Task.create → TaskAssignee.bulkCreate
+    // (assignees) → TaskAssignee.bulkCreate (supervisors) → TaskOwner.bulkCreate
+    // as four separate statements. If any of the bulk inserts threw mid-flight
+    // (e.g. an FK violation because an assignee row was deactivated between the
+    // authority check and the insert), the Task row was already committed —
+    // leaving an orphan task with no assignees that the UI couldn't render
+    // properly and that visibility queries couldn't filter consistently.
+    //
+    // We deliberately exclude side-effects (boardMembershipService.autoAddMember,
+    // notifications, Teams calls, activity log, realtime emits) from the
+    // transaction. They are idempotent or fire-and-forget; rolling them back
+    // adds risk without value, and including them would extend the transaction
+    // window across slow external calls (Teams API, sockets), holding row
+    // locks unnecessarily.
+    const task = await sequelize.transaction(async (t) => {
+      const created = await Task.create({
+        title: sanitizeInput(title),
+        description: sanitizeInput(description) || '',
+        status: status || 'not_started',
+        statusConfig: safeStatusConfig,
+        priority: priority || 'medium',
+        groupId: effectiveGroupId,
+        dueDate: dueDate || null,
+        startDate: startDate || null,
+        plannedStartTime: plannedStartTime || null,
+        plannedEndTime: plannedEndTime || null,
+        estimatedHours: estimatedHours != null ? estimatedHours : 0,
+        progress: status === 'done' ? 100 : 0,
+        completedAt: status === 'done' ? new Date() : null,
+        position: (maxPosition || 0) + 1,
+        tags: tags || [],
+        customFields: customFields || {},
+        boardId,
+        assignedTo: primaryAssignee,
+        createdBy: req.user.id,
+      }, { transaction: t });
+
+      if (assigneeIds.length > 0) {
+        const assigneeRecords = assigneeIds.map(uid => ({
+          taskId: created.id,
+          userId: uid,
+          role: 'assignee',
+          assignedAt: new Date(),
+          assignerId: req.user.id,
+        }));
+        await TaskAssignee.bulkCreate(assigneeRecords, { ignoreDuplicates: true, transaction: t });
+      }
+
+      if (supervisorIds.length > 0) {
+        const supervisorRecords = supervisorIds.map(uid => ({
+          taskId: created.id,
+          userId: uid,
+          role: 'supervisor',
+          assignedAt: new Date(),
+          assignerId: req.user.id,
+        }));
+        await TaskAssignee.bulkCreate(supervisorRecords, { ignoreDuplicates: true, transaction: t });
+      }
+
+      // Backward-compat: TaskOwner table mirrors the assignee set for older
+      // code that still queries it. The autoAddMember calls live OUTSIDE this
+      // transaction (see below) — they're idempotent ON CONFLICT DO NOTHING
+      // and don't accept a transaction parameter today.
+      if (Array.isArray(ownerIds) && ownerIds.length > 0 && canAssignOthers) {
+        const ownerRecords = ownerIds.map((uid, idx) => ({
+          taskId: created.id,
+          userId: uid,
+          isPrimary: idx === 0,
+        }));
+        await TaskOwner.bulkCreate(ownerRecords, { ignoreDuplicates: true, transaction: t });
+      }
+
+      return created;
     });
 
-    // Insert into task_assignees (assignees)
-    if (assigneeIds.length > 0) {
-      const assigneeRecords = assigneeIds.map(uid => ({
-        taskId: task.id,
-        userId: uid,
-        role: 'assignee',
-        assignedAt: new Date(),
-        assignerId: req.user.id,
-      }));
-      await TaskAssignee.bulkCreate(assigneeRecords, { ignoreDuplicates: true });
-    }
-
-    // Insert into task_assignees (supervisors)
-    if (supervisorIds.length > 0) {
-      const supervisorRecords = supervisorIds.map(uid => ({
-        taskId: task.id,
-        userId: uid,
-        role: 'supervisor',
-        assignedAt: new Date(),
-        assignerId: req.user.id,
-      }));
-      await TaskAssignee.bulkCreate(supervisorRecords, { ignoreDuplicates: true });
-    }
-
-    // Sync multi-owner records (backward compat for TaskOwner table)
+    // Owner-side board membership — deferred until after the transaction commit
+    // so the membership upsert sees the persisted task row. autoAddMember is
+    // idempotent (ON CONFLICT DO NOTHING) and self-handles errors.
     if (Array.isArray(ownerIds) && ownerIds.length > 0 && canAssignOthers) {
-      const ownerRecords = ownerIds.map((uid, idx) => ({
-        taskId: task.id,
-        userId: uid,
-        isPrimary: idx === 0,
-      }));
-      await TaskOwner.bulkCreate(ownerRecords, { ignoreDuplicates: true });
       for (const uid of ownerIds) {
         await boardMembershipService.autoAddMember(board.id, uid);
       }
@@ -682,7 +728,18 @@ const getTasks = async (req, res) => {
       include: [...taskIncludes, ...extraIncludes],
       order,
     };
-    if (limit) queryOpts.limit = Math.min(parseInt(limit, 10) || 50, 100);
+    if (limit !== undefined && limit !== null && limit !== '') {
+      // Defensive parse: negative, zero, NaN, or non-numeric values would
+      // make Sequelize emit `LIMIT <bad>` which Postgres rejects with 500
+      // ("LIMIT must not be negative" / "invalid input syntax"). Clamp to
+      // [1, 100] so any garbage from the query string is normalised before
+      // it reaches the planner.
+      const parsedLimit = parseInt(limit, 10);
+      const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, 100)
+        : 50;
+      queryOpts.limit = safeLimit;
+    }
 
     const tasks = await Task.findAll(queryOpts);
 

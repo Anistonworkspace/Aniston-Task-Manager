@@ -19,6 +19,7 @@ const {
   validateFileType,
   validateFileSize,
   validateMagicBytes,
+  validateSvgSafety,
   cleanupOnError,
 } = require('../services/storageService');
 
@@ -151,11 +152,22 @@ function postUploadValidation(category = 'general') {
       return res.status(400).json({ success: false, message: sizeResult.message });
     }
 
-    // 3. Magic-byte signature check
+    // 3. Magic-byte signature check (binary formats only; SVG has no
+    //    universal byte signature so this is a no-op for it).
     const magicResult = validateMagicBytes(req.file.path, req.file.originalname);
     if (!magicResult.valid) {
       cleanupOnError(req.file);
       return res.status(400).json({ success: false, message: magicResult.message });
+    }
+
+    // 4. SVG content safety scan (rejects script-bearing / XXE-bearing SVGs
+    //    that would otherwise survive the byte check). No-op for non-SVG
+    //    files, so safe to call unconditionally. See storageService for the
+    //    list of rejected patterns.
+    const svgResult = validateSvgSafety(req.file.path, req.file.originalname);
+    if (!svgResult.valid) {
+      cleanupOnError(req.file);
+      return res.status(400).json({ success: false, message: svgResult.message });
     }
 
     next();
@@ -164,14 +176,21 @@ function postUploadValidation(category = 'general') {
 
 /**
  * Legacy validateFileSignature middleware — preserved for backward compat.
- * Now delegates to the centralized magic-bytes check.
+ * Now delegates to the centralized magic-bytes check AND the SVG safety
+ * scan, so any caller using this older middleware still gets the SVG
+ * defense.
  */
 function validateFileSignature(req, res, next) {
   if (!req.file) return next();
-  const result = validateMagicBytes(req.file.path, req.file.originalname);
-  if (!result.valid) {
+  const magic = validateMagicBytes(req.file.path, req.file.originalname);
+  if (!magic.valid) {
     cleanupOnError(req.file);
-    return res.status(400).json({ success: false, message: result.message });
+    return res.status(400).json({ success: false, message: magic.message });
+  }
+  const svg = validateSvgSafety(req.file.path, req.file.originalname);
+  if (!svg.valid) {
+    cleanupOnError(req.file);
+    return res.status(400).json({ success: false, message: svg.message });
   }
   next();
 }

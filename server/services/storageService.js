@@ -120,6 +120,87 @@ function validateMagicBytes(filePath, originalName) {
   return { valid: true };
 }
 
+/**
+ * Validate that an SVG file is free of executable / XSS-vector content.
+ *
+ * Why this exists
+ * ---------------
+ * SVG is XML and the browser will execute scripts inside one when the file
+ * is rendered inline (e.g. <img> with `data:` URL bypass, direct GET to a
+ * stored .svg, or any place we render the source). Simple magic-byte checks
+ * can't see this — the audit (S-3) flagged it as the open XSS vector on
+ * uploads.
+ *
+ * What we reject (and why)
+ * ------------------------
+ *   - `<script ...>` ............. inline script execution
+ *   - `<foreignObject>` .......... allows embedding arbitrary HTML/iframe
+ *   - `on*="..."` event handlers . onclick/onload/onerror/etc. → JS execution
+ *   - `javascript:` URIs ......... in href/src/xlink:href
+ *   - `<!ENTITY ...>` / `[...]>` . external XML entity reference (XXE)
+ *
+ * What we DON'T do
+ * ----------------
+ *   - We do not parse XML rigorously. A determined attacker can probably
+ *     find an obscure SVG construct that bypasses the regex set. This
+ *     check is defense-in-depth, layered with `authenticateForStatic` on
+ *     /uploads (so anonymous users can't fetch the SVG to render it
+ *     anywhere off-platform). For a hardened deployment, the long-term
+ *     fix is `Content-Disposition: attachment` on /uploads responses for
+ *     image/svg+xml — that prevents inline render entirely.
+ *
+ * Returns { valid: boolean, message?: string }.
+ */
+function validateSvgSafety(filePath, originalName) {
+  const ext = path.extname(originalName || '').toLowerCase().replace(/^\./, '');
+  if (ext !== 'svg') return { valid: true };
+
+  // Cap the read at 1 MiB. Real-world SVGs almost never exceed that, and a
+  // 50 MB SVG bomb would be a separate DoS vector handled by the size limit
+  // before us. If the file is bigger we still scan the prefix — anything
+  // dangerous tends to live near the top.
+  const MAX_SCAN_BYTES = 1024 * 1024;
+  let text;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(MAX_SCAN_BYTES);
+    const read = fs.readSync(fd, buf, 0, MAX_SCAN_BYTES, 0);
+    fs.closeSync(fd);
+    text = buf.slice(0, read).toString('utf8');
+  } catch {
+    return { valid: false, message: 'Could not validate SVG content.' };
+  }
+
+  // Quick sanity: the file should look like XML/SVG. A binary masquerading
+  // as .svg would fail this and is rejected.
+  const trimmed = text.replace(/^﻿/, '').trimStart();
+  if (!/^(<\?xml|<!--|<!DOCTYPE|<svg)/i.test(trimmed)) {
+    return { valid: false, message: 'SVG file does not contain valid SVG/XML content.' };
+  }
+
+  // Pattern set. Each regex is tested against the full text. We do NOT lower-
+  // case the source first; the regexes already use `i` where the SVG/HTML
+  // spec is case-insensitive. JS event handler names are case-insensitive in
+  // HTML so the `on\w+` match catches `OnClick`, `onClick`, etc.
+  const banned = [
+    { re: /<\s*script\b/i,                          reason: '<script> tag' },
+    { re: /<\s*foreignObject\b/i,                   reason: '<foreignObject> element' },
+    { re: /\son[a-z]+\s*=/i,                        reason: 'inline event handler attribute' },
+    { re: /(?:href|src|xlink:href)\s*=\s*["']?\s*javascript:/i, reason: 'javascript: URI' },
+    { re: /<!ENTITY\b/i,                            reason: 'XML entity declaration (XXE risk)' },
+    { re: /<!DOCTYPE[^>]*\[/i,                      reason: 'inline DTD with subset (XXE risk)' },
+  ];
+  for (const { re, reason } of banned) {
+    if (re.test(text)) {
+      return {
+        valid: false,
+        message: `SVG rejected: contains ${reason}. Save the file as PNG/JPG or strip the offending content.`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
 // ── Store / Delete / URL helpers ────────────────────────────────────
 
 /**
@@ -203,6 +284,7 @@ module.exports = {
   validateFileType,
   validateFileSize,
   validateMagicBytes,
+  validateSvgSafety,
   storeFile,
   deleteFile,
   fileExists,

@@ -3,6 +3,13 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  // D-1: send the httpOnly auth cookies on every request. The backend now
+  // sets aniston_at + aniston_rt on login/refresh/SSO so the user no longer
+  // needs the JS-readable token snapshot in sessionStorage to be authenticated.
+  // The Authorization header is still attached below as a backward-compat
+  // fallback during the dual-track migration; once Phase 2 ships and the
+  // frontend stops storing tokens, the cookie will be the sole carrier.
+  withCredentials: true,
 });
 
 // Set Content-Type to application/json by default, but let axios auto-set it
@@ -19,6 +26,12 @@ api.interceptors.request.use((config) => {
 
 let isRefreshing = false;
 let failedQueue = [];
+
+// Single-flight guard for 429 toast events. While a Retry-After window is
+// active we suppress further global 429 toasts so a tight retry loop in any
+// page cannot fire the same "Too many requests" toast hundreds of times.
+// Reset to 0 by setTimeout below once the window passes.
+let rateLimited429SuppressedUntil = 0;
 
 function processQueue(error, token = null) {
   failedQueue.forEach(({ resolve, reject }) => {
@@ -69,7 +82,9 @@ api.interceptors.response.use(
         isRefreshing = true;
 
         try {
-          const res = await axios.post('/api/auth/refresh', { refreshToken });
+          // withCredentials so the refresh httpOnly cookie rides too — once
+          // Phase 2 ships we can drop the body payload entirely.
+          const res = await axios.post('/api/auth/refresh', { refreshToken }, { withCredentials: true });
           const { token: newToken, refreshToken: newRefresh } = res.data?.data || res.data;
 
           sessionStorage.setItem('token', newToken);
@@ -113,6 +128,31 @@ api.interceptors.response.use(
       if (!originalRequest?._silent) {
         const message = error.response?.data?.message || "You don't have permission to perform this action.";
         window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 403 } }));
+      }
+      return Promise.reject(error);
+    }
+
+    // Handle 429 Too Many Requests — surface ONE muted toast per Retry-After
+    // window so a stuck loop somewhere in the app cannot spam the UI. The
+    // Toast.jsx dedup window already swallows identical messages within
+    // 1500ms; we additionally skip emitting if the same window is still in
+    // flight (tracked on a module-level guard). The `Retry-After` header is
+    // attached to the rejection so callers that DO want to retry can wait.
+    if (error.response?.status === 429) {
+      const retryAfterHeader = error.response.headers?.['retry-after'];
+      const retryAfterBody = error.response.data?.retryAfter;
+      const retryAfterSec = Number(retryAfterHeader || retryAfterBody) || 60;
+      error.retryAfter = retryAfterSec;
+
+      const isSilent = originalRequest?._silent;
+      if (!isSilent && !rateLimited429SuppressedUntil) {
+        rateLimited429SuppressedUntil = Date.now() + Math.min(retryAfterSec, 30) * 1000;
+        const message = error.response.data?.message
+          || `Too many requests. Please wait ${retryAfterSec}s and try again.`;
+        window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 429, retryAfter: retryAfterSec } }));
+        // Clear the guard once the suppression window passes so a NEW 429
+        // event after recovery can still inform the user.
+        setTimeout(() => { rateLimited429SuppressedUntil = 0; }, Math.min(retryAfterSec, 30) * 1000);
       }
       return Promise.reject(error);
     }

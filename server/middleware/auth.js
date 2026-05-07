@@ -7,28 +7,22 @@ const {
   TIER_2,
   TIER_3,
 } = require('../config/tiers');
+const { getAccessTokenFromRequest } = require('../utils/authCookies');
 
 /**
- * Authenticate requests via Bearer token in the Authorization header.
+ * Authenticate requests via JWT — read from the httpOnly cookie set on
+ * login (preferred) or the legacy `Authorization: Bearer` header
+ * (fallback for old clients during the D-1 dual-track migration).
  * Attaches the full user object (minus password) to req.user.
  */
 const authenticate = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Access denied. No token provided.',
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
+    const token = getAccessTokenFromRequest(req);
 
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Access denied. Malformed authorization header.',
+        message: 'Access denied. No token provided.',
       });
     }
 

@@ -68,11 +68,24 @@ const systemSettingsRoutes = require('./routes/systemSettings');
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
 
-// Trust the first reverse proxy in front of the app (Nginx in deploy/nginx.conf)
-// so req.ip, X-Forwarded-For, and express-rate-limit see the real client IP
-// instead of bucketing every request under the proxy's address. Local dev (no
-// proxy) is unaffected — the hop count is exactly 1 in production.
-app.set('trust proxy', 1);
+// Trust private-network proxies in front of the app.
+//
+// Production topology has TWO proxies: host nginx (terminates TLS on :443)
+// → frontend container nginx (proxies /api/ to backend container). With the
+// previous `trust proxy: 1`, Express only stripped one hop from the right of
+// X-Forwarded-For, so req.ip resolved to the Docker bridge gateway (e.g.
+// 172.19.0.1) for every request. That meant express-rate-limit bucketed
+// EVERY user under the same key — one stuck browser tab DoS'd the whole
+// product, and `combined`-format access logs only ever showed the bridge IP.
+//
+// Trusting the standard private-IP ranges (loopback / link-local / unique-
+// local — see RFC 1918 + RFC 4193) walks XFF from right to left, skips every
+// trusted proxy, and uses the first non-private IP as req.ip. That is the
+// real public client IP regardless of how many internal hops are added.
+//
+// Local dev (no proxy) still works: with no XFF header set, req.ip falls
+// back to the connection address (127.0.0.1).
+app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
 const server = http.createServer(app);
 
@@ -91,8 +104,57 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
+// CORS origin policy.
+//
+// CLIENT_URL may carry a comma-separated list (e.g. for staging that admits
+// both https://app.example.com and https://stg.example.com). We validate
+// every entry at startup so a misconfigured value can never silently widen
+// the policy in production.
+//
+// Rules:
+//   - Wildcards ('*' anywhere in any entry) are REJECTED in production. They
+//     are allowed in development for ergonomic local testing only.
+//   - Missing / empty CLIENT_URL falls back to localhost:3000 in development
+//     and FAILS startup in production (don't ship a permissive default).
+//   - Each entry must be a parseable URL with http or https protocol.
+const allowedOrigins = (() => {
+  const raw = process.env.CLIENT_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
+  const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (process.env.NODE_ENV === 'production') {
+    if (list.length === 0) {
+      console.error('[Fatal] CLIENT_URL is required in production (no permissive default).');
+      process.exit(1);
+    }
+    for (const o of list) {
+      if (o.includes('*')) {
+        console.error(`[Fatal] CLIENT_URL contains wildcard "${o}" — refusing to start.`);
+        process.exit(1);
+      }
+      try {
+        const u = new URL(o);
+        if (!/^https?:$/.test(u.protocol)) {
+          console.error(`[Fatal] CLIENT_URL entry "${o}" must use http:// or https://.`);
+          process.exit(1);
+        }
+      } catch {
+        console.error(`[Fatal] CLIENT_URL entry "${o}" is not a valid URL.`);
+        process.exit(1);
+      }
+    }
+  }
+  return list;
+})();
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  // Function form so we can support multiple allowed origins. Any non-CORS
+  // request (no Origin header, e.g. curl/server-to-server) is allowed because
+  // those requests aren't subject to the SOP CORS check anyway.
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.length === 0) return cb(null, true); // dev fallback
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS: origin "${origin}" not allowed`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
@@ -103,16 +165,36 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ─── Origin validation (CSRF-like protection for mutating requests) ──
-if (process.env.NODE_ENV === 'production') {
+// ─── Origin validation (CSRF-like protection for mutating requests) ──────
+// Runs in every environment except 'test'. The previous code only enforced
+// in production, which meant a developer typo like "I'll just point this at
+// `CLIENT_URL=*`" would never surface until prod boot — by which point the
+// permissive value might already be merged. Validating in dev too forces the
+// envvar to be correct earlier.
+//
+// We compare against the parsed `allowedOrigins` list (set above by the CORS
+// block) and normalise the request side to a bare scheme://host:port so
+// `Referer` URLs that include a path don't false-negative against an origin
+// list of bare URLs.
+if (process.env.NODE_ENV !== 'test') {
   app.use((req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-    const origin = req.headers.origin || req.headers.referer;
-    const allowed = process.env.CLIENT_URL || 'http://localhost:3000';
-    if (origin && origin !== allowed) {
-      return res.status(403).json({ success: false, message: 'Request origin not allowed' });
+    const raw = req.headers.origin || req.headers.referer;
+    if (!raw) return next(); // server-to-server / curl — not subject to SOP
+
+    let candidate;
+    try {
+      const u = new URL(raw);
+      candidate = `${u.protocol}//${u.host}`;
+    } catch {
+      // Malformed Origin/Referer — refuse rather than silently allow.
+      return res.status(403).json({ success: false, message: 'Malformed Origin/Referer header.' });
     }
-    next();
+
+    // Empty allowed list = development fallback; permit the request.
+    if (allowedOrigins.length === 0) return next();
+    if (allowedOrigins.includes(candidate)) return next();
+    return res.status(403).json({ success: false, message: 'Request origin not allowed' });
   });
 }
 
@@ -143,7 +225,12 @@ app.get('/api/upload-config', (req, res) => {
   res.json({ success: true, data: configs });
 });
 
-// ─── Health check ────────────────────────────────────────────
+// ─── Health checks ───────────────────────────────────────────
+// /api/health = lightweight liveness probe. Used by the Docker HEALTHCHECK
+// in deploy/Dockerfile.server. We deliberately do NOT hit the DB here — a
+// transient DB hiccup should not cause Docker to mark the container
+// unhealthy and (depending on swarm/compose setup) restart it. This endpoint
+// answering at all means the Node event loop is alive.
 app.get('/api/health', (_req, res) => {
   res.json({
     success: true,
@@ -153,43 +240,104 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// /api/health/deep = readiness/diagnostics probe. Verifies the DB pool can
+// answer SELECT 1 within a short timeout. Use this from external monitoring
+// (uptime checks, alerting). Returns 503 on failure so Prometheus/Pingdom etc
+// can page on it without false positives from network blips.
+app.get('/api/health/deep', async (_req, res) => {
+  const startedAt = Date.now();
+  try {
+    await sequelize.query('SELECT 1', { plain: true });
+    res.json({
+      success: true,
+      db: 'ok',
+      latencyMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[Health] Deep check failed:', err && err.message);
+    res.status(503).json({
+      success: false,
+      db: 'error',
+      message: 'Database unavailable',
+      latencyMs: Date.now() - startedAt,
+    });
+  }
+});
+
 // ─── Rate limiting ──────────────────────────────────────────
+//
+// Shared 429 response shape so the frontend can branch on `code === 'rate_limited'`
+// and read `retryAfter` (seconds) without parsing free-text. `standardHeaders`
+// also surfaces RateLimit-* / Retry-After response headers per RFC 6585 / draft.
+function rateLimitHandler(label) {
+  return (req, res, _next, options) => {
+    const retryAfterSec = Math.ceil(options.windowMs / 1000);
+    res.set('Retry-After', String(retryAfterSec));
+    res.status(options.statusCode || 429).json({
+      success: false,
+      code: 'rate_limited',
+      bucket: label,
+      message: 'Too many requests. Please wait before retrying.',
+      retryAfter: retryAfterSec,
+    });
+  };
+}
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 50, // 50 login attempts per 15 min per IP (increased for shared office networks)
-  message: { success: false, message: 'Too many login attempts. Please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
+  handler: rateLimitHandler('auth'),
 });
 
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50, // 50 uploads per 15 min
-  message: { success: false, message: 'Too many file uploads. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: rateLimitHandler('upload'),
 });
 
 const searchLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
   max: 60, // 60 searches per minute
-  message: { success: false, message: 'Too many search requests. Please slow down.' },
-});
-
-// General API rate limiter (200 requests per minute per IP)
-const generalLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 200,
-  message: { success: false, message: 'Too many requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
+  handler: rateLimitHandler('search'),
+});
+
+// General API rate limiter — broad safety net for /api/*. Combined with the
+// trust-proxy fix above this is now per real client IP, so one stuck browser
+// tab can only throttle ITSELF (and others on the same NAT, mitigated below
+// by route-specific limiters with their own budgets).
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 300, // gentle global ceiling per real client IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: rateLimitHandler('general'),
+});
+
+// Heavy board/task endpoints. The BoardPage in production has hit these in a
+// retry loop before; this caps any one client well under the global budget so
+// other clients on the same office NAT keep working even if one tab misbehaves.
+const boardReadLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 90, // ~1.5/sec sustained per real client IP for /boards/:id and /tasks reads
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: rateLimitHandler('board_read'),
 });
 
 // External/HRMS API rate limiter (100 requests per minute per IP)
 const externalLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 100,
-  message: { success: false, message: 'Too many external API requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
+  handler: rateLimitHandler('external'),
 });
 
 // ─── API routes ──────────────────────────────────────────────
@@ -202,8 +350,10 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth', authRoutes);
-app.use('/api/boards', boardRoutes);
-app.use('/api/tasks', taskRoutes);
+// boardReadLimiter sits in front of the heavy read endpoints so one misbehaving
+// client can't burn the global budget that other users on the same NAT share.
+app.use('/api/boards', boardReadLimiter, boardRoutes);
+app.use('/api/tasks', boardReadLimiter, taskRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/files', uploadLimiter, fileRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -1335,6 +1485,39 @@ const start = async () => {
       console.warn('[Server] users.tier migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: refresh_tokens table (D-2 — token rotation/denylist).
+    // Stores one row per issued refresh JWT keyed by its JTI claim. The
+    // /api/auth/refresh endpoint consults this table on every refresh and
+    // rotates the row (revoking the old, issuing a new). On password change
+    // and logout we revoke rows for the affected user. See models/RefreshToken
+    // and the refresh/logout/changePassword controllers for details.
+    //
+    // CASCADE on userId: when a user is hard-deleted, drop their tokens. This
+    // never happens for our soft-delete (`isActive=false`) flow but is the
+    // safer default for any future hard-delete tooling.
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+          jti UUID PRIMARY KEY,
+          "userId" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          "issuedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          "expiresAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+          "revokedAt" TIMESTAMP WITH TIME ZONE,
+          "replacedByJti" UUID,
+          "userAgent" VARCHAR(255),
+          "ip" VARCHAR(45),
+          "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )
+      `);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens("userId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens("expiresAt")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_revoked_at ON refresh_tokens("revokedAt")`);
+      console.log('[Server] refresh_tokens table + indexes ensured.');
+    } catch (e) {
+      console.warn('[Server] refresh_tokens migration warning:', e.message?.slice(0, 120));
+    }
+
     // ── Auto-migration: Add receipt columns to task_assignees ──
     // Per-assignee delivery/seen tracking for the WhatsApp-style receipt UI.
     // assignerId records who triggered the assignment (used to scope visibility
@@ -1436,6 +1619,13 @@ const start = async () => {
       // Outbound webhook retry job (every 5 min) — drains failed deliveries
       const { startWebhookRetryJob } = require('./jobs/webhookRetryJob');
       startWebhookRetryJob();
+
+      // Weekly VACUUM ANALYZE on hot tables. Defends against the planner-stats
+      // drift class of incident (May 2026 pg_toast_2619 corruption hit prod
+      // because autovacuum thresholds were too lax for our churn rate). The
+      // job is replica-safe via a Postgres advisory lock — see jobs/cronLock.js.
+      const { startVacuumAnalyzeJob } = require('./jobs/vacuumAnalyzeJob');
+      startVacuumAnalyzeJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

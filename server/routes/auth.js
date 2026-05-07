@@ -143,23 +143,38 @@ router.put(
 router.post('/refresh', refreshTokenEndpoint);
 
 // ─── POST /api/auth/logout ──────────────────────────────────
-// Server-side cleanup on logout. Stateless JWT cannot truly be revoked
-// without a denylist (out of scope here), but the endpoint MUST do three
-// things so a logged-out browser stops receiving live notifications:
+// Server-side cleanup on logout. With D-2 we now have a refresh-token
+// denylist, so logout truly revokes the session — not just clears local
+// state. The endpoint does FOUR things:
 //   1. Deactivate this device's web-push subscription (by endpoint, scoped
 //      to req.user.id). Other devices for the same user keep getting push.
 //   2. Force-disconnect the user's socket(s) from the realtime fan-out.
-//   3. Be tolerant of missing body fields — frontend may not have a push
-//      subscription at all.
+//   3. Revoke the refresh token. If `allDevices=true`, revoke ALL active
+//      refresh tokens for this user (logout-everywhere). If `refreshToken`
+//      is in the body, revoke just that specific token's row. If neither,
+//      we still log out the access-token tab (cookies/headers cleared on
+//      the client) but the refresh token survives — frontend should always
+//      send the refresh token to fully end the session.
+//   4. Be tolerant of missing body fields — frontend may not have a push
+//      subscription, may not pass the refresh token (older clients), etc.
 //
 // Body (all optional):
-//   { endpoint?: string, socketId?: string, allDevices?: boolean }
+//   { endpoint?: string, socketId?: string, allDevices?: boolean, refreshToken?: string }
 //
 // Response is always 200 with success=true so the frontend can proceed with
 // local cleanup even if a step fails.
 router.post('/logout', authenticate, async (req, res) => {
   const { endpoint, socketId, allDevices } = req.body || {};
-  const result = { pushDeactivated: 0, socketsDisconnected: 0 };
+  // D-1: prefer the refresh token from the httpOnly cookie. Falls back to
+  // req.body.refreshToken for clients that haven't migrated to cookies yet.
+  const { getRefreshTokenFromRequest, clearAuthCookies } = require('../utils/authCookies');
+  const refreshToken = getRefreshTokenFromRequest(req);
+  const result = { pushDeactivated: 0, socketsDisconnected: 0, refreshTokensRevoked: 0 };
+
+  // Clear the cookies first so even if a downstream step throws, the browser
+  // is no longer holding live credentials. Idempotent (clearing absent
+  // cookies is a no-op).
+  clearAuthCookies(res);
 
   try {
     const { deactivateSubscription, deactivateAllForUser } = require('../services/pushService');
@@ -183,6 +198,30 @@ router.post('/logout', authenticate, async (req, res) => {
     );
   } catch (err) {
     console.warn('[Auth.logout] socket disconnect failed:', err.message);
+  }
+
+  // Refresh-token revocation — D-2 denylist.
+  try {
+    const jwt = require('jsonwebtoken');
+    const { revokeRefreshToken, revokeAllRefreshTokensForUser } =
+      require('../controllers/authController');
+    if (allDevices) {
+      // Logout-everywhere: kill the whole user's session set.
+      result.refreshTokensRevoked = await revokeAllRefreshTokensForUser(req.user.id);
+    } else if (refreshToken) {
+      // Targeted revoke: decode (no verify needed — even an expired/forged
+      // token can be safely "revoked" — at worst the row doesn't exist and
+      // the update is a 0-row no-op). We still validate `id` matches the
+      // authenticated user so a malicious client can't revoke another
+      // user's token by guessing its JTI.
+      const decoded = jwt.decode(refreshToken) || {};
+      if (decoded.jti && decoded.id === req.user.id) {
+        await revokeRefreshToken(decoded.jti);
+        result.refreshTokensRevoked = 1;
+      }
+    }
+  } catch (err) {
+    console.warn('[Auth.logout] refresh-token revoke failed:', err.message);
   }
 
   res.json({ success: true, message: 'Logged out.', data: result });

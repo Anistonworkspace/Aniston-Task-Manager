@@ -47,6 +47,7 @@ const UserBoardOrder = require('./UserBoardOrder');
 const UserWorkspaceOrder = require('./UserWorkspaceOrder');
 const PushSubscription = require('./PushSubscription');
 const SystemSetting = require('./SystemSetting');
+const RefreshToken = require('./RefreshToken');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -419,7 +420,14 @@ module.exports = {
   UserWorkspaceOrder,
   PushSubscription,
   SystemSetting,
+  RefreshToken,
 };
+
+// ─── RefreshToken <-> User ───────────────────────────────────────────
+// CASCADE on delete: deactivating/removing a user wipes their refresh tokens
+// so a deactivated account cannot be re-activated by replaying old tokens.
+RefreshToken.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
+User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens' });
 
 // ─── PushSubscription <-> User ───────────────────────────────
 PushSubscription.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext, useCallback, useRef } from 'react';
+import React, { useState, useEffect, createContext, useContext, useCallback, useMemo, useRef } from 'react';
 import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
 
 // Suppress an identical (type+message) toast fired within this window. A single
@@ -67,8 +67,18 @@ export function ToastProvider({ children }) {
     return () => window.removeEventListener('api-error', handleApiError);
   }, [addToast]);
 
+  // Memoise the context value so consumers' useCallback/useEffect deps don't
+  // see a fresh reference every render. Without this, callers like
+  //   const { error } = useToast();
+  //   const load = useCallback(..., [..., error]);
+  //   useEffect(() => { load(); }, [load]);
+  // would refire load() on every render → at React render speed this becomes
+  // a per-IP request storm against /api/boards/:id, /api/tasks, etc., which
+  // then trips express-rate-limit and produces "Too many requests" toast spam.
+  const value = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast]);
+
   return (
-    <ToastContext.Provider value={{ addToast, removeToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       {/* Toast Container */}
       <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-[380px]">
@@ -92,18 +102,37 @@ export function ToastProvider({ children }) {
   );
 }
 
+// Stable no-op fallback used when the hook is called outside the provider.
+// Module-level so its identity never changes — safe to put in a useEffect/
+// useCallback dep array.
+const NOOP_TOAST = Object.freeze({
+  toast: () => {},
+  success: () => {},
+  error: () => {},
+  warning: () => {},
+  info: () => {},
+  remove: () => {},
+});
+
 export function useToast() {
   const ctx = useContext(ToastContext);
-  if (!ctx) {
-    // Return a no-op if used outside provider (graceful fallback)
-    return { toast: () => {}, success: () => {}, error: () => {}, warning: () => {}, info: () => {} };
-  }
-  return {
-    toast: ctx.addToast,
-    success: (msg) => ctx.addToast(msg, 'success'),
-    error: (msg) => ctx.addToast(msg, 'error'),
-    warning: (msg) => ctx.addToast(msg, 'warning'),
-    info: (msg) => ctx.addToast(msg, 'info'),
-    remove: ctx.removeToast,
-  };
+  // The returned object MUST be stable across renders. The previous
+  // implementation built a fresh object literal (with new arrow functions for
+  // success/error/...) every call, so callers like
+  //   const { error } = useToast();
+  //   const load = useCallback(..., [..., error]);
+  // saw a different `error` identity every render → useCallback churned →
+  // useEffect([load]) refired → infinite render-rate refetch loop on the
+  // BoardPage which produced the per-IP retry storm we hit in production.
+  return useMemo(() => {
+    if (!ctx) return NOOP_TOAST;
+    return {
+      toast: ctx.addToast,
+      success: (msg) => ctx.addToast(msg, 'success'),
+      error: (msg) => ctx.addToast(msg, 'error'),
+      warning: (msg) => ctx.addToast(msg, 'warning'),
+      info: (msg) => ctx.addToast(msg, 'info'),
+      remove: ctx.removeToast,
+    };
+  }, [ctx]);
 }
