@@ -12,6 +12,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
   Tooltip, CartesianGrid, AreaChart, Area, Legend
 } from 'recharts';
+import { resolveTier, tierLabel } from '../utils/tiers';
 
 const COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc'];
 const STATUS_COLORS = { not_started: '#c4c4c4', working_on_it: '#fdab3d', stuck: '#e2445c', done: '#00c875' };
@@ -283,7 +284,7 @@ export default function TeamDashboardPage() {
                   {m.avatar ? <img src={m.avatar} alt="" className="w-10 h-10 rounded-full object-cover" /> : m.name?.charAt(0)}
                 </div>
                 <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{m.name}</p>
-                <p className="text-[10px] text-gray-500 capitalize">{m.role}</p>
+                <p className="text-[10px] text-gray-500">{tierLabel(resolveTier(m))}</p>
                 <div className="flex justify-center gap-2 mt-2 text-[10px]">
                   <span className="text-green-600 font-medium">{m.doneTasks}✓</span>
                   <span className="text-yellow-600 font-medium">{m.workingTasks}⟳</span>

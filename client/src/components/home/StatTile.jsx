@@ -1,34 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { motion, useMotionValue, useTransform, animate, useReducedMotion } from 'framer-motion';
+import React from 'react';
+import { motion } from 'framer-motion';
 import { staggerItem } from '../../utils/animations';
 
 /**
- * Number that counts up from 0 to its target over ~600ms. Honors prefers-
- * reduced-motion by jumping straight to the final value.
+ * Static numeric display — no count-up animation. Kept as a named export so
+ * existing call sites stay unchanged; previously animated, now renders the
+ * value directly. (Per UX feedback: number tickers were distracting on a
+ * dashboard glanced at all day.)
  */
 export function CountUp({ value, suffix = '' }) {
-  const prefersReducedMotion = useReducedMotion();
   const target = typeof value === 'number' ? value : parseFloat(value) || 0;
-  const mv = useMotionValue(prefersReducedMotion ? target : 0);
-  const display = useTransform(mv, v => Math.round(v));
-  const [current, setCurrent] = useState(prefersReducedMotion ? target : 0);
-
-  useEffect(() => {
-    if (prefersReducedMotion) {
-      setCurrent(target);
-      return;
-    }
-    const ctrl = animate(mv, target, { duration: 0.6, ease: [0.16, 1, 0.3, 1] });
-    const unsub = display.on('change', v => setCurrent(v));
-    return () => { ctrl.stop(); unsub(); };
-  }, [target, mv, display, prefersReducedMotion]);
-
-  return (
-    <>
-      {current}
-      {suffix}
-    </>
-  );
+  return <>{target}{suffix}</>;
 }
 
 /**

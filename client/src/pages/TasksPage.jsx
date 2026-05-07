@@ -11,6 +11,7 @@ import TaskModal from '../components/task/TaskModal';
 import { useToast } from '../components/common/Toast';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { getBoardStatuses } from '../utils/constants';
+import { roleLabelFor } from '../utils/approvalStages';
 
 const TABS = [
   { id: 'approvals', label: 'Approvals', icon: ClipboardCheck, color: '#8b5cf6' },
@@ -437,7 +438,7 @@ export default function TasksPage() {
                         {(task.myCapabilities.isOverrideApprover || task.myCapabilities.canApproveEarly) && (
                           <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${task.myCapabilities.isOverrideApprover ? 'bg-purple-100 text-purple-700' : 'bg-amber-100 text-amber-700'}`}>
                             <Shield size={9} />
-                            {task.myCapabilities.isOverrideApprover ? 'Super Admin Override' : 'Higher-Level Approver'}
+                            {task.myCapabilities.isOverrideApprover ? 'Tier 1 Override' : 'Higher-Level Approver'}
                           </span>
                         )}
                         <div className="flex items-center gap-2">
@@ -534,9 +535,10 @@ export default function TasksPage() {
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-surface rounded">
                             <Avatar name={item.currentApprover.name} size="xs" />
                             <span>{item.currentApprover.name}</span>
-                            {item.currentApprover.role && (
-                              <span className="text-text-tertiary">· {item.currentApprover.role.replace('_', ' ')}</span>
-                            )}
+                            {(() => {
+                              const lbl = roleLabelFor(item.currentApprover);
+                              return lbl ? <span className="text-text-tertiary">· {lbl}</span> : null;
+                            })()}
                           </span>
                         )}
                       </div>

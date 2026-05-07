@@ -4,6 +4,7 @@ import { X, Search, UserCheck } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../common/Toast';
 import Avatar from '../common/Avatar';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 /**
  * Reassign dialog for a DependencyRequest.
@@ -91,7 +92,7 @@ export default function ReassignDependencyDialog({ dep, onClose, onSubmitted }) 
                 <Avatar name={u.name} size="xs" />
                 <div className="flex-1 min-w-0">
                   <span className="text-xs font-medium text-gray-700">{u.name}</span>
-                  <span className="text-[10px] text-gray-400 ml-1.5 capitalize">({u.role})</span>
+                  <span className="text-[10px] text-gray-400 ml-1.5">({tierLabel(resolveTier(u))})</span>
                 </div>
                 {selectedUserId === u.id && (
                   <span className="text-[10px] font-medium text-blue-600">Selected</span>

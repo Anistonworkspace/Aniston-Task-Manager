@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
 import AccessDenied from '../components/common/AccessDenied';
 import { isExplicitlyDenied } from '../utils/permissions';
+import { TIER_1, TIER_2, TIER_3, TIER_4, resolveTier, tierLabel, tiersGrantableBy } from '../utils/tiers';
 import {
   Users, ChevronDown, ArrowUp, User, Edit2, X, History, Shield, Search,
   GitBranch, Crown, Settings2, Layers, Building2, GripVertical,
@@ -29,19 +30,20 @@ function hasPrimaryManager(employee) {
   return rels.some((r) => r && r.isPrimary === true);
 }
 
-const ROLE_COLORS = {
-  admin: { color: '#e2445c', bg: '#fef2f2' },
-  manager: { color: '#0073ea', bg: '#eff6ff' },
-  assistant_manager: { color: '#f59e0b', bg: '#fffbeb' },
-  member: { color: '#00c875', bg: '#f0fdf4' },
+// Tier-based color palette for the org-chart fallback (used when a user has
+// no hierarchyLevel set). hierarchyLevel remains the primary classification —
+// tier is shown only as a fallback so cards never render an old role name.
+const TIER_COLORS = {
+  [TIER_1]: { color: '#e2445c', bg: '#fef2f2' },
+  [TIER_2]: { color: '#0073ea', bg: '#eff6ff' },
+  [TIER_3]: { color: '#f59e0b', bg: '#fffbeb' },
+  [TIER_4]: { color: '#00c875', bg: '#f0fdf4' },
 };
 
-const ROLE_LABELS = {
-  admin: 'Admin',
-  manager: 'Manager',
-  assistant_manager: 'Asst. Manager',
-  member: 'Member',
-};
+// Resolve the org-chart fallback color for a user. Uses tier — never role.
+function tierColorOf(user) {
+  return TIER_COLORS[resolveTier(user)] || TIER_COLORS[TIER_4];
+}
 
 // ═══ SINGLE CARD (draggable independently) ═══
 function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, onEdit, onPromote, onChangeManager, onViewHistory, onDragStartCard, onDropOnCard, onClick }) {
@@ -129,8 +131,10 @@ function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers 
   const [expanded, setExpanded] = useState(depth < 2);
   const hasChildren = node.children?.length > 0;
   const hlInfo = hierarchyLevels.find(l => l.name === node.hierarchyLevel);
-  const hlColor = hlInfo?.color || ROLE_COLORS[node.role]?.color || '#00c875';
-  const hlLabel = ROLE_LABELS[node.role] || hlInfo?.label || node.role || 'Member';
+  const hlColor = hlInfo?.color || tierColorOf(node).color;
+  // Display priority: explicit hierarchyLevel label → fallback to tier label.
+  // Old role names (Admin/Manager/Asst. Manager/Member) are never shown.
+  const hlLabel = hlInfo?.label || tierLabel(resolveTier(node));
 
   return (
     <div className="flex flex-col items-center">
@@ -166,13 +170,49 @@ function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers 
 
 // ═══ EDIT EMPLOYEE MODAL ═══
 function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved }) {
-  const [form, setForm] = useState({ name: user.name || '', designation: user.designation || '', department: user.department || '', hierarchyLevel: user.hierarchyLevel || 'member', role: user.role || 'member' });
+  const { user: actor } = useAuth();
+  const initialTier = resolveTier(user);
+  const [form, setForm] = useState({
+    name: user.name || '',
+    designation: user.designation || '',
+    department: user.department || '',
+    hierarchyLevel: user.hierarchyLevel || 'member',
+    tier: initialTier,
+  });
   const [saving, setSaving] = useState(false);
+
+  // Always include the user's CURRENT tier (so the dropdown can render their
+  // existing state) plus every tier the actor is permitted to grant. Tier 3/4
+  // actors get a single read-only entry.
+  const grantable = tiersGrantableBy(actor);
+  const tierOptions = Array.from(new Set([initialTier, ...grantable.map(g => g.value)]))
+    .sort((a, b) => a - b)
+    .map(t => ({ value: t, label: tierLabel(t) }));
+
+  // Map a tier to the legacy (role, isSuperAdmin) pair the API still accepts
+  // during the compatibility window. The User-model `beforeSave` hook keeps
+  // tier and legacy fields in lockstep on the server side.
+  function legacyFromTier(tier) {
+    switch (tier) {
+      case TIER_1: return { role: 'admin', isSuperAdmin: true };
+      case TIER_2: return { role: 'admin', isSuperAdmin: false };
+      case TIER_3: return { role: 'assistant_manager', isSuperAdmin: false };
+      case TIER_4: return { role: 'member', isSuperAdmin: false };
+      default:     return { role: 'member', isSuperAdmin: false };
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
     try {
-      const res = await api.put(`/users/${user.id}`, form);
+      const payload = {
+        name: form.name,
+        designation: form.designation,
+        department: form.department,
+        hierarchyLevel: form.hierarchyLevel,
+      };
+      if (form.tier !== initialTier) Object.assign(payload, legacyFromTier(form.tier));
+      const res = await api.put(`/users/${user.id}`, payload);
       console.log('[OrgChart] Edit saved:', res.data);
       await onSaved();
       onClose();
@@ -208,10 +248,11 @@ function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved }) {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Role</label>
-              <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}
-                className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none focus:border-blue-400">
-                <option value="member">Member</option><option value="assistant_manager">Assistant Manager</option><option value="manager">Manager</option><option value="admin">Admin</option>
+              <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Tier</label>
+              <select value={form.tier} onChange={e => setForm({ ...form, tier: Number(e.target.value) })}
+                disabled={tierOptions.length <= 1}
+                className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none focus:border-blue-400 disabled:opacity-60 disabled:cursor-not-allowed">
+                {tierOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
             <div>
@@ -296,16 +337,15 @@ function HierarchyManager({ levels, onClose, onRefresh }) {
 function ViewProfileModal({ employee, allUsers, hierarchyLevels, onClose }) {
   if (!employee) return null;
   const hlInfo = hierarchyLevels.find(l => l.name === employee.hierarchyLevel);
-  const hlColor = hlInfo?.color || ROLE_COLORS[employee.role]?.color || '#00c875';
+  const hlColor = hlInfo?.color || tierColorOf(employee).color;
   const avatarUrl = employee.avatar ? (employee.avatar.startsWith?.('http') ? employee.avatar : employee.avatar.startsWith?.('/') ? employee.avatar : `/${employee.avatar}`) : null;
   const manager = employee.managerId ? allUsers.find(u => String(u.id) === String(employee.managerId)) : null;
   const directReports = allUsers.filter(u => String(u.managerId) === String(employee.id));
-  const roleLabel = { admin: 'Admin', manager: 'Manager', assistant_manager: 'Assistant Manager', member: 'Employee' }[employee.role] || employee.role;
 
   const fields = [
     { label: 'Email', value: employee.email },
     { label: 'Department', value: employee.department },
-    { label: 'Role', value: roleLabel },
+    { label: 'Tier', value: tierLabel(resolveTier(employee)) },
     { label: 'Designation', value: employee.designation || employee.title },
     { label: 'Hierarchy Level', value: hlInfo?.label || employee.hierarchyLevel, color: hlColor },
     { label: 'Reports to', value: manager ? manager.name : 'None (Root)' },
@@ -347,11 +387,11 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
   if (!employee) return null;
 
   const hlInfo = hierarchyLevels.find(l => l.name === employee.hierarchyLevel);
-  const hlColor = hlInfo?.color || ROLE_COLORS[employee.role]?.color || '#00c875';
+  const hlColor = hlInfo?.color || tierColorOf(employee).color;
   const avatarUrl = employee.avatar ? (employee.avatar.startsWith?.('http') ? employee.avatar : employee.avatar.startsWith?.('/') ? employee.avatar : `/${employee.avatar}`) : null;
   const manager = employee.managerId ? allUsers.find(u => String(u.id) === String(employee.managerId)) : null;
   const directReports = allUsers.filter(u => String(u.managerId) === String(employee.id));
-  const roleLabel = { admin: 'Admin', manager: 'Manager', assistant_manager: 'Assistant Manager', member: 'Employee' }[employee.role] || employee.role;
+  const tierBadgeText = tierLabel(resolveTier(employee));
 
   // Multi-manager: get all manager relations for this employee
   const relations = employee.managerRelations || [];
@@ -392,8 +432,8 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
             <span className="text-[11px] font-medium text-gray-700">{employee.department || '—'}</span>
           </div>
           <div className="flex items-center justify-between py-2 border-b border-gray-100">
-            <span className="text-[11px] text-gray-500">Role</span>
-            <span className="text-[11px] font-medium text-gray-700">{roleLabel}</span>
+            <span className="text-[11px] text-gray-500">Tier</span>
+            <span className="text-[11px] font-medium text-gray-700">{tierBadgeText}</span>
           </div>
           <div className="flex items-center justify-between py-2 border-b border-gray-100">
             <span className="text-[11px] text-gray-500">Hierarchy Level</span>
@@ -451,7 +491,7 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
               {directReports.map(r => {
                 const rRaw = r.toJSON ? r.toJSON() : r;
                 const rHl = hierarchyLevels.find(l => l.name === rRaw.hierarchyLevel);
-                const rColor = rHl?.color || ROLE_COLORS[rRaw.role]?.color || '#00c875';
+                const rColor = rHl?.color || tierColorOf(rRaw).color;
                 return (
                   <div key={rRaw.id} className="flex items-center gap-2 px-2 py-1.5 bg-gray-50 rounded-lg">
                     <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white" style={{ backgroundColor: rColor }}>
@@ -808,7 +848,13 @@ export default function OrgChartPage() {
   }
 
   const filteredChart = filterTree(orgChart, searchQuery);
-  const stats = { total: allUsers.length, admins: allUsers.filter(u => u.role === 'admin').length, managers: allUsers.filter(u => u.role === 'manager').length, members: allUsers.filter(u => u.role === 'member').length };
+  const stats = {
+    total: allUsers.length,
+    tier1: allUsers.filter(u => resolveTier(u) === TIER_1).length,
+    tier2: allUsers.filter(u => resolveTier(u) === TIER_2).length,
+    tier3: allUsers.filter(u => resolveTier(u) === TIER_3).length,
+    tier4: allUsers.filter(u => resolveTier(u) === TIER_4).length,
+  };
 
   // Can drag only if canManage AND editMode is on
   const canDrag = canManage && editMode;
@@ -872,7 +918,13 @@ export default function OrgChartPage() {
 
             {/* Stats */}
             <div className="grid grid-cols-4 gap-2.5 mb-4">
-              {[{ label: 'Total', count: stats.total, color: '#6366f1', icon: Users }, { label: 'Admin', count: stats.admins, color: '#e2445c', icon: Crown }, { label: 'Manager', count: stats.managers, color: '#0073ea', icon: Shield }, { label: 'Member', count: stats.members, color: '#00c875', icon: User }].map((s, i) => (
+              {[
+                { label: 'Total',  count: stats.total, color: '#6366f1', icon: Users },
+                { label: 'Tier 1', count: stats.tier1, color: '#e2445c', icon: Crown },
+                { label: 'Tier 2', count: stats.tier2, color: '#0073ea', icon: Shield },
+                { label: 'Tier 3', count: stats.tier3, color: '#f59e0b', icon: Shield },
+                { label: 'Tier 4', count: stats.tier4, color: '#00c875', icon: User },
+              ].map((s, i) => (
                 <div key={i} className="bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2.5 flex items-center gap-3">
                   <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${s.color}12` }}><s.icon size={13} style={{ color: s.color }} /></div>
                   <div><p className="text-lg font-bold text-gray-800 leading-none">{s.count}</p><p className="text-[9px] text-gray-400 uppercase tracking-wide mt-0.5">{s.label}</p></div>
@@ -978,13 +1030,13 @@ export default function OrgChartPage() {
                           </div>
                           <div className="p-3 flex flex-wrap gap-2.5 min-h-[50px]">
                             {levelUsers.map(u => {
-                              const hlColor = ROLE_COLORS[u.role]?.color || level.color || '#00c875';
+                              const hlColor = level.color || tierColorOf(u).color;
                               return (
                                 <PersonCard
                                   key={u.id}
                                   node={u}
                                   hlColor={hlColor}
-                                  hlLabel={ROLE_LABELS[u.role] || level.label}
+                                  hlLabel={level.label || tierLabel(resolveTier(u))}
                                   canDrag={canDrag}
                                   isSelected={selectedEmployee?.id === u.id}
                                   onEdit={n => setShowEditEmployee(n)}
@@ -1029,7 +1081,7 @@ export default function OrgChartPage() {
                     <div className="p-3 flex flex-wrap gap-2">
                       {users.map(u => {
                         const hl = hierarchyLevels.find(l => l.name === u.hierarchyLevel);
-                        const c = hl?.color || ROLE_COLORS[u.role]?.color || '#00c875';
+                        const c = hl?.color || tierColorOf(u).color;
                         return (
                           <div key={u.id}
                             className={`flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer group transition-colors ${selectedEmployee?.id === u.id ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50 hover:bg-gray-100 border border-transparent'}`}
@@ -1038,7 +1090,7 @@ export default function OrgChartPage() {
                             <div className="w-7 h-7 rounded-full flex items-center justify-center text-[9px] font-bold text-white" style={{ backgroundColor: c }}>{u.name?.charAt(0)?.toUpperCase()}</div>
                             <div className="flex-1 min-w-0">
                               <p className="text-[11px] font-semibold text-gray-700 truncate">{u.name}</p>
-                              <p className="text-[9px] text-gray-400 truncate">{u.designation || hl?.label || u.role}</p>
+                              <p className="text-[9px] text-gray-400 truncate">{u.designation || hl?.label || tierLabel(resolveTier(u))}</p>
                             </div>
                           </div>
                         );
@@ -1083,7 +1135,37 @@ export default function OrgChartPage() {
             <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-xl p-5 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2"><ArrowUp size={14} className="text-green-500" /> Promote {showPromote.name}</h3>
               <div className="space-y-3">
-                <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">System Role</label><select value={promoteForm.newRole} onChange={e => setPromoteForm({ ...promoteForm, newRole: e.target.value })} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none"><option value="member">Member</option><option value="assistant_manager">Assistant Manager</option><option value="manager">Manager</option><option value="admin">Admin</option></select></div>
+                <div>
+                  <label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Tier</label>
+                  <select
+                    value={(() => {
+                      // Translate the staged legacy role string back to a tier
+                      // value so the select renders the right option even if
+                      // the parent set newRole as a legacy string.
+                      const r = promoteForm.newRole;
+                      if (r === 'admin') return TIER_2;
+                      if (r === 'assistant_manager') return TIER_3;
+                      if (r === 'member') return TIER_4;
+                      // No newRole staged yet → fall back to the user's current tier.
+                      return resolveTier(showPromote);
+                    })()}
+                    onChange={e => {
+                      const t = Number(e.target.value);
+                      // Translate tier → legacy role for the existing API.
+                      // Tier 1 promotion via this dialog is intentionally
+                      // disabled (use the Admin Settings tier dropdown).
+                      const role =
+                        t === TIER_2 ? 'admin' :
+                        t === TIER_3 ? 'assistant_manager' :
+                                       'member';
+                      setPromoteForm({ ...promoteForm, newRole: role });
+                    }}
+                    className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none">
+                    <option value={TIER_4}>{tierLabel(TIER_4)}</option>
+                    <option value={TIER_3}>{tierLabel(TIER_3)}</option>
+                    <option value={TIER_2}>{tierLabel(TIER_2)}</option>
+                  </select>
+                </div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Hierarchy Level</label><select value={promoteForm.newHierarchyLevel} onChange={e => setPromoteForm({ ...promoteForm, newHierarchyLevel: e.target.value })} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none"><option value="">Select...</option>{hierarchyLevels.map(l => <option key={l.id} value={l.name}>{l.label}</option>)}</select></div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Title</label><input value={promoteForm.newTitle} onChange={e => setPromoteForm({ ...promoteForm, newTitle: e.target.value })} placeholder="e.g., Senior Developer" className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] outline-none" /></div>
                 <div><label className="text-[10px] font-semibold text-gray-500 uppercase mb-1 block">Notes</label><textarea value={promoteForm.notes} onChange={e => setPromoteForm({ ...promoteForm, notes: e.target.value })} rows={2} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] outline-none resize-none" /></div>
@@ -1104,7 +1186,7 @@ export default function OrgChartPage() {
               )}
               <select value={selectedManager} onChange={e => setSelectedManager(e.target.value)} className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-[12px] bg-white outline-none mb-3">
                 <option value="">✕ No Manager (Root Level)</option>
-                {allUsers.filter(u => u.id !== showChangeManager.id).map(u => <option key={u.id} value={u.id}>{u.name} · {u.designation || u.role}</option>)}
+                {allUsers.filter(u => u.id !== showChangeManager.id).map(u => <option key={u.id} value={u.id}>{u.name} · {u.designation || tierLabel(resolveTier(u))}</option>)}
               </select>
               <div className="flex gap-2"><button onClick={handleChangeManager} className="flex-1 py-2 bg-blue-500 text-white text-[12px] font-medium rounded-lg hover:bg-blue-600">Update</button><button onClick={() => setShowChangeManager(null)} className="px-4 py-2 text-[12px] text-gray-500">Cancel</button></div>
             </motion.div>
@@ -1146,7 +1228,7 @@ export default function OrgChartPage() {
                     <option value="">Select manager...</option>
                     {allUsers
                       .filter(u => u.id !== showAddManager.id && !(showAddManager.managerRelations || []).some(r => String(r.managerId) === String(u.id)))
-                      .map(u => <option key={u.id} value={u.id}>{u.name} · {u.designation || u.role}</option>)}
+                      .map(u => <option key={u.id} value={u.id}>{u.name} · {u.designation || tierLabel(resolveTier(u))}</option>)}
                   </select>
                 </div>
                 <div>

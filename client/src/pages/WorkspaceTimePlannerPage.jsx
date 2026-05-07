@@ -9,6 +9,7 @@ import {
   Upload, Crown, Users, User
 } from 'lucide-react';
 import { STATUS_CONFIG } from '../utils/constants';
+import { resolveTier, tierLabel } from '../utils/tiers';
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8am to 8pm
 
@@ -237,7 +238,7 @@ export default function WorkspaceTimePlannerPage() {
             <select value={selectedEmployee || ''} onChange={e => setSelectedEmployee(e.target.value || null)}
               className="text-xs border border-gray-200 dark:border-zinc-600 rounded-lg px-3 py-2 focus:outline-none focus:border-primary">
               <option value="">My Schedule</option>
-              {allUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+              {allUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>)}
             </select>
           )}
 

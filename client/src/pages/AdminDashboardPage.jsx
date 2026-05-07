@@ -6,7 +6,7 @@ export default function AdminDashboardPage() {
     <RoleDashboard
       scope="admin"
       title="My Dashboard"
-      subtitle="Admin"
+      subtitle="Tier 1 / Tier 2"
       showPersonFilter={true}
       showUnassigned={true}
     />

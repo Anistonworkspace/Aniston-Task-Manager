@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Check, AlertCircle, Search } from 'lucide-react';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 const TYPES = [
   { value: 'meeting', label: 'Meeting', color: '#0073ea' },
@@ -200,7 +201,7 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
                     <Avatar name={u.name} size="xs" />
                     <div className="flex-1 min-w-0">
                       <span className="text-xs font-medium text-text-primary truncate block">{u.name}</span>
-                      <span className="text-[10px] text-text-tertiary capitalize">{u.role}</span>
+                      <span className="text-[10px] text-text-tertiary">{tierLabel(resolveTier(u))}</span>
                     </div>
                   </label>
                 ))}

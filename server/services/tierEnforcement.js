@@ -85,6 +85,21 @@ const SHARED_KINDS = new Set([
   'board_member',
   'webhook',
   'integration_config',
+  // Phase 7 — additional shared kinds whose destructive paths are gated
+  // through `assertCanDelete`. Each of these had a P0/P1 bypass in the
+  // 2026-05-07 audit; adding them here is the prerequisite for the
+  // controller-level gate calls.
+  'worklog',
+  'task_assignee',
+  'task_owner',
+  'manager_relation',
+  'hierarchy_level',
+  'feedback',
+  'promotion',
+  'dependency_request',
+  'transcription_provider',
+  'ai_provider',
+  'ai_config',
 ]);
 
 const KNOWN_KINDS = new Set([...PERSONAL_KINDS, ...SHARED_KINDS]);

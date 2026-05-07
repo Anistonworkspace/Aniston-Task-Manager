@@ -92,6 +92,12 @@ const revokeKey = async (req, res) => {
       return res.status(404).json({ success: false, message: 'API key not found.' });
     }
 
+    // Phase 7 — Tier-2 destructive guard. The route admits T2-admin via
+    // strictAdminOnly; this gate enforces decision #4 (T2 cannot destroy).
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'api_key', { isOwnResource: false }))) return;
+
     await key.destroy();
     res.json({ success: true, message: 'API key revoked successfully.' });
   } catch (error) {

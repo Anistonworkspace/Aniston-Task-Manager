@@ -465,6 +465,12 @@ exports.revokePermission = async (req, res) => {
     });
     if (!grant) return res.status(404).json({ success: false, message: 'Permission not found.' });
 
+    // Phase 7 — Tier-2 destructive guard. Revoking a permission grant is
+    // soft-delete-class; T2 must not perform it (decision #4).
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'permission_grant', { isOwnResource: false }))) return;
+
     await grant.update({
       isActive: false,
       revokedAt: new Date(),

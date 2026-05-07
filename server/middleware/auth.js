@@ -57,6 +57,24 @@ const authenticate = async (req, res, next) => {
       });
     }
 
+    // Phase 7 — Reject tokens issued before the user's password was last
+    // changed. JWTs are otherwise valid until natural expiry (1h), so a
+    // forced reset / "log everywhere out" admin action would not actually
+    // invalidate stolen tokens without this check. iat is in seconds; the
+    // model column is a Date. Compare with a 1-second tolerance so a token
+    // issued in the same second as the password change isn't false-rejected
+    // by clock-rounding.
+    if (user.passwordChangedAt && decoded.iat) {
+      const passwordChangedAtSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
+      if (decoded.iat + 1 < passwordChangedAtSec) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please log in again.',
+          code: 'PASSWORD_CHANGED',
+        });
+      }
+    }
+
     req.user = user;
     next();
   } catch (error) {

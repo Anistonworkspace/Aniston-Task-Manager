@@ -40,6 +40,11 @@ exports.updateLabel = async (req, res) => {
 // DELETE /api/labels/:id
 exports.deleteLabel = async (req, res) => {
   try {
+    // Phase 7 — Tier-2 destructive guard.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'label', { isOwnResource: false }))) return;
+
     await TaskLabel.destroy({ where: { labelId: req.params.id } });
     await Label.destroy({ where: { id: req.params.id } });
     res.json({ success: true, message: 'Label deleted.' });

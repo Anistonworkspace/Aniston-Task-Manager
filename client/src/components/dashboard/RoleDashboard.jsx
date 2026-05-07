@@ -8,6 +8,7 @@ import { format, isBefore, startOfDay } from 'date-fns';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
 import { openTaskFromAnywhere } from '../../utils/taskNavigation';
 import Avatar from '../common/Avatar';
@@ -253,7 +254,7 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
                         <button key={u.id} onClick={() => { setFilters(f => ({ ...f, person: u.id, smartView: '' })); setPersonOpen(false); setPage(1); }}
                           className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface ${filters.person === u.id ? 'bg-primary/5 font-semibold' : ''}`}>
                           <Avatar name={u.name} size="xs" /> {u.name}
-                          {u.role && <span className="text-[9px] text-text-tertiary ml-auto">{u.role}</span>}
+                          <span className="text-[9px] text-text-tertiary ml-auto">{tierLabel(resolveTier(u))}</span>
                         </button>
                       ))}
                     </div>

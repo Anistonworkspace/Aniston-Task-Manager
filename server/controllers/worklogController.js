@@ -187,6 +187,14 @@ const deleteWorkLog = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Work log not found.' });
     }
 
+    // Phase 7 — Tier-2 destructive guard. Author-owned worklog deletions
+    // remain allowed for T3/T4 (own data); T2 is blocked even on own data
+    // per decision #4 strict.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    const isOwnResource = String(worklog.userId) === String(req.user.id);
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'worklog', { isOwnResource }))) return;
+
     await worklog.destroy();
     res.json({ success: true, message: 'Work log deleted.' });
   } catch (error) {

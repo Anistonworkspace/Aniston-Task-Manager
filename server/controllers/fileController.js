@@ -26,10 +26,16 @@ const {
 const canAccessTask = async (taskId, user) => {
   if (!user || !taskId) return false;
 
-  // Elevated roles — admin, manager, assistant_manager, super-admin always read.
-  if (user.isSuperAdmin) return true;
-  const role = user.role;
-  if (role === 'admin' || role === 'manager' || role === 'assistant_manager') return true;
+  // Phase 7 — Tier-aware visibility. Tier 1 (super admin) and Tier 2
+  // (admin/manager) get unrestricted task access; Tier 3 (assistant
+  // manager) used to also short-circuit `true` here, which let them
+  // read/upload/delete files on ANY task in the org (audit P0-5). We
+  // now defer Tier 3 to the same per-task visibility predicates as
+  // Tier 4 below — direct linkage / board membership / dependency /
+  // hierarchy subtree are checked the same way.
+  const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
+  const tier = resolveTier(user);
+  if (tier === TIER_1 || tier === TIER_2) return true;
 
   // Direct task linkage — single assignedTo, creator, multi-assignee row,
   // multi-owner row, or board membership.

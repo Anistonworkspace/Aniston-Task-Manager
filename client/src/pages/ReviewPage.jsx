@@ -4,6 +4,7 @@ import { format, addDays, subDays, parseISO, startOfWeek, endOfWeek } from 'date
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Avatar from '../components/common/Avatar';
+import { resolveTier, tierLabel } from '../utils/tiers';
 
 const STATUS_LABELS = {
   not_started: { label: 'Not Started', color: '#c4c4c4' },
@@ -168,7 +169,7 @@ export default function ReviewPage() {
                 <div>
                   <h2 className="text-base font-bold text-text-primary">{data.user.name}</h2>
                   <p className="text-xs text-text-tertiary">
-                    {[data.user.designation, data.user.department].filter(Boolean).join(' · ') || data.user.role}
+                    {[data.user.designation, data.user.department].filter(Boolean).join(' · ') || tierLabel(resolveTier(data.user))}
                   </p>
                 </div>
               </div>

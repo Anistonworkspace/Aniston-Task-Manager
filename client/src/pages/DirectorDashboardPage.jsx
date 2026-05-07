@@ -192,7 +192,7 @@ export default function DirectorDashboardPage() {
         <div className="text-center">
           <Crown size={48} className="text-gray-300 mx-auto mb-4" />
           <h2 className="text-lg font-bold text-gray-700">Access Required</h2>
-          <p className="text-sm text-gray-500 mt-2">This dashboard is only available for Admin, Manager, and Super Admin.</p>
+          <p className="text-sm text-gray-500 mt-2">This dashboard is only available for Tier 1 and Tier 2.</p>
         </div>
       </div>
     );
@@ -274,7 +274,7 @@ export default function DirectorDashboardPage() {
           >
             {directors.map(d => (
               <option key={d.id} value={d.id}>
-                {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
+                {d.name} {d.isSuperAdmin ? '(Tier 1)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
               </option>
             ))}
           </select>
@@ -605,7 +605,7 @@ export default function DirectorDashboardPage() {
             <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
               <Crown size={40} className="text-gray-300 mx-auto mb-3" />
               <p className="text-sm text-gray-500 font-medium">No daily plan set for today.</p>
-              <p className="text-xs text-gray-400 mt-1">Your assistant manager will plan your day.</p>
+              <p className="text-xs text-gray-400 mt-1">A delegate will plan your day.</p>
             </div>
           )}
         </>

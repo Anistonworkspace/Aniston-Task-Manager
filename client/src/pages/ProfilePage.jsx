@@ -11,12 +11,14 @@ import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import SOPViewer from '../components/common/SOPViewer';
 import DepartmentSelect from '../components/common/DepartmentSelect';
+import { TIER_1, TIER_2, TIER_3, TIER_4, resolveTier, tierLabel } from '../utils/tiers';
 
-const ROLE_STYLES = {
-  admin:             { bg: 'bg-danger/10',  text: 'text-danger',  border: 'border-danger/20',  label: 'Administrator' },
-  manager:           { bg: 'bg-warning/10', text: 'text-warning', border: 'border-warning/20', label: 'Manager' },
-  assistant_manager: { bg: 'bg-purple/10',  text: 'text-purple',  border: 'border-purple/20',  label: 'Assistant Manager' },
-  member:            { bg: 'bg-primary/10', text: 'text-primary', border: 'border-primary/20', label: 'Member' },
+// Tier-based badge styles. Replaces the old role-name palette.
+const TIER_STYLES = {
+  [TIER_1]: { bg: 'bg-danger/10',  text: 'text-danger',  border: 'border-danger/20' },
+  [TIER_2]: { bg: 'bg-warning/10', text: 'text-warning', border: 'border-warning/20' },
+  [TIER_3]: { bg: 'bg-purple/10',  text: 'text-purple',  border: 'border-purple/20' },
+  [TIER_4]: { bg: 'bg-primary/10', text: 'text-primary', border: 'border-primary/20' },
 };
 
 // Section nav for the Task-Modal-style panel. Drives scrollspy + tab clicks.
@@ -267,7 +269,9 @@ export default function ProfilePage({ variant = 'page', onClose }) {
     }
   }
 
-  const roleStyle = ROLE_STYLES[user?.role] || ROLE_STYLES.member;
+  const userTier = resolveTier(user);
+  const tierStyle = TIER_STYLES[userTier] || TIER_STYLES[TIER_4];
+  const tierLabelText = tierLabel(userTier);
   const avatarUrl = user?.avatar ? (user.avatar.startsWith('http') ? user.avatar : user.avatar) : null;
   const initials = (user?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   const isMicrosoftSSO = user?.authProvider === 'microsoft' && !user?.hasLocalPassword;
@@ -352,8 +356,8 @@ export default function ProfilePage({ variant = 'page', onClose }) {
               </p>
 
               <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-                <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${roleStyle.bg} ${roleStyle.text} ${roleStyle.border}`}>
-                  <Shield size={11} />{roleStyle.label}
+                <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${tierStyle.bg} ${tierStyle.text} ${tierStyle.border}`}>
+                  <Shield size={11} />{tierLabelText}
                 </span>
                 {user?.department && (
                   <span className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-50 border border-border text-text-secondary">
@@ -443,10 +447,10 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                 </Field>
               </div>
 
-              <Field label="Role" hint="Contact admin to change">
+              <Field label="Tier" hint="Contact a Tier 1 administrator to change">
                 <input
                   type="text"
-                  value={roleStyle.label}
+                  value={tierLabelText}
                   readOnly
                   className={`${readOnlyInputCls} max-w-xs`}
                 />

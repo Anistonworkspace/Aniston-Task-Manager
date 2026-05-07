@@ -4,6 +4,7 @@ import { X, Search, Send, Link2, AlertCircle, Users, Calendar, Flag, FileText, L
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import { useToast } from '../common/Toast';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 const PRIORITIES = [
   { value: 'low',      label: 'Low',      color: '#9aa6b8' },
@@ -271,7 +272,7 @@ export default function DependencySelector({
                 <Avatar name={selectedUser.name} size="xs" />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium text-text-primary">{selectedUser.name}</span>
-                  <span className="text-[10px] text-text-tertiary ml-2 capitalize">{selectedUser.role}</span>
+                  <span className="text-[10px] text-text-tertiary ml-2">{tierLabel(resolveTier(selectedUser))}</span>
                 </div>
                 <button onClick={() => { setSelectedUserId(null); setSearch(''); }}
                   className="p-0.5 rounded hover:bg-surface text-text-tertiary"><X size={14} /></button>
@@ -293,7 +294,7 @@ export default function DependencySelector({
                       <Avatar name={u.name} size="xs" />
                       <div className="flex-1 min-w-0">
                         <span className="text-xs font-medium text-text-primary">{u.name}</span>
-                        <span className="text-[10px] text-text-tertiary ml-1.5 capitalize">({u.role})</span>
+                        <span className="text-[10px] text-text-tertiary ml-1.5">({tierLabel(resolveTier(u))})</span>
                       </div>
                       {u.department && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-text-tertiary">{u.department}</span>

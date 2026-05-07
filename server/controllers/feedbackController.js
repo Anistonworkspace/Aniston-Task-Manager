@@ -89,11 +89,16 @@ exports.updateFeedback = async (req, res) => {
   }
 };
 
-// DELETE /api/feedback/:id — delete (admin only)
+// DELETE /api/feedback/:id — delete (Tier 1 only)
 exports.deleteFeedback = async (req, res) => {
   try {
     const feedback = await Feedback.findByPk(req.params.id);
     if (!feedback) return res.status(404).json({ success: false, message: 'Feedback not found.' });
+
+    // Phase 7 — Tier-2 destructive guard.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'feedback', { isOwnResource: false }))) return;
 
     await feedback.destroy();
     res.json({ success: true, message: 'Feedback deleted.' });

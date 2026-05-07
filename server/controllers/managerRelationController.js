@@ -109,6 +109,12 @@ exports.removeRelation = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Relation not found.' });
     }
 
+    // Phase 7 — Tier-2 destructive guard. Removing a manager relation
+    // mutates org-chart structure; T2 must not perform it (decision #4).
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'manager_relation', { isOwnResource: false }))) return;
+
     const wasPrimary = relation.isPrimary;
     const employeeId = relation.employeeId;
     const managerId = relation.managerId;

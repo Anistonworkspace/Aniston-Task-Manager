@@ -401,9 +401,17 @@ const toggleUserStatus = async (req, res) => {
 
     const newStatus = !user.isActive;
 
-    // Phase 5c — Last Tier-1 protection. A deactivation that would leave
-    // zero active Tier 1 users is refused (decision #12).
+    // Phase 7 — Tier-2 destructive guard. Deactivation is destructive; only
+    // Tier 1 may perform it. The legacy `auth.scope === 'full'` admits Tier 2
+    // admins, so we layer `assertCanDelete` on top to enforce decision #4
+    // (T2 cannot delete/deactivate anything anywhere).
     if (newStatus === false) {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'user', { isOwnResource: false }))) return;
+
+      // Phase 5c — Last Tier-1 protection. A deactivation that would leave
+      // zero active Tier 1 users is refused (decision #12).
       if (await lastTier1Blocked(res, user, 'deactivate')) return;
     }
 
@@ -507,6 +515,13 @@ const deleteUser = async (req, res) => {
         message: 'Admins cannot delete other admin accounts. A super admin must perform this action.',
       });
     }
+
+    // Phase 7 — Tier-2 destructive guard. `auth.scope === 'full'` admits
+    // Tier 2 admins, so we layer `assertCanDelete` to enforce decision #4
+    // (T2 cannot delete anything anywhere). Closes the audit P0-1 leak.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'user', { isOwnResource: false }))) return;
 
     // Phase 5c — Last Tier-1 protection. Defense in depth: today the
     // hard "super admin accounts cannot be deleted via this endpoint"

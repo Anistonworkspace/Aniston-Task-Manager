@@ -170,6 +170,12 @@ const saveConfig = async (req, res) => {
 const deleteConfig = async (req, res) => {
   try {
     const { provider } = req.params;
+
+    // Phase 7 — Tier-2 destructive guard.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'integration_config', { isOwnResource: false }))) return;
+
     const deleted = await IntegrationConfig.destroy({ where: { provider } });
 
     if (!deleted) {

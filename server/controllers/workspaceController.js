@@ -246,6 +246,16 @@ exports.updateWorkspace = async (req, res) => {
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
 
     const { name, description, color, icon, isActive } = req.body;
+
+    // Phase 7 — Tier-2 destructive guard. Flipping isActive=false is
+    // soft-archive / delete-class; T2 cannot do it (decision #4). Re-enable
+    // (isActive=true) is constructive and not gated here. Closes audit P0-4.
+    if (isActive === false && workspace.isActive !== false) {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'workspace', { isOwnResource: false }))) return;
+    }
+
     await workspace.update({
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),

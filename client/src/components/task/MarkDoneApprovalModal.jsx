@@ -3,6 +3,7 @@ import { CheckCircle2, X, Paperclip, ArrowRight, Loader2, Sparkles } from 'lucid
 import DetailModalShell from '../common/DetailModalShell';
 import api from '../../services/api';
 import { useToast } from '../common/Toast';
+import { roleLabelFor } from '../../utils/approvalStages';
 
 /**
  * Centered modal that intercepts a "Done" status change and submits the
@@ -242,8 +243,8 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
                       <p className="text-[13px] font-medium text-zinc-900 dark:text-white truncate">
                         {a.userName}
                       </p>
-                      <p className="text-[11px] text-zinc-400 dark:text-zinc-500 capitalize truncate">
-                        {a.isSuperAdmin ? 'super admin' : (a.role?.replace('_', ' ') || 'reviewer')}
+                      <p className="text-[11px] text-zinc-400 dark:text-zinc-500 truncate">
+                        {roleLabelFor(a) || 'Reviewer'}
                       </p>
                     </div>
                   </div>
@@ -259,8 +260,8 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
                 <p className="text-[13px] font-medium text-zinc-900 dark:text-white truncate">
                   {preview.nextApprover.userName}
                 </p>
-                <p className="text-[11px] text-zinc-400 dark:text-zinc-500 capitalize truncate">
-                  {preview.nextApprover.role?.replace('_', ' ') || 'reviewer'}
+                <p className="text-[11px] text-zinc-400 dark:text-zinc-500 truncate">
+                  {roleLabelFor(preview.nextApprover) || 'Reviewer'}
                 </p>
               </div>
             </div>

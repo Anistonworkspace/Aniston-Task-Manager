@@ -10,6 +10,7 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 import { formatDistanceToNow, parseISO, format } from 'date-fns';
 import api from '../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
+import { resolveTier, tierLabel } from '../utils/tiers';
 import Avatar from '../components/common/Avatar';
 import MemberDrillDown from '../components/dashboard/MemberDrillDown';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
@@ -403,7 +404,7 @@ export default function DashboardPage() {
                         <Avatar name={u.name} size="xs" />
                         <span className="truncate">{u.name}</span>
                         {(u.designation || u.role) && (
-                          <span className="text-[9px] text-text-tertiary ml-auto truncate max-w-[80px]">{u.designation || u.role}</span>
+                          <span className="text-[9px] text-text-tertiary ml-auto truncate max-w-[80px]">{u.designation || tierLabel(resolveTier(u))}</span>
                         )}
                       </button>
                     ))}
@@ -585,7 +586,7 @@ export default function DashboardPage() {
                                         <div className="min-w-0 flex-1">
                                           <p className="text-xs font-medium text-text-primary truncate">{c.name}</p>
                                           <p className="text-[10px] text-text-tertiary truncate">
-                                            {c.designation || c.role}{c.department ? ` · ${c.department}` : ''}
+                                            {c.designation || tierLabel(resolveTier(c))}{c.department ? ` · ${c.department}` : ''}
                                           </p>
                                         </div>
                                       </div>

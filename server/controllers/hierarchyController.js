@@ -59,6 +59,12 @@ exports.remove = async (req, res) => {
   try {
     const level = await HierarchyLevel.findByPk(req.params.id);
     if (!level) return res.status(404).json({ success: false, message: 'Level not found.' });
+
+    // Phase 7 — Tier-2 destructive guard. `isActive=false` is soft-delete.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'hierarchy_level', { isOwnResource: false }))) return;
+
     await level.update({ isActive: false });
     res.json({ success: true, message: 'Level deactivated.' });
   } catch (err) {

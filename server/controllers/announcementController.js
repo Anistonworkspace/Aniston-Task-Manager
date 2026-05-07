@@ -75,6 +75,12 @@ exports.deleteAnnouncement = async (req, res) => {
   try {
     const announcement = await Announcement.findByPk(req.params.id);
     if (!announcement) return res.status(404).json({ success: false, message: 'Not found.' });
+
+    // Phase 7 — Tier-2 destructive guard.
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'announcement', { isOwnResource: false }))) return;
+
     await announcement.destroy();
     res.json({ success: true, message: 'Announcement deleted.' });
   } catch (err) {

@@ -6,7 +6,7 @@ export default function ManagerDashboardPage() {
     <RoleDashboard
       scope="manager"
       title="My Dashboard"
-      subtitle="Manager"
+      subtitle="Tier 2"
       showPersonFilter={true}
       showUnassigned={true}
     />

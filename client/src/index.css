@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Roboto:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -260,6 +260,18 @@ body {
 .scrollbar-sidebar::-webkit-scrollbar-thumb { background: #c5c7d0; border-radius: 99px; }
 .scrollbar-sidebar::-webkit-scrollbar-thumb:hover { background: #a1a3ab; }
 .scrollbar-sidebar::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== Display utility: neu-machina ===========================
+   Geometric/technical sans for display text (greetings, hero numbers).
+   Stack puts Neue Machina first so when/if the team licenses & ships the
+   actual font (e.g. as a self-hosted woff2), it takes precedence with zero
+   call-site changes. Today it falls back to Space Grotesk (closest free
+   approximation) → Figtree → system. Use sparingly — display only. */
+.font-neu-machina {
+  font-family: 'Neue Machina', 'Space Grotesk', 'Figtree', system-ui, sans-serif;
+  font-feature-settings: 'ss01', 'ss02', 'cv11';
+  letter-spacing: -0.01em;
+}
 
 /* ===== Component Layer ===== */
 @layer components {

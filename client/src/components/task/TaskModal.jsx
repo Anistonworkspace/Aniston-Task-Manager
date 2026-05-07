@@ -28,6 +28,7 @@ import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
 import { canEditTask as canEditTaskFn, canSetPriority as canSetPriorityFn } from '../../utils/permissions';
 import { formatTaskDate } from '../../utils/dateFormat';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
   const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
@@ -674,8 +675,8 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                   <span className="text-text-tertiary">Assigned by</span>
                   <Avatar name={creatorName} size="xs" />
                   <span className="font-medium text-text-primary">{creatorName}</span>
-                  {creator?.role && (
-                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary">· {creator.role.replace('_', ' ')}</span>
+                  {creator && (
+                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary">· {tierLabel(resolveTier(creator))}</span>
                   )}
                 </div>
                 <span className="text-border">|</span>

@@ -630,11 +630,21 @@ const approveAccount = async (req, res) => {
 
 /**
  * PUT /api/auth/reject/:userId
+ *
+ * Rejecting a pending account destroys the user row. Tier-2 actors are
+ * blocked by `assertCanDelete` (decision #4 — T2 cannot delete anything,
+ * anywhere) so they receive 403 even though the route admits them via
+ * `managerOrAdmin`. Tier 1 may still reject pending accounts.
  */
 const rejectAccount = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'user', { isOwnResource: false }))) return;
+
     await user.destroy();
     res.json({ success: true, message: `Account request from ${user.name} has been rejected and removed.` });
   } catch (error) {
@@ -661,6 +671,20 @@ const refreshTokenEndpoint = async (req, res) => {
     const user = await User.findByPk(decoded.id);
     if (!user || !user.isActive) {
       return res.status(401).json({ success: false, message: 'User not found or inactive.' });
+    }
+
+    // Phase 7 — Reject refresh tokens that pre-date the user's last password
+    // change. Without this, a stolen long-lived refresh token survives any
+    // forced reset until its 7-day natural expiry.
+    if (user.passwordChangedAt && decoded.iat) {
+      const passwordChangedAtSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
+      if (decoded.iat + 1 < passwordChangedAtSec) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please log in again.',
+          code: 'PASSWORD_CHANGED',
+        });
+      }
     }
 
     const newToken = generateToken(user.id);

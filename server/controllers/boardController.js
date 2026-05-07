@@ -548,6 +548,16 @@ const updateBoard = async (req, res) => {
       });
     }
 
+    // Phase 7 — Tier-2 destructive guard. Soft-archive (isArchived=true) is
+    // delete-class; route this through `assertCanDelete` even when the rest
+    // of the update would otherwise pass. Restoration (isArchived=false) is
+    // not destructive — only the archive direction is gated. Closes audit P0-4.
+    if (updates.isArchived === true && board.isArchived !== true) {
+      const { assertCanDelete } = require('../services/tierEnforcement');
+      const { sendIfTierError } = require('../utils/tierResponseHelpers');
+      if (sendIfTierError(res, () => assertCanDelete(req.user, 'board', { isOwnResource: false }))) return;
+    }
+
     await board.update(updates);
 
     const fullBoard = await Board.findByPk(board.id, {

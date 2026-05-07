@@ -17,6 +17,7 @@ import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
 import ProfileModal from '../common/ProfileModal';
 import { canUser } from '../../utils/permissions';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 // Per-user workspace usage memory (client-side only — survives reload, does
 // not sync across devices/browsers). Drives the "top 3 workspaces" sort in
@@ -838,7 +839,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             </div>
             <div className="flex-1 min-w-0 text-left">
               <p className="text-sidebar-text-active text-[11px] font-medium truncate">{user?.name}</p>
-              <p className="text-sidebar-text/50 text-[9px] capitalize">{user?.role}</p>
+              <p className="text-sidebar-text/50 text-[9px]">{user ? tierLabel(resolveTier(user)) : ''}</p>
             </div>
             <Settings size={13} className="text-sidebar-text/30 flex-shrink-0" />
           </button>

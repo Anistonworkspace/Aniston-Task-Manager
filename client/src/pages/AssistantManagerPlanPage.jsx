@@ -312,7 +312,7 @@ export default function AssistantManagerPlanPage() {
         <div className="text-center">
           <Calendar size={48} className="text-gray-300 mx-auto mb-4" />
           <h2 className="text-lg font-bold text-gray-700">Access Denied</h2>
-          <p className="text-sm text-gray-500 mt-2">This page is only available for managers and above.</p>
+          <p className="text-sm text-gray-500 mt-2">This page is only available for Tier 3 and above.</p>
         </div>
       </div>
     );
@@ -924,7 +924,7 @@ export default function AssistantManagerPlanPage() {
               >
                 {(directors || []).map(d => (
                   <option key={d.id} value={d.id}>
-                    {d.name} {d.isSuperAdmin ? '(Super Admin)' : d.role === 'admin' ? '(Admin)' : d.role === 'manager' ? '(Manager)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
+                    {d.name} {d.isSuperAdmin ? '(Tier 1)' : (d.role === 'admin' || d.role === 'manager') ? '(Tier 2)' : d.hierarchyLevel ? `(${d.hierarchyLevel})` : ''}
                   </option>
                 ))}
               </select>
@@ -1358,7 +1358,7 @@ export default function AssistantManagerPlanPage() {
                                   className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 max-w-[150px] focus:outline-none focus:ring-1 focus:ring-indigo-300"
                                 >
                                   <option value="">Select assignee</option>
-                                  {(directors || []).map(d => <option key={d.id} value={d.id}>{d.name}{d.isSuperAdmin ? ' (Super Admin)' : d.hierarchyLevel ? ` (${d.hierarchyLevel})` : ''}</option>)}
+                                  {(directors || []).map(d => <option key={d.id} value={d.id}>{d.name}{d.isSuperAdmin ? ' (Tier 1)' : d.hierarchyLevel ? ` (${d.hierarchyLevel})` : ''}</option>)}
                                 </select>
                               </div>
                               <button onClick={() => confirmDeleteTask(catIndex, taskIndex)}

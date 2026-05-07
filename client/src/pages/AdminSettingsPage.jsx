@@ -16,6 +16,10 @@ import EditUserModal from '../components/user/EditUserModal';
 import ResetPasswordModal from '../components/user/ResetPasswordModal';
 import { useToast } from '../components/common/Toast';
 import { RESOURCES, ACTIONS, RESOURCE_ACTIONS, getResourcesByCategory, getActionsForResource } from '../utils/permissions';
+import {
+  TIER_1, TIER_2, TIER_3, TIER_4, ALL_TIERS,
+  resolveTier, tierLabel, tiersGrantableBy, hasTierAtLeast,
+} from '../utils/tiers';
 
 const TABS = [
   { id: 'users', label: 'Users', icon: Users },
@@ -23,17 +27,30 @@ const TABS = [
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'access_requests', label: 'Access Requests', icon: Key },
   { id: 'templates', label: 'Templates', icon: BookmarkCheck },
-  // 'security' is super-admin only and is filtered into the visible list at render time.
-  { id: 'security', label: 'Security', icon: Lock, superAdminOnly: true },
+  // 'security' is Tier 1 only and is filtered into the visible list at render time.
+  { id: 'security', label: 'Security', icon: Lock, tier1Only: true },
 ];
 
-const ROLE_BADGE = {
-  superadmin: { bg: 'bg-red-100', text: 'text-red-700', label: 'Super Admin', icon: ShieldCheck },
-  admin: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Admin', icon: ShieldCheck },
-  manager: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Manager', icon: Shield },
-  assistant_manager: { bg: 'bg-cyan-100', text: 'text-cyan-700', label: 'Asst. Manager', icon: Shield },
-  member: { bg: 'bg-green-100', text: 'text-green-700', label: 'Member', icon: Users },
+// Tier badge styles. Numerically smaller = more privileged.
+const TIER_BADGE = {
+  [TIER_1]: { bg: 'bg-red-100',    text: 'text-red-700',    icon: ShieldCheck },
+  [TIER_2]: { bg: 'bg-purple-100', text: 'text-purple-700', icon: ShieldCheck },
+  [TIER_3]: { bg: 'bg-cyan-100',   text: 'text-cyan-700',   icon: Shield },
+  [TIER_4]: { bg: 'bg-green-100',  text: 'text-green-700',  icon: Users },
 };
+
+// Map a tier value to the legacy (role, isSuperAdmin) pair the API still
+// accepts during the compatibility window. The User-model `beforeSave` hook
+// keeps tier and legacy fields in lockstep on the server side.
+function legacyFromTier(tier) {
+  switch (tier) {
+    case TIER_1: return { role: 'admin', isSuperAdmin: true };
+    case TIER_2: return { role: 'admin', isSuperAdmin: false };
+    case TIER_3: return { role: 'assistant_manager', isSuperAdmin: false };
+    case TIER_4: return { role: 'member', isSuperAdmin: false };
+    default:     return { role: 'member', isSuperAdmin: false };
+  }
+}
 
 const LEGACY_RESOURCE_TYPES = ['workspace', 'board', 'team', 'dashboard'];
 const LEGACY_PERMISSION_LEVELS = ['view', 'edit', 'assign', 'manage', 'admin'];
@@ -51,7 +68,7 @@ export default function AdminSettingsPage() {
   // Filter out super-admin-only tabs for regular admins. The Security tab is
   // intentionally invisible to admins/managers/members — they cannot read or
   // write the system inactivity timeout. Backend enforces the same on PUT.
-  const visibleTabs = TABS.filter(t => !t.superAdminOnly || isSuperAdmin);
+  const visibleTabs = TABS.filter(t => !t.tier1Only || resolveTier(user) === TIER_1);
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
@@ -86,29 +103,33 @@ export default function AdminSettingsPage() {
 }
 
 function UsersTab() {
-  const { user: currentUser, isSuperAdmin } = useAuth();
+  const { user: currentUser } = useAuth();
+  const actorTier = resolveTier(currentUser);
   const toast = useToast();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [roleFilter, setRoleFilter] = useState('all');
+  const [tierFilter, setTierFilter] = useState('all');
   const [showCreate, setShowCreate] = useState(false);
   const [showReset, setShowReset] = useState(null);
   const [editUser, setEditUser] = useState(null);
   const [actionMenu, setActionMenu] = useState(null);
-  const [roleChanging, setRoleChanging] = useState(null);
-  // Staged role change awaiting Super Admin / Admin confirmation. Holds the
-  // target user, their current role token, and the requested new role token.
-  // The select stays bound to the canonical user.role, so cancelling the modal
-  // requires no manual revert — React renders the original value.
-  const [pendingRoleChange, setPendingRoleChange] = useState(null);
+  const [tierChanging, setTierChanging] = useState(null);
+  // Staged tier change awaiting confirmation. Holds the target user, their
+  // current tier, and the requested new tier. The select stays bound to the
+  // canonical user.tier, so cancelling the modal requires no manual revert.
+  const [pendingTierChange, setPendingTierChange] = useState(null);
   const [visibleCount, setVisibleCount] = useState(25);
 
-  // Admins (and super admins) get the privileged edit form (role / status /
-  // email). Managers see only the safe-profile-fields slice — server side
-  // also enforces this via hierarchyService.canManageUser. Keep the two in
-  // sync so the form does not lie about what will save.
-  const canEditPrivileged = isSuperAdmin || currentUser?.role === 'admin';
+  // Tier 1/Tier 2 actors get the privileged edit form (tier / status / email).
+  // Lower tiers see only the safe-profile-fields slice — server side enforces
+  // the same via hierarchyService.canManageUser.
+  const canEditPrivileged = hasTierAtLeast(currentUser, TIER_2);
+
+  // Tiers this actor is allowed to grant. Tier 1 grants any tier; Tier 2
+  // grants Tier 3/4 only. Tier 3/4 actors get an empty list — the dropdown
+  // simply renders the user's current tier as read-only.
+  const grantableTiers = tiersGrantableBy(currentUser);
 
   useEffect(() => { fetchUsers(); }, []);
 
@@ -119,48 +140,50 @@ function UsersTab() {
     } catch (err) { console.error(err); } finally { setLoading(false); }
   }
 
-  // Stage the role change — does NOT hit the API. Confirmation modal calls
-  // confirmRoleChange() to actually mutate. Bail early if the dropdown
-  // re-emits the user's current role (e.g. after cancel + reopen).
-  function requestRoleChange(u, newRole) {
-    const currentRole = u.isSuperAdmin ? 'superadmin' : u.role;
-    if (newRole === currentRole) return;
-    setPendingRoleChange({ user: u, oldRole: currentRole, newRole });
+  // Stage the tier change — does NOT hit the API. Confirmation modal calls
+  // confirmTierChange() to actually mutate. Bail early if the dropdown
+  // re-emits the user's current tier.
+  function requestTierChange(u, newTier) {
+    const currentTier = resolveTier(u);
+    if (newTier === currentTier) return;
+    // Defense in depth — backend also enforces these:
+    if (newTier < actorTier) {
+      toast.error(`You cannot grant a tier higher than your own (${tierLabel(actorTier)}).`);
+      return;
+    }
+    if (actorTier === TIER_2 && newTier <= TIER_2) {
+      toast.error('Tier 2 may only grant Tier 3 or Tier 4.');
+      return;
+    }
+    setPendingTierChange({ user: u, oldTier: currentTier, newTier });
   }
 
-  async function confirmRoleChange() {
-    if (!pendingRoleChange) return;
-    const { user: target, newRole } = pendingRoleChange;
-    // Guard against double-click / duplicate submits while the request is
-    // in flight. setRoleChanging is the same lock the dropdown disable
-    // uses, so we share the existing UX hook.
-    if (roleChanging === target.id) return;
-    setRoleChanging(target.id);
+  async function confirmTierChange() {
+    if (!pendingTierChange) return;
+    const { user: target, newTier } = pendingTierChange;
+    if (tierChanging === target.id) return;
+    setTierChanging(target.id);
     try {
-      if (newRole === 'superadmin') {
-        await api.put(`/users/${target.id}`, { role: 'admin', isSuperAdmin: true });
-      } else {
-        await api.put(`/users/${target.id}`, { role: newRole, isSuperAdmin: false });
-      }
+      // Send legacy fields derived from the target tier — the server's
+      // userTierSync hook keeps tier in lockstep on save.
+      await api.put(`/users/${target.id}`, legacyFromTier(newTier));
       await fetchUsers();
-      toast.success('Role updated.');
-      setPendingRoleChange(null);
+      toast.success(`${tierLabel(newTier)} assigned.`);
+      setPendingTierChange(null);
     } catch (err) {
       console.error(err);
-      toast.error(err.response?.data?.message || 'Failed to change role');
-      // Refetch so the dropdown reflects the canonical server state in case
-      // the server already partially applied or the local copy is stale.
+      toast.error(err.response?.data?.message || 'Failed to change tier');
       fetchUsers();
-      setPendingRoleChange(null);
+      setPendingTierChange(null);
     } finally {
-      setRoleChanging(null);
+      setTierChanging(null);
       setActionMenu(null);
     }
   }
 
-  function cancelRoleChange() {
-    if (roleChanging) return; // ignore close attempts while submitting
-    setPendingRoleChange(null);
+  function cancelTierChange() {
+    if (tierChanging) return;
+    setPendingTierChange(null);
   }
 
   async function handleDelete(userId, name) {
@@ -191,7 +214,7 @@ function UsersTab() {
   }
 
   const filtered = users.filter(u => {
-    if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+    if (tierFilter !== 'all' && resolveTier(u) !== Number(tierFilter)) return false;
     if (search) {
       const q = search.toLowerCase();
       return u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.designation?.toLowerCase().includes(q);
@@ -199,12 +222,15 @@ function UsersTab() {
     return true;
   });
 
-  const stats = {
-    total: users.length,
-    admin: users.filter(u => u.role === 'admin').length,
-    manager: users.filter(u => u.role === 'manager').length,
-    member: users.filter(u => u.role === 'member').length,
+  // Tier-keyed counts for stat cards and filter sub-tabs.
+  const tierCounts = {
+    [TIER_1]: 0, [TIER_2]: 0, [TIER_3]: 0, [TIER_4]: 0,
   };
+  for (const u of users) {
+    const t = resolveTier(u);
+    if (tierCounts[t] !== undefined) tierCounts[t] += 1;
+  }
+  const stats = { total: users.length, ...tierCounts };
 
   if (loading) return <div className="animate-pulse space-y-3">{[1,2,3].map(i => <div key={i} className="h-16 bg-gray-100 dark:bg-zinc-800 rounded-xl" />)}</div>;
 
@@ -219,13 +245,14 @@ function UsersTab() {
         </button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-3 mb-4">
+      {/* Stats — tier-based, never role-based. */}
+      <div className="grid grid-cols-5 gap-3 mb-4">
         {[
-          { label: 'Total', count: stats.total, color: '#0073ea' },
-          { label: 'Admin', count: stats.admin, color: '#8b5cf6' },
-          { label: 'Manager', count: stats.manager, color: '#0073ea' },
-          { label: 'Member', count: stats.member, color: '#00c875' },
+          { label: 'Total',  count: stats.total,     color: '#0073ea' },
+          { label: 'Tier 1', count: stats[TIER_1],   color: '#dc2626' },
+          { label: 'Tier 2', count: stats[TIER_2],   color: '#8b5cf6' },
+          { label: 'Tier 3', count: stats[TIER_3],   color: '#0891b2' },
+          { label: 'Tier 4', count: stats[TIER_4],   color: '#16a34a' },
         ].map(s => (
           <div key={s.label} className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 px-4 py-3">
             <p className="text-2xl font-bold" style={{ color: s.color }}>{s.count}</p>
@@ -234,14 +261,20 @@ function UsersTab() {
         ))}
       </div>
 
-      {/* Role sub-tabs + Search */}
+      {/* Tier sub-tabs + Search */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-1 bg-gray-100 dark:bg-zinc-800 rounded-lg p-0.5">
-          {['all', 'admin', 'manager', 'member'].map(r => (
-            <button key={r} onClick={() => setRoleFilter(r)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all capitalize ${
-                roleFilter === r ? 'bg-white dark:bg-zinc-700 text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}>{r === 'all' ? `All (${stats.total})` : `${r}s (${stats[r]})`}</button>
+          {[
+            { value: 'all',          label: `All (${stats.total})` },
+            { value: String(TIER_1), label: `Tier 1 (${stats[TIER_1]})` },
+            { value: String(TIER_2), label: `Tier 2 (${stats[TIER_2]})` },
+            { value: String(TIER_3), label: `Tier 3 (${stats[TIER_3]})` },
+            { value: String(TIER_4), label: `Tier 4 (${stats[TIER_4]})` },
+          ].map(opt => (
+            <button key={opt.value} onClick={() => setTierFilter(opt.value)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+                tierFilter === opt.value ? 'bg-white dark:bg-zinc-700 text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}>{opt.label}</button>
           ))}
         </div>
         <div className="relative">
@@ -258,14 +291,24 @@ function UsersTab() {
             <tr className="border-b border-gray-100 dark:border-zinc-700 bg-gray-50/50 dark:bg-zinc-800/50">
               <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">User</th>
               <th className="text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Department</th>
-              <th className="text-center text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Role</th>
+              <th className="text-center text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Tier</th>
               <th className="text-center text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Status</th>
               <th className="text-right text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {filtered.slice(0, visibleCount).map(u => {
-              const badge = u.isSuperAdmin ? ROLE_BADGE.superadmin : (ROLE_BADGE[u.role] || ROLE_BADGE.member);
+              const userTier = resolveTier(u);
+              const badge = TIER_BADGE[userTier] || TIER_BADGE[TIER_4];
+              const canChangeThisUserTier = grantableTiers.length > 0 && u.id !== currentUser?.id;
+              // Build the dropdown options. Always include the user's CURRENT
+              // tier (so the select can render their state) plus every tier
+              // the actor is allowed to grant. Tier 3/4 actors see no options
+              // beyond the read-only current-tier label.
+              const optionTiers = Array.from(new Set([
+                userTier,
+                ...grantableTiers.map(g => g.value),
+              ])).sort((a, b) => a - b);
               return (
                 <tr key={u.id} className="border-b border-gray-50 dark:border-zinc-700/50 hover:bg-gray-50/50 dark:hover:bg-zinc-700/30 transition-colors">
                   <td className="px-4 py-3">
@@ -282,14 +325,12 @@ function UsersTab() {
                     {u.designation && <p className="text-[10px] text-gray-400">{u.designation}</p>}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <select value={u.isSuperAdmin ? 'superadmin' : u.role} onChange={e => requestRoleChange(u, e.target.value)}
-                      disabled={roleChanging === u.id}
-                      className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text}`}>
-                      <option value="member">Member</option>
-                      <option value="assistant_manager">Assistant Manager</option>
-                      <option value="manager">Manager</option>
-                      <option value="admin">Admin</option>
-                      {isSuperAdmin && <option value="superadmin">Super Admin</option>}
+                    <select value={userTier} onChange={e => requestTierChange(u, Number(e.target.value))}
+                      disabled={!canChangeThisUserTier || tierChanging === u.id}
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30 ${badge.bg} ${badge.text} disabled:cursor-not-allowed disabled:opacity-80`}>
+                      {optionTiers.map(t => (
+                        <option key={t} value={t}>{tierLabel(t)}</option>
+                      ))}
                     </select>
                   </td>
                   <td className="px-4 py-3 text-center">
@@ -318,7 +359,8 @@ function UsersTab() {
                             className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-700">
                             {u.isActive ? <><UserX size={12} /> Deactivate</> : <><UserCheck size={12} /> Activate</>}
                           </button>
-                          {!u.isSuperAdmin && (
+                          {/* Tier 1 users cannot be deleted via this UI — server-side last-Tier-1 protection enforces the same rule. */}
+                          {resolveTier(u) !== TIER_1 && actorTier === TIER_1 && (
                             <button onClick={() => { handleDelete(u.id, u.name); setActionMenu(null); }}
                               className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20">
                               <Trash2 size={12} /> Delete User
@@ -362,27 +404,27 @@ function UsersTab() {
           onToast={({ type, message }) => (toast[type] || toast.info)(message)}
         />
       )}
-      <RoleChangeConfirmModal
-        pending={pendingRoleChange}
-        isSubmitting={!!pendingRoleChange && roleChanging === pendingRoleChange.user.id}
-        onCancel={cancelRoleChange}
-        onConfirm={confirmRoleChange}
+      <TierChangeConfirmModal
+        pending={pendingTierChange}
+        isSubmitting={!!pendingTierChange && tierChanging === pendingTierChange.user.id}
+        onCancel={cancelTierChange}
+        onConfirm={confirmTierChange}
       />
     </div>
   );
 }
 
-function RoleChangeConfirmModal({ pending, isSubmitting, onCancel, onConfirm }) {
+function TierChangeConfirmModal({ pending, isSubmitting, onCancel, onConfirm }) {
   if (!pending) return null;
-  const { user, oldRole, newRole } = pending;
-  const oldBadge = ROLE_BADGE[oldRole] || ROLE_BADGE.member;
-  const newBadge = ROLE_BADGE[newRole] || ROLE_BADGE.member;
+  const { user, oldTier, newTier } = pending;
+  const oldBadge = TIER_BADGE[oldTier] || TIER_BADGE[TIER_4];
+  const newBadge = TIER_BADGE[newTier] || TIER_BADGE[TIER_4];
 
   return (
     <Modal
       isOpen={!!pending}
       onClose={onCancel}
-      title="Confirm Role Change"
+      title="Confirm Tier Change"
       size="sm"
       footer={
         <>
@@ -420,14 +462,14 @@ function RoleChangeConfirmModal({ pending, isSubmitting, onCancel, onConfirm }) 
             <div className="flex flex-col">
               <span className="text-[10px] uppercase tracking-wider text-gray-400">Current</span>
               <span className={`mt-1 inline-flex items-center self-start text-[11px] font-semibold px-2 py-0.5 rounded-full ${oldBadge.bg} ${oldBadge.text}`}>
-                {oldBadge.label}
+                {tierLabel(oldTier)}
               </span>
             </div>
             <ChevronRight size={16} className="text-gray-400 shrink-0" />
             <div className="flex flex-col">
               <span className="text-[10px] uppercase tracking-wider text-gray-400">New</span>
               <span className={`mt-1 inline-flex items-center self-start text-[11px] font-semibold px-2 py-0.5 rounded-full ${newBadge.bg} ${newBadge.text}`}>
-                {newBadge.label}
+                {tierLabel(newTier)}
               </span>
             </div>
           </div>
@@ -436,7 +478,7 @@ function RoleChangeConfirmModal({ pending, isSubmitting, onCancel, onConfirm }) 
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
           <AlertCircle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
           <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
-            This will change the user's permissions and access level immediately.
+            This will change the user's tier-based permissions immediately.
             They may gain or lose the ability to manage boards, users, or sensitive settings.
           </p>
         </div>
@@ -619,7 +661,7 @@ function WorkspacesTab() {
                           className="text-xs border border-gray-200 dark:border-zinc-600 rounded-md px-2 py-1.5 flex-1 focus:outline-none focus:border-primary">
                           <option value="">Select user to add...</option>
                           {allUsers.filter(u => !(ws.workspaceMembers || []).find(m => m.id === u.id)).map(u => (
-                            <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                            <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>
                           ))}
                         </select>
                         <button onClick={() => handleAssignMembers(ws.id)} className="px-3 py-1.5 bg-primary text-white text-xs rounded-md hover:bg-primary/90">
@@ -1043,22 +1085,25 @@ function PermissionsTab() {
               <select value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary dark:bg-zinc-700 dark:text-gray-200">
                 <option value="">Select user...</option>
-                {users.map(u => {
-                  const badge = u.isSuperAdmin ? 'Super Admin' : (ROLE_BADGE[u.role]?.label || u.role);
-                  return <option key={u.id} value={u.id}>{u.name} ({badge})</option>;
-                })}
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>
+                ))}
               </select>
-              {selectedUser && (
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">{selectedUser.name?.charAt(0)}</div>
-                  <div>
-                    <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{selectedUser.name}</span>
-                    <span className={`ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full ${(ROLE_BADGE[selectedUser.isSuperAdmin ? 'superadmin' : selectedUser.role] || ROLE_BADGE.member).bg} ${(ROLE_BADGE[selectedUser.isSuperAdmin ? 'superadmin' : selectedUser.role] || ROLE_BADGE.member).text}`}>
-                      {selectedUser.isSuperAdmin ? 'Super Admin' : (ROLE_BADGE[selectedUser.role]?.label || selectedUser.role)}
-                    </span>
+              {selectedUser && (() => {
+                const selUserTier = resolveTier(selectedUser);
+                const selBadge = TIER_BADGE[selUserTier] || TIER_BADGE[TIER_4];
+                return (
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">{selectedUser.name?.charAt(0)}</div>
+                    <div>
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{selectedUser.name}</span>
+                      <span className={`ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full ${selBadge.bg} ${selBadge.text}`}>
+                        {tierLabel(selUserTier)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Row 2: Multi-select Resource + Multi-select Action */}
@@ -1188,7 +1233,7 @@ function PermissionsTab() {
           <select value={effectiveUser} onChange={e => setEffectiveUser(e.target.value)}
             className="text-xs border border-gray-200 dark:border-zinc-600 rounded-md px-2 py-1.5 flex-1 focus:outline-none focus:border-primary dark:bg-zinc-700 dark:text-gray-200">
             <option value="">Select user to preview...</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.isSuperAdmin ? 'Super Admin' : u.role})</option>)}
+            {users.map(u => <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>)}
           </select>
           <button onClick={fetchEffective} disabled={!effectiveUser || effectiveLoading}
             className="px-3 py-1.5 bg-primary/10 text-primary text-xs rounded-md hover:bg-primary/20 font-medium disabled:opacity-40">
@@ -1202,18 +1247,21 @@ function PermissionsTab() {
           )}
         </div>
 
-        {effectiveData && (
+        {effectiveData && (() => {
+          const effTier = resolveTier(effectiveData);
+          const effBadge = TIER_BADGE[effTier] || TIER_BADGE[TIER_4];
+          return (
           <div className="space-y-3">
-            {/* Role info */}
+            {/* Tier info */}
             <div className="flex items-center gap-3 p-3 bg-white dark:bg-zinc-800 rounded-lg border border-gray-100 dark:border-zinc-700">
               <div>
-                <span className="text-xs text-gray-500">Base Role: </span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${(ROLE_BADGE[effectiveData.role] || ROLE_BADGE.member).bg} ${(ROLE_BADGE[effectiveData.role] || ROLE_BADGE.member).text}`}>
-                  {effectiveData.role}
+                <span className="text-xs text-gray-500">Base Tier: </span>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${effBadge.bg} ${effBadge.text}`}>
+                  {tierLabel(effTier)}
                 </span>
               </div>
-              {effectiveData.isSuperAdmin && (
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">Super Admin — Full Access</span>
+              {effTier === TIER_1 && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">Tier 1 — Full Access</span>
               )}
               {effectiveData.overrides?.length > 0 && (
                 <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
@@ -1227,8 +1275,8 @@ function PermissionsTab() {
               )}
             </div>
 
-            {/* Permissions by resource */}
-            {effectiveData.permissions && !effectiveData.isSuperAdmin && (
+            {/* Permissions by resource — Tier 1 sees no per-resource matrix; full access is implied. */}
+            {effectiveData.permissions && effTier !== TIER_1 && (
               <div className="p-3 bg-white dark:bg-zinc-800 rounded-lg border border-gray-100 dark:border-zinc-700">
                 <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Effective Permissions by Module</p>
                 <div className="space-y-2 max-h-80 overflow-y-auto">
@@ -1289,7 +1337,8 @@ function PermissionsTab() {
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Permission History Modal */}
@@ -1372,7 +1421,7 @@ function PermissionsTab() {
                       </div>
                       <div>
                         <p className="text-xs font-medium text-gray-800 dark:text-gray-200">{p.user?.name}</p>
-                        <p className="text-[10px] text-gray-500">{p.user?.isSuperAdmin ? 'Super Admin' : p.user?.role}</p>
+                        <p className="text-[10px] text-gray-500">{p.user ? tierLabel(resolveTier(p.user)) : ''}</p>
                       </div>
                     </div>
                   </td>
@@ -1608,7 +1657,7 @@ function TemplatesTab() {
             <select value={selectedUser} onChange={e => setSelectedUser(e.target.value)}
               className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary">
               <option value="">Select user...</option>
-              {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+              {users.map(u => <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>)}
             </select>
           </div>
           <div className="flex-1">

@@ -3,18 +3,28 @@ import Modal from '../common/Modal';
 import Avatar from '../common/Avatar';
 import DepartmentSelect from '../common/DepartmentSelect';
 import api from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
+import {
+  TIER_1, TIER_2, TIER_3, TIER_4,
+  resolveTier, tierLabel, tiersGrantableBy,
+} from '../../utils/tiers';
 
-const ROLES = [
-  { value: 'member', label: 'Member' },
-  { value: 'assistant_manager', label: 'Assistant Manager' },
-  { value: 'manager', label: 'Manager' },
-  { value: 'admin', label: 'Admin' },
-];
+// Map a tier value to the legacy (role, isSuperAdmin) pair the API still
+// accepts during the compatibility window. The User-model `beforeSave` hook
+// keeps tier and legacy fields in lockstep on the server side.
+function legacyFromTier(tier) {
+  switch (tier) {
+    case TIER_1: return { role: 'admin', isSuperAdmin: true };
+    case TIER_2: return { role: 'admin', isSuperAdmin: false };
+    case TIER_3: return { role: 'assistant_manager', isSuperAdmin: false };
+    case TIER_4: return { role: 'member', isSuperAdmin: false };
+    default:     return { role: 'member', isSuperAdmin: false };
+  }
+}
 
-// Build the payload that the PUT /users/:id endpoint accepts. Sending only
-// the diff keeps the audit log meaningful and avoids triggering hierarchy
-// re-balancing logic on no-op fields. hierarchyLevel is intentionally
-// excluded — this dialog must never mutate it (managed elsewhere).
+// Build the diff to PUT /users/:id. Sending only the diff keeps the audit
+// log meaningful and avoids triggering hierarchy re-balancing on no-op fields.
+// hierarchyLevel is intentionally excluded — managed elsewhere.
 function buildDiff(form, user) {
   const diff = {};
   const trimOrNull = v => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -23,7 +33,11 @@ function buildDiff(form, user) {
   if ((user.email || '').toLowerCase() !== form.email.trim().toLowerCase()) {
     diff.email = form.email.trim();
   }
-  if ((user.role || 'member') !== form.role) diff.role = form.role;
+  // Tier change → translate to (role, isSuperAdmin) for the compat API.
+  const currentTier = resolveTier(user);
+  if (form.tier !== currentTier) {
+    Object.assign(diff, legacyFromTier(form.tier));
+  }
   if ((user.department || '') !== (form.department || '')) {
     diff.department = trimOrNull(form.department);
   }
@@ -33,13 +47,13 @@ function buildDiff(form, user) {
   if (Boolean(user.isActive) !== Boolean(form.isActive)) {
     diff.isActive = Boolean(form.isActive);
   }
-  delete diff.hierarchyLevel;
   return diff;
 }
 
 export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmin, onToast }) {
+  const { user: actor } = useAuth();
   const [form, setForm] = useState({
-    name: '', email: '', role: 'member', department: '', designation: '',
+    name: '', email: '', tier: TIER_4, department: '', designation: '',
     isActive: true,
   });
   const [departmentMode, setDepartmentMode] = useState('empty');
@@ -51,7 +65,7 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
       setForm({
         name: user.name || '',
         email: user.email || '',
-        role: user.role || 'member',
+        tier: resolveTier(user),
         department: user.department || '',
         designation: user.designation || '',
         isActive: user.isActive !== false,
@@ -60,12 +74,22 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
     }
   }, [user]);
 
-  // Members of the modal can never see the role/status/hierarchy controls
-  // for someone they do not have authority over — that decision is also
-  // enforced server-side, but keeping the UI clean prevents misleading
-  // form interactions for managers.
+  // Privileged actors (Tier 1 / Tier 2) can change the tier/status/email of
+  // a target. Lower tiers see only the safe-profile slice — server enforces
+  // the same.
   const canEditPrivileged = !!isAdmin;
-  const isSuperAdminTarget = !!user?.isSuperAdmin;
+
+  // Build the tier dropdown. Always include the user's CURRENT tier (so the
+  // form can render their state) plus every tier the actor is allowed to
+  // grant. Tier 3/4 actors get only the read-only current-tier label.
+  const grantable = tiersGrantableBy(actor);
+  const currentTier = resolveTier(user);
+  const tierOptions = Array.from(new Set([
+    currentTier,
+    ...grantable.map(g => g.value),
+  ]))
+    .sort((a, b) => a - b)
+    .map(t => ({ value: t, label: tierLabel(t) }));
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -109,6 +133,8 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
 
   if (!user) return null;
 
+  const targetTier = resolveTier(user);
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Edit User" size="md">
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -119,11 +145,14 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
             <p className="text-sm font-semibold text-text-primary truncate">{user.name}</p>
             <p className="text-xs text-text-tertiary truncate">{user.email}</p>
           </div>
-          {isSuperAdminTarget && (
-            <span className="ml-auto text-[10px] uppercase tracking-wider px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-semibold">
-              Super Admin
-            </span>
-          )}
+          <span className={`ml-auto text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full font-semibold ${
+            targetTier === TIER_1 ? 'bg-red-50 text-red-700' :
+            targetTier === TIER_2 ? 'bg-purple-50 text-purple-700' :
+            targetTier === TIER_3 ? 'bg-cyan-50 text-cyan-700' :
+                                    'bg-green-50 text-green-700'
+          }`}>
+            {tierLabel(targetTier)}
+          </span>
         </div>
 
         {error && (
@@ -149,22 +178,25 @@ export default function EditUserModal({ isOpen, onClose, user, onUpdated, isAdmi
             disabled={!canEditPrivileged}
             className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white disabled:opacity-50 disabled:cursor-not-allowed"
           />
-          {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only admins can change emails</p>}
+          {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only Tier 1 / Tier 2 can change emails</p>}
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-text-secondary mb-1">Role</label>
+          <label className="block text-sm font-medium text-text-secondary mb-1">Tier</label>
           <select
-            value={form.role}
-            onChange={e => setForm({ ...form, role: e.target.value })}
-            disabled={!canEditPrivileged}
+            value={form.tier}
+            onChange={e => setForm({ ...form, tier: Number(e.target.value) })}
+            disabled={!canEditPrivileged || tierOptions.length <= 1}
             className="w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {ROLES.map(r => (
-              <option key={r.value} value={r.value}>{r.label}</option>
+            {tierOptions.map(t => (
+              <option key={t.value} value={t.value}>{t.label}</option>
             ))}
           </select>
-          {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only admins can change roles</p>}
+          {!canEditPrivileged && <p className="text-xs text-text-tertiary mt-1">Only Tier 1 / Tier 2 can change tiers</p>}
+          {canEditPrivileged && tierOptions.length <= 1 && (
+            <p className="text-xs text-text-tertiary mt-1">No higher tier is grantable from your tier.</p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">

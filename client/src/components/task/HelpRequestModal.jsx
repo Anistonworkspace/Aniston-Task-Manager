@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { HelpCircle, X, Send, AlertCircle, Clock, Video, Check } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 const URGENCY_CONFIG = {
   low: { label: 'Low', color: '#579bfc' },
@@ -112,7 +113,7 @@ export default function HelpRequestModal({ task, onClose }) {
                 className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary">
                 <option value="">Select person...</option>
                 {users.map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.role}{u.designation ? ` - ${u.designation}` : ''})</option>
+                  <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))}{u.designation ? ` - ${u.designation}` : ''})</option>
                 ))}
               </select>
             </div>

@@ -1,20 +1,20 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
 import RoleDashboard from '../components/dashboard/RoleDashboard';
+import { resolveTier, tierLabel, hasTierAtLeast, TIER_3 } from '../utils/tiers';
 
 export default function MemberDashboardPage() {
-  const { isSuperAdmin, isAssistantManager, isAdmin, isManager } = useAuth();
+  const { user } = useAuth();
 
-  // SuperAdmin and Assistant Manager see all tasks with person filter
-  // Admin and Manager also see all tasks with person filter
-  // Regular members see only their own tasks
-  const canSeeAll = isSuperAdmin || isAssistantManager || isAdmin || isManager;
+  // Tier 1/Tier 2/Tier 3 actors see all tasks with the person filter; Tier 4
+  // sees only their own. (Was: SuperAdmin/Asst Mgr/Admin/Manager fan-in.)
+  const canSeeAll = hasTierAtLeast(user, TIER_3);
 
   return (
     <RoleDashboard
       scope={canSeeAll ? 'admin' : 'member'}
       title="My Dashboard"
-      subtitle={isSuperAdmin ? 'Super Admin' : isAssistantManager ? 'Assistant Manager' : isAdmin ? 'Admin' : isManager ? 'Manager' : 'Member'}
+      subtitle={tierLabel(resolveTier(user))}
       showPersonFilter={canSeeAll}
       showUnassigned={canSeeAll}
     />

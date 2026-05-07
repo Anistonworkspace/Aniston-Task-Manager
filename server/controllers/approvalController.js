@@ -187,6 +187,27 @@ exports.submitForApproval = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found.' });
     }
 
+    // Phase 7 — Visibility gate. Anyone with the task id used to be able to
+    // submit it for approval (audit P1-8) — that overwrote the approval
+    // chain and forced the task to status='waiting_for_review'/progress=100.
+    // Tier 1/2 retain unrestricted access; Tier 3/4 must have task
+    // visibility before they can submit.
+    {
+      const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+      if (!hasTierAtLeast(req.user, TIER_2)) {
+        const taskVisibility = require('../services/taskVisibilityService');
+        const canView = await taskVisibility.canViewTask(req.user, task);
+        if (!canView) {
+          await t.rollback();
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have access to this task.',
+            code: 'TASK_NOT_VISIBLE',
+          });
+        }
+      }
+    }
+
     // Idempotency guard: if already pending and not in changes_requested/rejected
     // state, refuse rather than silently rebuilding.
     if (task.approvalStatus === 'pending_approval') {

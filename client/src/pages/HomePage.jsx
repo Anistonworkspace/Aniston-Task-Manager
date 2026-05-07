@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Clock, ArrowRight, ArrowDownRight, ArrowUpRight, FolderKanban, Bell, BellOff,
-  ListTodo, CheckCircle2, AlertTriangle, TrendingUp, Users, Target,
+  ListTodo, CheckCircle2, AlertTriangle, TrendingUp, Target,
   Flame, Info,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -18,10 +18,10 @@ import StatTile, { CountUp } from '../components/home/StatTile';
 import Sparkline from '../components/home/Sparkline';
 import RingChart from '../components/home/RingChart';
 import MiniBars from '../components/home/MiniBars';
-import AvatarStack from '../components/home/AvatarStack';
 import EmptyState from '../components/home/EmptyState';
 import RecentBoardCard from '../components/home/RecentBoardCard';
 import WaveHand from '../components/home/WaveHand';
+import UpdatesModal from '../components/home/UpdatesModal';
 
 // ── Tile primitives ────────────────────────────────────────────────────
 function TileLabel({ children }) {
@@ -32,20 +32,18 @@ function TileLabel({ children }) {
   );
 }
 
-function TileIconChip({ icon: Icon, color, pulse = false }) {
+// Static icon chip. The earlier `pulse` prop animated a dot for non-zero
+// alert states; that motion was removed because the same information is
+// already conveyed by the (red) numeric value, and the loop drew the eye
+// every time the page was visible.
+function TileIconChip({ icon: Icon, color }) {
   return (
     <span
-      className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 relative"
+      className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
       style={{ backgroundColor: `${color}14` }}
       aria-hidden="true"
     >
       <Icon size={16} style={{ color }} strokeWidth={1.9} />
-      {pulse && (
-        <span
-          className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full animate-ping"
-          style={{ backgroundColor: color, opacity: 0.6 }}
-        />
-      )}
     </span>
   );
 }
@@ -60,6 +58,7 @@ export default function HomePage() {
   const [myTasks, setMyTasks] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -83,9 +82,19 @@ export default function HomePage() {
   }
   async function loadNotifications() {
     try {
-      const res = await api.get('/notifications');
-      setNotifications((res.data.notifications || res.data || []).slice(0, 5));
+      // Fetch up to 50 so the Updates modal has the full list to render. The
+      // preview tile still only renders the first 3 — the rest are revealed
+      // when the user opens the modal. Single source of truth, no double fetch.
+      const res = await api.get('/notifications?limit=50');
+      setNotifications(res.data.notifications || res.data || []);
     } catch { toastError('Failed to load notifications'); }
+  }
+  async function markNotificationRead(id) {
+    // Local-first: flip the flag immediately so the badge/dot updates without
+    // waiting for the server. The error swallow is intentional — realtime
+    // will reconcile on the next event if the request fails.
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
+    try { await api.put(`/notifications/${id}/read`); } catch { /* reconcile via realtime */ }
   }
   async function loadMyTasks() {
     try {
@@ -108,6 +117,8 @@ export default function HomePage() {
     return 'Good evening';
   })();
 
+  const unreadCount = notifications.filter(n => !n.isRead).length;
+
   const overdueTasks = myTasks.filter(
     t => t.dueDate && new Date(t.dueDate) < new Date() && t.status !== 'done'
   );
@@ -123,27 +134,47 @@ export default function HomePage() {
     t => t.status === 'working_on_it' || t.status === 'in_progress'
   );
 
-  // Managers see team-wide values; members see their own derived values so
-  // every tile still has data to render.
-  const teamTotal = canManage && stats ? (stats.totalTasks || 0) : myTasks.length;
+  // ── Stats-endpoint adapters ─────────────────────────────────────────
+  // GET /dashboard/stats actually returns:
+  //   { summary: { totalTasks, done, working, stuck, notStarted, overdue },
+  //     statusCounts: { not_started, working_on_it, stuck, done, ... }, ... }
+  // Read those exact keys instead of the legacy `stats.totalTasks` /
+  // `stats.statusBreakdown.*` paths, which never existed and silently
+  // collapsed every team-scoped tile to 0. completionRate is also not on
+  // the response — derive it from summary.done / summary.totalTasks.
+  const summary = stats?.summary;
+  const statusCounts = stats?.statusCounts || {};
+
+  const teamTotal = canManage && summary ? (summary.totalTasks || 0) : myTasks.length;
   const teamInProgress = canManage && stats
-    ? (stats.statusBreakdown?.working_on_it || stats.statusBreakdown?.in_progress || 0)
+    ? (statusCounts.working_on_it || statusCounts.in_progress || summary?.working || 0)
     : inProgressPersonal.length;
   const teamStuck = canManage && stats
-    ? (stats.statusBreakdown?.stuck || 0)
+    ? (statusCounts.stuck || summary?.stuck || 0)
     : myTasks.filter(t => t.status === 'stuck').length;
+
   const personalCompletionRate = myTasks.length === 0
     ? 0
     : Math.round((completedTasks.length / myTasks.length) * 100);
-  const completionRate = canManage && stats
-    ? (typeof stats.completionRate === 'object'
-        ? (stats.completionRate?.current ?? 0)
-        : (stats.completionRate || 0))
-    : personalCompletionRate;
+
+  const teamCompletionRate = (() => {
+    if (!summary) return 0;
+    // Forward-compat: handle the proposed { current, previous, delta } shape
+    // documented in TODO_BACKEND.md without breaking the current numeric/derived path.
+    if (typeof stats.completionRate === 'object' && stats.completionRate) {
+      return stats.completionRate.current ?? 0;
+    }
+    if (typeof stats.completionRate === 'number') return stats.completionRate;
+    const total = summary.totalTasks || 0;
+    const done = summary.done || 0;
+    return total > 0 ? Math.round((done / total) * 100) : 0;
+  })();
+  const completionRate = canManage ? teamCompletionRate : personalCompletionRate;
 
   // Week-over-week delta. Only render the trend chip when the backend
-  // returns a real number — never fabricate one. See TODO_BACKEND.md for
-  // the proposed shape: stats.completionRate = { current, previous, delta }.
+  // returns a real number — never fabricate one. The current endpoint does
+  // not surface this; the chip stays hidden until /dashboard/stats ships
+  // the proposed { current, previous, delta } shape.
   const completionDelta = canManage && stats && typeof stats.completionRate === 'object'
     ? (typeof stats.completionRate.delta === 'number' ? stats.completionRate.delta : null)
     : null;
@@ -155,14 +186,6 @@ export default function HomePage() {
     month: 'short',
     day: 'numeric',
   });
-
-  const subtitle = overdueTasks.length > 0
-    ? `You have ${overdueTasks.length} overdue task${overdueTasks.length > 1 ? 's' : ''} that need attention`
-    : todayTasks.length > 0
-      ? `${todayTasks.length} task${todayTasks.length > 1 ? 's' : ''} due today`
-      : pendingTasks.length > 0
-        ? `${pendingTasks.length} task${pendingTasks.length > 1 ? 's' : ''} in progress`
-        : "You're all caught up. Great work.";
 
   if (loading) {
     return (
@@ -187,20 +210,19 @@ export default function HomePage() {
         initial="initial"
         animate="animate"
       >
-        {/* ─── Row 1: Hero greeting strip ────────────────────────────── */}
+        {/* ─── Row 1: Compact greeting strip ─────────────────────────── */}
         <motion.section
           {...fadeInUp}
-          className="col-span-1 sm:col-span-6 lg:col-span-12 relative overflow-hidden rounded-2xl px-5 py-5 sm:px-7 sm:py-6"
+          className="col-span-1 sm:col-span-6 lg:col-span-12 relative overflow-hidden rounded-lg px-3.5 py-1.5 sm:px-4 sm:py-2"
           style={{
             background:
-              'radial-gradient(ellipse at top right, rgba(79, 70, 229, 0.07), transparent 60%)',
+              'radial-gradient(ellipse at top right, rgba(79, 70, 229, 0.06), transparent 60%)',
           }}
         >
-          <h1 className="text-2xl sm:text-3xl font-semibold text-text-primary mb-1 flex items-center gap-2">
+          <h1 className="font-neu-machina text-base sm:text-lg font-semibold text-text-primary flex items-center gap-2 leading-tight tracking-tight">
             {greeting}, {user?.name?.split(' ')[0]}{' '}
             <WaveHand />
           </h1>
-          <p className="text-sm text-text-secondary">{subtitle}</p>
         </motion.section>
 
         {/* ─── Row 2: Completion Rate hero (col-6, row-2) + 4 KPI ───── */}
@@ -306,10 +328,7 @@ export default function HomePage() {
           </p>
           <div className="flex items-center gap-1.5 mt-1.5">
             {overdueTasks.length === 0 && (
-              <span className="relative flex w-2 h-2">
-                <span className="absolute inline-flex w-full h-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
-                <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-500" />
-              </span>
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
             )}
             <p className="text-[11px] text-text-tertiary">
               {overdueTasks.length > 0 ? 'Needs attention' : 'All on track'}
@@ -333,8 +352,12 @@ export default function HomePage() {
           <div className="w-full h-1 rounded-full bg-surface-100 dark:bg-surface-200" />
         </StatTile>
 
-        {/* ─── Row 3: Slim KPI tiles + Updates ──────────────────────── */}
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
+        {/* ─── Row 3: Total Tasks + Stuck/Blocked + Updates (col-4 each)
+            "Team Tasks / Tasks Around You" was removed per UX review — its
+            data was a duplicate of stats already surfaced elsewhere on the
+            page (Team Completion Rate uses summary.totalTasks directly), so
+            the tile was carrying weight without earning its space. ─── */}
+        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               <TileIconChip icon={ListTodo} color="#4f46e5" />
@@ -344,38 +367,15 @@ export default function HomePage() {
               </div>
             </div>
             <p className="text-2xl font-semibold tabular-nums text-text-primary">
-              <CountUp value={myTasks.length} />
+              {myTasks.length}
             </p>
-          </div>
-          <div className="mt-2 -mx-1">
-            <Sparkline empty color="#4f46e5" height={18} fill={false} />
           </div>
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
+        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
-              <TileIconChip icon={Users} color="#14b8a6" />
-              <div className="min-w-0">
-                <TileLabel>{canManage ? 'Team Tasks' : 'Tasks Around You'}</TileLabel>
-                <p className="text-[10px] text-text-tertiary truncate">
-                  {canManage ? 'Total assigned' : 'Across your boards'}
-                </p>
-              </div>
-            </div>
-            <p className="text-2xl font-semibold tabular-nums text-text-primary">
-              <CountUp value={teamTotal} />
-            </p>
-          </div>
-          <div className="mt-2.5">
-            <AvatarStack empty max={3} size="sm" />
-          </div>
-        </StatTile>
-
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <TileIconChip icon={Flame} color="#f43f5e" pulse={teamStuck > 0} />
+              <TileIconChip icon={Flame} color="#f43f5e" />
               <div className="min-w-0">
                 <TileLabel>Stuck / Blocked</TileLabel>
                 <p className="text-[10px] text-text-tertiary truncate">
@@ -388,51 +388,53 @@ export default function HomePage() {
                 teamStuck > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-text-tertiary'
               }`}
             >
-              <CountUp value={teamStuck} />
+              {teamStuck}
             </p>
           </div>
         </StatTile>
 
-        {/* Updates tile — col-3 row-span-2 on lg so it spans rows 3+4 on the
-            right; full-width on mobile with a min-height so the empty state
-            doesn't look squashed. */}
+        {/* Updates tile — col-4 single-row at lg, full-width on mobile.
+            Click anywhere on the tile (or the explicit "View all" link)
+            opens the UpdatesModal. The previous onClick used to navigate
+            to a non-existent /notifications route, which is why clicks
+            silently did nothing. */}
         <StatTile
-          className="col-span-1 sm:col-span-3 lg:col-span-3 lg:row-span-2 flex flex-col min-h-[200px]"
-          onClick={() => navigate('/notifications')}
-          ariaLabel="Updates"
+          className="col-span-1 sm:col-span-3 lg:col-span-4 flex flex-col min-h-[160px]"
+          onClick={() => setUpdatesOpen(true)}
+          ariaLabel="Open updates"
         >
           <div className="flex items-start justify-between mb-2">
             <div className="flex items-center gap-2">
               <TileLabel>Updates</TileLabel>
-              {notifications.filter(n => !n.isRead).length > 0 && (
+              {unreadCount > 0 && (
                 <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-primary-100 text-primary-700 text-[10px] font-bold min-w-[18px]">
-                  {notifications.filter(n => !n.isRead).length}
+                  {unreadCount}
                 </span>
               )}
             </div>
             <TileIconChip icon={Bell} color="#0ea5e9" />
           </div>
           {notifications.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-6">
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-4">
               <BellOff
-                size={48}
+                size={36}
                 strokeWidth={1.4}
-                className="text-text-tertiary mb-3"
+                className="text-text-tertiary mb-2"
                 aria-hidden="true"
               />
               <p className="text-sm font-semibold text-text-primary">No updates</p>
-              <p className="text-xs text-text-secondary mt-1">You're all caught up</p>
+              <p className="text-xs text-text-secondary mt-0.5">You're all caught up</p>
             </div>
           ) : (
             <div className="flex-1 flex flex-col">
-              <div className="space-y-2 flex-1">
-                {notifications.slice(0, 4).map(n => (
+              <div className="space-y-1.5 flex-1">
+                {notifications.slice(0, 3).map(n => (
                   <p
                     key={n.id}
-                    className="text-[11px] text-text-secondary line-clamp-2 leading-snug"
+                    className="text-[11px] text-text-secondary line-clamp-1 leading-snug"
                   >
                     <span
-                      className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${
+                      className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${
                         n.isRead ? 'bg-transparent' : 'bg-primary-500'
                       }`}
                     />
@@ -440,16 +442,20 @@ export default function HomePage() {
                   </p>
                 ))}
               </div>
-              <p className="text-[11px] text-primary-600 font-semibold pt-2">
-                View all {notifications.length} →
-              </p>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setUpdatesOpen(true); }}
+                className="text-[11px] text-primary-600 hover:text-primary-700 font-semibold pt-2 self-start"
+              >
+                View all {notifications.length} updates →
+              </button>
             </div>
           )}
         </StatTile>
 
-        {/* ─── Row 4: My Tasks (col-6) + Recent (col-3) ─────────────── */}
+        {/* ─── Row 4: My Tasks (col-8) + Recent (col-4) ─────────────── */}
         <StatTile
-          className="col-span-1 sm:col-span-6 lg:col-span-6 lg:row-span-2 flex flex-col min-h-[320px]"
+          className="col-span-1 sm:col-span-6 lg:col-span-8 flex flex-col min-h-[320px]"
         >
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-md font-semibold text-text-primary flex items-center gap-2">
@@ -572,7 +578,7 @@ export default function HomePage() {
           )}
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-6 lg:col-span-3 lg:row-span-2 flex flex-col">
+        <StatTile className="col-span-1 sm:col-span-6 lg:col-span-4 flex flex-col">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-md font-semibold text-text-primary flex items-center gap-2">
               <Clock size={15} strokeWidth={1.9} /> Recent
@@ -609,6 +615,14 @@ export default function HomePage() {
           </motion.div>
         </StatTile>
       </motion.div>
+
+      <UpdatesModal
+        isOpen={updatesOpen}
+        onClose={() => setUpdatesOpen(false)}
+        notifications={notifications}
+        unreadCount={unreadCount}
+        onMarkRead={markNotificationRead}
+      />
     </div>
   );
 }

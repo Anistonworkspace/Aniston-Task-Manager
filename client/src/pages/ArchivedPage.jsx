@@ -46,7 +46,7 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
           <p className="text-sm font-semibold text-gray-800 mb-3">"{item?.name || item?.title || item?.task?.title || 'Item'}"</p>
           {!canDelete && (
             <p className="text-xs text-orange-600 font-medium bg-orange-50 rounded-lg px-3 py-2 mb-3">
-              This item is still within the 90-day protection period. Only Super Admin can delete it.
+              This item is still within the 90-day protection period. Only Tier 1 can delete it.
             </p>
           )}
           <p className="text-xs text-red-500 font-medium bg-red-50 rounded-lg px-3 py-2 mb-5">

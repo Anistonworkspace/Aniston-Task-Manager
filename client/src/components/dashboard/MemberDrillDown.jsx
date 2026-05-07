@@ -5,6 +5,7 @@ import api from '../../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
 import Avatar from '../common/Avatar';
 import DetailModalShell from '../common/DetailModalShell';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function MemberDrillDown({ userId, boardId, onClose }) {
   const navigate = useNavigate();
@@ -105,7 +106,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
             <div className="min-w-0 flex-1">
               <h2 id={memberTitleId} className="text-base font-bold text-text-primary leading-tight truncate">{member.name}</h2>
               <p className="text-[11px] text-text-tertiary leading-tight truncate">
-                {member.designation || member.role}{member.department ? ` · ${member.department}` : ''}{member.email ? ` · ${member.email}` : ''}
+                {member.designation || tierLabel(resolveTier(member))}{member.department ? ` · ${member.department}` : ''}{member.email ? ` · ${member.email}` : ''}
               </p>
             </div>
             <button onClick={handleClose} aria-label="Close member details" className="p-1.5 rounded-md hover:bg-surface text-text-secondary flex-shrink-0"><X size={18} /></button>

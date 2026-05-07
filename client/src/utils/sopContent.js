@@ -219,10 +219,10 @@ const ADMIN_SECTIONS = [
     icon: Shield,
     steps: [
       { title: 'Open Admin Settings', description: 'Click "Admin Settings" in sidebar > Users tab.' },
-      { title: 'Create User', description: 'Click "+ Create User" > fill Name, Email, Password, Role, Department.' },
-      { title: 'Change Role', description: 'Click Role dropdown on any user > select: Member, Assistant Manager, Manager, Admin.' },
+      { title: 'Create User', description: 'Click "+ Create User" > fill Name, Email, Password, Tier, Department.' },
+      { title: 'Change Tier', description: 'Click the Tier dropdown on any user > select: Tier 1, Tier 2, Tier 3, or Tier 4. Confirmation dialog gates the change.' },
       { title: 'Reset Password', description: 'Click "..." > Reset Password > set temporary password.' },
-      { title: 'Deactivate/Delete', description: 'Click "..." > Deactivate (can\'t login) or Delete (permanent).' },
+      { title: 'Deactivate/Delete', description: 'Click "..." > Deactivate (can\'t login) or Delete (Tier 1 only, permanent).' },
     ],
   },
   {
@@ -250,34 +250,74 @@ const ADMIN_SECTIONS = [
       { title: 'Open Archive', description: 'Click "Archive" in sidebar.' },
       { title: 'Browse Tabs', description: '5 tabs: Tasks, Boards, Workspaces, Dependencies, Help Requests.' },
       { title: 'Restore Items', description: 'Click "Restore" to bring archived items back.' },
-      { title: '90-Day Protection', description: 'Items cannot be permanently deleted for 90 days. Super Admin can bypass this rule.' },
+      { title: '90-Day Protection', description: 'Items cannot be permanently deleted for 90 days. Tier 1 can bypass this rule.' },
     ],
   },
 ];
 
 // ─── EXPORT ─────────────────────────────────────────────────
+//
+// Tier-keyed guides. Old role-name keys are retained as compatibility aliases
+// so any non-tier code path that still passes 'admin'/'manager'/etc. keeps
+// working, but every TITLE and SUBTITLE rendered to users is tier-based.
 export const SOP_CONTENT = {
+  // Canonical tier keys. These are what `sopForTier` returns.
+  tier4: {
+    title: 'Tier 4 Guide',
+    subtitle: 'Your complete guide to working as a contributor.',
+    sections: MEMBER_SECTIONS,
+  },
+  tier3: {
+    title: 'Tier 3 Guide',
+    subtitle: 'Your complete guide to subtree management duties.',
+    sections: ASSISTANT_MANAGER_SECTIONS,
+  },
+  tier2: {
+    title: 'Tier 2 Guide',
+    subtitle: 'Your complete guide to managing teams and projects.',
+    sections: MANAGER_SECTIONS,
+  },
+  tier1: {
+    title: 'Tier 1 Guide',
+    subtitle: 'Your complete guide to system administration and management.',
+    sections: ADMIN_SECTIONS,
+  },
+
+  // Legacy role-name aliases — same content as the matching tier above.
+  // Kept for any code path that still passes user.role; do NOT add new ones.
   member: {
-    title: 'Member Guide',
-    subtitle: 'Your complete guide to using Monday Aniston as a team member',
+    title: 'Tier 4 Guide',
+    subtitle: 'Your complete guide to working as a contributor.',
     sections: MEMBER_SECTIONS,
   },
   manager: {
-    title: 'Manager Guide',
-    subtitle: 'Your complete guide to managing teams and projects',
+    title: 'Tier 2 Guide',
+    subtitle: 'Your complete guide to managing teams and projects.',
     sections: MANAGER_SECTIONS,
   },
   assistant_manager: {
-    title: 'Assistant Manager Guide',
-    subtitle: 'Your complete guide including director management duties',
+    title: 'Tier 3 Guide',
+    subtitle: 'Your complete guide to subtree management duties.',
     sections: ASSISTANT_MANAGER_SECTIONS,
   },
   admin: {
-    title: 'Admin Guide',
-    subtitle: 'Your complete guide to system administration and management',
-    sections: ADMIN_SECTIONS,
+    title: 'Tier 2 Guide',
+    subtitle: 'Your complete guide to managing teams and projects.',
+    sections: MANAGER_SECTIONS,
   },
 };
+
+// Resolve the SOP entry for a tier value (1..4). Falls back to the Tier 4
+// guide for unknown inputs so the viewer always renders something.
+export function sopForTier(tier) {
+  switch (tier) {
+    case 1: return SOP_CONTENT.tier1;
+    case 2: return SOP_CONTENT.tier2;
+    case 3: return SOP_CONTENT.tier3;
+    case 4: return SOP_CONTENT.tier4;
+    default: return SOP_CONTENT.tier4;
+  }
+}
 
 // ─── ONBOARDING TOUR STEPS ─────────────────────────────────
 // ─── GUIDED SPOTLIGHT TOUR STEPS ────────────────────────────

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Check, AlertCircle } from 'lucide-react';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
+import { resolveTier, tierLabel, hasTierAtLeast, TIER_3 } from '../../utils/tiers';
 
 const DEPT_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc', '#ff642e', '#037f4c', '#9cd326', '#cab641', '#ff158a', '#66ccff'];
 
@@ -96,8 +97,8 @@ export default function DepartmentModal({ department, onClose, onSave }) {
             <select value={head || ''} onChange={e => setHead(e.target.value || null)}
               className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-white">
               <option value="">No head assigned</option>
-              {users.filter(u => u.role !== 'member').map(u => (
-                <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+              {users.filter(u => hasTierAtLeast(u, TIER_3)).map(u => (
+                <option key={u.id} value={u.id}>{u.name} ({tierLabel(resolveTier(u))})</option>
               ))}
             </select>
           </div>

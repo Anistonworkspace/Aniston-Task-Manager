@@ -3,6 +3,7 @@ import { Search, X, Star, Eye, AlertTriangle } from 'lucide-react';
 import Avatar from '../common/Avatar';
 import PortalDropdown from '../common/PortalDropdown';
 import { useToast } from '../common/Toast';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function PersonCell({
   value,
@@ -214,7 +215,9 @@ export default function PersonCell({
           {filtered.map(m => {
             const mName = m.name || m.user?.name || 'Unknown';
             const mId = m.id || m.user?.id;
-            const mRole = m.role || m.user?.role;
+            // Show tier — never raw role names — in the picker.
+            const userObj = m.user || m;
+            const mRole = tierLabel(resolveTier(userObj));
             const mAvatar = m.avatar || m.user?.avatar || undefined;
 
             if (multiMode) {
@@ -228,7 +231,7 @@ export default function PersonCell({
                   <Avatar name={mName} image={mAvatar} size="xs" />
                   <div className="flex-1 min-w-0 text-left">
                     <span className="truncate block text-text-primary">{mName}</span>
-                    {mRole && <span className="text-[10px] text-text-tertiary capitalize">{mRole}</span>}
+                    {mRole && <span className="text-[10px] text-text-tertiary">{mRole}</span>}
                   </div>
                   {isPrimary && isChecked && <Star size={12} className="text-amber-400 fill-amber-400 flex-shrink-0" />}
                 </button>

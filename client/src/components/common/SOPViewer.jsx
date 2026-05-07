@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight, Search, RotateCcw, BookOpen } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { SOP_CONTENT } from '../../utils/sopContent';
+import { SOP_CONTENT, sopForTier } from '../../utils/sopContent';
+import { resolveTier } from '../../utils/tiers';
 
 export default function SOPViewer({ onRestartTour }) {
   const { user } = useAuth();
   const [expandedSections, setExpandedSections] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
 
-  const role = user?.role || 'member';
-  const sop = SOP_CONTENT[role] || SOP_CONTENT.member;
+  // Lookup by tier — never by role string. sopForTier maps the tier value to
+  // the appropriate guide entry, falling back to the Tier 4 (member) guide.
+  const sop = sopForTier(resolveTier(user)) || SOP_CONTENT.member;
 
   function toggleSection(idx) {
     setExpandedSections(prev => ({ ...prev, [idx]: !prev[idx] }));

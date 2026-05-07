@@ -23,11 +23,15 @@ const SUBTASK_INCLUDES = () => ([
  */
 async function userCanAccessParentTask(user, task) {
   if (!user || !task) return false;
-  const role = user.role;
-  if (user.isSuperAdmin || role === 'admin' || role === 'manager' || role === 'assistant_manager') {
-    return true;
-  }
-  // Member — must be linked to the task.
+  // Phase 7 — Tier-aware. Tier 1 / Tier 2 retain unrestricted access (org
+  // visibility). Tier 3 (assistant manager) used to short-circuit `true`
+  // here; that let them read/mutate subtasks on ANY task in the org
+  // (audit P0-5). Tier 3 now follows the same per-task linkage check as
+  // Tier 4 below.
+  const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
+  const t = resolveTier(user);
+  if (t === TIER_1 || t === TIER_2) return true;
+  // Tier 3 / Tier 4 — must be linked to the task.
   if (task.createdBy === user.id || task.assignedTo === user.id) return true;
   try {
     const ta = await TaskAssignee.findOne({ where: { taskId: task.id, userId: user.id } });
@@ -56,8 +60,13 @@ async function userCanAccessParentTask(user, task) {
  * can; this short-circuits before the field-level check.
  */
 function canMemberMutateSubtask(user, task, subtask) {
-  if (user.isSuperAdmin) return true;
-  if (['admin', 'manager', 'assistant_manager'].includes(user.role)) return true;
+  // Phase 7 — Tier-aware mutation gate. Tier 1/2 always pass; Tier 3 used
+  // to also short-circuit `true` (audit P0-5) and could mutate subtasks on
+  // unrelated tasks. Tier 3 now must be linked to the parent or the
+  // subtask itself, just like Tier 4.
+  const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
+  const t = resolveTier(user);
+  if (t === TIER_1 || t === TIER_2) return true;
   if (!task) return false;
   if (task.assignedTo === user.id || task.createdBy === user.id) return true;
   if (subtask && subtask.assignedTo === user.id) return true;

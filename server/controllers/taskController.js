@@ -256,6 +256,25 @@ const createTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
+    // Phase 7 — Board visibility gate. Tier 1/2 retain unrestricted access;
+    // Tier 3/4 must be able to see the board before they can plant a task
+    // on it. Closes audit P0-7 (createTask did not enforce board access,
+    // letting members POST tasks onto stranger boards via guessed IDs).
+    {
+      const { resolveTier, hasTierAtLeast, TIER_2 } = require('../config/tiers');
+      if (!hasTierAtLeast(req.user, TIER_2)) {
+        const boardVisibility = require('../services/boardVisibilityService');
+        const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+        if (!reachable) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have access to this board.',
+            code: 'BOARD_NOT_VISIBLE',
+          });
+        }
+      }
+    }
+
     // Validate status against task-level config (if provided), then board config
     if (status) {
       const tempTask = statusConfig ? { statusConfig } : {};
@@ -856,21 +875,61 @@ const updateTask = async (req, res) => {
     // Use Layer 3 allowedFields if set, otherwise allow all
     const allowedFields = editPermission.allowedFields || allFields;
 
-    // Description set-once lock — once a non-empty description is saved on a
-    // task it is immutable for every role (incl. super admin / admin). The
-    // intent is "captured-context that nobody can rewrite later". A no-op
-    // resend (incoming === existing) is allowed so optimistic clients that
-    // include the field in PATCH payloads don't break.
+    // Phase 7 — Approval-snapshot tamper protection. Reserved keys inside
+    // `customFields` (today: `_approvalSnapshot`) are written/cleared
+    // exclusively by the approval lifecycle helpers. If a user PUT-tries to
+    // set them via /api/tasks/:id, the rejected/changes-requested path would
+    // restore the task to whatever fake state they injected — a full bypass
+    // of the approval gate. Strip every `_`-prefixed reserved key from
+    // incoming customFields before merge. Closes audit P0-8.
+    if (req.body.customFields !== undefined && allowedFields.includes('customFields')) {
+      const cf = req.body.customFields;
+      if (cf && typeof cf === 'object' && !Array.isArray(cf)) {
+        const cleaned = {};
+        for (const [key, val] of Object.entries(cf)) {
+          // Reserved-key namespace: leading underscore == internal/system.
+          // Today this is just `_approvalSnapshot`; future reserved keys
+          // declared by approvalLifecycleService follow the same shape, so
+          // a single underscore-prefix filter covers them all.
+          if (typeof key === 'string' && key.startsWith('_')) continue;
+          cleaned[key] = val;
+        }
+        req.body.customFields = cleaned;
+      } else if (cf !== null && cf !== undefined) {
+        // Non-object payloads (string, number, etc.) cannot carry reserved
+        // keys, but they're meaningless for customFields — reject them
+        // outright so we don't accidentally drop the JSONB column entirely.
+        return res.status(400).json({
+          success: false,
+          message: 'customFields must be an object.',
+          code: 'invalid_custom_fields',
+        });
+      }
+    }
+
+    // Description set-once lock. Tier 2/3/4 may add a description only when
+    // empty; once non-empty it is immutable for them. Tier 1 may override
+    // (matches matrix entry `tasks.edit_locked_description`). A no-op resend
+    // (incoming === existing) is allowed for everyone so optimistic clients
+    // that include the field in PATCH payloads don't break.
     if (req.body.description !== undefined && allowedFields.includes('description')) {
       const existingDesc = typeof task.description === 'string' ? task.description.trim() : '';
       const incomingRaw = req.body.description == null ? '' : String(req.body.description);
       const incomingDesc = incomingRaw.trim();
       if (existingDesc && incomingDesc !== existingDesc) {
-        return res.status(400).json({
-          success: false,
-          message: 'Task description cannot be edited after it has been added.',
-          code: 'description_locked',
-        });
+        // Phase 7 — Tier 1 override per product matrix flag
+        // `tasks.edit_locked_description`. Closes audit P1-10.
+        const { resolveTier, TIER_1 } = require('../config/tiers');
+        if (resolveTier(req.user) !== TIER_1) {
+          return res.status(400).json({
+            success: false,
+            message: 'Task description cannot be edited after it has been added.',
+            code: 'description_locked',
+          });
+        }
+        // Tier 1 override path: sanitize the incoming value and let the
+        // normal field-merge below persist it.
+        req.body.description = sanitizeInput(incomingRaw);
       }
       // Sanitize on first set so the persisted value matches createTask's
       // hygiene. Whitespace-only incoming on an empty task is dropped to
@@ -1803,7 +1862,8 @@ const moveTask = async (req, res) => {
  */
 const bulkUpdateTasks = async (req, res) => {
   try {
-    const { taskIds, updates } = req.body;
+    let { taskIds } = req.body;
+    const { updates } = req.body;
 
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       return res.status(400).json({ success: false, message: 'taskIds array is required.' });
@@ -1829,12 +1889,61 @@ const bulkUpdateTasks = async (req, res) => {
     // tasks.delete (deny-aware) is required to flip isArchived, even though
     // the route gate only requires tasks.edit.
     if (safeUpdates.isArchived !== undefined) {
+      // Phase 7 — Tier-2 destructive guard. Bulk archive bypassed
+      // `assertCanDelete` previously (audit P0-3); wire it explicitly here
+      // when the operation is an archive (isArchived=true). Restore is not
+      // destructive, so we only gate the archive direction.
+      if (safeUpdates.isArchived === true) {
+        const { assertCanDelete } = require('../services/tierEnforcement');
+        const { sendIfTierError } = require('../utils/tierResponseHelpers');
+        if (sendIfTierError(res, () => assertCanDelete(req.user, 'task', { isOwnResource: false }))) return;
+      }
+
       const canArchive = await enginePermission(req.user, 'tasks', 'delete');
       if (!canArchive) {
         return res.status(403).json({
           success: false,
           message: 'You do not have permission to archive or restore tasks.',
         });
+      }
+    }
+
+    // Phase 7 — Tier 3/4 IDOR gate on bulk taskIds. Filter the supplied
+    // task-ID list down to ids the actor can actually see, so a Tier 3/4
+    // user with `tasks.edit` cannot mutate stranger tasks via a single
+    // bulk request. Tier 1/2 bypass this filter (broad org access).
+    {
+      const { resolveTier, hasTierAtLeast, TIER_2 } = require('../config/tiers');
+      if (!hasTierAtLeast(req.user, TIER_2)) {
+        const taskVisibility = require('../services/taskVisibilityService');
+        let visibleIds = taskIds;
+        try {
+          const where = await taskVisibility.buildTaskVisibilityWhere(req.user);
+          const visibleTasks = await Task.findAll({
+            where: { id: { [Op.in]: taskIds }, ...(where || {}) },
+            attributes: ['id'],
+            raw: true,
+          });
+          visibleIds = visibleTasks.map(t => t.id);
+        } catch (err) {
+          // Visibility helper failed — fail closed for non-management tiers.
+          console.error('[Tasks.bulk] visibility filter error:', err.message);
+          return res.status(403).json({ success: false, message: 'Visibility check failed.' });
+        }
+        if (visibleIds.length === 0) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have access to any of the requested tasks.',
+            code: 'TIER_SCOPE_DENIED',
+          });
+        }
+        if (visibleIds.length !== taskIds.length) {
+          // Drop the strangers silently — caller still gets a 200 for the
+          // visible subset. Mutating the local taskIds means every later
+          // query (assignment auth, completion targets, calendar sync,
+          // Task.update) runs against the trimmed set.
+          taskIds = visibleIds;
+        }
       }
     }
 

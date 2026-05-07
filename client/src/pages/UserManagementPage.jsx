@@ -68,7 +68,9 @@ export default function UserManagementPage() {
       setLoading(true);
       const params = new URLSearchParams();
       if (search) params.append('search', search);
-      if (filterRole) params.append('role', filterRole);
+      // Tier filtering is applied client-side (see `filtered` below) so the
+      // server keeps speaking the legacy `role=` query param without us
+      // needing to send tier values that the API doesn't yet accept.
       if (filterStatus) params.append('status', filterStatus);
       const res = await api.get(`/users?${params.toString()}`);
       setUsers(res.data.users || res.data.data?.users || []);
@@ -158,9 +160,10 @@ export default function UserManagementPage() {
   const stats = {
     total: users.length,
     active: users.filter(u => u.isActive).length,
-    admins: users.filter(u => u.role === 'admin').length,
-    managers: users.filter(u => u.role === 'manager').length,
-    members: users.filter(u => u.role === 'member').length,
+    tier1: users.filter(u => tierOf(u) === 1).length,
+    tier2: users.filter(u => tierOf(u) === 2).length,
+    tier3: users.filter(u => tierOf(u) === 3).length,
+    tier4: users.filter(u => tierOf(u) === 4).length,
   };
 
   const filteredWorkspaces = workspaces.filter(w =>
@@ -281,13 +284,14 @@ export default function UserManagementPage() {
 
       {activeTab === 'users' && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
             {[
               { label: 'Total Users', value: stats.total, color: '#0073ea' },
-              { label: 'Active', value: stats.active, color: '#00c875' },
-              { label: 'Admins', value: stats.admins, color: '#a25ddc' },
-              { label: 'Managers', value: stats.managers, color: '#0073ea' },
-              { label: 'Members', value: stats.members, color: '#00c875' },
+              { label: 'Active',      value: stats.active, color: '#00c875' },
+              { label: 'Tier 1',      value: stats.tier1,  color: '#dc2626' },
+              { label: 'Tier 2',      value: stats.tier2,  color: '#a25ddc' },
+              { label: 'Tier 3',      value: stats.tier3,  color: '#0073ea' },
+              { label: 'Tier 4',      value: stats.tier4,  color: '#16a34a' },
             ].map(card => (
               <div key={card.label} className="widget-card">
                 <p className="text-xs text-text-secondary font-medium mb-1">{card.label}</p>
@@ -304,13 +308,15 @@ export default function UserManagementPage() {
             </div>
             <div className="flex items-center gap-2">
               <Filter size={14} className="text-text-tertiary" />
+              {/* filterRole holds a TIER value ('1'..'4') or '' for all. Variable
+                  name preserved for diff size; semantics are tier-based. */}
               <select value={filterRole} onChange={e => setFilterRole(e.target.value)}
                 className="px-3 py-2 border border-border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
-                <option value="">All Roles</option>
-                <option value="admin">Admin</option>
-                <option value="manager">Manager</option>
-                <option value="assistant_manager">Assistant Manager</option>
-                <option value="member">Member</option>
+                <option value="">All Tiers</option>
+                <option value="1">Tier 1</option>
+                <option value="2">Tier 2</option>
+                <option value="3">Tier 3</option>
+                <option value="4">Tier 4</option>
               </select>
               <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
                 className="px-3 py-2 border border-border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
@@ -350,7 +356,9 @@ export default function UserManagementPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map(u => {
+                    {users
+                      .filter(u => !filterRole || String(tierOf(u)) === String(filterRole))
+                      .map(u => {
                       // Phase 6 — tier-based badge.
                       const userTier = tierOf(u);
                       const roleBadge = TIER_BADGE[userTier] || TIER_BADGE[4];
@@ -713,7 +721,7 @@ export default function UserManagementPage() {
                                 <Avatar name={m.name} size="xs" />
                                 <div className="flex-1 min-w-0">
                                   <p className="text-sm font-medium text-text-primary truncate">{m.name}</p>
-                                  <p className="text-xs text-text-tertiary capitalize">{m.role}</p>
+                                  <p className="text-xs text-text-tertiary">Tier {tierOf(m)}</p>
                                 </div>
                                 {canManage && (
                                   <button

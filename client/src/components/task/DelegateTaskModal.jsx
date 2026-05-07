@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Send, Search, AlertCircle, Check } from 'lucide-react';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
+import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function DelegateTaskModal({ task, onClose, onDelegated }) {
   const [users, setUsers] = useState([]);
@@ -85,7 +86,7 @@ export default function DelegateTaskModal({ task, onClose, onDelegated }) {
                     <Avatar name={u.name} size="sm" />
                     <div className="flex-1 text-left min-w-0">
                       <p className="text-sm font-medium text-text-primary truncate">{u.name}</p>
-                      <p className="text-[10px] text-text-tertiary capitalize">{u.role}{u.department ? ` · ${u.department}` : ''}</p>
+                      <p className="text-[10px] text-text-tertiary">{tierLabel(resolveTier(u))}{u.department ? ` · ${u.department}` : ''}</p>
                     </div>
                     {selectedUser?.id === u.id && (
                       <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center">

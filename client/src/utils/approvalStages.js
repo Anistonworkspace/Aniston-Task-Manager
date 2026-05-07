@@ -2,21 +2,20 @@
 //
 // Backend stores one TaskApprovalFlow row per individual approver. We render
 // the chain as max 3 LOGICAL stages instead of one dot per row, so that an
-// approval chain with N managers/admins/super admins still presents as a
-// clean three-step workflow:
+// approval chain with N reviewers still presents as a clean three-step
+// workflow:
 //
-//   1. SUBMISSION       — the task assignee/creator who submitted (level 0)
-//   2. ASSISTANT_MANAGER — every assistant_manager row (sequential walk)
-//   3. FINAL             — Manager + Admin + Super Admin (any-of)
+//   1. SUBMISSION    — the task assignee/creator who submitted (level 0)
+//   2. STAGE_1_REVIEW — every Tier 3 reviewer row (sequential walk)
+//   3. FINAL          — Tier 2 + Tier 1 reviewers (any-of)
 //
-// This grouping is derived from `role` + `isSuperAdmin`, NOT from the stored
-// `stage` value on the row. That way the UI is correct regardless of whether
-// the backend split or grouped rows internally, and adding more admins to the
-// org doesn't add more dots to the indicator.
+// The internal stage key 'assistant_manager' is preserved as a stable
+// identifier so persisted state and external integrations don't break, but
+// every USER-FACING label is tier-based — never role names.
 
 export const LOGICAL_STAGE = Object.freeze({
   SUBMISSION: 'submission',
-  ASSISTANT_MANAGER: 'assistant_manager',
+  ASSISTANT_MANAGER: 'assistant_manager', // internal key — labels below use Stage 1 / Tier 3
   FINAL: 'final',
 });
 
@@ -28,14 +27,14 @@ export const LOGICAL_STAGE_ORDER = [
 
 export const LOGICAL_STAGE_LABELS = {
   [LOGICAL_STAGE.SUBMISSION]: 'Submission',
-  [LOGICAL_STAGE.ASSISTANT_MANAGER]: 'Assistant Manager Review',
+  [LOGICAL_STAGE.ASSISTANT_MANAGER]: 'Stage 1 Review',
   [LOGICAL_STAGE.FINAL]: 'Final Approval',
 };
 
 export const LOGICAL_STAGE_SHORT_LABELS = {
   [LOGICAL_STAGE.SUBMISSION]: 'Submitted',
-  [LOGICAL_STAGE.ASSISTANT_MANAGER]: 'Assistant Manager',
-  [LOGICAL_STAGE.FINAL]: 'Final Approval',
+  [LOGICAL_STAGE.ASSISTANT_MANAGER]: 'Stage 1',
+  [LOGICAL_STAGE.FINAL]: 'Final',
 };
 
 // isSuperAdmin can arrive either flattened on the row (loadChainForResponse)
@@ -148,15 +147,22 @@ export function currentLogicalStage(stageGroups) {
   return null;
 }
 
-// Human-friendly per-row label for the "what role is this person?" column.
-// Super admins appear as "Super Admin" not "Admin" so the hierarchy reads
-// correctly in the UI.
+// Human-friendly per-row label for the "what tier is this person?" column.
+// Old role names ('Admin', 'Manager', 'Assistant Manager', 'Member',
+// 'Super Admin') are NEVER shown — tier labels only.
+//
+// Mirrors server/config/tiers.js#tierFromLegacy:
+//   isSuperAdmin → Tier 1
+//   admin/manager → Tier 2
+//   assistant_manager → Tier 3
+//   member/anything else → Tier 4
 export function roleLabelFor(row) {
-  if (isSuperAdminRow(row)) return 'Super Admin';
-  if (!row?.role) return '';
-  return row.role
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  if (isSuperAdminRow(row)) return 'Tier 1';
+  const r = row?.role;
+  if (r === 'admin' || r === 'manager') return 'Tier 2';
+  if (r === 'assistant_manager') return 'Tier 3';
+  if (r === 'member') return 'Tier 4';
+  return '';
 }
 
 // Convert a backend row.status to a one-word visual label for the row's chip.
