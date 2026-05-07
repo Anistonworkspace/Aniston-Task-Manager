@@ -3,6 +3,7 @@ const router = express.Router();
 const { Task, Board, User, Notification } = require('../models');
 const { sendTeamsNotification } = require('../services/teamsWebhook');
 const { getIO } = require('../services/socketService');
+const { verifyWebhookSignature } = require('../middleware/webhookSignature');
 
 // ── Webhook API key authentication ──────────────────────────
 // Set WEBHOOK_API_KEY in .env. Requests must send header: x-webhook-key: <key>
@@ -26,6 +27,13 @@ const webhookAuth = (req, res, next) => {
 };
 
 router.use(webhookAuth);
+
+// D-3 — HMAC signature verification (replay protection + body integrity).
+// Runs AFTER the static-key check so we never burn HMAC compute on anonymous
+// traffic. The middleware honours WEBHOOK_REQUIRE_SIGNATURE: `off` (default)
+// passes everything through, `warn` logs unsigned requests so ops can chase
+// down un-migrated senders, `strict` rejects them. See middleware/webhookSignature.js.
+router.use(verifyWebhookSignature);
 
 // POST /api/webhooks/n8n/task-created - Webhook when task is created (n8n sends here)
 router.post('/n8n/task-created', async (req, res) => {

@@ -162,7 +162,16 @@ app.use(cors({
 
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-app.use(express.json({ limit: '10mb' }));
+// Capture the raw request buffer so signature-checking middleware (D-3 webhook
+// HMAC verification) can compute HMAC over the EXACT bytes that arrived,
+// not the JSON re-serialisation. Keeping a reference adds at most 10 MiB of
+// retained memory per in-flight request, which is bounded by the body limit
+// itself and dropped at the end of the request lifecycle. Other middleware
+// MUST treat req.rawBody as immutable.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Origin validation (CSRF-like protection for mutating requests) ──────
