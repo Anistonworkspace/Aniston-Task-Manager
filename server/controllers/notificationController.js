@@ -38,7 +38,19 @@ const getNotifications = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Notification] GetNotifications error:', error);
+    // Surface the real Sequelize/Postgres failure so prod logs are actionable.
+    // The generic message stays for the client; full detail goes to stderr.
+    console.error('[Notification] GetNotifications error:', {
+      message: error?.message,
+      name: error?.name,
+      sql: error?.sql,
+      parameters: error?.parameters,
+      pgCode: error?.parent?.code,
+      pgDetail: error?.parent?.detail,
+      pgTable: error?.parent?.table,
+      pgColumn: error?.parent?.column,
+      stack: error?.stack,
+    });
     res.status(500).json({ success: false, message: 'Server error fetching notifications.' });
   }
 };
