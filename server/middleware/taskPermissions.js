@@ -4,6 +4,13 @@ const { Op } = require('sequelize');
 const { safeUUID } = require('../utils/safeSql');
 const taskVisibility = require('../services/taskVisibilityService');
 const logger = require('../utils/logger');
+// D-7: tier helpers replace ad-hoc role-string checks in checkTaskAction
+// below. The legacy `role === 'admin'` super-admin bypass at the top of the
+// function is INTENTIONALLY left as-is — the new mapping treats role='admin'
+// without isSuperAdmin as tier 2, but historic behaviour gave those users
+// "full access". Tightening that is a deliberate behaviour change tracked
+// separately, NOT an automated refactor target.
+const { resolveTier, TIER_2, TIER_3, TIER_4 } = require('../config/tiers');
 
 // ── Table existence cache (shared across all middleware calls) ───────────
 const _tableCache = {};
@@ -118,9 +125,21 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
   const isSuperAdmin = !!user.isSuperAdmin;
 
   // Super admin / admin — full access always.
+  // (Kept as a literal role-string check for the reasons in the import block:
+  // a non-super-admin admin-role user is tier 2 in the new mapping, but the
+  // historic "admin = full access" behaviour is preserved here. Touching this
+  // line tightens permissions, which is a deliberate decision separate from
+  // the D-7 mechanical migration.)
   if (isSuperAdmin || role === 'admin') {
     return { allowed: true, reason: 'admin_access', allowedFields: null };
   }
+
+  // D-7: from this point onward, the population is `role IN ('manager',
+  // 'assistant_manager', 'member')` (i.e. tier 2/3/4 — admin/super already
+  // returned above). Resolve once and use the canonical tier value for the
+  // switch instead of re-comparing role strings on every case branch.
+  const tier = resolveTier(user);
+  const isTier2or3 = tier === TIER_2 || tier === TIER_3;
 
   // Find user's membership role in this task
   const userAssignment = taskAssignees.find(ta => ta.userId === user.id);
@@ -162,7 +181,7 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
     case 'edit_status': {
       // Manager / assistant_manager: full edit on tasks inside their subtree.
-      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+      if (isTier2or3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management', allowedFields: null };
       }
       if (isAssignee || isTaskCreator || task.assignedTo === user.id) {
@@ -173,7 +192,7 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
     case 'edit': {
       // Manager / assistant_manager: full edit on tasks inside their subtree.
-      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+      if (isTier2or3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management', allowedFields: null };
       }
       // Assignee / creator — can update the self-management whitelist.
@@ -215,18 +234,18 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
     case 'reassign': {
       // Only manager+ acting on a task INSIDE their subtree.
-      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+      if (isTier2or3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management' };
       }
       return { allowed: false, reason: 'insufficient_role_for_reassign' };
     }
 
     case 'delete': {
-      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+      if (isTier2or3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management' };
       }
       // Members can archive their own tasks
-      if ((isAssignee || task.assignedTo === user.id) && role === 'member') {
+      if ((isAssignee || task.assignedTo === user.id) && tier === TIER_4) {
         return { allowed: true, reason: 'member_archive_only' };
       }
       return { allowed: false, reason: 'insufficient_role_for_delete' };
@@ -234,7 +253,7 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
 
     case 'create': {
       // Tier 2/3 (manager, assistant_manager) — unrestricted create.
-      if (['manager', 'assistant_manager'].includes(role)) {
+      if (isTier2or3) {
         return { allowed: true, reason: 'can_create' };
       }
       // Tier 4 (member) — allowed to create. Downstream gates (`assign_others`
@@ -245,14 +264,14 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
       // payload sets the creator as self-assignee, but the request was 403'd
       // before any of those downstream checks ran. See PROGRESS audit RBAC
       // Finding 1 + permissions matrix in client/src/utils/permissions.js.
-      if (role === 'member') {
+      if (tier === TIER_4) {
         return { allowed: true, reason: 'member_self_create' };
       }
-      return { allowed: false, reason: 'unknown_role_for_create' };
+      return { allowed: false, reason: 'unknown_tier_for_create' };
     }
 
     case 'manage_members': {
-      if ((role === 'manager' || role === 'assistant_manager') && inSubtree) {
+      if (isTier2or3 && inSubtree) {
         return { allowed: true, reason: 'can_manage_members' };
       }
       return { allowed: false, reason: 'insufficient_role_for_member_management' };
