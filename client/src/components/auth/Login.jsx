@@ -27,18 +27,17 @@ export default function Login() {
     const ssoStatus = params.get('sso');
 
     if (ssoStatus === 'success') {
-      const token = params.get('token');
-      const refreshToken = params.get('refreshToken');
-      // Clean up URL immediately
+      // D-1 Phase 2: backend set the httpOnly cookies BEFORE the redirect,
+      // so by the time we run here the browser already holds the session.
+      // We just confirm the session via /auth/me (cookie auth) and load
+      // the user. No more reading the token from the URL — that closes the
+      // exposure where tokens lived in browser history / Referer headers.
       window.history.replaceState({}, '', window.location.pathname);
-
-      if (token) {
-        setSsoLoading(true);
-        loginWithToken(token, refreshToken)
-          .then(() => navigate('/'))
-          .catch(() => setError('SSO login failed. Please try again.'))
-          .finally(() => setSsoLoading(false));
-      }
+      setSsoLoading(true);
+      loginWithToken()
+        .then(() => navigate('/'))
+        .catch(() => setError('SSO login failed. Please try again.'))
+        .finally(() => setSsoLoading(false));
     } else if (ssoStatus === 'error') {
       const msg = params.get('msg') || 'Microsoft sign-in failed.';
       // SSO failed — clear any stale local auth so the user starts fresh.

@@ -41,10 +41,24 @@ function processQueue(error, token = null) {
   failedQueue = [];
 }
 
+// D-1 Phase 2: the request interceptor no longer attaches an Authorization
+// header — auth rides the httpOnly cookie set by the server, sent automatically
+// by the browser because the api instance has withCredentials: true.
+//
+// We DO still read leftover storage tokens here for one transitional reason:
+// users who logged in BEFORE Phase 2 deployed have a token in storage but no
+// cookie. Without the header, their first request after the deploy would 401
+// and bounce them to the login page. The fallback below keeps those sessions
+// alive until natural refresh (≤1 hour) — at which point the refresh response
+// sets cookies and storage becomes irrelevant. After ~7 days (refresh TTL),
+// no surviving session will rely on storage and this fallback is dead code,
+// safe to remove in Phase 3.
 api.interceptors.request.use(
   (config) => {
-    const token = sessionStorage.getItem('token') || localStorage.getItem('token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    const legacyToken = sessionStorage.getItem('token') || localStorage.getItem('token');
+    if (legacyToken && !config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${legacyToken}`;
+    }
     return config;
   },
   (error) => Promise.reject(error)
@@ -60,66 +74,52 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // Try silent refresh on 401 (except for login/refresh endpoints)
+    // D-1 Phase 2: silent refresh on 401. The refresh JWT lives in an
+    // httpOnly cookie — the browser sends it automatically because the
+    // api instance has withCredentials. We don't need to read the token
+    // from storage, don't post it in the body, and the response no longer
+    // returns it. Success means new cookies were set; just retry the
+    // original request and the new access cookie will be picked up.
     if (error.response?.status === 401 && !originalRequest._retry &&
         !originalRequest.url?.includes('/auth/login') &&
         !originalRequest.url?.includes('/auth/refresh')) {
 
-      const refreshToken = sessionStorage.getItem('refreshToken');
-
-      if (refreshToken) {
-        if (isRefreshing) {
-          // Queue this request while refresh is in progress
-          return new Promise((resolve, reject) => {
-            failedQueue.push({ resolve, reject });
-          }).then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return api(originalRequest);
-          });
-        }
-
-        originalRequest._retry = true;
-        isRefreshing = true;
-
-        try {
-          // withCredentials so the refresh httpOnly cookie rides too — once
-          // Phase 2 ships we can drop the body payload entirely.
-          const res = await axios.post('/api/auth/refresh', { refreshToken }, { withCredentials: true });
-          const { token: newToken, refreshToken: newRefresh } = res.data?.data || res.data;
-
-          sessionStorage.setItem('token', newToken);
-          if (newRefresh) sessionStorage.setItem('refreshToken', newRefresh);
-
-          api.defaults.headers.common.Authorization = `Bearer ${newToken}`;
-          processQueue(null, newToken);
-
-          originalRequest.headers.Authorization = `Bearer ${newToken}`;
-          return api(originalRequest);
-        } catch (refreshError) {
-          processQueue(refreshError, null);
-          // Refresh failed — clear everything and redirect to login
-          sessionStorage.removeItem('token');
-          sessionStorage.removeItem('user');
-          sessionStorage.removeItem('refreshToken');
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-          if (window.location.pathname !== '/login') {
-            window.location.href = '/login';
-          }
-          return Promise.reject(refreshError);
-        } finally {
-          isRefreshing = false;
-        }
+      if (isRefreshing) {
+        // Queue this request while refresh is in progress. We resolve with
+        // a sentinel because the original request no longer needs an
+        // Authorization header injected — the cookie does the job.
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        }).then(() => api(originalRequest));
       }
 
-      // No refresh token available — redirect to login
-      sessionStorage.removeItem('token');
-      sessionStorage.removeItem('user');
-      sessionStorage.removeItem('refreshToken');
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      try {
+        await axios.post('/api/auth/refresh', {}, { withCredentials: true });
+        // No tokens in body to extract — the new cookies are set on the
+        // response and the browser already wrote them. processQueue
+        // signals queued callers to retry their requests.
+        processQueue(null, null);
+        return api(originalRequest);
+      } catch (refreshError) {
+        processQueue(refreshError, null);
+        // Refresh failed — clear any leftover legacy storage and bounce
+        // to login. Cookies were cleared server-side as part of the 401
+        // response (or were already invalid).
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('user');
+        sessionStorage.removeItem('refreshToken');
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        localStorage.removeItem('refreshToken');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
       }
     }
 

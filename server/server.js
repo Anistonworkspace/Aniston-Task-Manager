@@ -100,9 +100,93 @@ const { attachMeetingStream } = require('./services/meetingStreamService');
 attachMeetingStream(server);
 
 // ─── Global middleware ───────────────────────────────────────
+//
+// D-8 — Content-Security-Policy.
+//
+// We deploy CSP in REPORT-ONLY mode first so the browser sends violation
+// reports without blocking anything. After observing the wild for a few
+// days (collecting any unexpected sources via the `report-uri` endpoint
+// /api/csp-report and/or browser DevTools), flip
+// CSP_ENFORCE=true to switch to enforcement.
+//
+// Directive choices (each annotated with WHY):
+//   default-src 'self'
+//     — minimum baseline; any directive not explicitly set falls back here.
+//   script-src 'self' 'unsafe-inline' 'unsafe-eval'
+//     — Vite injects inline bootstrap scripts in index.html and the dev
+//       toolbar uses eval. 'unsafe-inline' weakens script-src on its own,
+//       but combined with our XSS sanitisation + the new SVG check (D-5)
+//       this is acceptable. Long-term we'd switch to nonces or hashes.
+//   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com
+//     — Tailwind's JIT generates style attributes; component libraries
+//       (lucide-react, framer-motion) sometimes inline transforms.
+//   img-src 'self' data: blob: https:
+//     — avatars stored on /uploads (self), uploaded image previews
+//       (data:/blob:), and external avatars / OG images (https:).
+//   font-src 'self' data: https://fonts.gstatic.com
+//     — embedded data URIs for icon fonts, Google Fonts CDN.
+//   connect-src 'self' ws: wss: https://login.microsoftonline.com
+//     — Socket.io needs ws/wss; SSO redirects to login.microsoftonline.com.
+//   frame-ancestors 'none'
+//     — disallow being embedded in an iframe (clickjacking defence).
+//   form-action 'self' https://login.microsoftonline.com
+//     — restrict where forms can post. Microsoft login form posts to
+//       login.microsoftonline.com during SSO.
+//   object-src 'none'
+//     — kill the legacy <object>/<embed>/applet attack surface.
+//   base-uri 'self'
+//     — prevent <base> tag injection from rerouting relative URLs.
+//   worker-src 'self' blob:
+//     — service worker (sw.js) + any blob workers.
+//   manifest-src 'self'
+//     — PWA manifest.
+const cspDirectives = {
+  defaultSrc: ["'self'"],
+  scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+  styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+  imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+  fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+  connectSrc: ["'self'", 'ws:', 'wss:', 'https://login.microsoftonline.com'],
+  frameAncestors: ["'none'"],
+  formAction: ["'self'", 'https://login.microsoftonline.com'],
+  objectSrc: ["'none'"],
+  baseUri: ["'self'"],
+  workerSrc: ["'self'", 'blob:'],
+  manifestSrc: ["'self'"],
+  // Legacy CSP1 reporting directive — broadly supported. Modern browsers
+  // also honour the Reporting-Endpoints header + report-to directive but
+  // report-uri is the lowest-common-denominator and works for everyone.
+  reportUri: ['/api/csp-report'],
+};
+const cspEnforce = String(process.env.CSP_ENFORCE || '').toLowerCase() === 'true';
+
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    useDefaults: false,
+    reportOnly: !cspEnforce,
+    directives: cspDirectives,
+  },
 }));
+
+// CSP violation report receiver. Browsers POST a JSON `csp-report` object
+// here when something violates the policy. We log truncated entries (a
+// runaway extension can flood this); ops watches for repeating signatures
+// to know what to allowlist before flipping CSP_ENFORCE=true.
+app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'application/json'], limit: '32kb' }), (req, res) => {
+  const r = req.body && (req.body['csp-report'] || req.body);
+  if (r) {
+    const fields = {
+      blocked: String(r['blocked-uri'] || r.blockedURL || '').slice(0, 200),
+      violated: String(r['violated-directive'] || r.effectiveDirective || '').slice(0, 80),
+      docUri: String(r['document-uri'] || r.documentURL || '').slice(0, 200),
+      source: String(r['source-file'] || r.sourceFile || '').slice(0, 200),
+      line: r['line-number'] || r.lineNumber || null,
+    };
+    console.warn('[CSP] violation:', fields);
+  }
+  res.status(204).end();
+});
 
 // CORS origin policy.
 //

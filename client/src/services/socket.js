@@ -34,8 +34,14 @@ export function connect(token) {
   // technically reconnect after logout.
   logoutLatch = false;
 
+  // D-1 Phase 2: cookies carry the auth on the handshake (withCredentials:
+  // true makes the browser attach them on the upgrade request). The auth
+  // payload is still passed when a `token` is supplied — useful for legacy
+  // callers and for manual connect attempts in tests — but the production
+  // browser flow no longer relies on a JS-readable token.
   socket = io(window.location.origin, {
-    auth: { token },
+    auth: token ? { token } : {},
+    withCredentials: true,
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: 10,

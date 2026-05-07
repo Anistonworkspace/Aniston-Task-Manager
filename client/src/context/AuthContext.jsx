@@ -138,15 +138,11 @@ export function AuthProvider({ children }) {
     // 2. Local cleanup IMMEDIATELY — clears storage + state + disconnects
     //    socket synchronously. Callers that do `logout(); navigate('/login')`
     //    can rely on auth state being gone before the next render.
-    //    Note: we keep the token snapshot for the API call below; it's pulled
-    //    from sessionStorage by the api interceptor, so we capture it first.
-    //    The refresh-token snapshot is new (D-2 backend rotation/denylist) —
-    //    we pass it to /auth/logout so the backend can mark that specific
-    //    JTI revoked. Without this snapshot the backend can still log the
-    //    user out (sockets, push) but the refresh token row stays alive
-    //    until natural expiry.
-    const tokenSnapshot = sessionStorage.getItem('token') || localStorage.getItem('token');
-    const refreshTokenSnapshot = sessionStorage.getItem('refreshToken') || localStorage.getItem('refreshToken');
+    //    D-1 Phase 2: no JS-readable token to capture — auth rides the
+    //    cookie that the browser will send on the /auth/logout call below
+    //    automatically (api client has withCredentials: true). The backend
+    //    reads the refresh-token cookie itself and revokes the JTI; we no
+    //    longer ship the token in the request body.
     localCleanup();
 
     // 3. Multi-tab broadcast so every other tab in this browser logs out too.
@@ -167,23 +163,14 @@ export function AuthProvider({ children }) {
       let pushEndpoint = null;
       try { pushEndpoint = await unsubscribeFromPush(); } catch { /* ignore */ }
       try {
+        // D-1 Phase 2: no Bearer header, no refreshToken body. The auth
+        // and refresh tokens ride on the httpOnly cookies (withCredentials
+        // on the api client). Backend reads them server-side, revokes the
+        // JTI, and clears the cookies on the response.
         await api.post(
           '/auth/logout',
-          {
-            endpoint: pushEndpoint,
-            socketId,
-            allDevices,
-            // Backend uses this to revoke the JTI in refresh_tokens.
-            // Safe to send: the endpoint is authenticated (Bearer token
-            // above) and we already passed the same token through the
-            // network on every authenticated request — including the
-            // refresh-token in this body adds no new exposure.
-            refreshToken: refreshTokenSnapshot || undefined,
-          },
-          {
-            _silent: true,
-            headers: tokenSnapshot ? { Authorization: `Bearer ${tokenSnapshot}` } : undefined,
-          }
+          { endpoint: pushEndpoint, socketId, allDevices },
+          { _silent: true }
         );
       } catch (err) {
         console.warn('[Auth.logout] backend logout call failed:', err?.message);
@@ -227,28 +214,37 @@ export function AuthProvider({ children }) {
   }, []);
 
   const loadUser = useCallback(async () => {
-    // Check sessionStorage first, then localStorage (migration)
-    let storedToken = sessionStorage.getItem('token') || localStorage.getItem('token');
-    if (!storedToken) { setLoading(false); return; }
-    // Migrate from localStorage to sessionStorage
-    if (!sessionStorage.getItem('token') && localStorage.getItem('token')) {
-      sessionStorage.setItem('token', storedToken);
-      localStorage.removeItem('token');
-    }
+    // D-1 Phase 2: cookie-only session lookup. No JS-readable token to
+    // probe — we just hit /auth/me. If the cookie is present and valid,
+    // the request succeeds. If not, the server responds 401 and we treat
+    // it as "not logged in" (loading=false, no user). This is one extra
+    // request per page load for unauthenticated visitors compared to the
+    // pre-Phase-2 behaviour, but the request is cheap (auth-only check)
+    // and the security win is closing the storage-token exposure.
+    //
+    // Storage cleanup is preserved as a one-time drain for any leftover
+    // tokens written before Phase 2 deployed. After all pre-deploy
+    // sessions expire (≤ refresh token TTL = 7 days) this becomes dead
+    // code; safe to keep until then.
     try {
       const res = await api.get('/auth/me');
       const u = res.data?.data?.user || res.data?.user || res.data;
       setUser(u);
-      setToken(storedToken);
-      connect(storedToken);
-      // Load permission grants after user is loaded (await so they're ready before UI renders)
+      connect();
       if (u?.id) await loadPermissions();
     } catch (err) {
-      console.error('Failed to load user:', err);
+      // 401 here is the normal "no session" path — silent. Any other
+      // error is logged so ops can see network failures.
+      if (err?.response?.status !== 401) {
+        console.error('Failed to load user:', err);
+      }
+      // One-time drain of pre-Phase-2 storage tokens.
       sessionStorage.removeItem('token');
       sessionStorage.removeItem('user');
+      sessionStorage.removeItem('refreshToken');
       localStorage.removeItem('token');
       localStorage.removeItem('user');
+      localStorage.removeItem('refreshToken');
       setToken(null);
       setUser(null);
     } finally {
@@ -355,40 +351,36 @@ export function AuthProvider({ children }) {
   }, [user, logout, refreshInactivityTimeout]);
 
   const login = async (email, password) => {
+    // D-1 Phase 2: backend sets httpOnly cookies and returns ONLY the user
+    // record. The session lives in the cookie — no JS-readable token to
+    // store, no XSS exfiltration vector. The socket connect() picks the
+    // cookie up via withCredentials on the handshake (see socket.js).
     const res = await api.post('/auth/login', { email, password });
     const d = res.data?.data || res.data;
-    const newToken = d.token;
     const newUser = d.user;
-    sessionStorage.setItem('token', newToken);
-    sessionStorage.setItem('user', JSON.stringify(newUser));
-    if (d.refreshToken) sessionStorage.setItem('refreshToken', d.refreshToken);
-    setToken(newToken);
     setUser(newUser);
     lastActivityRef.current = Date.now();
-    connect(newToken);
+    connect();
     // Load permission grants after login (await so UI has grants before navigating)
     await loadPermissions();
     return newUser;
   };
 
-  const loginWithToken = async (newToken, newRefreshToken) => {
-    sessionStorage.setItem('token', newToken);
-    if (newRefreshToken) sessionStorage.setItem('refreshToken', newRefreshToken);
-    setToken(newToken);
+  // D-1 Phase 2: SSO callback flow no longer carries the token in the URL.
+  // The backend sets cookies before issuing the redirect, so by the time
+  // this runs the browser already holds the session. We just confirm by
+  // hitting /auth/me (cookie auth) and load the user. The function name
+  // is kept for backward compat with callers; arguments are now ignored.
+  const loginWithToken = async (_unusedToken, _unusedRefreshToken) => {
     try {
       const res = await api.get('/auth/me');
       const u = res.data?.data?.user || res.data?.user || res.data;
       setUser(u);
-      sessionStorage.setItem('user', JSON.stringify(u));
       lastActivityRef.current = Date.now();
-      connect(newToken);
-      // Load permission grants after token login
+      connect();
       loadPermissions();
       return u;
     } catch (err) {
-      sessionStorage.removeItem('token');
-      sessionStorage.removeItem('refreshToken');
-      setToken(null);
       setUser(null);
       throw err;
     }

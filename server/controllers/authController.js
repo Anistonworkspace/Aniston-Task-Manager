@@ -278,16 +278,18 @@ const login = async (req, res) => {
     // refresh endpoint can verify the token wasn't already rotated/revoked.
     const refreshToken = await issueRefreshToken(user.id, req);
 
-    // D-1: set httpOnly cookies in addition to returning tokens in the body.
-    // Body is kept for backward compat during the dual-track migration; new
-    // clients should rely on the cookies and stop storing tokens in JS-readable
-    // storage.
+    // D-1 Phase 2: tokens are delivered ONLY via httpOnly cookies. The
+    // response body no longer carries them — JS in the page can't read the
+    // session, which closes the XSS-token-exfiltration vector. External
+    // (programmatic) API consumers that still need a Bearer token can call
+    // a dedicated machine-token endpoint or use API keys; the browser flow
+    // is cookie-only.
     setAuthCookies(res, { accessToken: token, refreshToken });
 
     res.json({
       success: true,
       message: 'Login successful.',
-      data: { user: user.toJSON(), token, refreshToken },
+      data: { user: user.toJSON() },
     });
   } catch (error) {
     console.error('[Auth] Login error:', error);
@@ -826,10 +828,7 @@ const refreshTokenEndpoint = async (req, res) => {
       const newToken = generateToken(user.id);
       const newRefreshToken = await issueRefreshToken(user.id, req);
       setAuthCookies(res, { accessToken: newToken, refreshToken: newRefreshToken });
-      return res.json({
-        success: true,
-        data: { token: newToken, refreshToken: newRefreshToken },
-      });
+      return res.json({ success: true });
     }
 
     const record = await RefreshToken.findByPk(decoded.jti);
@@ -872,13 +871,11 @@ const refreshTokenEndpoint = async (req, res) => {
 
     // D-1: refresh the cookies so the new pair takes effect on the next
     // request. The browser overwrites the old cookies in place because the
-    // (name, path, domain) tuple matches.
+    // (name, path, domain) tuple matches. Phase 2: the body no longer
+    // carries the tokens — the cookies are the sole delivery channel.
     setAuthCookies(res, { accessToken: newToken, refreshToken: newRefreshToken });
 
-    res.json({
-      success: true,
-      data: { token: newToken, refreshToken: newRefreshToken },
-    });
+    res.json({ success: true });
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ success: false, message: 'Refresh token expired. Please login again.' });
@@ -1151,17 +1148,14 @@ const microsoftCallback = async (req, res) => {
     const token = generateToken(user.id);
     const appRefreshToken = await issueRefreshToken(user.id, req);
 
-    // D-1: set httpOnly cookies BEFORE the redirect. Browsers honour
-    // Set-Cookie on a 302 response — the next request to /login (and every
-    // subsequent /api/* call) will carry the cookies automatically.
+    // D-1 Phase 2: set httpOnly cookies BEFORE the redirect, and the redirect
+    // URL no longer carries the tokens as query parameters. This closes the
+    // exposure where tokens lived in the browser history, the Referer header
+    // of any subsequent navigation, and any analytics that captured the URL.
+    // The frontend reads the cookie on the next page load to confirm the
+    // session and fetch the user profile.
     setAuthCookies(res, { accessToken: token, refreshToken: appRefreshToken });
-
-    // We still include the tokens in the redirect URL for the dual-track
-    // migration: a frontend that hasn't been updated to read cookies will
-    // pick the tokens out of the URL exactly as before. Once Phase 2 ships
-    // (frontend uses cookies only) we can drop the query params here, which
-    // also closes the "tokens leak into browser history / referer" issue.
-    res.redirect(`${CLIENT_URL}/login?sso=success&token=${encodeURIComponent(token)}&refreshToken=${encodeURIComponent(appRefreshToken)}`);
+    res.redirect(`${CLIENT_URL}/login?sso=success`);
   } catch (error) {
     console.error('[Auth] Microsoft SSO callback error:', error.response?.data || error.message);
     res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Authentication failed. Please try again.')}`);

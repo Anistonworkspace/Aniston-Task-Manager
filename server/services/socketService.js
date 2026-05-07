@@ -44,9 +44,32 @@ const initializeSocket = (server) => {
   });
 
   // ── Auth middleware ────────────────────────────────────────
+  // D-1 Phase 2: prefer the httpOnly cookie sent on the handshake. Falls
+  // back to socket.handshake.auth.token for legacy clients (e.g. native
+  // mobile apps or test scripts that drive socket.io-client directly).
+  // The cookie is parsed inline rather than via cookie-parser to avoid a
+  // dependency just for this one read.
+  const { ACCESS_COOKIE } = require('../utils/authCookies');
+  function tokenFromHandshake(socket) {
+    if (socket.handshake.auth && socket.handshake.auth.token) {
+      return socket.handshake.auth.token;
+    }
+    const cookieHeader = socket.handshake.headers && socket.handshake.headers.cookie;
+    if (!cookieHeader || typeof cookieHeader !== 'string') return null;
+    for (const part of cookieHeader.split(';')) {
+      const eq = part.indexOf('=');
+      if (eq === -1) continue;
+      const name = part.slice(0, eq).trim();
+      if (name !== ACCESS_COOKIE) continue;
+      const raw = part.slice(eq + 1).trim();
+      try { return decodeURIComponent(raw); } catch { return raw; }
+    }
+    return null;
+  }
+
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth.token;
+      const token = tokenFromHandshake(socket);
 
       if (!token) {
         return next(new Error('Authentication required'));
