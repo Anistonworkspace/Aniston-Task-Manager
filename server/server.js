@@ -1288,6 +1288,53 @@ const start = async () => {
       console.warn('[Server] users.font_size_preference migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: Add tier column to users (migration 014) ──
+    // Mirrors server/migrations/014_add_user_tier.sql. Self-installing so
+    // production deploys (which only restart the container, never invoke
+    // run_014.js) get the column, the CHECK constraint, the index, and the
+    // legacy→tier backfill on every boot. Without this block sequelize.sync
+    // ({ alter: false }) would fail to add the column to existing prod DBs
+    // and every User.findAll() would crash with `column users.tier does not
+    // exist`. Idempotent: ADD COLUMN IF NOT EXISTS + DO $$ guard for the
+    // constraint + CREATE INDEX IF NOT EXISTS. The backfill is
+    // re-derivation-safe (running it twice produces the same value).
+    try {
+      const [userTablesTier] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
+      );
+      if (userTablesTier.length > 0) {
+        await sequelize.query(
+          `ALTER TABLE users ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 4`
+        );
+        await sequelize.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'users_tier_check'
+            ) THEN
+              ALTER TABLE users
+                ADD CONSTRAINT users_tier_check
+                CHECK (tier BETWEEN 1 AND 4);
+            END IF;
+          END $$;
+        `);
+        // Backfill from legacy fields. Idempotent — re-running re-derives the
+        // same value from (isSuperAdmin, role) so concurrent boots are safe.
+        await sequelize.query(`
+          UPDATE users SET tier = CASE
+            WHEN "isSuperAdmin" = true        THEN 1
+            WHEN role IN ('admin','manager')  THEN 2
+            WHEN role = 'assistant_manager'   THEN 3
+            ELSE                                   4
+          END
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_users_tier ON users(tier)`);
+        console.log('[Server] users.tier column + CHECK + index ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] users.tier migration warning:', e.message?.slice(0, 100));
+    }
+
     // ── Auto-migration: Add receipt columns to task_assignees ──
     // Per-assignee delivery/seen tracking for the WhatsApp-style receipt UI.
     // assignerId records who triggered the assignment (used to scope visibility
