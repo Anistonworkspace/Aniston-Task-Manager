@@ -306,7 +306,19 @@ const updateUser = async (req, res) => {
       }
     }
 
+    // Snapshot tier-defining fields BEFORE update so we can detect a real
+    // RBAC change after the save and notify the affected user in realtime.
+    const prevTier = resolveTier(user);
+    const prevRole = user.role;
+    const prevSuperAdmin = !!user.isSuperAdmin;
+
     await user.update(updates);
+
+    const newTier = resolveTier(user);
+    const tierChanged =
+      newTier !== prevTier ||
+      user.role !== prevRole ||
+      Boolean(user.isSuperAdmin) !== prevSuperAdmin;
 
     logActivity({
       action: 'user_updated',
@@ -314,8 +326,35 @@ const updateUser = async (req, res) => {
       entityType: 'user',
       entityId: user.id,
       userId: req.user.id,
-      meta: { fields: Object.keys(updates), scope: auth.scope },
+      meta: {
+        fields: Object.keys(updates),
+        scope: auth.scope,
+        ...(tierChanged ? { previousTier: prevTier, newTier } : {}),
+      },
     });
+
+    // Realtime tier/role change notice — targeted only to the affected user's
+    // personal socket room so their session can refresh permissions, sidebar,
+    // and route guards without a manual reload. Self-edits are blocked above
+    // for these fields, but we still skip self defensively. Best-effort emit:
+    // a socket failure here MUST NOT fail the user-update response, since the
+    // backend remains the source of truth and the next /auth/me call will
+    // pick up the new tier regardless.
+    if (tierChanged && String(user.id) !== String(req.user.id)) {
+      try {
+        const { emitToUser } = require('../services/socketService');
+        emitToUser(user.id, 'user:role-updated', {
+          previousTier: prevTier,
+          newTier,
+          newRole: user.role,
+          isSuperAdmin: !!user.isSuperAdmin,
+          changedBy: { id: req.user.id, name: req.user.name },
+          at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('[User] role-update emit failed:', err.message);
+      }
+    }
 
     res.json({
       success: true,

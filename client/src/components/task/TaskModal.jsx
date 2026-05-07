@@ -16,7 +16,11 @@ import DependencyWorkSection from '../dependencies/DependencyWorkSection';
 
 import ApprovalSection from './ApprovalSection';
 import WatcherSection from './WatcherSection';
-import RecurrenceSection from './RecurrenceSection';
+// Legacy `RecurrenceSection` is no longer rendered in the modal — it wrote
+// into the Task.recurrence JSONB column, which is being phased out in favour
+// of the new RecurringTaskTemplate stack on /recurring-work. The import is
+// kept commented out so the file's history is searchable.
+// import RecurrenceSection from './RecurrenceSection';
 import DueDateExtensionModal from './DueDateExtensionModal';
 import HelpRequestModal from './HelpRequestModal';
 import ConflictWarning from './ConflictWarning';
@@ -26,12 +30,12 @@ import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import DetailModalShell from '../common/DetailModalShell';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
-import { canEditTask as canEditTaskFn, canSetPriority as canSetPriorityFn } from '../../utils/permissions';
+import { canEditTask as canEditTaskFn, canEditTaskTitle as canEditTaskTitleFn, canSetPriorityForTask } from '../../utils/permissions';
 import { formatTaskDate } from '../../utils/dateFormat';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
-  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions, isTier1, isTier2 } = useAuth();
   const { error: toastError } = useToast();
   // Ref the shell populates with its animated `requestClose` so the X button
   // (and programmatic closes after delete/duplicate) play the slide-down exit
@@ -52,10 +56,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
 
   // Whether the actor can change task priority. Members default to false;
-  // managers/admins/asst-mgrs default to true. Backend gate (`tasks.set_priority`)
-  // remains the source of truth — this just renders the pill read-only when
-  // disallowed so a user can't even open the dropdown.
-  const canSetPriority = canSetPriorityFn(isSuperAdmin, granularPermissions);
+  // managers/admins/asst-mgrs default to true. Per-task helper so a Tier 4
+  // actor can still edit priority on tasks they CREATED and SOLELY OWN
+  // (mirrors the backend self-owned exemption in updateTask). Backend
+  // `tasks.set_priority` (with the same self-owned exemption) remains the
+  // source of truth — this just renders the pill read-only when disallowed
+  // so a user can't even open the dropdown.
+  const canSetPriority = canSetPriorityForTask(user, task, isSuperAdmin, granularPermissions);
 
   // canEditOwnFields uses the centralized helper so explicit DENY on tasks.edit
   // wins even for members who would otherwise be allowed to edit their own
@@ -63,15 +70,14 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   // permissionEngine.deny precedence.
   const canEditOwnFields = canEditTaskFn(user, task, granularPermissions);
 
-  // Title edit gate. Mirrors backend `checkTaskAction('edit')` which permits
-  // title updates for management roles AND for any actor that is the task's
-  // assignee or creator (the "self-management whitelist"). The previous
-  // condition only allowed `isMember` ownership and excluded assistant_manager
-  // assignees — so an assistant manager couldn't rename their own task even
-  // though the API would have accepted the change. `canEditOwnFields` runs
-  // the canonical client-side helper (canEditTask in utils/permissions.js)
-  // which respects explicit DENY overrides and ownership.
-  const canEditTitle = !isApproved && (canEditAllFields || canEditOwnFields);
+  // Title edit gate — Tier 1 only after creation. Once a task exists, only
+  // Super Admin (Tier 1) may rename it. Creators, assignees, managers, and
+  // assistant managers can no longer change the title via the modal — the
+  // input collapses to a read-only `<h2>`. During NEW-task creation (when
+  // task has no id), the gate falls through to the generic edit check so
+  // allowed users can type the initial title. Mirrors the backend
+  // `title_locked` 403 in `taskController.updateTask`.
+  const canEditTitle = !isApproved && canEditTaskTitleFn(user, task, granularPermissions);
   const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
   // Status edit gate: only owners/management may change status. Members who
   // can view a task they don't own (e.g. via cross-team links) get a read-
@@ -275,6 +281,20 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       const approvalCode = err.response?.data?.code;
       if (status === 403 && (approvalCode === 'approval_required' || approvalCode === 'approval_pending')) {
         setStatus(task.status);
+        setSaveStatus('error');
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
+        return;
+      }
+
+      // Description set-once lock — backend rejected an attempt to edit a
+      // description that's already populated for a tier without override
+      // (T3/T4). Revert the optimistic textarea value to the saved
+      // description so the UI matches the persisted state, then surface
+      // the message via toast.
+      if (approvalCode === 'description_locked') {
+        setDescription(task.description || '');
+        if (toastError) toastError(msg || 'Task description cannot be edited after it has been added.');
         setSaveStatus('error');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
@@ -700,7 +720,28 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
           {/* Watcher + Approval + Recurrence */}
           <WatcherSection taskId={task?.id} />
           <ApprovalSection task={task} onUpdate={(updated) => { if (onUpdate) onUpdate({ ...task, ...updated }); }} />
-          <RecurrenceSection taskId={task?.id} recurrence={task?.recurrence} onUpdate={(updated) => { if (onUpdate) onUpdate({ ...task, ...updated }); }} />
+          {/* Legacy per-task RecurrenceSection has been retired in favour of
+              the dedicated Recurring Work flow. New recurring rules are
+              created on /recurring-work; this button is the discoverability
+              path for users who used to look here. The legacy
+              Task.recurrence column still exists in the DB and any pre-
+              existing rules can still be read by /api/task-extras/:id/recurrence,
+              but the legacy generation cron is now off by default. */}
+          {canManage && !task?.isRecurringInstance && (
+            <div className="mb-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { window.location.href = '/recurring-work'; }}
+                className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors"
+                title="Recurring work is managed on the Recurring Work page"
+              >
+                <RefreshCw size={13} /> Make this recurring…
+              </button>
+              <span className="text-[10px] text-text-tertiary">
+                Opens the Recurring Work page where you can configure schedule, assignee, and escalation.
+              </span>
+            </div>
+          )}
 
           {/* Approval Status Badge */}
           {task?.approvalStatus && (
@@ -1236,17 +1277,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             </div>
           )}
 
-          {/* Description — set-once. Editable while the saved value is empty;
-              once a non-empty description has been persisted it locks for every
-              role (mirrors the backend description_locked guard).
+          {/* Description — set-once for Tier 3/Tier 4 only. Tier 1 and Tier 2
+              may edit the description at any time (mirrors the backend
+              `tasks.edit_locked_description` matrix flag and the
+              `description_locked` 403 guard). For Tier 3/Tier 4 the field is
+              editable while empty so they can add the first description, then
+              becomes a read-only "Locked" panel after persistence.
               Edit gate matches the title field (canEditAllFields || canEditOwnFields)
               so an assignee / creator member can add the first description —
               backend `checkTaskAction('edit')` whitelists `description` for the
               same actors, so this UI gate must not be narrower. */}
           {(() => {
             const savedDescription = typeof task?.description === 'string' ? task.description : '';
-            const isDescriptionLocked = !!savedDescription.trim();
-            const canAddFirstDescription = !isApproved && (canEditAllFields || canEditOwnFields);
+            const hasSavedDescription = !!savedDescription.trim();
+            // Tier 1 + Tier 2 always bypass the lock (matches backend matrix
+            // flag `tasks.edit_locked_description`).
+            const canBypassDescriptionLock = isTier1 || isTier2;
+            const isDescriptionLocked = hasSavedDescription && !canBypassDescriptionLock;
+            const canEditDescription = !isApproved
+              && (canEditAllFields || canEditOwnFields)
+              && (!hasSavedDescription || canBypassDescriptionLock);
             return (
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-1.5">
@@ -1261,14 +1311,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                     </span>
                   )}
                 </div>
-                {isDescriptionLocked ? (
-                  <div
-                    aria-readonly="true"
-                    className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30 whitespace-pre-wrap select-text"
-                  >
-                    {savedDescription}
-                  </div>
-                ) : canAddFirstDescription ? (
+                {canEditDescription ? (
                   <>
                     <textarea
                       value={description}
@@ -1284,6 +1327,13 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                       onDismiss={dismissDescGrammar}
                     />
                   </>
+                ) : isDescriptionLocked ? (
+                  <div
+                    aria-readonly="true"
+                    className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30 whitespace-pre-wrap select-text"
+                  >
+                    {savedDescription}
+                  </div>
                 ) : (
                   <p className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30">No description</p>
                 )}

@@ -7,6 +7,7 @@ import AIAssistant from '../common/AIAssistant';
 import VoiceNotes from '../common/VoiceNotes';
 import FeedbackWidget from '../common/FeedbackWidget';
 import ToolsFAB from '../common/ToolsFAB';
+import RoleChangePopup from '../common/RoleChangePopup';
 
 export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -35,6 +36,7 @@ export default function Layout() {
       <FeedbackWidget isOpen={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       <AIAssistant isOpen={aiOpen} onClose={() => setAiOpen(false)} />
       <OnboardingTour />
+      <RoleChangePopup />
     </div>
   );
 }

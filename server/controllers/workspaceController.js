@@ -3,6 +3,18 @@ const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const boardMembershipService = require('../services/boardMembershipService');
 const boardVisibility = require('../services/boardVisibilityService');
+const { getIO } = require('../services/socketService');
+
+// Sidebar refresh: workspace mutations have no per-room concept (workspaces
+// don't have socket rooms), so we broadcast globally and let each receiving
+// client invalidate its `boards.list` queryKey. The refetch hits the
+// RBAC-aware `/workspaces/mine` + `/boards` endpoints, so unauthorised users
+// see no change. Payload kept minimal — clients refetch for the truth.
+function broadcastWorkspaceChange(event, workspaceId, extra = {}) {
+  try {
+    getIO().emit(event, { workspaceId, ...extra });
+  } catch (_) { /* socket layer not initialised in tests */ }
+}
 
 // GET /api/workspaces/mine — workspaces visible to current user
 // Admins/Managers: see all workspaces
@@ -220,6 +232,8 @@ exports.createWorkspace = async (req, res) => {
       ],
     });
 
+    broadcastWorkspaceChange('workspace:created', workspace.id, { workspace: full });
+
     res.status(201).json({ success: true, data: { workspace: full } });
   } catch (err) {
     console.error('[Workspace] createWorkspace error:', err.message);
@@ -272,6 +286,12 @@ exports.updateWorkspace = async (req, res) => {
       userId: req.user.id,
     });
 
+    // Real-time sidebar refresh — covers rename, color/icon change, AND
+    // archive (isActive=false). Distinct event lets clients log differently
+    // if they ever want to, but the routing target is the same `boards.list`.
+    const archiveEvent = isActive === false ? 'workspace:archived' : 'workspace:updated';
+    broadcastWorkspaceChange(archiveEvent, workspace.id, { workspace });
+
     res.json({ success: true, data: { workspace } });
   } catch (err) {
     console.error('[Workspace] updateWorkspace error:', err.message);
@@ -321,6 +341,9 @@ exports.deleteWorkspace = async (req, res) => {
       userId: req.user.id,
     });
 
+    // Sidebar refresh — clients re-fetch their workspace + board lists.
+    broadcastWorkspaceChange('workspace:deleted', workspace.id);
+
     res.json({ success: true, message: 'Workspace deleted.' });
   } catch (err) {
     console.error('[Workspace] deleteWorkspace error:', err.message);
@@ -336,6 +359,10 @@ exports.assignBoard = async (req, res) => {
     if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
 
     await board.update({ workspaceId: req.params.id });
+    // The board moved between workspaces — broadcast both events so the
+    // sidebar re-shuffles for everyone whose `boards.list` is registered.
+    broadcastWorkspaceChange('workspace:updated', req.params.id, { boardId });
+    try { getIO().emit('board:updated', { boardId, board }); } catch {}
     res.json({ success: true, data: { board } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to assign board.' });
@@ -358,6 +385,10 @@ exports.assignMembers = async (req, res) => {
       userId: req.user.id,
       meta: { userIds },
     });
+
+    // Membership change can flip workspace visibility for affected users —
+    // broadcast so their sidebar re-evaluates via the RBAC-aware refetch.
+    broadcastWorkspaceChange('workspace:memberUpdated', req.params.id, { userIds });
 
     res.json({ success: true, message: `${userIds.length} member(s) assigned.` });
   } catch (err) {
@@ -416,6 +447,10 @@ exports.createFromTemplate = async (req, res) => {
       ],
     });
 
+    // Workspace + every templated board appeared in one go — one workspace
+    // event is enough to drive the sidebar to re-fetch the whole structure.
+    broadcastWorkspaceChange('workspace:created', workspace.id, { workspace: full });
+
     res.status(201).json({ success: true, data: { workspace: full } });
   } catch (err) {
     console.error('[Workspace] createFromTemplate error:', err.message);
@@ -457,6 +492,11 @@ exports.applyTemplate = async (req, res) => {
       meta: { boardCount: createdBoards.length },
     });
 
+    // Several boards just landed in this workspace — sidebar refresh.
+    broadcastWorkspaceChange('workspace:updated', workspace.id, {
+      addedBoardIds: createdBoards.map((b) => b.id),
+    });
+
     res.json({ success: true, data: { boards: createdBoards } });
   } catch (err) {
     console.error('[Workspace] applyTemplate error:', err.message);
@@ -468,6 +508,11 @@ exports.applyTemplate = async (req, res) => {
 exports.removeMember = async (req, res) => {
   try {
     await User.update({ workspaceId: null }, { where: { id: req.params.userId, workspaceId: req.params.id } });
+    // Workspace visibility may have changed for the removed user — broadcast
+    // so their sidebar re-fetches from the RBAC-aware endpoints.
+    broadcastWorkspaceChange('workspace:memberUpdated', req.params.id, {
+      removedUserId: req.params.userId,
+    });
     res.json({ success: true, message: 'Member removed from workspace.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to remove member.' });
@@ -515,6 +560,9 @@ exports.restoreWorkspace = async (req, res) => {
     await workspace.update({ isActive: true });
     // Also restore all boards in this workspace
     await Board.update({ isArchived: false }, { where: { workspaceId: req.params.id } });
+    // Sidebar refresh — workspace + its boards reappear for everyone allowed
+    // to see them.
+    broadcastWorkspaceChange('workspace:restored', workspace.id, { workspace });
     res.json({ success: true, message: 'Workspace restored.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to restore workspace.' });

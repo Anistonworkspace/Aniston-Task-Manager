@@ -36,8 +36,6 @@ const TasksPage = lazy(() => import('./pages/TasksPage'));
 const MemberDashboardPage = lazy(() => import('./pages/MemberDashboardPage'));
 const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage'));
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
-const DirectorDashboardPage = lazy(() => import('./pages/DirectorDashboardPage'));
-const AssistantManagerPlanPage = lazy(() => import('./pages/AssistantManagerPlanPage'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
 const RecurringWorkPage = lazy(() => import('./pages/RecurringWorkPage'));
@@ -186,8 +184,9 @@ export default function App() {
           <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
           <Route path="manager-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></AdminRoute>} />
           <Route path="admin-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="director-dashboard" element={<AdminRoute requiredPermission="director_plan.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><DirectorDashboardPage /></Suspense></ErrorBoundary></AdminRoute>} />
-          <Route path="director-plan" element={<AdminRoute requiredPermission="director_plan.view"><Suspense fallback={<PageLoader />}><AssistantManagerPlanPage /></Suspense></AdminRoute>} />
+          {/* Director Dashboard and Director Plan routes removed — modules retired. */}
+          <Route path="director-dashboard" element={<Navigate to="/" replace />} />
+          <Route path="director-plan" element={<Navigate to="/" replace />} />
           <Route path="timeline" element={<Suspense fallback={<PageLoader />}><TimelinePage /></Suspense>} />
           <Route path="time-plan" element={<Suspense fallback={<PageLoader />}><TimePlanPage /></Suspense>} />
           <Route path="reviews" element={<Suspense fallback={<PageLoader />}><ReviewPage /></Suspense>} />

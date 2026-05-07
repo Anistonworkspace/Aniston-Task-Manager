@@ -208,7 +208,6 @@ function deriveResourceTypes(url) {
   if (/\/meetings/i.test(url)) return ['meetings'];
   if (/\/notes/i.test(url)) return ['notes'];
   if (/\/timeplans/i.test(url)) return ['time_plan'];
-  if (/\/director-plan/i.test(url)) return ['director_plan'];
   if (/\/archive/i.test(url)) return ['archive'];
   if (/\/integrations/i.test(url)) return ['integrations'];
   if (/\/feedback/i.test(url)) return ['feedback'];

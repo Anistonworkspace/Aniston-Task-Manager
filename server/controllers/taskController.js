@@ -24,6 +24,7 @@ const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig')
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 const boardMembershipService = require('../services/boardMembershipService');
 const { hasPermission: enginePermission } = require('../services/permissionEngine');
+const { isSelfOwnedTask, isSelfOwnedCreate } = require('../utils/taskOwnership');
 
 /**
  * Centralized check: can this user assign a task to the given target user IDs?
@@ -363,9 +364,18 @@ const createTask = async (req, res) => {
     // value. The result is the same task row (priority='medium') either
     // way, so a 403 here would just be theatre. Mirrors the principle in
     // updateTask: only block ACTUAL changes from the default.
+    //
+    // Self-owned exemption: a Tier 4 actor creating a task they're keeping
+    // for themselves (no foreign assignees) IS the de-facto owner — the
+    // engine's coarse `set_priority=false` would otherwise lock them out of
+    // setting priority on their own work. The exemption is scoped strictly
+    // to the "creator + self/empty assignee set" shape so a member who tries
+    // to assign to anyone else still hits the 403.
     const DEFAULT_PRIORITY = 'medium';
     if (priority !== undefined && priority !== null && priority !== DEFAULT_PRIORITY) {
-      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      const selfOwned = isSelfOwnedCreate(req.user.id, assigneeIds);
+      const canSetPriority = selfOwned
+        || (await enginePermission(req.user, 'tasks', 'set_priority'));
       if (!canSetPriority) {
         return res.status(403).json({
           success: false,
@@ -809,6 +819,27 @@ const updateTask = async (req, res) => {
     const taskAssignees = task.taskAssignees || [];
     const editPermission = await checkTaskAction('edit', req.user, task, taskAssignees, req);
 
+    // Title set-once lock. Once a task exists, only Tier 1 / Super Admin may
+    // rename it. Tier 2/3/4 — including the task's creator and assignees —
+    // can no longer change the title via PUT. A no-op resend (incoming ===
+    // existing) is allowed for everyone so optimistic clients that include
+    // `title` in PATCH-style payloads don't 403. Title creation happens in
+    // POST /tasks (createTask), which is unaffected by this gate.
+    if (req.body.title !== undefined) {
+      const incomingTitle = typeof req.body.title === 'string' ? req.body.title : '';
+      const sameAsExisting = incomingTitle === task.title;
+      if (!sameAsExisting) {
+        const { resolveTier, TIER_1 } = require('../config/tiers');
+        if (resolveTier(req.user) !== TIER_1) {
+          return res.status(403).json({
+            success: false,
+            message: 'Task title can only be edited by Super Admin (Tier 1) after creation.',
+            code: 'title_locked',
+          });
+        }
+      }
+    }
+
     // Archive-as-delete gate: PUT { isArchived: true|false } is the board UI's
     // way of soft-deleting / restoring. It must be authorized by tasks.delete
     // (deny-aware), not silently filtered, so a member that bypasses the UI
@@ -821,7 +852,16 @@ const updateTask = async (req, res) => {
     // no write). req._taskInSubtree was populated by the editPermission
     // check above (or by the canViewTask middleware on read paths).
     if (req.body.isArchived !== undefined) {
-      const canArchive = await enginePermission(req.user, 'tasks', 'delete');
+      // Archive (soft-delete) is now a SEPARATE action from permanent delete.
+      // Tier 1 (Super Admin) and Tier 2 (Admin/Manager) may archive any task
+      // they have visibility on. Tier 3/4 still need the matrix `tasks.delete`
+      // permission (which defaults to false but can be granted as an
+      // override). Permanent deletion remains gated by `assertCanDelete`
+      // in deleteTask — Tier 2 cannot reach that path.
+      const { resolveTier, hasTierAtLeast: hasTierAtLeastFn, TIER_2 } = require('../config/tiers');
+      const userTier = resolveTier(req.user);
+      const canArchive = hasTierAtLeastFn(req.user, TIER_2)
+        || (await enginePermission(req.user, 'tasks', 'delete'));
       const isAdminLike = req.user.isSuperAdmin || req.user.role === 'admin';
       const archiveInScope = isAdminLike
         || req._taskInSubtree === true
@@ -907,9 +947,10 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // Description set-once lock. Tier 2/3/4 may add a description only when
-    // empty; once non-empty it is immutable for them. Tier 1 may override
-    // (matches matrix entry `tasks.edit_locked_description`). A no-op resend
+    // Description set-once lock. Tier 3/Tier 4 may add a description only when
+    // empty; once non-empty it is immutable for them. Tier 1 + Tier 2 may
+    // override at any time (matches matrix entry `tasks.edit_locked_description`,
+    // decision #10 revised — T1+T2 always editable). A no-op resend
     // (incoming === existing) is allowed for everyone so optimistic clients
     // that include the field in PATCH payloads don't break.
     if (req.body.description !== undefined && allowedFields.includes('description')) {
@@ -917,18 +958,21 @@ const updateTask = async (req, res) => {
       const incomingRaw = req.body.description == null ? '' : String(req.body.description);
       const incomingDesc = incomingRaw.trim();
       if (existingDesc && incomingDesc !== existingDesc) {
-        // Phase 7 — Tier 1 override per product matrix flag
-        // `tasks.edit_locked_description`. Closes audit P1-10.
-        const { resolveTier, TIER_1 } = require('../config/tiers');
-        if (resolveTier(req.user) !== TIER_1) {
-          return res.status(400).json({
+        // Phase 7 — Tier 1 + Tier 2 override per product matrix flag
+        // `tasks.edit_locked_description`. Read the matrix directly so the
+        // controller never drifts from the engine / frontend. Closes audit P1-10.
+        const { resolveTier } = require('../config/tiers');
+        const { isTierBasePermission } = require('../config/permissionMatrix');
+        const actorTier = resolveTier(req.user);
+        if (!isTierBasePermission(actorTier, 'tasks', 'edit_locked_description')) {
+          return res.status(403).json({
             success: false,
             message: 'Task description cannot be edited after it has been added.',
             code: 'description_locked',
           });
         }
-        // Tier 1 override path: sanitize the incoming value and let the
-        // normal field-merge below persist it.
+        // Override path (Tier 1 / Tier 2): sanitize the incoming value and let
+        // the normal field-merge below persist it.
         req.body.description = sanitizeInput(incomingRaw);
       }
       // Sanitize on first set so the persisted value matches createTask's
@@ -1175,8 +1219,18 @@ const updateTask = async (req, res) => {
     // 403 a member who's editing OTHER fields on their own task. Backend is
     // the source of truth; the frontend renders priority read-only when the
     // user lacks the perm, but a forged direct PUT will still hit this gate.
+    //
+    // Self-owned exemption: a Tier 4 actor who created the task AND is its
+    // sole assignee may set priority on it even though `tasks.set_priority`
+    // is false at the matrix level. This matches the product rule that
+    // priority is a planning concern owned by the task's owner — when the
+    // owner IS the actor, denying them is just frustrating noise. Tasks
+    // delegated to a member by anyone else (different creator OR another
+    // assignee on the row) still hit the 403.
     if (changes.priority !== undefined && changes.priority !== task.priority) {
-      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      const selfOwned = isSelfOwnedTask(req.user.id, task, taskAssignees);
+      const canSetPriority = selfOwned
+        || (await enginePermission(req.user, 'tasks', 'set_priority'));
       if (!canSetPriority) {
         return res.status(403).json({
           success: false,
@@ -1885,21 +1939,17 @@ const bulkUpdateTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid update fields provided.' });
     }
 
-    // Archive-as-delete gate for bulk: same rule as the single-task PUT —
-    // tasks.delete (deny-aware) is required to flip isArchived, even though
-    // the route gate only requires tasks.edit.
+    // Archive-as-soft-delete gate for bulk. Archive is now a SEPARATE action
+    // from permanent delete: Tier 1 + Tier 2 (Admin/Manager) may bulk archive,
+    // Tier 3/4 still require the matrix `tasks.delete` (default false). The
+    // `assertCanDelete` gate previously wired here for the archive direction
+    // is removed because it would block Tier 2 — and Tier 2 is now allowed
+    // to archive. Permanent deletion is still gated by `assertCanDelete` in
+    // `deleteTask`, so Tier 2 still cannot truly delete.
     if (safeUpdates.isArchived !== undefined) {
-      // Phase 7 — Tier-2 destructive guard. Bulk archive bypassed
-      // `assertCanDelete` previously (audit P0-3); wire it explicitly here
-      // when the operation is an archive (isArchived=true). Restore is not
-      // destructive, so we only gate the archive direction.
-      if (safeUpdates.isArchived === true) {
-        const { assertCanDelete } = require('../services/tierEnforcement');
-        const { sendIfTierError } = require('../utils/tierResponseHelpers');
-        if (sendIfTierError(res, () => assertCanDelete(req.user, 'task', { isOwnResource: false }))) return;
-      }
-
-      const canArchive = await enginePermission(req.user, 'tasks', 'delete');
+      const { hasTierAtLeast: hasTierAtLeastFn, TIER_2 } = require('../config/tiers');
+      const canArchive = hasTierAtLeastFn(req.user, TIER_2)
+        || (await enginePermission(req.user, 'tasks', 'delete'));
       if (!canArchive) {
         return res.status(403).json({
           success: false,
@@ -1962,9 +2012,25 @@ const bulkUpdateTasks = async (req, res) => {
 
     // Bulk priority gate — same rule as the single PUT. We check before
     // mutating so a denied user can't slip a priority change in alongside an
-    // otherwise-allowed bulk update (e.g. status change).
+    // otherwise-allowed bulk update (e.g. status change). The self-owned
+    // exemption (Tier 4 owner-creator may set priority on their own task)
+    // applies per-row: every selected task in the bulk must be self-owned
+    // for the bulk to proceed without `tasks.set_priority`. A single
+    // foreign task in the selection collapses the entire bulk back to the
+    // 403 path so the actor cannot piggy-back priority changes on stranger
+    // rows alongside their own.
     if (safeUpdates.priority !== undefined) {
-      const canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      let canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
+      if (!canSetPriority) {
+        const ownershipRows = await Task.findAll({
+          where: { id: { [Op.in]: taskIds } },
+          attributes: ['id', 'createdBy', 'assignedTo'],
+          include: [{ model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'] }],
+        });
+        const allSelfOwned = ownershipRows.length === taskIds.length
+          && ownershipRows.every((t) => isSelfOwnedTask(req.user.id, t, t.taskAssignees || []));
+        canSetPriority = allSelfOwned;
+      }
       if (!canSetPriority) {
         return res.status(403).json({
           success: false,

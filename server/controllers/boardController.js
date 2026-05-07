@@ -1,7 +1,20 @@
 const { Board, User, Task, Workspace, TaskOwner, TaskAssignee, sequelize } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
-const { emitToBoard, emitToUser, forceUserLeaveBoard } = require('../services/socketService');
+const { emitToBoard, emitToUser, forceUserLeaveBoard, getIO } = require('../services/socketService');
+
+// Sidebar refresh: broadcast a board mutation to every connected socket so any
+// user whose sidebar/workspace list depends on this board re-fetches via the
+// RBAC-aware `/boards` + `/workspaces/mine` endpoints. The payload itself is
+// intentionally minimal (no leaking of board.members, etc.) — clients only
+// react by invalidating their `boards.list` queryKey, which triggers the
+// authorised refetch. Safe even if the receiving user has no access: their
+// refetch returns the same filtered list they already had.
+function broadcastBoardChange(event, boardId, extra = {}) {
+  try {
+    getIO().emit(event, { boardId, ...extra });
+  } catch (_) { /* socket layer not initialised in tests */ }
+}
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isValidStatus } = require('../utils/statusConfig');
@@ -149,9 +162,11 @@ const createBoard = async (req, res) => {
       ],
     });
 
-    // Broadcast board creation to all connected users (for sidebar refresh)
-    const { getIO } = require('../services/socketService');
-    try { getIO().emit('board:created', { board: fullBoard }); } catch {}
+    // Broadcast board creation to all connected users (for sidebar refresh).
+    // Each receiver's `boards.list` invalidation re-fetches via the RBAC-aware
+    // /boards + /workspaces/mine endpoints, so unauthorised users see no
+    // change while authorised users get the new entry without a page reload.
+    broadcastBoardChange('board:created', board.id, { board: fullBoard });
 
     logActivity({
       action: 'board_created',
@@ -567,8 +582,13 @@ const updateBoard = async (req, res) => {
       ],
     });
 
-    // Real-time update
+    // Real-time update — emit to the board room (for any user currently
+    // viewing the board page) AND globally (for every sidebar/workspace list
+    // that needs to reflect the rename / archive / restore / workspace move).
+    // The global emit is RBAC-safe because the receiving sidebar refetches
+    // via the authorised `/boards` + `/workspaces/mine` endpoints.
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
+    broadcastBoardChange('board:updated', board.id, { board: fullBoard });
 
     logActivity({
       action: updates.isArchived ? 'board_archived' : 'board_updated',
@@ -637,7 +657,7 @@ const deleteBoard = async (req, res) => {
 
     emitToBoard(boardId, 'board:deleted', { boardId });
     // Also broadcast to all for sidebar refresh
-    try { const { getIO } = require('../services/socketService'); getIO().emit('board:deleted', { boardId }); } catch {}
+    broadcastBoardChange('board:deleted', boardId);
 
     logActivity({
       action: 'board_deleted',
@@ -705,6 +725,10 @@ const addMember = async (req, res) => {
     });
 
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
+    // Sidebar/board-list refresh for every connected user — membership change
+    // alters who can see this board. Receivers refetch via the RBAC-aware
+    // /boards + /workspaces/mine endpoints.
+    broadcastBoardChange('board:memberAdded', board.id, { boardId: board.id, userId });
 
     logActivity({
       action: 'board_member_added',
@@ -780,6 +804,8 @@ const removeMember = async (req, res) => {
     });
 
     emitToBoard(board.id, 'board:updated', { board: fullBoard });
+    // Sidebar/board-list refresh for every connected user.
+    broadcastBoardChange('board:memberRemoved', board.id, { boardId: board.id, userId });
 
     logActivity({
       action: 'board_member_removed',

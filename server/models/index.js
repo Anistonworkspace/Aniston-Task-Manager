@@ -19,7 +19,6 @@ const PermissionGrant = require('./PermissionGrant');
 const AccessRequest = require('./AccessRequest');
 const TaskWatcher = require('./TaskWatcher');
 const Announcement = require('./Announcement');
-const DirectorPlan = require('./DirectorPlan');
 const Label = require('./Label');
 const TaskLabel = require('./TaskLabel');
 const DueDateExtension = require('./DueDateExtension');
@@ -358,10 +357,6 @@ TaskApprovalFlow.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: '
 TaskApprovalFlow.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'SET NULL' });
 User.hasMany(TaskApprovalFlow, { foreignKey: 'userId', as: 'approvalSteps' });
 
-// ─── DirectorPlan <-> User ──────────────────────────────────
-DirectorPlan.belongsTo(User, { foreignKey: 'directorId', as: 'director', onDelete: 'CASCADE' });
-DirectorPlan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
-
 // ─── RecurringTaskTemplate associations ─────────────────────
 // Templates own many generated Task instances. Instance.recurringTemplateId is
 // SET NULL on template hard-delete so historical instances survive (we soft-
@@ -405,7 +400,6 @@ module.exports = {
   HelpRequest,
   PromotionHistory,
   HierarchyLevel,
-  DirectorPlan,
   IntegrationConfig,
   TaskOwner,
   TaskAssignee,

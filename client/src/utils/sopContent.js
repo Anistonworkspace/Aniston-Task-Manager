@@ -1,6 +1,6 @@
 import {
   LogIn, KeyRound, UserCircle, ClipboardList, RefreshCw, FileText, Clock,
-  LayoutGrid, UserPlus, BarChart3, Users, Calendar, Crown, Settings,
+  LayoutGrid, UserPlus, BarChart3, Users, Calendar, Settings,
   Building2, Link2, Archive, Shield, CheckCircle, MessageSquare, Upload,
   ListChecks, CalendarDays, Download, Filter, Search, GripVertical, Eye,
   Bell, GitBranch, Repeat, Zap
@@ -200,15 +200,6 @@ const MANAGER_SECTIONS = [
 // ─── ASSISTANT MANAGER SOP ──────────────────────────────────
 const ASSISTANT_MANAGER_SECTIONS = [
   ...MANAGER_SECTIONS,
-  {
-    title: 'Director Dashboard',
-    icon: Crown,
-    steps: [
-      { title: 'Access', description: 'Click "Director Dashboard" in sidebar.' },
-      { title: 'Manage Schedule', description: 'View and manage the director/CEO\'s schedule and task priorities.' },
-      { title: 'Create Plans', description: 'Use "Director Plan" to create weekly plans, schedule meetings, and manage their calendar.' },
-    ],
-  },
 ];
 
 // ─── ADMIN SOP ──────────────────────────────────────────────
@@ -426,12 +417,6 @@ export const TOUR_STEPS = {
       title: 'Team Dashboard',
       description: 'View team performance, task trends, and workload analytics.',
       target: '[data-tour="nav-dashboard"]',
-    },
-    {
-      icon: '👑',
-      title: 'Director Dashboard',
-      description: 'Manage the director\'s schedule, view their time plans, and track their daily tasks.',
-      target: '[data-tour="nav-director-dashboard"]',
     },
     {
       icon: '➕',

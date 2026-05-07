@@ -47,16 +47,20 @@ beforeEach(() => {
 });
 
 describe('checkTaskAction("edit") — assignee/creator whitelist', () => {
-  it('member-creator gets allowedFields including assignedTo and dueDate', async () => {
+  it('member-creator gets allowedFields including assignedTo and dueDate, but NOT title', async () => {
     const user = { id: ME, role: 'member', isSuperAdmin: false };
     const task = makeTask({ createdBy: ME });
     const result = await checkTaskAction('edit', user, task, [], {});
 
     expect(result.allowed).toBe(true);
     expect(result.allowedFields).toEqual(expect.arrayContaining([
-      'title', 'description', 'status', 'priority', 'progress',
+      'description', 'status', 'priority', 'progress',
       'dueDate', 'startDate', 'assignedTo',
     ]));
+    // Title-lock: only Tier 1 may rename a task after creation. The
+    // assignee/creator whitelist intentionally omits 'title' as the
+    // defense-in-depth layer beneath the controller-level title gate.
+    expect(result.allowedFields).not.toContain('title');
   });
 
   it('member-assignee (via task_assignees) gets the same whitelist with assignedTo', async () => {

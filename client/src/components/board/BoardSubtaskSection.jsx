@@ -310,16 +310,15 @@ export default function BoardSubtaskSection({
 
   // ── Visual layout ──────────────────────────────────────────────────────
   // Monday.com-style nested panel. The subitem area is a self-contained
-  // bordered card indented from the parent row's left edge, with its own
-  // column widths (independent of parentTask's grid). The parent grid props
-  // (`columns`, `taskColWidth`) are intentionally unused here — the visual
-  // intent is "this subitem table is its own little surface, not a
-  // continuation of the parent row." Functionally nothing else changes.
+  // bordered card indented from the parent row's left edge. The title cell
+  // mirrors the parent task column width (`taskColWidth`, minus the panel's
+  // own 48px indent and 20px inner padding) so the subitem title sits
+  // directly under the parent title and shares the same width contract.
   //
   // Subitem column schema (fixed-width, in render order):
-  //   Title (flex)  Status 132  Owner 96  Date 110  Priority 116  Progress 144  Actions 36
-  // Total min ~924px. The card is `overflow-x-auto` so on narrow viewports
-  // it scrolls horizontally rather than overlapping the parent table.
+  //   Title (taskColWidth-aligned)  Status 132  Owner 96  Date 110  Priority 116  Progress 144  Actions 36
+  // The card is `overflow-x-auto` so on narrow viewports it scrolls
+  // horizontally rather than overlapping the parent table.
   const SUB_COLS = [
     { type: 'status', label: 'Status', width: 132 },
     { type: 'person', label: 'Owner', width: 96 },
@@ -327,6 +326,14 @@ export default function BoardSubtaskSection({
     { type: 'priority', label: 'Priority', width: 116 },
     { type: 'progress', label: 'Progress', width: 144 },
   ];
+
+  // Lock the subitem title cell to the same width as the parent task title
+  // column. The 48px subtracts the panel's left indent (`pl-[48px]` on the
+  // outer wrapper) so the title text aligns visually under the parent task
+  // title. Floor at 220px so very narrow main columns don't crush the title
+  // beyond legibility, and cap so an unusually wide main column doesn't
+  // create an empty river to the right of the subitem title.
+  const subTitleWidth = Math.min(520, Math.max(220, (taskColWidth || 300) - 48));
 
   // ── Wrapper hierarchy ─────────────────────────────────────────────────
   // Three-layer structure, all unconditional (same DOM regardless of
@@ -361,13 +368,18 @@ export default function BoardSubtaskSection({
         <div className="overflow-x-auto">
           <div className="min-w-[760px]">
             {/* Subitem header — smaller font, lighter weight than the
-                parent board's column header. */}
+                parent board's column header. The title cell uses the same
+                fixed width as the row title cell below so they always stay
+                in lockstep when the user resizes the parent task column. */}
             <div className="flex items-stretch text-[10px] uppercase tracking-[0.04em] font-semibold text-[#9aa1ad] bg-[#f8f9fc] dark:bg-[#1a1b1e] border-b border-[#eef0f4] dark:border-[#2a2b30]">
-              <div className="flex-1 min-w-[240px] pl-5 pr-3 py-2 flex items-center gap-1.5 border-r border-[#eef0f4] dark:border-[#2a2b30]">
-                <ListChecks size={11} className="text-[#9aa1ad]" />
-                <span>Subitem</span>
+              <div
+                style={{ width: subTitleWidth }}
+                className="flex-shrink-0 pl-5 pr-3 py-2 flex items-center gap-1.5 border-r border-[#eef0f4] dark:border-[#2a2b30] overflow-hidden"
+              >
+                <ListChecks size={11} className="text-[#9aa1ad] flex-shrink-0" />
+                <span className="truncate">Subitem</span>
                 {totalCount > 0 && (
-                  <span className="ml-1 text-[10px] font-normal normal-case text-[#c4c4c4]">{totalCount}</span>
+                  <span className="ml-1 text-[10px] font-normal normal-case text-[#c4c4c4] flex-shrink-0">{totalCount}</span>
                 )}
               </div>
               {SUB_COLS.map((col) => (
@@ -421,10 +433,15 @@ export default function BoardSubtaskSection({
                   key={subtask.id}
                   className="flex items-stretch border-b border-[#eef0f4] dark:border-[#2a2b30] hover:bg-[#f8f9fc] dark:hover:bg-[#1a1b1e] transition-colors group/subrow"
                 >
-                  {/* Title col — flex-1 so it absorbs free space; min-width
-                      keeps the title legible even when many columns are
-                      visible. */}
-                  <div className="flex-1 min-w-[240px] pl-5 pr-3 py-2.5 flex items-center gap-2 border-r border-[#eef0f4] dark:border-[#2a2b30]">
+                  {/* Title col — fixed width matching the parent task title
+                      column (via `subTitleWidth`) so subitem rows align under
+                      the parent row's title. `overflow-hidden` clips any
+                      content that escapes the inner truncate (defensive —
+                      `min-w-0` on the title element does the real work). */}
+                  <div
+                    style={{ width: subTitleWidth }}
+                    className="flex-shrink-0 pl-5 pr-3 py-2.5 flex items-center gap-2 border-r border-[#eef0f4] dark:border-[#2a2b30] overflow-hidden"
+                  >
                     <GripVertical size={12} className="text-[#c4c4c4] opacity-0 group-hover/subrow:opacity-100 transition-opacity flex-shrink-0" />
                     <SubtaskTitle
                       subtask={subtask}
@@ -524,9 +541,18 @@ function SubtaskTitle({ subtask, canEdit, onChange }) {
     setEditing(false);
   }
 
+  // `min-w-0` on every variant is critical: flex children default to
+  // `min-width: auto`, which makes very long subtask titles (a paragraph of
+  // text with no spaces, etc.) push the cell wider than its allocated width.
+  // Without min-w-0, `truncate` is silently no-op'd and the title bleeds
+  // across into the Status / Owner / Date columns. min-w-0 lets the cell
+  // collapse to its allocated width and the truncate ellipsis kicks in.
   if (!canEdit) {
     return (
-      <span className={`flex-1 truncate text-[13px] ${subtask.status === 'done' ? 'line-through text-[#9aa1ad]' : 'text-[#323338] dark:text-white'}`}>
+      <span
+        title={subtask.title}
+        className={`flex-1 min-w-0 max-w-full truncate text-[13px] ${subtask.status === 'done' ? 'line-through text-[#9aa1ad]' : 'text-[#323338] dark:text-white'}`}
+      >
         {subtask.title}
       </span>
     );
@@ -543,7 +569,7 @@ function SubtaskTitle({ subtask, canEdit, onChange }) {
           if (e.key === 'Enter') { e.preventDefault(); commit(); }
           if (e.key === 'Escape') { setDraft(subtask.title || ''); setEditing(false); }
         }}
-        className="flex-1 text-[13px] bg-transparent border-none outline-none text-[#323338] dark:text-white"
+        className="flex-1 min-w-0 max-w-full text-[13px] bg-transparent border-none outline-none text-[#323338] dark:text-white"
         autoFocus
         aria-label="Edit subitem title"
       />
@@ -553,7 +579,8 @@ function SubtaskTitle({ subtask, canEdit, onChange }) {
   return (
     <button
       onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-      className={`flex-1 text-left truncate text-[13px] hover:text-[#0073ea] transition-colors ${subtask.status === 'done' ? 'line-through text-[#9aa1ad]' : 'text-[#323338] dark:text-white'}`}
+      title={subtask.title}
+      className={`flex-1 min-w-0 max-w-full text-left truncate text-[13px] hover:text-[#0073ea] transition-colors ${subtask.status === 'done' ? 'line-through text-[#9aa1ad]' : 'text-[#323338] dark:text-white'}`}
       aria-label="Edit subitem title"
     >
       {subtask.title}

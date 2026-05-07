@@ -97,13 +97,28 @@ export async function generateNow(id) {
 
 // ─── Frequency / weekday helpers used by the UI ─────────────────────────────
 
+// User-facing frequency catalogue. The legacy 'custom' value is intentionally
+// NOT shown — it was an alias of 'weekly' and only created UX confusion. Old
+// templates with frequency='custom' are surfaced as 'weekly' by
+// `normalizeFrequencyForUI` below; they keep their selected weekdays and round-
+// trip safely (the modal saves them back as 'weekly' on next edit).
 export const FREQUENCIES = [
   { value: 'daily', label: 'Daily', hint: 'Every day' },
   { value: 'weekdays', label: 'Weekdays', hint: 'Mon – Sat' },
-  { value: 'weekly', label: 'Weekly', hint: 'Pick days of the week' },
-  { value: 'monthly', label: 'Monthly', hint: 'On specific days each month' },
-  { value: 'custom', label: 'Custom', hint: 'Custom day-of-week pattern' },
+  { value: 'weekly', label: 'Weekly', hint: 'Choose days of the week' },
+  { value: 'monthly', label: 'Monthly', hint: 'Choose date(s) each month' },
 ];
+
+/**
+ * Normalise a stored frequency value for UI rendering. The legacy 'custom'
+ * frequency had identical semantics to 'weekly' (server-side
+ * `isOccurrenceEligible` treats them the same), so the modal collapses them
+ * onto the same picker — keeps existing rules editable without a backfill.
+ */
+export function normalizeFrequencyForUI(frequency) {
+  if (frequency === 'custom') return 'weekly';
+  return frequency || 'daily';
+}
 
 // Match the schema convention: 0 = Sunday … 6 = Saturday.
 export const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -212,4 +227,5 @@ export default {
   formatDueTime12h,
   dueTimeToInputValue,
   getMonthlyDaysFromTemplate,
+  normalizeFrequencyForUI,
 };

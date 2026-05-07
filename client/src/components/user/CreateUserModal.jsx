@@ -212,13 +212,25 @@ export default function CreateUserModal({ isOpen, onClose, onCreated, creatorRol
           </div>
         )}
 
-        {/* Role description */}
-        <div className="bg-surface/50 rounded-lg px-3 py-2">
-          <p className="text-xs text-text-tertiary">
-            <span className="font-medium text-text-secondary">{availableRoles.find(r => r.value === form.role)?.label}:</span>{' '}
-            {availableRoles.find(r => r.value === form.role)?.desc}
-          </p>
-        </div>
+        {/* Tier description — Phase 6: descriptor is derived from the
+            currently selected tier so the UI stays in sync with the dropdown
+            above. Defensive fallback: if the tier value is missing or
+            unknown, render the lowest-privilege descriptor instead of
+            crashing the page. */}
+        {(() => {
+          const selectedTier =
+            TIER_OPTIONS.find(t => t.value === form.tier) ||
+            TIER_OPTIONS.find(t => t.value === 4);
+          if (!selectedTier) return null;
+          return (
+            <div className="bg-surface/50 rounded-lg px-3 py-2">
+              <p className="text-xs text-text-tertiary">
+                <span className="font-medium text-text-secondary">{selectedTier.label}:</span>{' '}
+                {selectedTier.desc}
+              </p>
+            </div>
+          );
+        })()}
 
         {/* Actions */}
         <div className="flex items-center justify-end gap-2 pt-2">

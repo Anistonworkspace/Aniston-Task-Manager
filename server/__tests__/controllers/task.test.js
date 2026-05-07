@@ -503,23 +503,19 @@ describe('PUT /api/tasks/:id', () => {
     );
   });
 
-  it('returns 200 when a manager updates a task they created', async () => {
+  it('returns 403 with title_locked when a manager (Tier 2) tries to rename a task they created', async () => {
+    // Title-lock rule: once a task exists, only Tier 1 / Super Admin may
+    // change the title. A Tier 2 manager — even one who created the task —
+    // gets a 403 with code `title_locked`. Non-title field updates remain
+    // unaffected (covered by the priority test above).
     const managerUser = makeUserRecord({ role: 'manager', id: USER_ID });
-    // authenticate
     User.findByPk
       .mockResolvedValueOnce(managerUser)                       // authenticate
       .mockResolvedValueOnce({ id: USER_ID, role: 'manager' }); // creator lookup
 
     const existingTask = makeTaskRecord({ assignedTo: OTHER_ID, createdBy: USER_ID });
-    const updatedTaskJson = { id: TASK_ID, title: 'Renamed Task' };
 
-    Task.findByPk
-      .mockResolvedValueOnce(existingTask)
-      .mockResolvedValueOnce({
-        ...existingTask,
-        title: 'Renamed Task',
-        toJSON: jest.fn().mockReturnValue(updatedTaskJson),
-      });
+    Task.findByPk.mockResolvedValueOnce(existingTask);
 
     const token = generateToken(USER_ID, 'manager');
 
@@ -528,7 +524,10 @@ describe('PUT /api/tasks/:id', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ title: 'Renamed Task' });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, code: 'title_locked' });
+    // The mutation must never reach the DB on a title-lock denial.
+    expect(existingTask.update).not.toHaveBeenCalled();
   });
 });
 

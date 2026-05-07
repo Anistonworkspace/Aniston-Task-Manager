@@ -4,8 +4,7 @@
  * Uses Microsoft Graph Application permissions (client credentials) via
  * `/users/{teamsUserId}/events`. Never uses delegated `/me/events`.
  *
- * Single responsibility for task calendar sync. The parallel
- * `teamsCalendarService.js` is used by the Director Plan module only.
+ * Single responsibility for task calendar sync.
  *
  * Sync state on Task:
  *   - teamsEventId          → Graph event id

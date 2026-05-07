@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { canArchiveTask, canSetPriority as canSetPriorityFn } from '../../utils/permissions';
+import { canArchiveTask, canSetPriorityForTask } from '../../utils/permissions';
 import StatusCell from './StatusCell';
 import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
 import ApprovalStepIndicator from './ApprovalStepIndicator';
@@ -43,9 +43,11 @@ const TaskRow = React.memo(function TaskRow({
 
   // Priority is gated by its own granular action (`tasks.set_priority`).
   // Members default to false; managers/admins/asst-mgrs default to true.
-  // Centralized helper so an explicit DENY on the user wins over the role
-  // default (mirrors the backend gate in updateTask/bulkUpdate/createTask).
-  const canSetPriority = canSetPriorityFn(isSuperAdmin, granularPermissions);
+  // Centralized per-task helper so a Tier 4 actor can still set priority on
+  // tasks they CREATED and SOLELY OWN (mirrors the backend self-owned
+  // exemption in updateTask/bulkUpdate/createTask). An explicit DENY on
+  // the user still wins over the role default for the global path.
+  const canSetPriority = canSetPriorityForTask(user, task, isSuperAdmin, granularPermissions);
 
   // Centralized archive check — respects role defaults, ownership for members,
   // and explicit DENY overrides. Hides the row's archive icon entirely when

@@ -116,8 +116,6 @@ export default function Header({ onToggleSidebar }) {
     if (path === '/tasks') return 'Tasks & Workflows';
     if (path === '/integrations') return 'Integrations';
     if (path === '/archive') return 'Archive';
-    if (path === '/director-dashboard') return 'Director Dashboard';
-    if (path === '/director-plan') return 'Director Plan';
     if (path.startsWith('/boards/')) return 'Board';
     return '';
   };

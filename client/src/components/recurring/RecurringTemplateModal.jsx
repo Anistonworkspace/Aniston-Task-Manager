@@ -12,6 +12,7 @@ import {
   ESCALATION_TARGETS,
   dueTimeToInputValue,
   getMonthlyDaysFromTemplate,
+  normalizeFrequencyForUI,
 } from '../../services/recurringTasks';
 
 /**
@@ -114,6 +115,8 @@ export default function RecurringTemplateModal({
     return users;
   }, [users, isMember, user]);
 
+  // 'custom' is no longer a user-selectable frequency, but be defensive in
+  // case a stale form state slips through — the server still accepts it.
   const requiresWeekdays = form.frequency === 'weekly' || form.frequency === 'custom';
   const requiresDayOfMonth = form.frequency === 'monthly';
 
@@ -208,16 +211,47 @@ export default function RecurringTemplateModal({
         saved = await updateTemplate(template.id, payload);
         toastSuccess('Recurring work updated.');
       } else {
-        // createTemplate now returns { template, immediateGeneration } so we
-        // can confirm the same-request generation actually happened. The
-        // server side enforces eligibility (start date today, today is in
-        // schedule, etc.) — the client just reads the flag.
+        // createTemplate returns { template, immediateGeneration }. The
+        // server now seeds the NEXT UPCOMING occurrence (today or future) on
+        // create, so the assignee sees a concrete task right away with the
+        // correct future dueDate.
+        //
+        // Branches:
+        //   generated=true, occurrenceDate=today      → today's task is live
+        //   generated=true, occurrenceDate=future     → next occurrence task
+        //                                               is created with that
+        //                                               future dueDate
+        //   alreadyExisted=true                       → idempotent re-seed,
+        //                                               no new row but the
+        //                                               instance is there
+        //   error / non-window reason                 → template saved but
+        //                                               first instance failed
+        //                                               (board archived,
+        //                                               assignee inactive,…)
+        //                                               cron will retry
+        //   reason='no-future-occurrence'             → schedule yields no
+        //                                               eligible date (e.g.
+        //                                               endDate already past)
         const result = await createTemplate(payload);
         saved = result.template;
-        if (result.immediateGeneration?.generated) {
-          toastSuccess(`Recurring work created. Today's task has been assigned${
-            result.immediateGeneration.occurrenceDate ? ` (${result.immediateGeneration.occurrenceDate})` : ''
-          }.`);
+        const ig = result.immediateGeneration || {};
+        if (ig.generated || ig.alreadyExisted) {
+          toastSuccess(
+            `Recurring work created. First task assigned for ${ig.occurrenceDate || 'the next scheduled date'}.`
+          );
+        } else if (ig.reason === 'no-future-occurrence') {
+          toastError(
+            'Recurring work saved, but the schedule yields no upcoming date '
+            + '(check end date and weekday/day-of-month selection).'
+          );
+        } else if (ig.error || ig.reason) {
+          // Partial success — template saved, but first instance failed for a
+          // user-actionable reason. Cron will retry next tick.
+          toastError(
+            `Recurring work saved, but the first task could not be generated`
+            + (ig.reason ? ` (${ig.reason})` : '')
+            + `. The system will retry on the next scheduled run.`
+          );
         } else {
           toastSuccess('Recurring work created.');
         }
@@ -645,7 +679,10 @@ function buildInitialForm(template, ctx) {
       groupId: template.groupId || 'new',
       assigneeId: template.assigneeId || '',
       priority: template.priority || 'medium',
-      frequency: template.frequency || 'daily',
+      // Legacy 'custom' templates collapse onto 'weekly' in the UI — same
+      // server-side semantics, no DB rewrite needed. Saving will persist
+      // the new 'weekly' value, transparently migrating old rows.
+      frequency: normalizeFrequencyForUI(template.frequency),
       weekdays: Array.isArray(template.weekdays) ? template.weekdays : [],
       daysOfMonth,
       startDate: template.startDate || todayStr(),

@@ -88,9 +88,9 @@ describe('getEffectiveBasePermission', () => {
     expect(getEffectiveBasePermission(t4User, 'notes', 'delete')).toBe(true);
   });
 
-  it('only Tier 1 has tasks.edit_locked_description (decision #10)', () => {
+  it('Tier 1 + Tier 2 have tasks.edit_locked_description (decision #10 revised)', () => {
     expect(getEffectiveBasePermission(t1User, 'tasks', 'edit_locked_description')).toBe(true);
-    expect(getEffectiveBasePermission(t2AdminUser, 'tasks', 'edit_locked_description')).toBe(false);
+    expect(getEffectiveBasePermission(t2AdminUser, 'tasks', 'edit_locked_description')).toBe(true);
     expect(getEffectiveBasePermission(t3User, 'tasks', 'edit_locked_description')).toBe(false);
     expect(getEffectiveBasePermission(t4User, 'tasks', 'edit_locked_description')).toBe(false);
   });

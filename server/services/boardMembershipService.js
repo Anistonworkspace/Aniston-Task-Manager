@@ -30,18 +30,43 @@ async function _tblExists(name) {
 /**
  * Auto-add a user to a board's membership with autoAdded=true.
  * Safe to call multiple times — skips if the row already exists.
+ *
+ * Realtime side-effect: when (and only when) a NEW BoardMembers row is
+ * actually inserted, we emit `board:memberAdded` to the user's personal
+ * socket room. This drives the assignee's sidebar to refetch the board
+ * list immediately without a page reload — closing the long-standing
+ * gap where assignment from another user gave them backend access but
+ * no UI update until they manually refreshed.
+ *
+ * The `RETURNING "userId"` clause makes the on-conflict no-op return
+ * an empty array, so we can distinguish "newly inserted" from "already
+ * a member" and only fire the event in the new-insert case. That keeps
+ * task-edit churn from spamming the user with redundant invalidations.
+ *
+ * The emit is wrapped: if the socket layer isn't initialised (tests),
+ * the failure is silently swallowed — the DB write still succeeded.
  */
 async function autoAddMember(boardId, userId) {
   try {
-    // Use raw upsert so we never flip autoAdded=false → true on an
-    // explicitly-added member.
-    await sequelize.query(
+    const [rows] = await sequelize.query(
       `INSERT INTO "BoardMembers" ("boardId", "userId", "autoAdded", "createdAt", "updatedAt")
        VALUES (:boardId, :userId, true, NOW(), NOW())
-       ON CONFLICT ("boardId", "userId") DO NOTHING`,
+       ON CONFLICT ("boardId", "userId") DO NOTHING
+       RETURNING "userId"`,
       { replacements: { boardId, userId } }
     );
-    logger.info(`[BoardMembership] Auto-added user ${userId} to board ${boardId}`);
+    const inserted = Array.isArray(rows) && rows.length > 0;
+    if (inserted) {
+      logger.info(`[BoardMembership] Auto-added user ${userId} to board ${boardId}`);
+      // Targeted user-room emit — never broadcast a board's existence
+      // globally from this path. The eventRouter routes board:memberAdded
+      // to invalidate `boards.list` + `tasks.assignedTo.me`, which makes
+      // the new board appear in the recipient's sidebar after their
+      // RBAC-aware refetch.
+      try {
+        emitToUser(userId, 'board:memberAdded', { boardId, userId });
+      } catch (_) { /* socket layer not ready — non-fatal */ }
+    }
   } catch (err) {
     // Swallow — the row likely already exists or FK is stale.
     logger.warn(`[BoardMembership] autoAddMember failed (non-fatal): ${err.message?.slice(0, 120)}`);
@@ -51,17 +76,35 @@ async function autoAddMember(boardId, userId) {
 /**
  * Explicitly add a user to a board (via Board Settings / addMember endpoint).
  * Sets autoAdded=false so the row survives task-unassignment cleanup.
+ *
+ * Realtime side-effect: emit `board:memberAdded` to the user's personal
+ * socket room only on a TRUE first insert (xmax = 0 in PostgreSQL means
+ * the row was inserted, not updated). Suppresses spurious emits when the
+ * caller is just upgrading an existing auto-added row to explicit (a
+ * common no-visible-change path triggered by `addMember` re-adds).
+ *
+ * Note: `boardController.addMember` also emits `board:memberAdded`
+ * with `boardName` for richer payload — this fallback ensures the event
+ * fires even when explicitAddMember is invoked from elsewhere
+ * (templates, board creation auto-add, etc.).
  */
 async function explicitAddMember(boardId, userId) {
   try {
-    await sequelize.query(
+    const [rows] = await sequelize.query(
       `INSERT INTO "BoardMembers" ("boardId", "userId", "autoAdded", "createdAt", "updatedAt")
        VALUES (:boardId, :userId, false, NOW(), NOW())
        ON CONFLICT ("boardId", "userId")
-       DO UPDATE SET "autoAdded" = false, "updatedAt" = NOW()`,
+       DO UPDATE SET "autoAdded" = false, "updatedAt" = NOW()
+       RETURNING "userId", (xmax = 0) AS inserted`,
       { replacements: { boardId, userId } }
     );
     logger.info(`[BoardMembership] Explicitly added user ${userId} to board ${boardId}`);
+    const wasNewInsert = Array.isArray(rows) && rows.length > 0 && rows[0].inserted === true;
+    if (wasNewInsert) {
+      try {
+        emitToUser(userId, 'board:memberAdded', { boardId, userId });
+      } catch (_) { /* socket layer not ready — non-fatal */ }
+    }
   } catch (err) {
     logger.warn(`[BoardMembership] explicitAddMember failed (non-fatal): ${err.message?.slice(0, 120)}`);
   }

@@ -61,11 +61,17 @@ export default function HomePage() {
   const [updatesOpen, setUpdatesOpen] = useState(false);
 
   useEffect(() => {
+    // loadStats is for ALL roles, not just managers. The endpoint applies
+    // taskVisibility server-side, so a member's response only contains
+    // their own tasks (memberStats[me] is the user's accurate per-status
+    // counts, untruncated by /tasks limits). The `Completed = 0` bug came
+    // from gating this call to canManage and then deriving counts from a
+    // 20-row /tasks slice that drops Done tasks to the bottom.
     Promise.all([
       loadBoards(),
       loadNotifications(),
       loadMyTasks(),
-      canManage && loadStats(),
+      loadStats(),
     ]).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -119,43 +125,63 @@ export default function HomePage() {
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
+  // ── Stat-tile data sources (corrected) ──────────────────────────────
+  // GET /dashboard/stats returns:
+  //   summary.{totalTasks, done, working, stuck, notStarted, overdue}
+  //   statusCounts.{not_started, working_on_it, stuck, done, ...}
+  //   memberStats[]: per-user {id, total, done, working, stuck, overdue,
+  //                            dueToday, dueThisWeek, ...}
+  //
+  // Personal-scoped tiles (Total/Completed/DueToday/Overdue/InProgress
+  // for members) were previously derived from the /tasks?assignedTo=me
+  // slice — which truncates at 20 with done-last ordering, dropping Done
+  // counts entirely. memberStats[me] is computed from ALL the user's
+  // visible tasks server-side, so it's the right source.
+  //
+  // Team-scoped tiles (managers only) read summary.* directly.
+  const summary = stats?.summary;
+  const statusCounts = stats?.statusCounts || {};
+  const memberStats = Array.isArray(stats?.memberStats) ? stats.memberStats : [];
+  const me = memberStats.find((m) => m.id === user?.id) || null;
+
+  // myTasks is still used for the My Tasks list rendered on the page —
+  // that list intentionally only shows the top 10 active items.
   const overdueTasks = myTasks.filter(
     t => t.dueDate && new Date(t.dueDate) < new Date() && t.status !== 'done'
   );
   const pendingTasks = myTasks.filter(t => t.status !== 'done');
-  const completedTasks = myTasks.filter(t => t.status === 'done');
-  const todayTasks = myTasks.filter(t => {
+
+  // ── Personal counts: server-truth (memberStats) with safe fallback ──
+  const personalTotal = me ? me.total : pendingTasks.length;
+  const personalDone = me ? me.done : myTasks.filter(t => t.status === 'done').length;
+  const personalDueToday = me ? me.dueToday : myTasks.filter(t => {
     if (!t.dueDate) return false;
-    const d = new Date(t.dueDate);
-    const today = new Date();
+    const d = new Date(t.dueDate); const today = new Date();
     return d.toDateString() === today.toDateString();
-  });
-  const inProgressPersonal = myTasks.filter(
+  }).length;
+  const personalOverdue = me ? me.overdue : overdueTasks.length;
+  const personalInProgress = me ? me.working : myTasks.filter(
     t => t.status === 'working_on_it' || t.status === 'in_progress'
-  );
-
-  // ── Stats-endpoint adapters ─────────────────────────────────────────
-  // GET /dashboard/stats actually returns:
-  //   { summary: { totalTasks, done, working, stuck, notStarted, overdue },
-  //     statusCounts: { not_started, working_on_it, stuck, done, ... }, ... }
-  // Read those exact keys instead of the legacy `stats.totalTasks` /
-  // `stats.statusBreakdown.*` paths, which never existed and silently
-  // collapsed every team-scoped tile to 0. completionRate is also not on
-  // the response — derive it from summary.done / summary.totalTasks.
-  const summary = stats?.summary;
-  const statusCounts = stats?.statusCounts || {};
-
-  const teamTotal = canManage && summary ? (summary.totalTasks || 0) : myTasks.length;
-  const teamInProgress = canManage && stats
-    ? (statusCounts.working_on_it || statusCounts.in_progress || summary?.working || 0)
-    : inProgressPersonal.length;
-  const teamStuck = canManage && stats
-    ? (statusCounts.stuck || summary?.stuck || 0)
-    : myTasks.filter(t => t.status === 'stuck').length;
-
-  const personalCompletionRate = myTasks.length === 0
+  ).length;
+  const personalStuck = me ? me.stuck : myTasks.filter(t => t.status === 'stuck').length;
+  const personalCompletionRate = personalTotal === 0
     ? 0
-    : Math.round((completedTasks.length / myTasks.length) * 100);
+    : Math.round((personalDone / personalTotal) * 100);
+
+  // ── Tile values: managers see team-scoped; members see personal ────
+  // Due Today and Overdue stay personal for both roles — they're
+  // "what should I focus on today" not team-management metrics.
+  const totalCount = canManage && summary ? (summary.totalTasks || 0) : personalTotal;
+  const completedCount = canManage && summary ? (summary.done || 0) : personalDone;
+  const inProgressCount = canManage && stats
+    ? (statusCounts.working_on_it || statusCounts.in_progress || summary?.working || 0)
+    : personalInProgress;
+  const stuckCount = canManage && stats
+    ? (statusCounts.stuck || summary?.stuck || 0)
+    : personalStuck;
+  const dueTodayCount = personalDueToday;
+  const overdueCount = personalOverdue;
+  const activeCount = Math.max(0, totalCount - completedCount);
 
   const teamCompletionRate = (() => {
     if (!summary) return 0;
@@ -225,11 +251,17 @@ export default function HomePage() {
           </h1>
         </motion.section>
 
-        {/* ─── Row 2: Completion Rate hero (col-6, row-2) + 4 KPI ───── */}
+        {/* ─── Row 2: Completion Rate hero (col-6, row-2) + 4 KPI ─────
+            Hero shrunk per UX review: number 48px (was 64), ring 100px
+            (was 132), padding tightened, footer sparkline removed.
+            Still col-6 row-2 so the right-side 2x2 KPI grid stays balanced. */}
+        {/* Completion Rate is intentionally NOT clickable — it's a summary
+            metric, not a task-list shortcut. Drilling into "20% completion"
+            doesn't have an obvious destination, and routing it somewhere
+            would be more confusing than helpful. */}
         <StatTile
           hero
-          className="col-span-1 sm:col-span-6 lg:col-span-6 lg:row-span-2 flex flex-col"
-          onClick={canManage ? () => navigate('/dashboard') : undefined}
+          className="col-span-1 sm:col-span-6 lg:col-span-6 lg:row-span-2 flex flex-col p-3 sm:p-4"
           ariaLabel={`Completion Rate: ${completionRate}%`}
         >
           <div className="flex items-start justify-between">
@@ -253,57 +285,64 @@ export default function HomePage() {
             )}
           </div>
 
-          <div className="flex-1 flex items-center justify-between gap-4 mt-4">
+          <div className="flex-1 flex items-center justify-between gap-4 mt-2">
             <div>
-              <p className="text-5xl sm:text-[64px] font-semibold tabular-nums text-text-primary leading-none">
-                <CountUp value={completionRate} suffix="%" />
+              <p className="text-4xl sm:text-5xl font-semibold tabular-nums text-text-primary leading-none">
+                {completionRate}%
               </p>
-              <p className="text-xs text-text-secondary mt-3">
+              <p className="text-xs text-text-secondary mt-2">
                 {canManage ? 'This period' : 'Across your tasks'}
-                {myTasks.length > 0 && (
+                {totalCount > 0 && (
                   <span className="text-text-tertiary">
-                    {' · '}{completedTasks.length}/{myTasks.length} done
+                    {' · '}{completedCount}/{totalCount} done
                   </span>
                 )}
               </p>
             </div>
             <div className="hidden sm:flex items-center justify-center">
-              <RingChart value={completionRate} size={132} />
+              <RingChart value={completionRate} size={100} strokeWidth={10} />
             </div>
-          </div>
-
-          <div className="mt-4 -mx-1">
-            {/* TODO_BACKEND: pass `data={stats.completionRate.trend7d}` once
-                /dashboard/stats?range=7d returns the daily series. */}
-            <Sparkline empty color="#4f46e5" height={28} delay={0.3} />
           </div>
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
+        {/* All clickable stat tiles route to /my-work?filter=<key>. RBAC is
+            preserved because /my-work's data source (/tasks?assignedTo=me)
+            is server-side scoped to the user's own assignments — the URL
+            filter only narrows the view, never widens it. For managers the
+            tile shows team counts but the click lands on their personal
+            filtered view, which is the closest existing destination. */}
+        <StatTile
+          className="col-span-1 sm:col-span-3 lg:col-span-3 p-3 sm:p-4"
+          onClick={() => navigate('/my-work?filter=done')}
+          ariaLabel={`Completed tasks: ${completedCount}. Open list.`}
+        >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Completed</TileLabel>
             <TileIconChip icon={CheckCircle2} color="#10b981" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
-            <CountUp value={completedTasks.length} />
+            {completedCount}
           </p>
-          <p className="text-[11px] text-text-tertiary mt-1.5 mb-3">
+          <p className="text-[11px] text-text-tertiary mt-1.5">
             {canManage ? 'This period' : 'Across your tasks'}
           </p>
-          <MiniBars empty color="#10b981" height={24} />
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
+        <StatTile
+          className="col-span-1 sm:col-span-3 lg:col-span-3 p-3 sm:p-4"
+          onClick={() => navigate('/my-work?filter=today')}
+          ariaLabel={`Due today: ${dueTodayCount}. Open list.`}
+        >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Due Today</TileLabel>
             <TileIconChip icon={Target} color="#f59e0b" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
-            <CountUp value={todayTasks.length} />
+            {dueTodayCount}
           </p>
           <div className="flex items-end justify-between mt-1.5">
             <p className="text-[11px] text-text-tertiary">
-              {todayTasks.length > 0 ? 'Focus on these' : 'No deadlines today'}
+              {dueTodayCount > 0 ? 'Focus on these' : 'No deadlines today'}
             </p>
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border border-[rgba(15,15,25,0.08)] text-text-secondary">
               {todayLabel}
@@ -312,8 +351,10 @@ export default function HomePage() {
         </StatTile>
 
         <StatTile
-          danger={overdueTasks.length > 0}
-          className="col-span-1 sm:col-span-3 lg:col-span-3"
+          danger={overdueCount > 0}
+          className="col-span-1 sm:col-span-3 lg:col-span-3 p-3 sm:p-4"
+          onClick={() => navigate('/my-work?filter=overdue')}
+          ariaLabel={`Overdue tasks: ${overdueCount}. Open list.`}
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Overdue</TileLabel>
@@ -321,76 +362,85 @@ export default function HomePage() {
           </div>
           <p
             className={`text-3xl font-semibold tabular-nums leading-none ${
-              overdueTasks.length > 0 ? 'text-red-600 dark:text-red-400' : 'text-text-primary'
+              overdueCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-text-primary'
             }`}
           >
-            <CountUp value={overdueTasks.length} />
+            {overdueCount}
           </p>
           <div className="flex items-center gap-1.5 mt-1.5">
-            {overdueTasks.length === 0 && (
+            {overdueCount === 0 && (
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
             )}
             <p className="text-[11px] text-text-tertiary">
-              {overdueTasks.length > 0 ? 'Needs attention' : 'All on track'}
+              {overdueCount > 0 ? 'Needs attention' : 'All on track'}
             </p>
           </div>
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-3">
+        <StatTile
+          className="col-span-1 sm:col-span-3 lg:col-span-3 p-3 sm:p-4"
+          onClick={() => navigate('/my-work?filter=in_progress')}
+          ariaLabel={`In progress tasks: ${inProgressCount}. Open list.`}
+        >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>In Progress</TileLabel>
             <TileIconChip icon={TrendingUp} color="#3b82f6" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
-            <CountUp value={teamInProgress} />
+            {inProgressCount}
           </p>
-          <p className="text-[11px] text-text-tertiary mt-1.5 mb-3">
+          <p className="text-[11px] text-text-tertiary mt-1.5">
             {canManage ? 'Across your team' : 'Currently working'}
           </p>
-          {/* Skeleton distribution strip — flat low-opacity track until
-              /dashboard/stats?range=7d returns the planning/doing/review split. */}
-          <div className="w-full h-1 rounded-full bg-surface-100 dark:bg-surface-200" />
         </StatTile>
 
         {/* ─── Row 3: Total Tasks + Stuck/Blocked + Updates (col-4 each)
-            "Team Tasks / Tasks Around You" was removed per UX review — its
-            data was a duplicate of stats already surfaced elsewhere on the
-            page (Team Completion Rate uses summary.totalTasks directly), so
-            the tile was carrying weight without earning its space. ─── */}
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <TileIconChip icon={ListTodo} color="#4f46e5" />
-              <div className="min-w-0">
-                <TileLabel>Total Tasks</TileLabel>
-                <p className="text-[10px] text-text-tertiary truncate">{pendingTasks.length} active</p>
-              </div>
-            </div>
-            <p className="text-2xl font-semibold tabular-nums text-text-primary">
-              {myTasks.length}
-            </p>
+            All three tiles share their CSS-grid row, so the row's height
+            tracks the tallest sibling (Updates' empty state). Without
+            distribution, content here would clump at the top with empty
+            space below.
+
+            Pattern: `flex flex-col` on the tile, `mt-auto` on the subtitle
+            so it pins to the bottom while the value sits in the
+            upper-middle band. Same visual rhythm Due Today / Overdue use
+            via their bottom date-pill / status-dot. ─── */}
+        <StatTile
+          className="col-span-1 sm:col-span-3 lg:col-span-4 p-3 sm:p-4 flex flex-col"
+          onClick={() => navigate('/my-work')}
+          ariaLabel={`Total tasks: ${totalCount}. Open list.`}
+        >
+          <div className="flex items-start justify-between mb-2">
+            <TileLabel>Total Tasks</TileLabel>
+            <TileIconChip icon={ListTodo} color="#4f46e5" />
           </div>
+          <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
+            {totalCount}
+          </p>
+          <p className="text-[11px] text-text-tertiary mt-auto pt-2">
+            {activeCount} active
+            {canManage && totalCount > 0 ? ' · across your team' : ''}
+          </p>
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-3 lg:col-span-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <TileIconChip icon={Flame} color="#f43f5e" />
-              <div className="min-w-0">
-                <TileLabel>Stuck / Blocked</TileLabel>
-                <p className="text-[10px] text-text-tertiary truncate">
-                  {teamStuck > 0 ? 'Unblock these' : 'Nothing blocked'}
-                </p>
-              </div>
-            </div>
-            <p
-              className={`text-2xl font-semibold tabular-nums ${
-                teamStuck > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-text-tertiary'
-              }`}
-            >
-              {teamStuck}
-            </p>
+        <StatTile
+          className="col-span-1 sm:col-span-3 lg:col-span-4 p-3 sm:p-4 flex flex-col"
+          onClick={() => navigate('/my-work?filter=stuck')}
+          ariaLabel={`Stuck or blocked tasks: ${stuckCount}. Open list.`}
+        >
+          <div className="flex items-start justify-between mb-2">
+            <TileLabel>Stuck / Blocked</TileLabel>
+            <TileIconChip icon={Flame} color="#f43f5e" />
           </div>
+          <p
+            className={`text-3xl font-semibold tabular-nums leading-none ${
+              stuckCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-text-primary'
+            }`}
+          >
+            {stuckCount}
+          </p>
+          <p className="text-[11px] text-text-tertiary mt-auto pt-2">
+            {stuckCount > 0 ? 'Unblock these' : 'Nothing blocked'}
+          </p>
         </StatTile>
 
         {/* Updates tile — col-4 single-row at lg, full-width on mobile.
@@ -399,7 +449,7 @@ export default function HomePage() {
             to a non-existent /notifications route, which is why clicks
             silently did nothing. */}
         <StatTile
-          className="col-span-1 sm:col-span-3 lg:col-span-4 flex flex-col min-h-[160px]"
+          className="col-span-1 sm:col-span-3 lg:col-span-4 flex flex-col p-3 sm:p-4"
           onClick={() => setUpdatesOpen(true)}
           ariaLabel="Open updates"
         >
@@ -455,7 +505,7 @@ export default function HomePage() {
 
         {/* ─── Row 4: My Tasks (col-8) + Recent (col-4) ─────────────── */}
         <StatTile
-          className="col-span-1 sm:col-span-6 lg:col-span-8 flex flex-col min-h-[320px]"
+          className="col-span-1 sm:col-span-6 lg:col-span-8 flex flex-col min-h-[260px] p-3 sm:p-4"
         >
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-md font-semibold text-text-primary flex items-center gap-2">
@@ -578,7 +628,7 @@ export default function HomePage() {
           )}
         </StatTile>
 
-        <StatTile className="col-span-1 sm:col-span-6 lg:col-span-4 flex flex-col">
+        <StatTile className="col-span-1 sm:col-span-6 lg:col-span-4 flex flex-col p-3 sm:p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-md font-semibold text-text-primary flex items-center gap-2">
               <Clock size={15} strokeWidth={1.9} /> Recent

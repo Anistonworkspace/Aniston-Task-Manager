@@ -411,6 +411,20 @@ export default function BoardPage() {
     if (data?.board?.id === boardId) setBoard(data.board);
   });
 
+  // board:memberRemoved → fired by socketService.emitToUser to the AFFECTED
+  // user's room only (admin manual remove OR auto-cleanup after the user's
+  // last task on this board is unassigned/deleted). If the recipient is
+  // currently sitting on that board page, their next action would 403 —
+  // bounce them to home with a toast instead. The targeted nature of the
+  // emit (user-room, not board-room) means we can react unconditionally
+  // when the boardId matches: the only way to receive it is to BE the
+  // affected user.
+  useRealtimeEvent('board:memberRemoved', (data) => {
+    if (data?.boardId !== boardId) return;
+    toastError('Your access to this board was removed.');
+    navigate('/');
+  });
+
   // Subtask badge bumps — keep the count accurate even when the section is
   // collapsed (BoardSubtaskSection handles itself when expanded).
   useRealtimeEvent('subtask:created', (data) => {

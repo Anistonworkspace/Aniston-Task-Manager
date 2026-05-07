@@ -5,7 +5,7 @@ import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
   FolderKanban, Star, StarOff, BarChart3, Users, FileText, CalendarDays,
   Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
-  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck, Crown,
+  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck,
   RefreshCw, Pin, PinOff
 } from 'lucide-react';
 import api from '../../services/api';
@@ -15,7 +15,6 @@ import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
 import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
-import ProfileModal from '../common/ProfileModal';
 import { canUser } from '../../utils/permissions';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 
@@ -122,7 +121,12 @@ export default function Sidebar({ collapsed, onToggle }) {
   // means the modal was opened from that workspace's three-dot menu and the
   // new board should land directly inside it.
   const [boardCreationWorkspace, setBoardCreationWorkspace] = useState(null);
-  const [showProfileModal, setShowProfileModal] = useState(false);
+  // Profile opens the same overlay modal the Header dropdown uses — navigate
+  // to /profile with the current location as background so App.jsx's modal
+  // route pattern mounts ProfileModalRoute on top of the page behind it.
+  // Keeps both entry points pixel-identical (DetailModalShell bottom-sheet)
+  // and avoids a second, divergent right-side drawer.
+  const openProfileModal = () => navigate('/profile', { state: { background: location } });
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const [wsActionMenu, setWsActionMenu] = useState(null);
   const [boardActionMenu, setBoardActionMenu] = useState(null);
@@ -457,7 +461,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         </>
       )}
       <div className="mt-auto">
-        <button onClick={() => setShowProfileModal(true)}
+        <button onClick={openProfileModal}
           className="w-7 h-7 rounded-full bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center text-white text-[10px] font-semibold"
           title="Profile">
           {user?.name?.charAt(0)?.toUpperCase() || 'U'}
@@ -500,8 +504,6 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Home} label="Home" path="/" tourId="nav-home" />
             {!isSuperAdmin && <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />}
             <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
-            {(isSuperAdmin || isAdmin) && <NavItem icon={Crown} label="Dashboard (Time Plan)" path="/director-dashboard" tourId="nav-director-dashboard" />}
-            {(isSuperAdmin || isAdmin) && <NavItem icon={CalendarDays} label="Director Plan" path="/director-plan" />}
             {/* Org Chart and Time Plan moved to header icons (see Header.jsx). */}
             <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
@@ -692,18 +694,19 @@ export default function Sidebar({ collapsed, onToggle }) {
                               <Plus size={12} /> Create Board
                             </button>
                           )}
-                          {/* "Rearrange Boards" is intentionally gated by
-                              canManage (admin / manager / super admin) and NOT
-                              by canCreateBoardPerm. Loosening create_board to
-                              all roles must NOT also expose the workspace
-                              board-rearrange action; that one stays
-                              management-only as it was before. */}
-                          {canManage && (
-                            <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                              <ArrowUpDown size={12} /> Rearrange Boards
-                            </button>
-                          )}
+                          {/* "Rearrange Boards" is available to every tier
+                              (T1–T4). The saved order is per-user, the modal
+                              only lists boards the caller can see, and the
+                              backend `PUT /workspaces/:id/board-order` route
+                              re-checks per-board visibility — so there is no
+                              privilege escalation in letting members reorder
+                              their own sidebar view. We deliberately do NOT
+                              gate this on canEditWsPerm / canManage; those
+                              still control Rename / Archive Workspace below. */}
+                          <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
+                            className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
+                            <ArrowUpDown size={12} /> Rearrange Boards
+                          </button>
                           {canEditWsPerm && (
                             <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
                               className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
@@ -830,7 +833,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         {/* === FIXED BOTTOM: User Footer === */}
         <div className="flex-shrink-0 border-t border-sidebar-border px-3 py-2.5">
           <button
-            onClick={() => setShowProfileModal(true)}
+            onClick={openProfileModal}
             className="flex items-center gap-2.5 w-full rounded-md px-1.5 py-1 hover:bg-sidebar-hover transition-all duration-150"
             title="Account Settings"
           >
@@ -866,11 +869,15 @@ export default function Sidebar({ collapsed, onToggle }) {
         hasMultipleWorkspaces={workspaces.length > 1}
       />
 
-      {/* Create Workspace Modal */}
+      {/* Create Workspace Modal — usedColors is the set of colours already
+          assigned to workspaces this user can see, so the modal's colour
+          picker can default to a not-yet-used swatch (mirrors the Create
+          Board behaviour). Empty array → random across the full palette. */}
       {showCreateWorkspace && (
         <CreateWorkspaceModal
           onClose={() => setShowCreateWorkspace(false)}
           onCreated={() => { loadData(); setShowCreateWorkspace(false); }}
+          usedColors={workspaces.map(w => w.color).filter(Boolean)}
         />
       )}
 
@@ -943,10 +950,10 @@ export default function Sidebar({ collapsed, onToggle }) {
         );
       })()}
 
-      {/* Profile Modal (slide-over) */}
-      {showProfileModal && (
-        <ProfileModal onClose={() => setShowProfileModal(false)} />
-      )}
+      {/* Profile is rendered by ProfileModalRoute (mounted in App.jsx) when
+          we navigate to /profile with state.background — see openProfileModal
+          above. The Header dropdown uses the same pattern, so both entry
+          points open the identical bottom-sheet modal. */}
     </>
   );
 }

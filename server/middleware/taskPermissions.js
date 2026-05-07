@@ -187,11 +187,19 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
       // `assignedTo` here, the field would be silently dropped and the
       // member's self-assign call would no-op.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
+        // NOTE: `title` is intentionally OMITTED here. Per the title-lock
+        // rule (Tier 1 only post-creation), assignees and creators may not
+        // rename a task once it exists — only Tier 1 / Super Admin may.
+        // The Tier 1 path takes the `admin_access` branch above, which
+        // returns `allowedFields: null` (full whitelist). Stripping title
+        // here is defense-in-depth: even if the controller-level title
+        // gate is bypassed, the field merge in updateTask will silently
+        // drop title for the assignee path because it's not in this list.
         return {
           allowed: true,
           reason: 'assignee_restricted',
           allowedFields: [
-            'title', 'description', 'status', 'priority', 'progress',
+            'description', 'status', 'priority', 'progress',
             'groupId', 'position', 'tags', 'customFields',
             'dueDate', 'startDate', 'assignedTo',
             'plannedStartTime', 'plannedEndTime', 'estimatedHours', 'actualHours',

@@ -23,7 +23,6 @@ function getPageContext(pathname) {
     '/integrations': 'Integrations - Microsoft Teams, AI configuration',
     '/notes': 'Notes page - voice notes and text notes, search, edit, delete',
     '/feedback': 'Feedback page (admin) - view all user feedback, stats, update status',
-    '/director-plan': 'Director Plan - daily task schedule with category cards, drag-drop tasks, deadlines, assignees',
     '/archive': 'Archive - archived tasks, boards, workspaces',
     '/cross-team': 'Dependencies - cross-board task dependencies',
     '/tasks': 'Tasks & Workflows - approvals, extensions, help requests',
@@ -49,7 +48,6 @@ The application sidebar has these sections:
 - Home: Overview with stats and recent boards
 - My Work: Personal task view
 - My Dashboard: Advanced task views with filters
-- Dashboard (Time Plan): Team workload overview
 - Org Chart: Organization hierarchy
 - Time Plan: Daily/weekly time planner
 - Meetings: Schedule and manage meetings

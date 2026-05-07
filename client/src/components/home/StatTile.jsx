@@ -32,8 +32,12 @@ export default function StatTile({
 }) {
   const isInteractive = Boolean(onClick);
 
+  // Padding intentionally omitted from base so call sites can dictate it
+  // (`p-3 sm:p-4` for compact tiles, custom for hero, etc.). Tailwind
+  // utility ordering means a hard-coded base `p-4` would beat any
+  // smaller value passed via className.
   const base =
-    'relative rounded-2xl border bg-white dark:bg-[var(--bg-elevated)] p-4 transition-shadow';
+    'relative rounded-2xl border bg-white dark:bg-[var(--bg-elevated)] transition-shadow';
   const heroBg = hero
     ? 'bg-gradient-to-br from-primary-50/60 via-white to-white dark:from-primary-900/20 dark:via-[var(--bg-elevated)] dark:to-[var(--bg-elevated)] border-primary-100/70 dark:border-primary-900/30'
     : 'border-[rgba(15,15,25,0.06)] dark:border-[rgba(255,255,255,0.06)]';
@@ -41,13 +45,22 @@ export default function StatTile({
     ? 'before:content-[""] before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full before:bg-danger'
     : '';
 
+  // Only lift on hover when the tile is actually clickable. Static
+  // summary tiles (e.g. Completion Rate hero) shouldn't move under the
+  // cursor — that motion implies interactivity that doesn't exist.
+  const hoverProps = isInteractive
+    ? {
+        whileHover: {
+          y: -2,
+          boxShadow: '0 4px 16px rgba(15,15,25,0.06), 0 1px 4px rgba(15,15,25,0.04)',
+        },
+      }
+    : {};
+
   return (
     <motion.div
       variants={staggerItem}
-      whileHover={{
-        y: -2,
-        boxShadow: '0 4px 16px rgba(15,15,25,0.06), 0 1px 4px rgba(15,15,25,0.04)',
-      }}
+      {...hoverProps}
       onClick={onClick}
       onKeyDown={
         isInteractive

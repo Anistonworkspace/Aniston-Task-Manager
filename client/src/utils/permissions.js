@@ -35,7 +35,6 @@ export const RESOURCES = {
   notes:            { label: 'Notes',                 category: 'Collaboration' },
   announcements:    { label: 'Announcements',         category: 'Collaboration' },
   time_plan:        { label: 'Time Plan',             category: 'Planning' },
-  director_plan:    { label: 'Director Plan',         category: 'Planning' },
   timeline:         { label: 'Timeline / Gantt',      category: 'Planning' },
   archive:          { label: 'Archive',               category: 'Operations' },
   integrations:     { label: 'Integrations',          category: 'Operations' },
@@ -84,7 +83,6 @@ export const RESOURCE_ACTIONS = {
   notes:            ['view', 'create', 'edit', 'delete'],
   announcements:    ['view', 'create', 'edit', 'delete'],
   time_plan:        ['view', 'create', 'edit', 'delete', 'manage'],
-  director_plan:    ['view', 'create', 'edit', 'delete'],
   timeline:         ['view'],
   archive:          ['view', 'manage'],
   integrations:     ['view', 'manage'],
@@ -265,6 +263,40 @@ export function canSetPriority(isSuperAdmin = false, granularPermissions = {}) {
   return hasGranularPermission('tasks', 'set_priority', isSuperAdmin, granularPermissions);
 }
 
+/**
+ * Per-task variant of canSetPriority. Mirrors the backend gate in
+ * createTask/updateTask/bulkUpdateTasks: a user without the global
+ * `tasks.set_priority` action may still edit priority on a task they
+ * created AND solely own. Used by board cells and the task modal so a
+ * Tier 4 user editing their own task sees the dropdown, while one editing
+ * a task delegated to them stays read-only.
+ *
+ * Self-owned == createdBy === user.id AND no foreign role='assignee' rows
+ * (supervisors are oversight, not ownership). The legacy scalar
+ * `task.assignedTo` is treated as a single assignee row when present.
+ */
+export function canSetPriorityForTask(user, task, isSuperAdmin = false, granularPermissions = {}) {
+  if (isSuperAdmin) return true;
+  if (canSetPriority(isSuperAdmin, granularPermissions)) return true;
+  if (!user || !task) return false;
+  const uid = user.id;
+  if (!uid) return false;
+  if (task.createdBy && task.createdBy !== uid) return false;
+  if (!task.createdBy) return false;
+  if (typeof task.assignedTo === 'string' && task.assignedTo && task.assignedTo !== uid) return false;
+  if (Array.isArray(task.assignedTo) && task.assignedTo.some((id) => id && id !== uid)) return false;
+  if (Array.isArray(task.taskAssignees)) {
+    const foreignAssignee = task.taskAssignees.find((ta) => {
+      if (!ta) return false;
+      const taUid = ta.userId || (ta.user && ta.user.id);
+      if (!taUid || taUid === uid) return false;
+      return ta.role === 'assignee';
+    });
+    if (foreignAssignee) return false;
+  }
+  return true;
+}
+
 // ── Task action helpers (canonical) ────────────────────────────────────
 //
 // These helpers are the single source of truth used by every task UI
@@ -276,6 +308,8 @@ export function canSetPriority(isSuperAdmin = false, granularPermissions = {}) {
 // Usage:
 //   const { user, isSuperAdmin, granularPermissions } = useAuth();
 //   if (canArchiveTask(user, task, granularPermissions)) { ... }
+
+import { resolveTier, TIER_1, TIER_2 } from './tiers';
 
 const MANAGEMENT_ROLES = ['admin', 'manager', 'assistant_manager'];
 
@@ -325,15 +359,53 @@ export function canEditTask(user, task, granularPermissions = {}) {
 }
 
 /**
+ * Can this user edit a task's TITLE specifically?
+ *
+ * Title is a set-once field. Once a task has been created, only Tier 1
+ * (Super Admin) may rename it — Tier 2/3/4 cannot, even if they are the
+ * task's creator or assignee. Title creation happens via POST /tasks
+ * (createTask), which is unaffected — pass `task = null` (or a task with
+ * no `id`) to indicate the new-task path and this helper returns true for
+ * anyone who could otherwise edit the task at all.
+ *
+ * Mirrors the backend gate in `server/controllers/taskController.js`
+ * (`updateTask` title-lock branch) and the `assignee_restricted`
+ * allowedFields whitelist in `server/middleware/taskPermissions.js`,
+ * which intentionally omits 'title' for non-Tier-1 actors.
+ */
+export function canEditTaskTitle(user, task, granularPermissions = {}) {
+  if (!user) return false;
+  // New-task path: anyone who can edit the task at all may set the title
+  // during creation. The board UI's quick-add input passes `task = null`,
+  // and the TaskModal create-mode (no task.id) hits the same branch.
+  const isNewTask = !task || !task.id;
+  if (isNewTask) return canEditTask(user, task, granularPermissions);
+  // Existing task: Tier 1 only.
+  return resolveTier(user) === TIER_1;
+}
+
+/**
  * Can this user archive (soft-delete) this task?
  *
- * Archive is a "delete-class" action: it requires `tasks.delete` and an
- * explicit DENY blocks even role defaults. A member with tasks.delete=true
- * may archive their *own* tasks; without ownership the answer is false.
+ * Archive is a SEPARATE action from permanent delete. Tier 1 (Super Admin)
+ * and Tier 2 (Admin/Manager) may archive any task they can see — an
+ * explicit DENY on `tasks.delete` no longer blocks T1/T2 archive because
+ * the action is now distinct from the permanent-delete authority. Tier 3/4
+ * still need the matrix `tasks.delete` (default false; can be granted as
+ * an override), and members may only archive their own tasks.
+ *
+ * Mirrors the backend archive gate in `taskController.updateTask` /
+ * `bulkUpdateTasks` which short-circuits T1+T2 to allowed.
  */
 export function canArchiveTask(user, task, granularPermissions = {}) {
   if (!user) return false;
   if (user.isSuperAdmin) return true;
+  // Tier 1 / Tier 2 may archive regardless of `tasks.delete`. A user that
+  // shouldn't see the task at all wouldn't have it rendered, so scope is
+  // already enforced by visibility upstream.
+  const tier = resolveTier(user);
+  if (tier === TIER_1 || tier === TIER_2) return true;
+  // Tier 3/4: still require the matrix permission (deny-aware).
   if (granularPermissions['tasks.delete'] === false) return false;
   if (MANAGEMENT_ROLES.includes(user.role)) {
     return granularPermissions['tasks.delete'] !== false;

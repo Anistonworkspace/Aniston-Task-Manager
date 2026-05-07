@@ -33,7 +33,6 @@ const RESOURCES = {
   notes:            { label: 'Notes',                 category: 'Collaboration' },
   announcements:    { label: 'Announcements',         category: 'Collaboration' },
   time_plan:        { label: 'Time Plan',             category: 'Planning' },
-  director_plan:    { label: 'Director Plan',         category: 'Planning' },
   timeline:         { label: 'Timeline / Gantt',      category: 'Planning' },
   archive:          { label: 'Archive',               category: 'Operations' },
   integrations:     { label: 'Integrations',          category: 'Operations' },
@@ -88,7 +87,6 @@ const RESOURCE_ACTIONS = {
   notes:            ['view', 'create', 'edit', 'delete'],
   announcements:    ['view', 'create', 'edit', 'delete'],
   time_plan:        ['view', 'create', 'edit', 'delete', 'manage'],
-  director_plan:    ['view', 'create', 'edit', 'delete'],
   timeline:         ['view'],
   archive:          ['view', 'manage'],
   integrations:     ['view', 'manage'],
@@ -124,7 +122,6 @@ const ROLE_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: true, edit: true, delete: true },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: true },
-    director_plan:    { view: true, create: true, edit: true, delete: true },
     timeline:         { view: true },
     archive:          { view: true, manage: true },
     integrations:     { view: true, manage: true },
@@ -156,7 +153,6 @@ const ROLE_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: true, edit: true, delete: true },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: true },
-    director_plan:    { view: true, create: true, edit: true, delete: true },
     timeline:         { view: true },
     archive:          { view: true, manage: true },
     integrations:     { view: false, manage: false },
@@ -195,7 +191,6 @@ const ROLE_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },
-    director_plan:    { view: false, create: false, edit: false, delete: false },
     timeline:         { view: true },
     archive:          { view: false, manage: false },
     integrations:     { view: false, manage: false },
@@ -238,7 +233,6 @@ const ROLE_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },
-    director_plan:    { view: false, create: false, edit: false, delete: false },
     timeline:         { view: true },
     archive:          { view: false, manage: false },
     integrations:     { view: false, manage: false },
@@ -263,15 +257,15 @@ const ROLE_PERMISSIONS = {
 //       * notifications.manage       -> false   (manage = clear/delete = destructive)
 //       * admin_settings.{view,manage}, integrations.{view,manage},
 //         api_keys.* (system administration — Tier 1 only)
-//       * tasks.edit_locked_description -> false (decision #10: T1-only override)
+//       * tasks.edit_locked_description -> TRUE (decision #10 revised: T1+T2 may
+//         override the description set-once lock; T3+T4 remain blocked.)
 //       * Director plan: T1+T2 (decision #6) — kept true
 //       * Feedback: T1+T2 (decision #5) — kept true incl. manage
 //   - Tier 3 (was assistant_manager): subtree-scoped management.
 //       * Matrix grants are coarse — subtree scoping is enforced by visibility
 //         services in controllers. Matrix entries match the previous
 //         assistant_manager row EXCEPT every destructive `delete` is tightened
-//         to false (decision #4: "no delete unless explicitly safe and scoped"),
-//         director_plan.* = false (decision #6).
+//         to false (decision #4: "no delete unless explicitly safe and scoped").
 //       * Personal data delete (notes, time_plan) preserved — matches the rule
 //         that everyone manages their own scratch data.
 //   - Tier 4 (was member): identical to the previous member row. The
@@ -305,7 +299,6 @@ const TIER_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: true, edit: true, delete: true },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: true },
-    director_plan:    { view: true, create: true, edit: true, delete: true },
     timeline:         { view: true },
     archive:          { view: true, manage: true },
     integrations:     { view: true, manage: true },
@@ -325,8 +318,9 @@ const TIER_PERMISSIONS = {
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: true, edit: true, delete: false, manage_members: true },
     boards:           { view: true, create: true, edit: true, delete: false, manage_members: true, manage_settings: true, export: true },
-    // edit_locked_description is T1-only (decision #10).
-    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: false },
+    // edit_locked_description is T1+T2 (decision #10 revised — Tier 1 and Tier 2
+    // may rewrite an already-set task description; Tier 3/Tier 4 are blocked.)
+    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: true },
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
@@ -340,7 +334,6 @@ const TIER_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: false },
     announcements:    { view: true, create: true, edit: true, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: false, manage: true },
-    director_plan:    { view: true, create: true, edit: true, delete: false },
     timeline:         { view: true },
     // archive.manage = restore + permanent-delete -> destructive.
     archive:          { view: true, manage: false },
@@ -383,7 +376,6 @@ const TIER_PERMISSIONS = {
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },
     // Director plan: T1+T2 only (decision #6).
-    director_plan:    { view: false, create: false, edit: false, delete: false },
     timeline:         { view: true },
     archive:          { view: false, manage: false },
     integrations:     { view: false, manage: false },
@@ -423,7 +415,6 @@ const TIER_PERMISSIONS = {
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },
-    director_plan:    { view: false, create: false, edit: false, delete: false },
     timeline:         { view: true },
     archive:          { view: false, manage: false },
     integrations:     { view: false, manage: false },

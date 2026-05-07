@@ -15,7 +15,7 @@ const {
   User, Board, Task, Notification, Meeting, Department,
   DueDateExtension, HelpRequest, TaskAssignee, TaskOwner,
   TaskDependency, TimeBlock, PromotionHistory, HierarchyLevel,
-  DirectorPlan, Activity,
+  Activity,
 } = require('../models');
 const { getDescendantIds } = require('./hierarchyService');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
@@ -619,28 +619,6 @@ async function resolveUsers(user, _params) {
   return lines.join('\n');
 }
 
-async function resolveDirectorPlan(user, params) {
-  const dateStr = params.selectedDate || today();
-
-  const plan = await DirectorPlan.findOne({
-    where: { directorId: user.id, date: dateStr },
-  });
-
-  if (!plan) {
-    return `Director plan for ${dateStr}: no plan created yet.`;
-  }
-
-  const categories = plan.categories || [];
-  const lines = [`Director plan for ${dateStr}: ${categories.length} categories`];
-  categories.forEach(cat => {
-    const taskCount = Array.isArray(cat.tasks) ? cat.tasks.length : 0;
-    lines.push(`- ${cat.name || cat.key || 'Category'}: ${taskCount} tasks`);
-  });
-  if (plan.notes) lines.push(`Notes: ${plan.notes}`);
-
-  return lines.join('\n');
-}
-
 async function resolveProfile(user, _params) {
   return [
     `Your profile:`,
@@ -681,14 +659,12 @@ const ROUTE_RESOLVERS = {
   '/admin-dashboard':  resolveDashboard,
   '/manager-dashboard': resolveDashboard,
   '/member-dashboard': resolveDashboard,
-  '/director-dashboard': resolveDashboard,
   '/org-chart':        resolveOrgChart,
   '/time-plan':        resolveTimePlan,
   '/meetings':         resolveMeetings,
   '/tasks':            resolveTasksWorkflows,
   '/cross-team':       resolveTasksWorkflows,
   '/users':            resolveUsers,
-  '/director-plan':    resolveDirectorPlan,
   '/profile':          resolveProfile,
   '/notes':            resolveNotes,
   '/integrations':     resolveIntegrations,

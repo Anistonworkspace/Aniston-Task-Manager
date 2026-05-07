@@ -1,4 +1,4 @@
-const { FileAttachment, Task, User, Board, TaskAssignee, TaskOwner, DependencyRequest } = require('../models');
+const { FileAttachment, Task, User, DependencyRequest } = require('../models');
 const { emitToBoard, emitToUsers } = require('../services/socketService');
 const taskVisibility = require('../services/taskVisibilityService');
 const {
@@ -12,52 +12,36 @@ const {
 } = require('../services/storageService');
 
 /**
- * Check if a user has read access to a task's files. The previous implementation
- * was out of sync with the rest of the app — it explicitly excluded
- * `assistant_manager`, `super_admin`, multi-assignee (TaskAssignee), multi-owner
- * (TaskOwner), and DependencyRequest assignees. That's what produced the
- * "You do not have access to this task" toast for assistant_managers and
- * dependency owners when their parent task modal opened.
+ * Check if a user has read access to a task's files. Delegates to the
+ * centralized `taskVisibilityService.canViewTask` so the file access rule
+ * is IDENTICAL to the rule used by the board list query, the task detail
+ * middleware, and comment / subtask / approval controllers — one source
+ * of truth.
  *
- * Aligned with `taskPermissions.canViewTask` + `subtaskController.userCanAccessParentTask`
- * + the dependency-owner read path so opening a parent task you have legitimate
- * context on doesn't 403 on the file panel.
+ * Why this matters: the previous inline check only matched direct linkage
+ * (assignedTo / createdBy / TaskAssignee / TaskOwner / board membership)
+ * and ignored the hierarchy subtree. A Tier 3 manager could see a
+ * descendant's task in the board listing (visibility filter is
+ * hierarchy-aware) but the modal's /files load returned 403, surfacing
+ * the "You do not have access to this task" toast despite legitimate
+ * visibility on the parent. Note that board-membership-only access was
+ * also dropped here on purpose — per the visibility service contract,
+ * board membership grants BOARD ACCESS only, never task-row visibility.
+ *
+ * Tier semantics are entirely encapsulated by `canViewTask`:
+ *   - Tier 1 / Tier 2 (admin, super_admin) → unrestricted
+ *   - Tier 3 / Tier 4 → self ∪ descendants subtree match against
+ *     assignedTo / createdBy / task_assignees / task_owners
+ *
+ * The dependency-owner read path is preserved separately so that a user
+ * assigned to a DependencyRequest on this parent still gets read access
+ * to its files.
  */
 const canAccessTask = async (taskId, user) => {
   if (!user || !taskId) return false;
 
-  // Phase 7 — Tier-aware visibility. Tier 1 (super admin) and Tier 2
-  // (admin/manager) get unrestricted task access; Tier 3 (assistant
-  // manager) used to also short-circuit `true` here, which let them
-  // read/upload/delete files on ANY task in the org (audit P0-5). We
-  // now defer Tier 3 to the same per-task visibility predicates as
-  // Tier 4 below — direct linkage / board membership / dependency /
-  // hierarchy subtree are checked the same way.
-  const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
-  const tier = resolveTier(user);
-  if (tier === TIER_1 || tier === TIER_2) return true;
+  if (await taskVisibility.canViewTask(user, taskId)) return true;
 
-  // Direct task linkage — single assignedTo, creator, multi-assignee row,
-  // multi-owner row, or board membership.
-  const task = await Task.findByPk(taskId, {
-    include: [{ model: Board, as: 'board', attributes: ['id', 'createdBy'], include: [{ model: User, as: 'members', attributes: ['id'] }] }],
-  });
-  if (!task) return false;
-  if (task.assignedTo === user.id || task.createdBy === user.id) return true;
-  if (task.board?.members?.some(m => m.id === user.id)) return true;
-
-  try {
-    const ta = await TaskAssignee.findOne({ where: { taskId, userId: user.id } });
-    if (ta) return true;
-  } catch { /* table may not exist on older DBs */ }
-  try {
-    const to = await TaskOwner.findOne({ where: { taskId, userId: user.id } });
-    if (to) return true;
-  } catch { /* table may not exist on older DBs */ }
-
-  // Dependency-owner read path — a user assigned to a DependencyRequest on this
-  // parent task gets read access to the parent's context (files, subtasks,
-  // task detail). Mutations are gated separately by their own role checks.
   try {
     const depCount = await DependencyRequest.count({
       where: { parentTaskId: taskId, assignedToUserId: user.id },

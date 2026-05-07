@@ -223,11 +223,31 @@ async function tickOnce(now = new Date()) {
       const dueAt = recurringTaskService.dueAtUtc(task.occurrenceDate, tpl.dueTime, tpl.timezone);
       if (dueAt > now) { skipped += 1; continue; }
 
+      // Race-safe claim: a conditional UPDATE that only succeeds while the
+      // flag is still FALSE. The Task model's update() returns
+      // [affectedRowCount] — we send notifications ONLY when this worker won
+      // the row. If a sibling replica already claimed it, our affectedCount
+      // is 0 and we skip without sending.
+      //
+      // Why this beats the "find → notify → set flag" sequence: in the
+      // original code two replicas could both pass the WHERE filter, both
+      // send notifications, and only THEN flip the flag. With this conditional
+      // UPDATE the flag flip is the lock — exactly one replica notifies.
+      const claim = await Task.update(
+        { missedEscalationSent: true, missedEscalationSentAt: new Date() },
+        { where: { id: task.id, missedEscalationSent: false } }
+      );
+      const claimed = Array.isArray(claim) ? claim[0] : claim;
+      if (!claimed) {
+        // Another worker already claimed this row. No-op.
+        skipped += 1;
+        continue;
+      }
+
       const recipients = await buildRecipients(tpl, task);
       if (recipients.length === 0) {
-        // No-one to notify (assignee deactivated, no managers, etc.). Still
-        // flip the flag so we don't reconsider this row every tick.
-        await task.update({ missedEscalationSent: true, missedEscalationSentAt: new Date() });
+        // We claimed the row but there's nobody to notify (assignee
+        // deactivated, no managers, etc.). Flag is already flipped — done.
         skipped += 1;
         continue;
       }
@@ -251,10 +271,6 @@ async function tickOnce(now = new Date()) {
         }
       }
 
-      await task.update({
-        missedEscalationSent: true,
-        missedEscalationSentAt: new Date(),
-      });
       escalated += 1;
       logger.info('[RecurringMiss] escalated', {
         event: 'recurring_missed',

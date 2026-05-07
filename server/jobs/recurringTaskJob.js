@@ -6,11 +6,34 @@ const calendarService = require('../services/calendarService');
 const logger = require('../utils/logger');
 
 /**
- * Recurring Task Cron Job
- * Runs every hour — checks for tasks with recurrence.nextRun <= now,
- * creates a duplicate task, and schedules the next run.
+ * Recurring Task Cron Job — LEGACY.
+ *
+ * This job processes the old `Task.recurrence` JSONB column. It pre-dates the
+ * new RecurringTaskTemplate stack and has known limitations: no idempotency,
+ * no Mon–Sat support, no multi-day monthly, no timezone-safe math, and a
+ * month-end roll-over bug (Date.setMonth + 1 from Jan 31 → Mar 3).
+ *
+ * It is kept on disk because some installs may still have rows in
+ * `tasks.recurrence`. Generation is gated behind LEGACY_RECURRING_ENABLED:
+ *   - unset / 'false'  → cron is registered but the tick is a no-op (default).
+ *                        Existing rows are left in place, no new instances
+ *                        are created, the new stack is the only generator.
+ *   - 'true'           → original behaviour. Use only on installs that have
+ *                        not yet migrated their legacy recurrence rows.
+ *
+ * Runs every hour at minute 15 when enabled.
  */
+const LEGACY_RECURRING_ENABLED = String(process.env.LEGACY_RECURRING_ENABLED || '').toLowerCase() === 'true';
+
 function startRecurringTaskJob() {
+  if (!LEGACY_RECURRING_ENABLED) {
+    console.log(
+      '[RecurringJob] Legacy Task.recurrence cron is DISABLED '
+      + '(set LEGACY_RECURRING_ENABLED=true to re-enable). '
+      + 'New recurring work goes through RecurringTaskTemplate.'
+    );
+    return;
+  }
   // Run every hour at minute 15
   cron.schedule('15 * * * *', async () => {
     try {

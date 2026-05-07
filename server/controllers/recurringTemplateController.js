@@ -191,7 +191,11 @@ function validateTemplateBody(body, { partial = false } = {}) {
     if (!partial || body.frequency !== undefined) {
       must(VALID_FREQUENCIES.includes(body.frequency),
         `frequency must be one of: ${VALID_FREQUENCIES.join(', ')}.`);
-      v.frequency = body.frequency;
+      // Legacy 'custom' is accepted (so old API clients and historic rows
+      // round-trip cleanly) but normalised to 'weekly' on write — they were
+      // always treated identically by `isOccurrenceEligible`. New rows
+      // therefore never carry the confusing 'custom' value.
+      v.frequency = body.frequency === 'custom' ? 'weekly' : body.frequency;
     }
     if (body.weekdays !== undefined) {
       must(Array.isArray(body.weekdays) && body.weekdays.every(d => Number.isInteger(d) && d >= 0 && d <= 6),
@@ -342,43 +346,79 @@ const createTemplate = async (req, res) => {
     await recurringTaskService.recomputeNextRunAt(template);
     await template.reload();
 
-    // Immediate first-occurrence generation. UX requirement: assignee should
-    // see today's task right away, not 5–10 minutes later when the cron next
-    // fires. We reuse runTemplateOnce so the eligibility, idempotency, and
-    // nextRunAt-advancement logic stays in one place — the cron and this path
-    // hit identical code. The DB partial unique index on
-    // (recurringTemplateId, occurrenceDate) is the duplicate guard if cron
-    // happens to race us.
+    // Seed the NEXT UPCOMING instance immediately. Old behaviour was
+    // today-only via runTemplateOnce — that meant a "weekly Tuesday" template
+    // created on Thursday produced no visible task until the cron fired the
+    // following Tuesday at 00:05. New behaviour generates the next eligible
+    // occurrence (today or future) so the assignee sees a concrete row in
+    // their board immediately, with the correct future dueDate.
     //
-    // runTemplateOnce never throws; failures land in result.error. We log them
-    // but do NOT fail the create — the template itself is saved and the cron
-    // can still pick it up later. The returned `immediateGeneration` payload
-    // lets the frontend show a different toast when today's task was created.
-    let immediateGeneration = { generated: false, alreadyExisted: false, occurrenceDate: null };
+    // Idempotency: when the cron later ticks the seeded date, the partial
+    // unique index `(recurringTemplateId, occurrenceDate)` rejects the duplicate
+    // and the service returns `created:false` — never two rows for one date.
+    //
+    // seedNextUpcomingInstance never throws; failures surface as
+    // `{ ok:false, reason }` and the template itself is saved. The frontend
+    // reads `immediateGeneration.error/reason` to decide between the green
+    // success toast and an amber partial-success warning.
+    let immediateGeneration = {
+      generated: false,
+      alreadyExisted: false,
+      occurrenceDate: null,
+      reason: null,
+      error: null,
+    };
     try {
-      const runResult = await recurringTaskService.runTemplateOnce(template, {
+      const seedResult = await recurringTaskService.seedNextUpcomingInstance(template, {
         source: 'recurringTemplateController.create',
       });
       // Reload so the response carries fresh nextRunAt / lastGeneratedDate.
       await template.reload();
-      if (runResult && !runResult.error) {
+      if (seedResult.ok) {
         immediateGeneration = {
-          generated: !!runResult.generated,
-          alreadyExisted: !!runResult.alreadyExisted,
-          occurrenceDate: runResult.occurrenceDate || null,
+          generated: !!seedResult.generated,
+          alreadyExisted: !!seedResult.alreadyExisted,
+          occurrenceDate: seedResult.occurrenceDate || null,
+          // 'no-future-occurrence' here means the template's schedule + window
+          // produced no eligible date in the next 366 days (e.g. endDate
+          // already past). Surfaced so the client can warn the user.
+          reason: seedResult.reason || null,
           // expose nextRunAt so the client can show "next at …" without a refetch
-          nextRunAt: runResult.nextRunAt ? new Date(runResult.nextRunAt).toISOString() : null,
+          nextRunAt: seedResult.nextRunAt ? new Date(seedResult.nextRunAt).toISOString() : null,
+          taskId: seedResult.taskId || null,
         };
-      } else if (runResult?.error) {
-        logger.warn('[recurringTemplateController.create] immediate generation reported error', {
-          templateId: template.id, msg: runResult.error,
+      } else {
+        // Pre-flight or runtime failure (board archived, assignee inactive,
+        // group missing, etc.). Template stays saved; surface the reason so
+        // the user can fix the underlying issue. Cron will retry on next tick.
+        immediateGeneration = {
+          ...immediateGeneration,
+          occurrenceDate: seedResult.occurrenceDate || null,
+          error: seedResult.error || seedResult.reason || null,
+          reason: seedResult.reason || null,
+        };
+        logger.warn('[recurringTemplateController.create] seed-upcoming reported error', {
+          templateId: template.id,
+          assigneeId: template.assigneeId,
+          boardId: template.boardId,
+          frequency: template.frequency,
+          reason: seedResult.reason,
+          err: seedResult.error,
         });
       }
     } catch (err) {
       // Defense-in-depth — the service's own catch should keep us from getting
-      // here, but if it does, the template still got saved. Surface as warning.
-      logger.warn('[recurringTemplateController.create] immediate generation crashed', {
-        templateId: template.id, msg: err.message,
+      // here, but if it does, the template still got saved.
+      immediateGeneration = {
+        ...immediateGeneration,
+        error: err.message,
+      };
+      logger.warn('[recurringTemplateController.create] seed-upcoming crashed', {
+        templateId: template.id,
+        assigneeId: template.assigneeId,
+        boardId: template.boardId,
+        frequency: template.frequency,
+        msg: err.message,
       });
     }
 
@@ -580,6 +620,25 @@ const updateTemplate = async (req, res) => {
     if (scheduleChanged) {
       await recurringTaskService.recomputeNextRunAt(template);
       await template.reload();
+      // When the schedule changes, seed the next upcoming instance under the
+      // NEW rule. Existing future instances generated under the OLD rule are
+      // intentionally preserved (per spec: never silently delete user work).
+      // The user can manually archive any orphaned instances from the old
+      // schedule. The DB unique index on (templateId, occurrenceDate) ensures
+      // we never insert a duplicate when the new and old schedules happen to
+      // pick the same date.
+      if (template.isActive && !template.archivedAt) {
+        try {
+          await recurringTaskService.seedNextUpcomingInstance(template, {
+            source: 'recurringTemplateController.update',
+          });
+          await template.reload();
+        } catch (e) {
+          logger.warn('[recurringTemplateController.update] seed-upcoming failed', {
+            templateId: template.id, msg: e.message,
+          });
+        }
+      }
     }
 
     logActivity({
@@ -622,6 +681,22 @@ async function togglePause(req, res, makeActive) {
     await template.update({ isActive: makeActive });
     await recurringTaskService.recomputeNextRunAt(template);
     await template.reload();
+
+    // On RESUME, seed the next upcoming instance so the assignee sees a
+    // concrete task immediately — the same UX promise as create/edit. On
+    // PAUSE we deliberately do nothing extra; the template stops generating.
+    if (makeActive && !template.archivedAt) {
+      try {
+        await recurringTaskService.seedNextUpcomingInstance(template, {
+          source: 'recurringTemplateController.resume',
+        });
+        await template.reload();
+      } catch (e) {
+        logger.warn('[recurringTemplateController.resume] seed-upcoming failed', {
+          templateId: template.id, msg: e.message,
+        });
+      }
+    }
 
     logActivity({
       action: makeActive ? 'recurring_template_resumed' : 'recurring_template_paused',

@@ -7,8 +7,9 @@
  * These tests pin down the agreed product rules so we cannot silently drift:
  *   - Tier 1: full access — every action true.
  *   - Tier 2: broad access EXCEPT every `delete` action, plus admin_settings,
- *     integrations, api_keys, archive.manage, notifications.manage,
- *     tasks.edit_locked_description (T1-only override).
+ *     integrations, api_keys, archive.manage, notifications.manage.
+ *     `tasks.edit_locked_description` is shared with Tier 1 (decision #10
+ *     revised — T1+T2 may rewrite an already-set task description).
  *   - Tier 3: subtree-scoped; matrix coarse, controllers enforce scope.
  *     Every destructive `delete` tightened to false except personal data
  *     (notes, time_plan).
@@ -76,9 +77,9 @@ describe('Tier 1 — full system access', () => {
     }
   });
 
-  it('only Tier 1 has tasks.edit_locked_description = true (decision #10)', () => {
+  it('Tier 1 + Tier 2 have tasks.edit_locked_description = true (decision #10 revised)', () => {
     expect(TIER_PERMISSIONS[1].tasks.edit_locked_description).toBe(true);
-    expect(TIER_PERMISSIONS[2].tasks.edit_locked_description).toBe(false);
+    expect(TIER_PERMISSIONS[2].tasks.edit_locked_description).toBe(true);
     expect(TIER_PERMISSIONS[3].tasks.edit_locked_description).toBe(false);
     expect(TIER_PERMISSIONS[4].tasks.edit_locked_description).toBe(false);
   });
@@ -122,14 +123,6 @@ describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => 
     expect(TIER_PERMISSIONS[2].feedback.manage).toBe(true);
   });
 
-  it('director_plan view/create/edit = TRUE (decision #6: T1+T2 access)', () => {
-    expect(TIER_PERMISSIONS[2].director_plan.view).toBe(true);
-    expect(TIER_PERMISSIONS[2].director_plan.create).toBe(true);
-    expect(TIER_PERMISSIONS[2].director_plan.edit).toBe(true);
-    // delete is false because of the global no-delete rule.
-    expect(TIER_PERMISSIONS[2].director_plan.delete).toBe(false);
-  });
-
   it('keeps every non-destructive management action = TRUE', () => {
     // Spot-check the meaningful ones.
     expect(TIER_PERMISSIONS[2].users.create).toBe(true);
@@ -167,13 +160,6 @@ describe('Tier 3 — subtree-scoped (was assistant_manager)', () => {
     expect(TIER_PERMISSIONS[3].automations.view).toBe(false);
   });
 
-  it('director_plan denied (decision #6: T3 no global access)', () => {
-    expect(TIER_PERMISSIONS[3].director_plan.view).toBe(false);
-    expect(TIER_PERMISSIONS[3].director_plan.create).toBe(false);
-    expect(TIER_PERMISSIONS[3].director_plan.edit).toBe(false);
-    expect(TIER_PERMISSIONS[3].director_plan.delete).toBe(false);
-  });
-
   it('boards.create = true; controllers enforce subtree scope (decision #7)', () => {
     expect(TIER_PERMISSIONS[3].boards.create).toBe(true);
   });
@@ -199,7 +185,7 @@ describe('Tier 3 — subtree-scoped (was assistant_manager)', () => {
     expect(TIER_PERMISSIONS[3].tasks.approve).toBe(false);
   });
 
-  it('tasks.edit_locked_description = false (T1-only override)', () => {
+  it('tasks.edit_locked_description = false (T1+T2-only override)', () => {
     expect(TIER_PERMISSIONS[3].tasks.edit_locked_description).toBe(false);
   });
 });
@@ -312,9 +298,9 @@ describe('cross-tier invariants', () => {
     }
   });
 
-  it('NO tier has tasks.edit_locked_description = true except Tier 1', () => {
+  it('only Tier 1 + Tier 2 have tasks.edit_locked_description = true', () => {
     const granted = ALL_TIERS.filter(t => TIER_PERMISSIONS[t].tasks.edit_locked_description);
-    expect(granted).toEqual([1]);
+    expect(granted).toEqual([1, 2]);
   });
 
   it('admin_settings is reachable only by Tier 1', () => {
@@ -335,10 +321,6 @@ describe('cross-tier invariants', () => {
 
   it('archive.manage is Tier 1 only', () => {
     expect(ALL_TIERS.filter(t => TIER_PERMISSIONS[t].archive.manage)).toEqual([1]);
-  });
-
-  it('director_plan.view is Tier 1 + Tier 2 only (decision #6)', () => {
-    expect(ALL_TIERS.filter(t => TIER_PERMISSIONS[t].director_plan.view).sort()).toEqual([1, 2]);
   });
 
   it('Tier 2 is a NON-DELETE superset of Tier 4 on shared resources', () => {

@@ -26,7 +26,6 @@ const mockModels = {
   Notification: { create: jest.fn() },
   HelpRequest: { findByPk: jest.fn(), findAll: jest.fn(), create: jest.fn() },
   Label: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn() },
-  DirectorPlan: { findOne: jest.fn(), findAll: jest.fn(), findOrCreate: jest.fn() },
   Workspace: {},
   TaskOwner: { findOne: jest.fn() },
   TaskAssignee: { findOne: jest.fn(), count: jest.fn() },
@@ -86,12 +85,6 @@ jest.mock('../../config/teams', () => ({
   }),
 }));
 
-jest.mock('../../services/teamsCalendarService', () => ({
-  createCalendarEvent: jest.fn(),
-  updateCalendarEvent: jest.fn(),
-  deleteCalendarEvent: jest.fn(),
-}));
-
 jest.mock('../../controllers/managerRelationController', () => ({
   getRelationsForEmployee: jest.fn((req, res) => res.json({ success: true })),
   addRelation: jest.fn((req, res) => res.json({ success: true })),
@@ -105,14 +98,6 @@ jest.mock('../../services/pushService', () => ({
   removeSubscription: jest.fn(),
   vapidPublicKey: 'test-vapid-public-key',
   pushConfigured: false,
-}));
-
-jest.mock('../../controllers/directorDashboardController', () => ({
-  getDirectorDashboard: jest.fn((req, res) => res.json({ success: true, data: {} })),
-}));
-
-jest.mock('../../models/DirectorPlan', () => ({
-  DEFAULT_CATEGORIES: [],
 }));
 
 jest.mock('../../services/hierarchyService', () => ({
@@ -254,73 +239,6 @@ describe('Board export authorization (boards.js)', () => {
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
       .get(`/api/boards/${BOARD_ID}/export`)
-      .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-  });
-});
-
-// ═══════════════════════��══════════════════════════════════���════════════════
-// 3. DIRECTOR PLAN ROLE RESTRICTION
-// ════���════════════════════���═════════════════════════════════════════════════
-
-describe('Director plan role restriction (directorPlan.js)', () => {
-  let app;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    app = express();
-    app.use(express.json());
-    app.use('/api/director-plan', require('../../routes/directorPlan'));
-  });
-
-  it('rejects member from accessing /directors list', async () => {
-    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
-    const token = generateToken(USER_ID, 'member');
-    const res = await request(app)
-      .get('/api/director-plan/directors')
-      .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(403);
-  });
-
-  it('allows manager to access /directors list', async () => {
-    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
-    mockModels.User.findAll.mockResolvedValue([]);
-    const token = generateToken(USER_ID, 'manager');
-    const res = await request(app)
-      .get('/api/director-plan/directors')
-      .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 4. DIRECTOR DASHBOARD ROLE RESTRICTION
-// ═══════════════════════════════════���═══════════════════════════════════════
-
-describe('Director dashboard role restriction (dashboard.js)', () => {
-  let app;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    app = express();
-    app.use(express.json());
-    app.use('/api/dashboard', require('../../routes/dashboard'));
-  });
-
-  it('rejects member from accessing /director dashboard', async () => {
-    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
-    const token = generateToken(USER_ID, 'member');
-    const res = await request(app)
-      .get('/api/dashboard/director')
-      .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(403);
-  });
-
-  it('allows admin to access /director dashboard', async () => {
-    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'admin' }));
-    const token = generateToken(USER_ID, 'admin');
-    const res = await request(app)
-      .get('/api/dashboard/director')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
   });

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Calendar as CalIcon, Table, Search, ChevronLeft, ChevronRight, Plus, Settings,
-  Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot,
+  Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot, X,
 } from 'lucide-react';
 import { SkeletonTable } from '../components/common/Skeleton';
 import {
@@ -17,10 +17,27 @@ import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 
+// Filter chip metadata. The keys here are the values accepted by the
+// `?filter=` URL param, so deep-links from the Home page stat tiles land
+// on a pre-narrowed view. RBAC stays intact because the underlying data
+// source (/tasks?assignedTo=me) is already personal-scoped server-side —
+// the filter only narrows what the user already sees, never widens it.
+const FILTER_META = {
+  overdue:     { label: 'Overdue',     color: '#e2445c' },
+  today:       { label: 'Due today',   color: '#0073ea' },
+  in_progress: { label: 'In progress', color: '#3b82f6' },
+  stuck:       { label: 'Stuck / blocked', color: '#f43f5e' },
+  done:        { label: 'Completed',   color: '#00c875' },
+};
+
 export default function MyWorkPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { error: toastError } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filterKey = searchParams.get('filter');
+  const activeFilter = FILTER_META[filterKey] ? filterKey : null;
+
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewTab, setViewTab] = useState('table');
@@ -50,7 +67,33 @@ export default function MyWorkPage() {
     }
   }
 
-  const filtered = searchQuery ? tasks.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase())) : tasks;
+  // Apply the URL-param bucket filter first, then the search-box text
+  // filter. Order matters: the URL filter is the user's deep-link intent
+  // ("show me overdue") and search refines within it.
+  const bucketFiltered = useMemo(() => {
+    if (!activeFilter) return tasks;
+    const today = new Date();
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    switch (activeFilter) {
+      case 'overdue':
+        return tasks.filter(t => t.dueDate && isPast(parseISO(t.dueDate))
+          && !isSameDay(parseISO(t.dueDate), todayStart) && t.status !== 'done');
+      case 'today':
+        return tasks.filter(t => t.dueDate && isSameDay(parseISO(t.dueDate), todayStart));
+      case 'in_progress':
+        return tasks.filter(t => t.status === 'working_on_it' || t.status === 'in_progress');
+      case 'stuck':
+        return tasks.filter(t => t.status === 'stuck');
+      case 'done':
+        return tasks.filter(t => t.status === 'done');
+      default:
+        return tasks;
+    }
+  }, [tasks, activeFilter]);
+
+  const filtered = searchQuery
+    ? bucketFiltered.filter(t => t.title.toLowerCase().includes(searchQuery.toLowerCase()))
+    : bucketFiltered;
 
   // Enhanced grouping
   const grouped = useMemo(() => {
@@ -112,13 +155,38 @@ export default function MyWorkPage() {
     <div className="h-full flex flex-col">
       <div className="px-6 pt-5 pb-2">
         <div className="flex items-center justify-between mb-3">
-          <div>
-            <h1 className="text-xl font-bold text-text-primary">My Work</h1>
-            <p className="text-xs text-text-secondary mt-0.5">
-              {stats.total} active task{stats.total !== 1 ? 's' : ''}
-              {stats.overdue > 0 && <span className="text-danger font-medium"> · {stats.overdue} overdue</span>}
-              {stats.autoAssigned > 0 && <span className="text-purple font-medium"> · {stats.autoAssigned} auto-assigned</span>}
-            </p>
+          <div className="flex items-center gap-2 min-w-0">
+            <div>
+              <h1 className="text-xl font-bold text-text-primary">My Work</h1>
+              <p className="text-xs text-text-secondary mt-0.5">
+                {stats.total} active task{stats.total !== 1 ? 's' : ''}
+                {stats.overdue > 0 && <span className="text-danger font-medium"> · {stats.overdue} overdue</span>}
+                {stats.autoAssigned > 0 && <span className="text-purple font-medium"> · {stats.autoAssigned} auto-assigned</span>}
+              </p>
+            </div>
+            {activeFilter && (
+              <span
+                className="ml-3 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-semibold"
+                style={{
+                  backgroundColor: `${FILTER_META[activeFilter].color}1A`,
+                  color: FILTER_META[activeFilter].color,
+                }}
+              >
+                Filtered: {FILTER_META[activeFilter].label}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('filter');
+                    setSearchParams(next, { replace: true });
+                  }}
+                  className="rounded-full hover:bg-black/5 p-0.5"
+                  aria-label="Clear filter"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
           </div>
         </div>
 

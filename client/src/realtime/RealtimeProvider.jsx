@@ -43,6 +43,9 @@ const REALTIME_EVENTS = [
   // Boards
   'board:created', 'board:updated', 'board:deleted',
   'board:memberAdded', 'board:memberRemoved',
+  // Workspaces
+  'workspace:created', 'workspace:updated', 'workspace:deleted',
+  'workspace:archived', 'workspace:restored', 'workspace:memberUpdated',
   // Comments / files
   'comment:created', 'comment:deleted',
   'file:uploaded', 'file:deleted',

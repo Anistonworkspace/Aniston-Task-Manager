@@ -51,7 +51,6 @@ const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
 const hierarchyRoutes = require('./routes/hierarchy');
 const managerRelationRoutes = require('./routes/managerRelations');
-const directorPlanRoutes = require('./routes/directorPlan');
 const archiveRoutes = require('./routes/archive');
 const pushRoutes = require('./routes/push');
 const externalRoutes = require('./routes/external');
@@ -232,7 +231,8 @@ app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/hierarchy-levels', hierarchyRoutes);
 app.use('/api/manager-relations', managerRelationRoutes);
-app.use('/api/director-plan', directorPlanRoutes);
+// /api/director-plan retired — return 410 Gone for any direct hits.
+app.use('/api/director-plan', (_req, res) => res.status(410).json({ success: false, message: 'Director Plan module has been removed.' }));
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/integrations', integrationConfigRoutes);
@@ -1409,17 +1409,7 @@ const start = async () => {
       const { startRecurringTaskJob } = require('./jobs/recurringTaskJob');
       startRecurringTaskJob();
 
-      // Start director plan deadline notification job (every 30 minutes)
-      const cron = require('node-cron');
-      const { checkDirectorPlanDeadlines } = require('./services/deadlineNotificationService');
-      cron.schedule('*/30 * * * *', async () => {
-        try {
-          await checkDirectorPlanDeadlines();
-        } catch (err) {
-          console.error('[DeadlineNotification] Cron job error:', err.message);
-        }
-      });
-      console.log('[Server] Director plan deadline notification cron started (every 30 min)');
+      // Director Plan deadline notification cron retired (module removed).
 
       // Start deadline reminder job (every 15 minutes)
       const { startDeadlineReminderJob } = require('./jobs/deadlineReminderJob');

@@ -36,6 +36,8 @@ const {
 } = require('../models');
 const { sendNotification } = require('./notificationService');
 const { logActivity } = require('./activityService');
+const realtime = require('./realtimeService');
+const boardMembershipService = require('./boardMembershipService');
 const logger = require('../utils/logger');
 
 // ─── Structured per-template logging ────────────────────────────────────────
@@ -595,9 +597,49 @@ async function generateInstance(template, occurrenceDate, options = {}) {
  * Side-effects to run AFTER the instance row is committed. Fire-and-forget;
  * each individual side-effect is wrapped in its own try/catch so one failure
  * doesn't suppress the others.
+ *
+ * Side-effect ordering matters once: autoAddMember must run BEFORE
+ * emitTaskCreated. emitTaskCreated targets users authorised to view the task,
+ * which is computed via taskVisibilityService — that path consults
+ * BoardMembers, so the assignee being a board member is what makes the event
+ * actually reach them. Without the membership row, the realtime event would
+ * fan out to nobody on a board the assignee was never explicitly added to.
  */
 async function afterInstanceCreated(template, task) {
-  // 1. In-app + push notification to the assignee.
+  // 1. Mirror normal task creation: ensure the assignee is a board member.
+  //    taskController.createTask does this exact call after each new
+  //    assignment; without it, an assignee who isn't already on the board
+  //    won't see the task in their sidebar / list. The call is idempotent
+  //    (ON CONFLICT DO NOTHING) so re-running on existing memberships is safe.
+  try {
+    if (task.assignedTo && task.boardId) {
+      await boardMembershipService.autoAddMember(task.boardId, task.assignedTo);
+    }
+  } catch (e) {
+    logger.warn('[recurringTaskService] autoAddMember failed', {
+      templateId: template.id, taskId: task.id, msg: e.message,
+    });
+  }
+
+  // 2. Realtime fan-out — same event shape as normal task creation
+  //    (taskController.createTask emits realtime.emitTaskCreated). The
+  //    eventRouter on the client invalidates `tasks.board.<boardId>`,
+  //    `tasks.id.<taskId>`, `tasks.assignedTo.me`, and `dashboard.stats`
+  //    automatically — no client-side change required.
+  //
+  //    actorId = template.createdBy because the human who set up the
+  //    recurrence is the closest analogue to "the user who just created
+  //    this task". Some receivers use it to suppress self-echo.
+  try {
+    realtime.emitTaskCreated(task, { actorId: template.createdBy });
+  } catch (e) {
+    // emitTaskCreated is itself fire-and-forget; this catch is belt+braces.
+    logger.warn('[recurringTaskService] emitTaskCreated threw', {
+      templateId: template.id, taskId: task.id, msg: e.message,
+    });
+  }
+
+  // 3. In-app + push notification to the assignee.
   try {
     await sendNotification(
       template.assigneeId,
@@ -610,7 +652,7 @@ async function afterInstanceCreated(template, task) {
     logger.warn('[recurringTaskService] notification failed', { templateId: template.id, taskId: task.id, msg: e.message });
   }
 
-  // 2. Activity log (audit trail). Fire-and-forget per project convention.
+  // 4. Activity log (audit trail). Fire-and-forget per project convention.
   try {
     logActivity({
       action: 'created',
@@ -633,6 +675,131 @@ function formatDueTimeForHumans(dueTime) {
   const h12 = ((t.hour + 11) % 12) + 1;
   const mm = String(t.minute).padStart(2, '0');
   return `${h12}:${mm} ${ampm}`;
+}
+
+// ─── Public: seed the NEXT UPCOMING instance ────────────────────────────────
+
+/**
+ * Generate the NEXT eligible occurrence (today or any future day) immediately.
+ *
+ * Called from `createTemplate`, `updateTemplate` (when schedule changes), and
+ * `resumeTemplate` so the assignee sees a concrete task in their board the
+ * moment a recurring rule is set up — even when the actual due date is in the
+ * future. The dueDate / occurrenceDate on the generated row reflect the
+ * scheduled day (e.g. "next Tuesday" for a weekly Tue template created on
+ * Thursday), and the cron later skips that day because the partial unique
+ * index `(recurringTemplateId, occurrenceDate)` rejects a second insert.
+ *
+ * Distinct from `runTemplateOnce` (cron path) which only generates for TODAY
+ * when today is eligible. Both paths share `generateInstance` so the
+ * idempotency / transaction / autoAddMember / realtime emit story is one place.
+ *
+ * Effects on `lastGeneratedDate` / `nextRunAt`:
+ *   - On success, `lastGeneratedDate` is advanced to the seeded occurrence
+ *     date. `recomputeNextRunAt` then anchors on `lastGeneratedDate + 1`,
+ *     pointing the cron at the FOLLOWING occurrence (e.g. the Tue after the
+ *     one we just seeded).
+ *   - On no-future-occurrence (endDate already past, empty weekdays, etc.)
+ *     `nextRunAt` is set to NULL via `recomputeNextRunAt` so the cron never
+ *     reconsiders the row.
+ *
+ * Never throws — errors are caught and surfaced as `{ ok:false, error }`.
+ */
+async function seedNextUpcomingInstance(template, options = {}) {
+  const fromDate = options.fromDate || new Date();
+  const source = options.source || 'seedNextUpcomingInstance';
+
+  if (!template) {
+    return { ok: false, reason: 'template-missing' };
+  }
+  if (template.archivedAt) {
+    return { ok: false, reason: 'template-archived' };
+  }
+  if (!template.isActive) {
+    return { ok: false, reason: 'template-paused' };
+  }
+
+  // Compute the next eligible occurrence — today wins if eligible, otherwise
+  // the earliest future eligible day inside [startDate, endDate].
+  const occurrenceDate = nextOccurrenceDate(template, fromDate);
+  if (!occurrenceDate) {
+    // endDate in the past, or schedule that yields no eligible day in the
+    // 366-day search window. Make sure nextRunAt reflects "nothing to do".
+    try { await recomputeNextRunAt(template, { fromDate }); }
+    catch (e) { /* non-fatal — the cron will re-evaluate next tick */ }
+    emitGenLog('info', 'skipped', template, {
+      reason: 'no-future-occurrence', source,
+    });
+    return {
+      ok: true,
+      generated: false,
+      alreadyExisted: false,
+      occurrenceDate: null,
+      nextRunAt: null,
+      reason: 'no-future-occurrence',
+    };
+  }
+
+  let result;
+  try {
+    result = await generateInstance(template, occurrenceDate, { source });
+  } catch (err) {
+    emitGenLog('error', 'error', template, {
+      occurrenceDate, reason: err.message, source,
+    });
+    return { ok: false, reason: err.message, error: err.message, occurrenceDate };
+  }
+
+  if (!result.ok) {
+    // Pre-flight failed (board archived, assignee inactive, group missing).
+    // Still recompute nextRunAt so the cron has a coherent view.
+    try { await recomputeNextRunAt(template, { fromDate }); }
+    catch (e) { /* non-fatal */ }
+    return {
+      ok: false,
+      generated: false,
+      alreadyExisted: false,
+      occurrenceDate,
+      reason: result.reason,
+    };
+  }
+
+  // Success (created OR already-existed). Advance lastGeneratedDate so
+  // recomputeNextRunAt anchors past this date — the cron will then skip the
+  // seeded day and pick up the FOLLOWING occurrence.
+  //
+  // Forward-only: if lastGeneratedDate is already further in the future
+  // (e.g. caller seeded twice with different fromDates), don't regress it.
+  const cur = template.lastGeneratedDate ? String(template.lastGeneratedDate) : null;
+  if (!cur || occurrenceDate >= cur) {
+    if (template.lastGeneratedDate !== occurrenceDate) {
+      try { await template.update({ lastGeneratedDate: occurrenceDate }); }
+      catch (e) {
+        emitGenLog('warn', 'error', template, {
+          occurrenceDate, reason: `lastGeneratedDate update failed: ${e.message}`, source,
+        });
+      }
+    }
+  }
+
+  let nextRunAt = null;
+  try {
+    const next = await recomputeNextRunAt(template, { fromDate });
+    nextRunAt = next ? next.nextRunAt : null;
+  } catch (e) {
+    emitGenLog('warn', 'error', template, {
+      occurrenceDate, reason: `recomputeNextRunAt failed: ${e.message}`, source,
+    });
+  }
+
+  return {
+    ok: true,
+    generated: !!result.created,
+    alreadyExisted: !!(result.task && !result.created),
+    occurrenceDate,
+    nextRunAt,
+    taskId: result.task?.id || null,
+  };
 }
 
 // ─── Public: orchestrator used by the cron job ──────────────────────────────
@@ -740,6 +907,7 @@ module.exports = {
   recomputeNextRunAt,
   generateInstance,
   runTemplateOnce,
+  seedNextUpcomingInstance,
 
   // Diagnostics (read-only)
   validateTemplateForGeneration,

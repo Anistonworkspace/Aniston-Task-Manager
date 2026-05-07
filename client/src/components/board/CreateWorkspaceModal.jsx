@@ -14,14 +14,31 @@ const ICON_MAP = {
 
 const PRESET_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc', '#ff642e', '#333333', '#9cd326', '#ff158a', '#66ccff', '#037f4c'];
 
-export default function CreateWorkspaceModal({ onClose, onCreated }) {
+// Mirror of CreateBoardModal#pickRandomColor — pick a colour the user hasn't
+// already used on another workspace they can see. Comparison is
+// case-insensitive so '#0073EA' and '#0073ea' aren't treated as different
+// shades. If every palette colour is already taken, fall back to a random
+// pick across the full palette so the modal still has a sensible default.
+function pickRandomColor(usedColors = []) {
+  const used = new Set((usedColors || []).filter(Boolean).map(c => String(c).toLowerCase()));
+  const available = PRESET_COLORS.filter(c => !used.has(c.toLowerCase()));
+  const pool = available.length > 0 ? available : PRESET_COLORS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+export default function CreateWorkspaceModal({ onClose, onCreated, usedColors = [] }) {
   const [step, setStep] = useState(1);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [color, setColor] = useState('#0073ea');
+  // Initial colour is auto-picked from the palette, biased away from colours
+  // already in use. This matches the Create Board modal's behaviour. The
+  // `selectBlank` path re-rolls so the user can keep clicking "Empty" and
+  // get a different available colour each time when the previous pick is
+  // also still unused.
+  const [color, setColor] = useState(() => pickRandomColor(usedColors));
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
 
@@ -43,7 +60,11 @@ export default function CreateWorkspaceModal({ onClose, onCreated }) {
     setSelectedTemplate(null);
     setName('');
     setDescription('');
-    setColor('#0073ea');
+    // Re-pick from the available pool so the empty-workspace path also gets
+    // a non-duplicate colour. If the user manually clicked a palette swatch
+    // before hitting Empty, this overwrites their choice — that's fine,
+    // the swatches are right there and they can re-pick on step 2.
+    setColor(pickRandomColor(usedColors));
     setStep(2);
   }
 

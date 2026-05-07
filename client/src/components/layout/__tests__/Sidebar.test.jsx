@@ -58,14 +58,6 @@ vi.mock('../../board/CreateWorkspaceModal', () => ({
   ),
 }));
 
-vi.mock('../../common/ProfileModal', () => ({
-  default: ({ onClose }) => (
-    <div data-testid="profile-modal">
-      <button onClick={onClose}>Close</button>
-    </div>
-  ),
-}));
-
 // createPortal renders portals inline in jsdom (no document.body append needed)
 vi.mock('react-dom', async (importOriginal) => {
   const actual = await importOriginal();
@@ -247,11 +239,18 @@ describe('Sidebar component', () => {
 
   // ---- Profile modal ----
 
-  it('opens the profile modal when the user footer button is clicked', () => {
+  // Sidebar Profile and Header "My Profile" must open the same overlay.
+  // Both navigate to /profile with the current location as state.background
+  // so App.jsx mounts ProfileModalRoute on top of the page behind it. The
+  // separate right-side Account Settings drawer was removed for parity.
+  it('navigates to /profile with background state when the user footer button is clicked', () => {
     renderSidebar();
     const accountBtn = screen.getByTitle('Account Settings');
     fireEvent.click(accountBtn);
-    expect(screen.getByTestId('profile-modal')).toBeInTheDocument();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/profile',
+      expect.objectContaining({ state: expect.objectContaining({ background: expect.any(Object) }) })
+    );
   });
 
   // ---- Workspace search ----

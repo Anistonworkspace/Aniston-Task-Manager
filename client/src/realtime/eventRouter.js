@@ -136,6 +136,21 @@ export function routeEvent(event, payload = {}) {
       break;
     }
 
+    case 'workspace:created':
+    case 'workspace:updated':
+    case 'workspace:deleted':
+    case 'workspace:archived':
+    case 'workspace:restored':
+    case 'workspace:memberUpdated': {
+      // The sidebar fetches both /boards and /workspaces/mine in one
+      // loadData() call, so invalidating `boards.list` is sufficient to
+      // re-sync the workspace tree. The actual visibility filtering happens
+      // server-side via boardVisibilityService — clients receive only what
+      // their RBAC permits, so the global broadcast is safe.
+      out.push('boards.list');
+      break;
+    }
+
     case 'comment:created':
     case 'comment:deleted': {
       pushIf(out, !!taskId, `comments.task.${taskId}`);

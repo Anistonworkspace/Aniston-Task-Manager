@@ -1,10 +1,10 @@
 const { validationResult } = require('express-validator');
-const { Subtask, Task, User, TaskAssignee, TaskOwner } = require('../models');
+const { Subtask, Task, User } = require('../models');
 const { logActivity } = require('../services/activityService');
 const realtime = require('../services/realtimeService');
 const { canAssignTo } = require('../services/hierarchyService');
+const taskVisibility = require('../services/taskVisibilityService');
 const { sanitizeInput } = require('../utils/sanitize');
-const { Op } = require('sequelize');
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -18,32 +18,34 @@ const SUBTASK_INCLUDES = () => ([
 
 /**
  * A user can view/access a parent task's subtasks if they could view the
- * parent task. Mirrors taskPermissions.canViewTask logic but inline so the
- * subtask routes can stay independent of the param shape.
+ * parent task itself. Delegates to the centralized
+ * `taskVisibilityService.canViewTask` so the subtask access rule is
+ * IDENTICAL to the rule used by the board list query, the task detail
+ * middleware, and comment/approval controllers — one source of truth.
+ *
+ * Why this matters: the previous inline check only matched direct linkage
+ * (assignedTo / createdBy / TaskAssignee / TaskOwner) and ignored the
+ * hierarchy subtree. A Tier 3 manager could see a descendant's task in the
+ * board listing (visibility filter is hierarchy-aware) but the modal's
+ * /subtasks load returned 403, surfacing the "You do not have access to
+ * this task" toast despite legitimate visibility.
+ *
+ * Tier semantics are entirely encapsulated by `canViewTask`:
+ *   - Tier 1 / Tier 2 (admin, super_admin) → unrestricted
+ *   - Tier 3 / Tier 4 → self ∪ descendants subtree match against
+ *     assignedTo / createdBy / task_assignees / task_owners
+ *
+ * The dependency-owner read path is preserved separately so that a user
+ * assigned to a DependencyRequest on this parent still gets read access
+ * to the parent's subtasks even when the canonical visibility check
+ * returns false. Mutation gates (canMemberMutateSubtask) still enforce
+ * the stricter write rules below.
  */
 async function userCanAccessParentTask(user, task) {
   if (!user || !task) return false;
-  // Phase 7 — Tier-aware. Tier 1 / Tier 2 retain unrestricted access (org
-  // visibility). Tier 3 (assistant manager) used to short-circuit `true`
-  // here; that let them read/mutate subtasks on ANY task in the org
-  // (audit P0-5). Tier 3 now follows the same per-task linkage check as
-  // Tier 4 below.
-  const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
-  const t = resolveTier(user);
-  if (t === TIER_1 || t === TIER_2) return true;
-  // Tier 3 / Tier 4 — must be linked to the task.
-  if (task.createdBy === user.id || task.assignedTo === user.id) return true;
-  try {
-    const ta = await TaskAssignee.findOne({ where: { taskId: task.id, userId: user.id } });
-    if (ta) return true;
-  } catch { /* table may not exist on older DBs */ }
-  try {
-    const to = await TaskOwner.findOne({ where: { taskId: task.id, userId: user.id } });
-    if (to) return true;
-  } catch { /* table may not exist on older DBs */ }
-  // Dependency-owner read path — a user assigned to a DependencyRequest on
-  // this parent gets read access (subtask list, file list, parent context).
-  // Mutation gates (canMemberMutateSubtask) still enforce write rules.
+
+  if (await taskVisibility.canViewTask(user, task)) return true;
+
   try {
     const { DependencyRequest } = require('../models');
     const depCount = await DependencyRequest.count({
@@ -51,6 +53,7 @@ async function userCanAccessParentTask(user, task) {
     });
     if (depCount > 0) return true;
   } catch { /* dependency_requests table may not exist on very old DBs */ }
+
   return false;
 }
 
