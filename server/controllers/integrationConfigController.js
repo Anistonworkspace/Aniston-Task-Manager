@@ -47,21 +47,46 @@ const getConfig = async (req, res) => {
       });
     }
 
-    const decryptedClientId = decrypt(config.clientId);
-    const decryptedSecret = decrypt(config.clientSecret);
+    // Decrypt isolated so an ENCRYPTION_KEY mismatch surfaces a precise,
+    // actionable response instead of a generic 500 that gives the admin no
+    // clue why the Integrations page is broken. The frontend can render
+    // "credentials need to be re-entered" when `decryptFailed: true` so the
+    // admin knows exactly what to do (re-save credentials with the current
+    // ENCRYPTION_KEY in scope). See server/config/teams.js for the same
+    // hardening on the public path.
+    let decryptedClientId = '';
+    let decryptedSecret = '';
+    let decryptFailed = false;
+    let decryptErrorMessage = null;
+    try {
+      decryptedClientId = decrypt(config.clientId) || '';
+      decryptedSecret = decrypt(config.clientSecret) || '';
+    } catch (err) {
+      decryptFailed = true;
+      decryptErrorMessage =
+        'Saved credentials could not be decrypted. The ENCRYPTION_KEY env var ' +
+        'is likely missing or has changed since these credentials were stored. ' +
+        'Re-enter Client ID and Client Secret below to fix.';
+      console.error(
+        '[IntegrationConfig] Decrypt failed for provider=' + provider +
+        ' — admin must re-save credentials. Underlying error: ' + err.message
+      );
+    }
 
     res.json({
       success: true,
       data: {
         provider: config.provider,
-        isConfigured: !!(decryptedClientId && decryptedSecret),
-        clientId: decryptedClientId || '',
+        isConfigured: !decryptFailed && !!(decryptedClientId && decryptedSecret),
+        clientId: decryptedClientId,
         clientSecret: maskSecret(decryptedSecret),
         tenantId: config.tenantId || '',
         redirectUri: config.redirectUri || '',
         ssoRedirectUri: config.ssoRedirectUri || '',
         ssoEnabled: config.ssoEnabled,
         hasSecret: !!decryptedSecret,
+        decryptFailed,
+        decryptErrorMessage,
         updatedAt: config.updatedAt,
       },
     });
