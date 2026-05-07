@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Filter, SortAsc, BarChart3, Plus, Columns3, Calendar, Settings,
-  LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal
+  LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal,
+  AlertCircle
 } from 'lucide-react';
 import { DragDropContext } from '@hello-pangea/dnd';
 import api from '../services/api';
@@ -207,6 +208,13 @@ export default function BoardPage() {
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
+  // True iff the most recent loadBoard() OR loadTasks() failed with a server
+  // error (5xx / network). Used to (a) hide misleading empty-state copy like
+  // "No tasks assigned to you" while the server is broken, and (b) guarantee
+  // a single user-facing toast per failed load even when both endpoints fail
+  // in the same render — the global api.js interceptor is bypassed via
+  // `_silent` on these two requests so we only show our own message here.
+  const [loadError, setLoadError] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
   const [viewTab, setViewTab] = useState('table');
   const [searchQuery, setSearchQuery] = useState('');
@@ -272,13 +280,17 @@ export default function BoardPage() {
   const loadBoard = useCallback(async () => {
     try {
       const [boardRes, usersRes] = await Promise.all([
-        api.get(`/boards/${boardId}`),
+        // _silent suppresses the global api-error toast — we surface a single
+        // local toast (or none, if loadTasks already did) so the user doesn't
+        // see "Server error fetching board" stacked with our cleaner message.
+        api.get(`/boards/${boardId}`, { _silent: true }),
         api.get('/auth/assignable-users'),
       ]);
       const data = boardRes.data.board || boardRes.data;
       setBoard(data);
       const allUsers = usersRes.data.users || usersRes.data || [];
       setMembers(allUsers.length > 0 ? allUsers : data.members || data.Users || []);
+      setLoadError(null);
     } catch (err) {
       console.error('[BoardPage] loadBoard error:', err);
       // If access denied (403), redirect to home instead of showing broken board
@@ -287,9 +299,19 @@ export default function BoardPage() {
         navigate('/');
         return;
       }
-      toastError('Failed to load board. Please refresh the page.');
+      if (err?.response?.status === 404) {
+        toastError('This board no longer exists.');
+        navigate('/');
+        return;
+      }
+      // Server / network failure: set the error flag and emit ONE toast.
+      // The toast component already dedupes identical (type+message) pairs in
+      // a 1.5s window, so even if loadTasks fails moments later with the same
+      // string, only one toast is rendered.
+      setLoadError('board');
+      toastError('We could not load this board. Please refresh the page.');
     }
-  }, [boardId, navigate]);
+  }, [boardId, navigate, toastError]);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -297,7 +319,7 @@ export default function BoardPage() {
       params.set('boardId', boardId);
       if (advFilters.person) params.set('assignedTo', advFilters.person);
       if (searchQuery) params.set('search', searchQuery);
-      const res = await api.get(`/tasks?${params.toString()}`);
+      const res = await api.get(`/tasks?${params.toString()}`, { _silent: true });
       let fetched = res.data.tasks || res.data || [];
       if (advFilters.status.length > 0) {
         fetched = fetched.filter(t => advFilters.status.includes(t.status));
@@ -308,13 +330,20 @@ export default function BoardPage() {
       // Filter out archived tasks
       fetched = fetched.filter(t => !t.isArchived);
       setTasks(fetched);
+      // Only clear loadError if it was set by tasks specifically — leave a
+      // 'board' error in place so the empty-state replacement still wins.
+      setLoadError((cur) => (cur === 'tasks' ? null : cur));
     } catch (err) {
       console.error('[BoardPage] loadTasks error:', err);
-      toastError('Failed to load tasks. Please refresh the page.');
+      // If loadBoard already surfaced a toast for the same incident, the
+      // dedup window in Toast.jsx will swallow this one. We still set the
+      // error flag so the empty-state copy is replaced regardless.
+      setLoadError((cur) => cur || 'tasks');
+      toastError('We could not load this board. Please refresh the page.');
     } finally {
       setLoading(false);
     }
-  }, [boardId, advFilters, searchQuery]);
+  }, [boardId, advFilters, searchQuery, toastError]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => { loadTasks(); }, [loadTasks]);
@@ -1228,8 +1257,30 @@ export default function BoardPage() {
               here keeps the gutter as static, non-scrollable space. */}
           <div className="flex-1 flex flex-col px-2 sm:px-6 pb-6 min-h-0">
             <div className="flex-1 overflow-auto -webkit-overflow-scrolling-touch min-h-0" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-            {/* Empty state for employees with no visible tasks */}
-            {sortedTasks.length === 0 && !loading && (
+            {/* Server / network failure — replaces the legitimate "no tasks"
+                empty state so the user isn't told "no tasks assigned to you"
+                while the API is actually broken. Shown only when the most
+                recent load failed. The single toast in loadBoard/loadTasks
+                handles the transient surface; this is the in-page fallback. */}
+            {loadError && !loading && (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="w-16 h-16 rounded-full bg-danger/10 flex items-center justify-center mb-4">
+                  <AlertCircle size={28} className="text-danger" />
+                </div>
+                <h3 className="text-lg font-semibold text-[#323338] mb-1">We couldn't load this board</h3>
+                <p className="text-sm text-[#676879] max-w-sm mb-4">Something went wrong on our side. Please refresh the page or try again in a moment.</p>
+                <button
+                  onClick={() => { setLoading(true); setLoadError(null); loadBoard(); loadTasks(); }}
+                  className="px-4 py-2 text-sm rounded-md bg-[#0073ea] text-white hover:bg-[#0060c2] transition-colors font-medium"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {/* Empty state for employees with no visible tasks. Suppressed
+                when loadError is set so we never show "No tasks assigned to
+                you" alongside a server failure (production audit fix). */}
+            {!loadError && sortedTasks.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <div className="w-16 h-16 rounded-full bg-surface-100 flex items-center justify-center mb-4">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c4c4c4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="2"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>

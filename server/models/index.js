@@ -331,9 +331,6 @@ Task.hasMany(DependencyRequest, { as: 'dependencyRequests', foreignKey: 'parentT
 User.hasMany(DependencyRequest, { as: 'assignedDependencyRequests',  foreignKey: 'assignedToUserId' });
 User.hasMany(DependencyRequest, { as: 'requestedDependencyRequests', foreignKey: 'requestedByUserId' });
 
-// ─── Task <-> User (scheduledBy) ─────────────────────────────
-Task.belongsTo(User, { as: 'scheduler', foreignKey: 'scheduledBy', onDelete: 'SET NULL' });
-
 // ─── Task <-> User (multi-owner via TaskOwner) ──────────────
 Task.belongsToMany(User, { through: TaskOwner, as: 'owners', foreignKey: 'taskId', otherKey: 'userId' });
 User.belongsToMany(Task, { through: TaskOwner, as: 'ownedTasks', foreignKey: 'userId', otherKey: 'taskId' });
