@@ -1,0 +1,247 @@
+name: Read-only Production Task Audit
+
+# Manual trigger only. No `push:`, no `schedule:`, no `pull_request:`.
+on:
+  workflow_dispatch:
+    inputs:
+      affected_user_search:
+        description: "ILIKE pattern to find the affected user (email or name). Default %sunny%"
+        required: false
+        default: "%sunny%"
+        type: string
+
+# Queue, never cancel — two audits in flight would only confuse the log.
+concurrency:
+  group: production-readonly-audit
+  cancel-in-progress: false
+
+# Workflow needs nothing from the repo other than reading itself.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only production audit
+    runs-on: ubuntu-latest
+    # Same gate as deploy.yml — requires a manual approval on the
+    # `production` environment before this job runs. Without the click,
+    # nothing connects to EC2.
+    environment: production
+
+    steps:
+      - name: SSH to EC2 and run READ-ONLY task audit
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 5m
+          # Forward only the input pattern — no other env, no ENV_FILE,
+          # no deploy keys.
+          envs: AFFECTED_USER_PATTERN
+          script: |
+            set -e
+
+            echo "════════════════════════════════════════════════════════════════"
+            echo "  READ-ONLY PRODUCTION TASK AUDIT"
+            echo "  - No code deploy. No container restart. No file changes."
+            echo "  - No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER."
+            echo "  - All SQL inside a SET TRANSACTION READ ONLY block + ROLLBACK."
+            echo "  - Director Plan / Time Plan tables are NOT queried."
+            echo "════════════════════════════════════════════════════════════════"
+            echo ""
+
+            # ── [1/5] Container check ──────────────────────────────────────────
+            echo "── [1/5] Container check ──"
+            for c in aph-backend aph-postgres; do
+              if ! docker inspect "$c" >/dev/null 2>&1; then
+                echo "ERROR: container $c not found on this host. Aborting."
+                exit 1
+              fi
+              STATE=$(docker inspect -f '{{.State.Status}}' "$c")
+              IMAGE=$(docker inspect -f '{{.Config.Image}}' "$c")
+              UPSINCE=$(docker inspect -f '{{.State.StartedAt}}' "$c")
+              echo "  $c → status=$STATE image=$IMAGE startedAt=$UPSINCE"
+              if [ "$STATE" != "running" ]; then
+                echo "ERROR: container $c is not running. Aborting (no restart attempted)."
+                exit 1
+              fi
+            done
+            echo ""
+
+            # ── [2/5] DB identity from BACKEND ─────────────────────────────────
+            echo "── [2/5] DB identity reported by aph-backend ──"
+            BACKEND_IDENTITY=$(docker exec aph-backend sh -c \
+              'node -e "const{sequelize}=require(\"./config/db\");sequelize.query(\"SELECT current_database() AS db, pg_postmaster_start_time()::text AS pg_started, version() AS pg_version\").then(([r])=>{console.log(JSON.stringify(r[0]));process.exit(0)}).catch(e=>{console.error(\"BACKEND_DB_ERR:\"+e.message);process.exit(1)})"')
+            echo "  $BACKEND_IDENTITY"
+            echo ""
+
+            # ── [3/5] DB identity from POSTGRES ────────────────────────────────
+            echo "── [3/5] DB identity reported by aph-postgres ──"
+            PG_IDENTITY=$(docker exec aph-postgres psql -U postgres -d aniston_project_hub -At -c \
+              "SELECT json_build_object('db', current_database(), 'pg_started', pg_postmaster_start_time()::text, 'pg_version', version(), 'in_recovery', pg_is_in_recovery());")
+            echo "  $PG_IDENTITY"
+            echo ""
+
+            # Hard identity check: backend.db == postgres.db == aniston_project_hub
+            if ! echo "$BACKEND_IDENTITY" | grep -q '"db":"aniston_project_hub"'; then
+              echo "ABORT: backend is NOT connected to aniston_project_hub."
+              exit 1
+            fi
+            if ! echo "$PG_IDENTITY" | grep -q '"db" *: *"aniston_project_hub"'; then
+              echo "ABORT: aph-postgres is not serving aniston_project_hub on this connection."
+              exit 1
+            fi
+
+            # Hard identity check: same pg_postmaster_start_time on both sides.
+            BACKEND_PG_START=$(echo "$BACKEND_IDENTITY" | sed -n 's/.*"pg_started":"\([^"]*\)".*/\1/p')
+            PG_PG_START=$(echo "$PG_IDENTITY"          | sed -n 's/.*"pg_started" *: *"\([^"]*\)".*/\1/p')
+            if [ -z "$BACKEND_PG_START" ] || [ -z "$PG_PG_START" ]; then
+              echo "ABORT: could not parse pg_postmaster_start_time from one of the sources."
+              exit 1
+            fi
+            if [ "$BACKEND_PG_START" != "$PG_PG_START" ]; then
+              echo "ABORT: pg_postmaster_start_time differs between backend ($BACKEND_PG_START) and postgres ($PG_PG_START)."
+              echo "       This means the backend is talking to a DIFFERENT Postgres than aph-postgres."
+              exit 1
+            fi
+            echo "  Identity match OK — backend and aph-postgres are the same instance."
+            echo "  pg_postmaster_start_time: $BACKEND_PG_START"
+            echo ""
+
+            # ── [4/5] READ-ONLY SQL bundle ─────────────────────────────────────
+            echo "── [4/5] Running READ-ONLY SQL bundle (BEGIN; SET TRANSACTION READ ONLY; … ROLLBACK;) ──"
+            echo ""
+
+            # Heredoc is single-quoted ('SQL') so no shell expansion happens
+            # inside it — the SQL is sent verbatim to psql.
+            #
+            # The :'pattern' psql variable is set on the command line via -v;
+            # psql escapes it as a SQL string literal, so a malicious pattern
+            # cannot break out. And even if it did, the txn is READ ONLY.
+            #
+            # ON_ERROR_STOP=off so one bad query does not skip later ones —
+            # we want to see all results in the CI log.
+            docker exec -i aph-postgres \
+              psql -U postgres -d aniston_project_hub \
+                   -v "pattern=${AFFECTED_USER_PATTERN:-%sunny%}" \
+                   -v ON_ERROR_STOP=off \
+                   --no-psqlrc <<'SQL'
+            \pset pager off
+            \timing on
+
+            BEGIN;
+            SET TRANSACTION READ ONLY;
+            SHOW transaction_read_only;
+
+            \echo '── timezone & date ──'
+            SHOW timezone;
+            SELECT CURRENT_DATE AS today, CURRENT_DATE - 1 AS yesterday, NOW() AS now_ts;
+
+            \echo '── top-line task counts ──'
+            SELECT COUNT(*) AS total_tasks FROM tasks;
+            SELECT
+              COUNT(*) FILTER (WHERE "isArchived" = false OR "isArchived" IS NULL) AS active_tasks,
+              COUNT(*) FILTER (WHERE "isArchived" = true)                          AS archived_tasks
+            FROM tasks;
+
+            \echo '── yesterday windows ──'
+            SELECT COUNT(*) AS tasks_created_yesterday  FROM tasks WHERE "createdAt"::date  = CURRENT_DATE - 1;
+            SELECT COUNT(*) AS tasks_updated_yesterday  FROM tasks WHERE "updatedAt"::date  = CURRENT_DATE - 1;
+            SELECT COUNT(*) AS tasks_due_yesterday      FROM tasks WHERE "dueDate"::date    = CURRENT_DATE - 1;
+            SELECT COUNT(*) AS tasks_archived_yesterday FROM tasks WHERE "archivedAt"::date = CURRENT_DATE - 1;
+            SELECT COUNT(*) AS done_tasks_updated_yesterday
+              FROM tasks WHERE status = 'done' AND "updatedAt"::date = CURRENT_DATE - 1;
+
+            \echo '── archive distribution last 48h ──'
+            SELECT date_trunc('hour', "archivedAt") AS hr, COUNT(*) AS n
+            FROM tasks
+            WHERE "archivedAt" >= NOW() - INTERVAL '48 hours'
+            GROUP BY 1 ORDER BY 1 DESC;
+
+            \echo '── yesterday activity counts (entityType=task) ──'
+            SELECT action, COUNT(*) AS n
+            FROM activities
+            WHERE "entityType" = 'task' AND "createdAt"::date = CURRENT_DATE - 1
+            GROUP BY action ORDER BY n DESC;
+
+            \echo '── all-time delete-shaped task activity ──'
+            SELECT action, COUNT(*) AS n
+            FROM activities
+            WHERE "entityType" = 'task' AND LOWER(action) LIKE '%delete%'
+            GROUP BY action ORDER BY n DESC;
+
+            \echo '── orphan / divergence checks ──'
+            SELECT COUNT(*) AS tasks_with_missing_board
+            FROM tasks t LEFT JOIN boards b ON b.id = t."boardId" WHERE b.id IS NULL;
+
+            SELECT COUNT(*) AS tasks_with_missing_creator
+            FROM tasks t LEFT JOIN users u ON u.id = t."createdBy" WHERE u.id IS NULL;
+
+            SELECT COUNT(*) AS tasks_with_legacy_assignedto_only
+            FROM tasks t
+            WHERE t."assignedTo" IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM task_assignees ta
+                WHERE ta."taskId" = t.id AND ta."userId" = t."assignedTo"
+              );
+
+            SELECT COUNT(*) AS tasks_with_junction_only
+            FROM tasks t
+            WHERE t."assignedTo" IS NULL
+              AND EXISTS (SELECT 1 FROM task_assignees ta WHERE ta."taskId" = t.id);
+
+            \echo '── affected user lookup (top 5 matches) ──'
+            SELECT id, name, email, role, tier, "hierarchyLevel", "isActive", "createdAt"
+            FROM users
+            WHERE email ILIKE :'pattern' OR name ILIKE :'pattern'
+            ORDER BY "createdAt" DESC LIMIT 5;
+
+            \echo '── affected user task counts (top match only) ──'
+            WITH affected AS (
+              SELECT id FROM users
+              WHERE email ILIKE :'pattern' OR name ILIKE :'pattern'
+              ORDER BY "createdAt" DESC LIMIT 1
+            )
+            SELECT 'tasks_assignedto_user' AS metric, COUNT(*)::bigint AS value
+              FROM tasks t, affected a WHERE t."assignedTo" = a.id
+            UNION ALL SELECT 'task_assignee_rows',    COUNT(*)
+              FROM task_assignees ta, affected a WHERE ta."userId" = a.id
+            UNION ALL SELECT 'task_owner_rows',       COUNT(*)
+              FROM task_owners  tow, affected a WHERE tow."userId" = a.id
+            UNION ALL SELECT 'tasks_created_by_user', COUNT(*)
+              FROM tasks t, affected a WHERE t."createdBy" = a.id
+            UNION ALL SELECT 'board_memberships',     COUNT(*)
+              FROM "BoardMembers" bm, affected a WHERE bm."userId" = a.id;
+
+            \echo '── affected user sample tasks (top 50) ──'
+            WITH affected AS (
+              SELECT id FROM users
+              WHERE email ILIKE :'pattern' OR name ILIKE :'pattern'
+              ORDER BY "createdAt" DESC LIMIT 1
+            )
+            SELECT t.id, t.title, t.status, t."boardId", b.name AS board_name,
+                   t."groupId", t."dueDate", t."isArchived",
+                   t."createdAt", t."updatedAt"
+            FROM tasks t
+            LEFT JOIN boards b           ON b.id = t."boardId"
+            LEFT JOIN task_assignees ta  ON ta."taskId"  = t.id
+            LEFT JOIN task_owners    tow ON tow."taskId" = t.id
+            WHERE t."assignedTo" IN (SELECT id FROM affected)
+               OR ta."userId"    IN (SELECT id FROM affected)
+               OR tow."userId"   IN (SELECT id FROM affected)
+               OR t."createdBy"  IN (SELECT id FROM affected)
+            ORDER BY t."updatedAt" DESC
+            LIMIT 50;
+
+            ROLLBACK;
+            SHOW transaction_read_only;
+            \echo '── READ-ONLY BUNDLE COMPLETE — transaction rolled back ──'
+            SQL
+
+            echo ""
+            echo "── [5/5] DONE ──"
+            echo "All SQL ran inside SET TRANSACTION READ ONLY and was ROLLBACK'd."
+            echo "No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER touched production data."
+        env:
+          AFFECTED_USER_PATTERN: ${{ github.event.inputs.affected_user_search }}
