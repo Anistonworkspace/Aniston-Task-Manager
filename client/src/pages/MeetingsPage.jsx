@@ -7,6 +7,7 @@ import {
 import { format, parseISO, isToday, isPast, isFuture, addDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { hasTierAtLeast, TIER_2 } from '../utils/tiers';
 import Avatar from '../components/common/Avatar';
 import MeetingModal from '../components/meeting/MeetingModal';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
@@ -288,8 +289,8 @@ export default function MeetingsPage() {
                                     </span>
                                   )}
 
-                                  {/* Edit/Delete for organizer */}
-                                  {(isOrganizer || user?.role === 'admin') && (
+                                  {/* Edit/Delete for organizer or any Tier 1/Tier 2 management user */}
+                                  {(isOrganizer || hasTierAtLeast(user, TIER_2)) && (
                                     <div className="relative ml-1">
                                       <button onClick={() => setActionMenu(actionMenu === meeting.id ? null : meeting.id)}
                                         className="p-1 rounded hover:bg-surface text-text-tertiary">

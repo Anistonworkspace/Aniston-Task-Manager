@@ -31,6 +31,7 @@ const { sequelize } = require('../config/db');
 const { Task, TaskAssignee, TaskOwner, User } = require('../models');
 const { safeUUID, safeUUIDList } = require('../utils/safeSql');
 const hierarchyService = require('./hierarchyService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 const logger = require('../utils/logger');
 
 // ── table existence cache (some deployments lag on migrations) ──────────────
@@ -49,6 +50,41 @@ async function _tblExists(name) {
 const hasTaskAssignees = () => _tblExists('task_assignees');
 const hasTaskOwners = () => _tblExists('task_owners');
 
+// ── feature flag: Tier 2 unrestricted task visibility ───────────────────────
+//
+// When TASK_VISIBILITY_TIER2_UNRESTRICTED is "true" (default), Tier 1 AND
+// Tier 2 viewers are treated as unrestricted for task-row visibility — they
+// see every task in the system. When "false", the kernel falls back to the
+// legacy strict check (only isSuperAdmin or role === 'admin' is unrestricted;
+// role === 'manager' is subtree-scoped).
+//
+// Why this exists: the strict-subtree behaviour was deliberately tightened
+// in May 2026 but turned out to over-hide tasks for managers in production
+// installations whose org-chart (User.managerId / manager_relations) was not
+// fully populated. This flag lets ops revert to the strict behaviour with a
+// single env-var flip + container restart, without a code revert.
+//
+// Read once at module load — flipping the env var requires restarting the
+// backend. The flag is consumed by isUnrestrictedTaskViewer(), which is the
+// single decision point for every read path.
+const TIER2_UNRESTRICTED =
+  (process.env.TASK_VISIBILITY_TIER2_UNRESTRICTED ?? 'true').toLowerCase() !== 'false';
+
+/**
+ * Single decision point: "is this viewer permitted to see every task in the
+ * system?" Used by getVisibleUserIdsForViewer (list queries) and canViewTask
+ * (per-row checks) here, plus the canViewTask middleware short-circuit and
+ * the boardController.getBoard filter trigger — so all four read paths agree.
+ *
+ * Pure function, no DB I/O.
+ */
+function isUnrestrictedTaskViewer(viewer) {
+  if (!viewer) return false;
+  if (TIER2_UNRESTRICTED) return hasTierAtLeast(viewer, TIER_2);
+  // Legacy / rollback path — preserves pre-hotfix behaviour exactly.
+  return !!viewer.isSuperAdmin || viewer.role === 'admin';
+}
+
 // ── viewer scope ────────────────────────────────────────────────────────────
 
 /**
@@ -65,7 +101,7 @@ const hasTaskOwners = () => _tblExists('task_owners');
  */
 async function getVisibleUserIdsForViewer(viewer) {
   if (!viewer) return { unrestricted: false, userIds: [] };
-  if (viewer.isSuperAdmin || viewer.role === 'admin') {
+  if (isUnrestrictedTaskViewer(viewer)) {
     return { unrestricted: true };
   }
   const descendants = await hierarchyService.getDescendantIds(viewer.id);
@@ -149,7 +185,7 @@ async function buildTaskVisibilityWhere(viewer, options = {}) {
  */
 async function canViewTask(viewer, taskOrId) {
   if (!viewer) return false;
-  if (viewer.isSuperAdmin || viewer.role === 'admin') return true;
+  if (isUnrestrictedTaskViewer(viewer)) return true;
 
   let task = null;
   let taskId = null;
@@ -368,4 +404,5 @@ module.exports = {
   canViewTask,
   filterVisibleTasks,
   getAuthorizedRealtimeRecipients,
+  isUnrestrictedTaskViewer,
 };

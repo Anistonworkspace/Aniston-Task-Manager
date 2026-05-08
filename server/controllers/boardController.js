@@ -23,6 +23,7 @@ const { safeUUIDList } = require('../utils/safeSql');
 const boardMembershipService = require('../services/boardMembershipService');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 // ── Table / column existence cache ──
 const _tblCache = {};
@@ -345,7 +346,12 @@ const getBoard = async (req, res) => {
     // in sync. We skip this for unrestricted roles (they don't need an
     // explicit membership row to see the board) and for users who already
     // have an explicit row.
-    if (!isSuperAdmin && role !== 'admin' && role !== 'manager') {
+    // Skip the auto-add membership side-effect for viewers who already have
+    // unrestricted board reach (Tier 1 + Tier 2). Was `!isSuperAdmin && role
+    // !== 'admin' && role !== 'manager'` — collapsed to the tier check so the
+    // gate aligns with the visibility kernel and survives any future role-name
+    // additions (D.1 hotfix).
+    if (!hasTierAtLeast(req.user, TIER_2)) {
       const userId = req.user.id;
       const visibleUserIds = [userId];
       try {
@@ -379,7 +385,11 @@ const getBoard = async (req, res) => {
     // their own subtree's rows.
     let visibleTasks = board.tasks || [];
     const tasksAlreadyTruncated = visibleTasks.length >= 500;
-    if (!isSuperAdmin && role !== 'admin' && visibleTasks.length > 0) {
+    // Trigger condition mirrors the kernel: unrestricted task viewers (Tier 1
+    // + Tier 2) skip the in-memory filter entirely. Was `!isSuperAdmin && role
+    // !== 'admin'` — collapsed so the trigger and the kernel agree on a single
+    // definition of "unrestricted" (D.1 hotfix).
+    if (!taskVisibility.isUnrestrictedTaskViewer(req.user) && visibleTasks.length > 0) {
       visibleTasks = await taskVisibility.filterVisibleTasks(req.user, visibleTasks);
     }
 

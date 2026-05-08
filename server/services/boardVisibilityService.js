@@ -38,6 +38,7 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const hierarchyService = require('./hierarchyService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 const { safeUUIDList } = require('../utils/safeSql');
 const logger = require('../utils/logger');
 
@@ -78,7 +79,11 @@ async function _colExists(table, column) {
  */
 async function getVisibleUserIdsForBoardScope(viewer) {
   if (!viewer) return { unrestricted: false, userIds: [] };
-  if (viewer.isSuperAdmin || viewer.role === 'admin' || viewer.role === 'manager') {
+  // Tier 1 + Tier 2 → unrestricted board reach. Was the role-string union
+  // `isSuperAdmin || role === 'admin' || role === 'manager'`; collapsed to
+  // the tier helper so this filter agrees with the task-visibility kernel
+  // and survives any future role-name additions (D.1 hotfix).
+  if (hasTierAtLeast(viewer, TIER_2)) {
     return { unrestricted: true };
   }
   const ids = new Set([viewer.id]);

@@ -298,7 +298,10 @@ async function canViewTask(req, res, next) {
     const taskId = req.params.id || req.params.taskId;
     if (!taskId) return next();
 
-    if (user.isSuperAdmin || user.role === 'admin') {
+    // Single decision point: defer to the kernel's unrestricted check so the
+    // middleware short-circuit, the per-row check, and the list filter all
+    // agree (D.1 hotfix — was `user.isSuperAdmin || user.role === 'admin'`).
+    if (taskVisibility.isUnrestrictedTaskViewer(user)) {
       req._taskInSubtree = true;
       return next();
     }
