@@ -1,0 +1,478 @@
+name: Read-only Production Task Visibility Audit (D.1 follow-up)
+
+# Manual trigger only. No `push:`, no `schedule:`, no `pull_request:`.
+on:
+  workflow_dispatch: {}
+
+# Queue, never cancel — two audits in flight would only confuse the log.
+concurrency:
+  group: production-readonly-task-visibility-audit
+  cancel-in-progress: false
+
+# Workflow needs nothing from the repo other than reading itself.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only production audit (steps 2 + 3 + 4 + 5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Same gate as deploy.yml — requires manual approval on the production
+    # environment before this job runs. Without the click, no SSH happens.
+    environment: production
+
+    steps:
+      # ──────────────────────────────────────────────────────────────────────
+      # Run the audit on EC2.
+      # The SSH script:
+      #   - verifies aph-backend and aph-postgres are running and pointing at
+      #     aniston_project_hub (parses pg_postmaster_start_time on both sides)
+      #   - writes a SQL bundle to /tmp/aniston-audit.sql
+      #   - runs a forbidden-keyword guard on the SQL file
+      #   - executes the bundle via `docker exec aph-postgres psql -f`
+      #   - captures stdout+stderr to /tmp/aniston-audit-output.txt for SCP
+      # The bundle runs inside `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;`
+      # so writes are physically rejected by Postgres regardless of guard.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Run READ-ONLY audit on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 8m
+          script: |
+            set -e
+
+            echo "════════════════════════════════════════════════════════════════"
+            echo "  READ-ONLY PRODUCTION TASK VISIBILITY AUDIT"
+            echo "  - No code deploy. No container restart. No file changes."
+            echo "  - All SQL inside SET TRANSACTION READ ONLY + ROLLBACK."
+            echo "  - No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER/CREATE/etc."
+            echo "  - Director Plan / Time Plan tables NOT queried."
+            echo "════════════════════════════════════════════════════════════════"
+
+            # ── [1/6] Container check ─────────────────────────────────────────
+            echo ""
+            echo "── [1/6] Container existence + status ──"
+            for c in aph-backend aph-postgres; do
+              if ! docker inspect "$c" >/dev/null 2>&1; then
+                echo "ERROR: container $c not found on this host."
+                exit 1
+              fi
+              STATE=$(docker inspect -f '{{.State.Status}}' "$c")
+              IMAGE=$(docker inspect -f '{{.Config.Image}}' "$c")
+              UPSINCE=$(docker inspect -f '{{.State.StartedAt}}' "$c")
+              echo "  $c -> status=$STATE image=$IMAGE startedAt=$UPSINCE"
+              if [ "$STATE" != "running" ]; then
+                echo "ERROR: container $c not running. Aborting (no restart attempted)."
+                exit 1
+              fi
+            done
+
+            # ── [2/6] DB identity verification ────────────────────────────────
+            echo ""
+            echo "── [2/6] DB identity (backend) ──"
+            BACKEND_DB=$(docker exec aph-backend sh -c \
+              'node -e "const{sequelize}=require(\"./config/db\");sequelize.query(\"SELECT current_database() AS db, pg_postmaster_start_time()::text AS pg_started\").then(([r])=>{console.log(JSON.stringify(r[0]));process.exit(0)}).catch(e=>{console.error(e.message);process.exit(1)})"')
+            echo "  $BACKEND_DB"
+
+            echo ""
+            echo "── [3/6] DB identity (postgres) ──"
+            PG_DB=$(docker exec aph-postgres psql -U postgres -d aniston_project_hub -At -c \
+              "SELECT json_build_object('db', current_database(), 'pg_started', pg_postmaster_start_time()::text);")
+            echo "  $PG_DB"
+
+            if ! echo "$BACKEND_DB" | grep -q '"db":"aniston_project_hub"'; then
+              echo "ABORT: backend NOT connected to aniston_project_hub."
+              exit 1
+            fi
+            if ! echo "$PG_DB" | grep -q '"db" *: *"aniston_project_hub"'; then
+              echo "ABORT: aph-postgres not serving aniston_project_hub."
+              exit 1
+            fi
+            BACKEND_PG=$(echo "$BACKEND_DB" | sed -n 's/.*"pg_started":"\([^"]*\)".*/\1/p')
+            PG_PG=$(echo "$PG_DB"           | sed -n 's/.*"pg_started" *: *"\([^"]*\)".*/\1/p')
+            if [ -z "$BACKEND_PG" ] || [ -z "$PG_PG" ] || [ "$BACKEND_PG" != "$PG_PG" ]; then
+              echo "ABORT: pg_postmaster_start_time mismatch ($BACKEND_PG vs $PG_PG)."
+              exit 1
+            fi
+            echo "  Identity OK — backend and aph-postgres are the same instance."
+            echo "  pg_postmaster_start_time: $BACKEND_PG"
+
+            # ── [4/6] Write SQL bundle to /tmp/aniston-audit.sql ──────────────
+            SQL_FILE=/tmp/aniston-audit.sql
+            OUT_FILE=/tmp/aniston-audit-output.txt
+            rm -f "$SQL_FILE" "$OUT_FILE" || true
+
+            cat > "$SQL_FILE" <<'SQL'
+            \pset pager off
+            \timing on
+            \set ON_ERROR_STOP off
+
+            BEGIN;
+            SET TRANSACTION READ ONLY;
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 1 DB IDENTITY'
+            \echo '════════════════════════════════════════════════════════════════'
+            SHOW transaction_read_only;
+            SELECT current_database() AS db,
+                   current_user        AS db_user,
+                   NOW()                AS now_ts;
+            SHOW timezone;
+            SELECT version();
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 2 USER ROLE/TIER STATE'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- 2.0 Probe: manager_relations table existence ---'
+            SELECT to_regclass('public.manager_relations')   AS snake_case_table,
+                   to_regclass('public."ManagerRelations"')  AS pascal_case_table;
+
+            SELECT
+              CASE WHEN to_regclass('public.manager_relations')  IS NOT NULL THEN 1 ELSE 0 END AS has_snake,
+              CASE WHEN to_regclass('public."ManagerRelations"') IS NOT NULL THEN 1 ELSE 0 END AS has_pascal
+            \gset
+
+            \echo
+            \echo '--- 2.1 Tier distribution (active users) ---'
+            SELECT tier, COUNT(*) AS n
+            FROM users WHERE "isActive" = true
+            GROUP BY tier ORDER BY tier NULLS FIRST;
+
+            \echo
+            \echo '--- 2.2 Role x isSuperAdmin x tier matrix (active users) ---'
+            SELECT role, "isSuperAdmin", tier, COUNT(*) AS n
+            FROM users WHERE "isActive" = true
+            GROUP BY role, "isSuperAdmin", tier
+            ORDER BY tier NULLS FIRST, role, "isSuperAdmin";
+
+            \echo
+            \echo '--- 2.3 Mismatched users (tier disagrees with canonical legacy mapping) ---'
+            SELECT id, name, email, role, "isSuperAdmin", tier, "hierarchyLevel",
+                   "isActive", "managerId", "createdAt"
+            FROM users
+            WHERE "isActive" = true
+              AND (
+                tier IS NULL
+                OR tier NOT BETWEEN 1 AND 4
+                OR (tier = 1 AND "isSuperAdmin" IS NOT TRUE)
+                OR (tier = 2 AND role NOT IN ('admin','manager'))
+                OR (tier = 3 AND role <> 'assistant_manager')
+                OR (tier = 4 AND role <> 'member' AND "isSuperAdmin" IS NOT TRUE)
+              )
+            ORDER BY tier NULLS FIRST, role, email
+            LIMIT 200;
+
+            \echo
+            \echo '--- 2.4 Hierarchy chain population ---'
+            SELECT
+              COUNT(*) FILTER (WHERE "managerId" IS NOT NULL) AS users_with_manager,
+              COUNT(*) FILTER (WHERE "managerId" IS NULL)     AS users_without_manager,
+              COUNT(*)                                        AS total_active
+            FROM users WHERE "isActive" = true;
+
+            \echo
+            \echo '--- 2.5 Per-tier hierarchy population ---'
+            SELECT
+              tier,
+              COUNT(*) FILTER (WHERE "managerId" IS NOT NULL) AS with_manager,
+              COUNT(*) FILTER (WHERE "managerId" IS NULL)     AS without_manager,
+              COUNT(*)                                        AS total
+            FROM users WHERE "isActive" = true
+            GROUP BY tier ORDER BY tier NULLS FIRST;
+
+            \echo
+            \echo '--- 2.6 manager_relations population (auto-routed by 2.0 probe) ---'
+            \if :has_snake
+            SELECT COUNT(*) AS mr_total,
+                   COUNT(*) FILTER (WHERE "isPrimary" = true) AS mr_primary
+            FROM manager_relations;
+            \elif :has_pascal
+            SELECT COUNT(*) AS mr_total,
+                   COUNT(*) FILTER (WHERE "isPrimary" = true) AS mr_primary
+            FROM "ManagerRelations";
+            \else
+            \echo 'manager_relations table not found in either casing — skipping'
+            \endif
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 3 MAY 7 TASK DATA'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- 3.1 Counts for 2026-05-07 ---'
+            SELECT
+              (SELECT COUNT(*) FROM tasks WHERE "createdAt"::date  = DATE '2026-05-07') AS born_2026_05_07,
+              (SELECT COUNT(*) FROM tasks WHERE "updatedAt"::date  = DATE '2026-05-07') AS modified_2026_05_07,
+              (SELECT COUNT(*) FROM tasks WHERE "dueDate"::date    = DATE '2026-05-07') AS due_2026_05_07,
+              (SELECT COUNT(*) FROM tasks WHERE "archivedAt"::date = DATE '2026-05-07') AS archived_2026_05_07,
+              (SELECT COUNT(*) FROM tasks WHERE status = 'done'
+                 AND "updatedAt"::date = DATE '2026-05-07')                              AS done_modified_2026_05_07;
+
+            \echo
+            \echo '--- 3.2 Sample 100 May 7 task rows (born OR modified OR due) ---'
+            SELECT id, title, "boardId", "groupId", "assignedTo", "createdBy",
+                   status, priority, "dueDate", "createdAt", "updatedAt",
+                   "isArchived", "archivedAt",
+                   "recurringTemplateId", "occurrenceDate", "isRecurringInstance"
+            FROM tasks
+            WHERE "createdAt"::date = DATE '2026-05-07'
+               OR "updatedAt"::date = DATE '2026-05-07'
+               OR "dueDate"::date   = DATE '2026-05-07'
+            ORDER BY "updatedAt" DESC
+            LIMIT 100;
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 3.5 TIER 2 MANAGER VISIBILITY EVIDENCE'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- D.1 Tasks born by role=manager users on May 7 ---'
+            SELECT t.id, t.title, t."boardId", t."assignedTo", t."createdBy",
+                   u.email AS creator_email, u.name AS creator_name, u.role, u.tier,
+                   t.status, t."dueDate", t."createdAt"
+            FROM tasks t
+            JOIN users u ON u.id = t."createdBy"
+            WHERE t."createdAt"::date = DATE '2026-05-07'
+              AND u.role = 'manager'
+            ORDER BY t."createdAt" DESC
+            LIMIT 50;
+
+            \echo
+            \echo '--- D.2 Tasks born by tier=2 users on May 7, by role ---'
+            SELECT u.role, COUNT(*) AS tasks_born_by_tier2_may7
+            FROM tasks t
+            JOIN users u ON u.id = t."createdBy"
+            WHERE t."createdAt"::date = DATE '2026-05-07'
+              AND u.tier = 2
+            GROUP BY u.role
+            ORDER BY u.role;
+
+            \echo
+            \echo '--- D.3 May 7 born/modified tasks by visibility class (current pre-D.1 prod) ---'
+            SELECT
+              CASE
+                WHEN u.role = 'admin' OR u."isSuperAdmin" = true THEN 'A. unrestricted (T1 + role=admin)'
+                WHEN u.role = 'manager'                          THEN 'B. T2-manager (HIDDEN today, the bug)'
+                WHEN u.role = 'assistant_manager'                THEN 'C. T3 (subtree only)'
+                WHEN u.role = 'member'                           THEN 'D. T4 (own task only)'
+                ELSE                                                  'E. unknown'
+              END AS creator_visibility_class,
+              COUNT(*) AS tasks
+            FROM tasks t
+            JOIN users u ON u.id = t."createdBy"
+            WHERE t."createdAt"::date = DATE '2026-05-07'
+               OR t."updatedAt"::date = DATE '2026-05-07'
+            GROUP BY 1
+            ORDER BY 1;
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 3.6 RECURRING TASKS'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- E.1 Recurring instance counts on May 7 ---'
+            SELECT
+              (SELECT COUNT(*) FROM tasks WHERE "isRecurringInstance" = true
+                 AND "createdAt"::date     = DATE '2026-05-07')  AS instances_born_may7,
+              (SELECT COUNT(*) FROM tasks WHERE "isRecurringInstance" = true
+                 AND "occurrenceDate"::date = DATE '2026-05-07') AS instances_for_may7;
+
+            \echo
+            \echo '--- E.2 Recurring instance sample rows ---'
+            SELECT id, title, "boardId", "assignedTo", "createdBy",
+                   "recurringTemplateId", "occurrenceDate", "createdAt", status, "dueDate"
+            FROM tasks
+            WHERE "isRecurringInstance" = true
+              AND ("createdAt"::date    = DATE '2026-05-07'
+                   OR "occurrenceDate"::date = DATE '2026-05-07')
+            ORDER BY "createdAt" DESC
+            LIMIT 50;
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 4 ASSIGNMENT COMPATIBILITY'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- 4.1 legacy assignedTo without matching task_assignees row ---'
+            SELECT COUNT(*) AS legacy_assignedto_no_junction
+            FROM tasks t
+            WHERE t."assignedTo" IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM task_assignees ta
+                WHERE ta."taskId" = t.id AND ta."userId" = t."assignedTo"
+              );
+
+            \echo
+            \echo '--- 4.2 task_assignees row but no legacy assignedTo ---'
+            SELECT COUNT(*) AS junction_no_assignedto
+            FROM tasks t
+            WHERE t."assignedTo" IS NULL
+              AND EXISTS (SELECT 1 FROM task_assignees ta WHERE ta."taskId" = t.id);
+
+            \echo
+            \echo '--- 4.3 task_owners row but no legacy assignedTo ---'
+            SELECT COUNT(*) AS owners_no_assignedto
+            FROM tasks t
+            WHERE t."assignedTo" IS NULL
+              AND EXISTS (SELECT 1 FROM task_owners tow WHERE tow."taskId" = t.id);
+
+            \echo
+            \echo '--- 4.4 assignedTo user not in BoardMembers ---'
+            SELECT COUNT(*) AS assignee_not_in_boardmembers
+            FROM tasks t
+            WHERE t."assignedTo" IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM "BoardMembers" bm
+                WHERE bm."boardId" = t."boardId" AND bm."userId" = t."assignedTo"
+              );
+
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  STEP 5 BOARD VISIBILITY'
+            \echo '════════════════════════════════════════════════════════════════'
+
+            \echo
+            \echo '--- 5.1 Boards holding May 7 tasks ---'
+            SELECT DISTINCT b.id, b.name, b."workspaceId", b."createdBy", b."isArchived"
+            FROM tasks t
+            JOIN boards b ON b.id = t."boardId"
+            WHERE t."createdAt"::date = DATE '2026-05-07'
+               OR t."updatedAt"::date = DATE '2026-05-07'
+               OR t."dueDate"::date   = DATE '2026-05-07'
+            ORDER BY b.name
+            LIMIT 100;
+
+            \echo
+            \echo '--- 5.2 Boards holding May 7 tasks where the task author is NOT in BoardMembers ---'
+            SELECT DISTINCT t."boardId", b.name AS board_name, t."createdBy",
+                   u.email AS author_email, u.role, u.tier
+            FROM tasks t
+            JOIN boards b ON b.id = t."boardId"
+            JOIN users u  ON u.id = t."createdBy"
+            WHERE (t."createdAt"::date = DATE '2026-05-07' OR t."updatedAt"::date = DATE '2026-05-07')
+              AND NOT EXISTS (
+                SELECT 1 FROM "BoardMembers" bm
+                WHERE bm."boardId" = t."boardId" AND bm."userId" = t."createdBy"
+              )
+            ORDER BY t."boardId"
+            LIMIT 50;
+
+            \echo
+            \echo '--- 5.3 Affected user candidates (top by May 7 activity) ---'
+            SELECT u.id, u.name, u.email, u.role, u.tier, u."hierarchyLevel",
+                   COUNT(t.id) AS tasks_touched_may7
+            FROM users u
+            JOIN tasks t ON (t."assignedTo" = u.id OR t."createdBy" = u.id)
+            WHERE u."isActive" = true
+              AND (t."createdAt"::date = DATE '2026-05-07'
+                   OR t."updatedAt"::date = DATE '2026-05-07'
+                   OR t."dueDate"::date   = DATE '2026-05-07')
+            GROUP BY u.id, u.name, u.email, u.role, u.tier, u."hierarchyLevel"
+            ORDER BY tasks_touched_may7 DESC
+            LIMIT 20;
+
+            ROLLBACK;
+            SHOW transaction_read_only;
+            \echo
+            \echo '════════════════════════════════════════════════════════════════'
+            \echo '  END READ ONLY AUDIT'
+            \echo '════════════════════════════════════════════════════════════════'
+            SQL
+
+            # ── [5/6] Forbidden-keyword guard ─────────────────────────────────
+            # Strip line comments first so SQL comments do not trip the grep,
+            # then word-boundary match the forbidden keyword list. ROLLBACK
+            # and SELECT are the only DML/control words used in the bundle and
+            # are explicitly allowed.
+            echo ""
+            echo "── [5/6] Forbidden-keyword guard ──"
+            SCRUBBED=$(sed -E 's/--.*$//' "$SQL_FILE")
+            if echo "$SCRUBBED" | grep -E -i -w '(insert|update|delete|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster)' > /tmp/forbidden.txt; then
+              echo "ABORT: forbidden keyword detected in audit SQL:"
+              cat /tmp/forbidden.txt
+              rm -f "$SQL_FILE" /tmp/forbidden.txt
+              exit 1
+            fi
+            rm -f /tmp/forbidden.txt
+            echo "  Guard passed — no forbidden keywords."
+
+            # ── [6/6] Run audit, capture output ───────────────────────────────
+            echo ""
+            echo "── [6/6] Running audit (output captured to $OUT_FILE) ──"
+            docker cp "$SQL_FILE" aph-postgres:/tmp/aniston-audit.sql
+            # ON_ERROR_STOP=off → individual SQL errors do not abort the
+            # bundle; psql exit code is 0 on success even if some queries
+            # logged errors. Connection failure exits non-zero, which trips
+            # `set -e` above. Both stdout (query results) and stderr (\echo,
+            # NOTICEs) are captured to OUT_FILE.
+            docker exec aph-postgres psql -U postgres -d aniston_project_hub \
+              -v ON_ERROR_STOP=off --no-psqlrc \
+              -f /tmp/aniston-audit.sql > "$OUT_FILE" 2>&1
+            docker exec aph-postgres rm -f /tmp/aniston-audit.sql
+            rm -f "$SQL_FILE"
+
+            echo ""
+            echo "── Audit output: tail (last 400 lines) ──"
+            tail -400 "$OUT_FILE"
+            echo ""
+            echo "── End of tail. Full output preserved at $OUT_FILE for SCP. ──"
+            wc -l "$OUT_FILE"
+            echo ""
+            echo "All SQL ran inside SET TRANSACTION READ ONLY and was ROLLBACK'd."
+            echo "No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER touched production data."
+
+      # ──────────────────────────────────────────────────────────────────────
+      # Pull the captured output back to the runner workspace.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Download audit output from EC2
+        if: success()
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "/tmp/aniston-audit-output.txt"
+          target: "."
+          strip_components: 1
+
+      # ──────────────────────────────────────────────────────────────────────
+      # Upload as a workflow artifact so the run is reproducible / shareable.
+      # The artifact contains the full audit log (DB identity + every section).
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Upload audit artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-task-visibility-audit
+          path: aniston-audit-output.txt
+          retention-days: 30
+
+      # ──────────────────────────────────────────────────────────────────────
+      # Always clean up temp files on EC2, even if a previous step failed,
+      # so a stale audit output cannot be picked up by a later run.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Cleanup remote temp files (always)
+        if: always()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 1m
+          script: |
+            rm -f /tmp/aniston-audit.sql
+            rm -f /tmp/aniston-audit-output.txt
+            docker exec aph-postgres rm -f /tmp/aniston-audit.sql 2>/dev/null || true
+            echo "Remote temp files cleaned."
