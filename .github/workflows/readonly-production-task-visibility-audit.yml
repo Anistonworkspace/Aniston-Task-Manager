@@ -423,29 +423,88 @@ jobs:
             docker exec aph-postgres rm -f /tmp/aniston-audit.sql
             rm -f "$SQL_FILE"
 
+            # ── Verify the output file exists and is non-empty ────────────────
+            # If psql exited 0 but produced nothing (or the redirection
+            # silently failed), fail loudly here so the next step does not
+            # try to scp a missing / empty file.
+            echo ""
+            echo "── Audit output verification ──"
+            if [ ! -f "$OUT_FILE" ] || [ ! -s "$OUT_FILE" ]; then
+              echo "ABORT: Audit output file missing or empty: $OUT_FILE"
+              ls -la "$OUT_FILE" 2>&1 || true
+              exit 1
+            fi
+            ls -lh "$OUT_FILE"
+            wc -l "$OUT_FILE"
+
             echo ""
             echo "── Audit output: tail (last 400 lines) ──"
             tail -400 "$OUT_FILE"
             echo ""
-            echo "── End of tail. Full output preserved at $OUT_FILE for SCP. ──"
-            wc -l "$OUT_FILE"
+            echo "── End of tail. Full output preserved at $OUT_FILE for the download step. ──"
             echo ""
             echo "All SQL ran inside SET TRANSACTION READ ONLY and was ROLLBACK'd."
             echo "No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER touched production data."
 
       # ──────────────────────────────────────────────────────────────────────
-      # Pull the captured output back to the runner workspace.
+      # Pull the captured output back to the runner workspace via direct scp.
+      #
+      # Why not appleboy/scp-action: the previous v0.1.7 use produced
+      # `tar: empty archive` for a single-file source — the action packs the
+      # source into a tarball before transport and the strip_components=1
+      # path the runner sees turned out to be empty. Plain scp avoids the
+      # tar packaging entirely and is what the deploy workflow's underlying
+      # SSH transport already does.
+      #
+      # No SSH key is ever echoed. The key file is per-job and is wiped
+      # automatically when the runner VM is destroyed at job end.
       # ──────────────────────────────────────────────────────────────────────
-      - name: Download audit output from EC2
+      - name: Download audit output from EC2 via direct scp
         if: success()
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "/tmp/aniston-audit-output.txt"
-          target: "."
-          strip_components: 1
+        env:
+          SSH_KEY:  ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -e
+
+          # Write the SSH key to a per-job file. printf preserves the PEM
+          # newlines verbatim; the value is masked in logs by GH's automatic
+          # secret redaction (we never `echo` it directly).
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          # Pull the file. StrictHostKeyChecking=no + UserKnownHostsFile=
+          # /dev/null matches the connection pattern appleboy/ssh-action
+          # uses internally and avoids polluting the ephemeral runner's
+          # known_hosts. ServerAliveInterval keeps the connection healthy
+          # for slow links.
+          scp -i ~/.ssh/id_rsa \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ServerAliveInterval=15 \
+              "${EC2_USER}@${EC2_HOST}:/tmp/aniston-audit-output.txt" \
+              ./aniston-audit-output.txt
+
+          # Local verification — fail loudly if scp succeeded with a 0-byte
+          # file (network glitch / partial transfer) so the upload-artifact
+          # step never produces a useless empty artifact.
+          if [ ! -f ./aniston-audit-output.txt ] || [ ! -s ./aniston-audit-output.txt ]; then
+            echo "ABORT: downloaded audit output is missing or empty."
+            ls -la ./aniston-audit-output.txt 2>&1 || true
+            exit 1
+          fi
+          echo "── Audit output downloaded to runner ──"
+          ls -lh ./aniston-audit-output.txt
+          wc -l ./aniston-audit-output.txt
+          echo ""
+          echo "── First 30 lines ──"
+          head -30 ./aniston-audit-output.txt
+          echo ""
+          echo "── Last 30 lines ──"
+          tail -30 ./aniston-audit-output.txt
 
       # ──────────────────────────────────────────────────────────────────────
       # Upload as a workflow artifact so the run is reproducible / shareable.
