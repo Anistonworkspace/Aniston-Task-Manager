@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const { User, Board } = require('../models');
+const { User } = require('../models');
+const boardVisibility = require('./boardVisibilityService');
 
 // TODO(scaling): horizontal scaling requires a Socket.io adapter so that
 // emits made on one app instance reach sockets connected to another. With
@@ -102,24 +103,35 @@ const initializeSocket = (server) => {
     // Auto-join personal room for directed notifications
     socket.join(`user:${userId}`);
 
-    // ── Board room management (with membership check) ─────
+    // ── Board room management ─────────────────────────────
+    //
+    // Delegates to boardVisibilityService.canUserSeeBoard so the realtime
+    // join check uses the SAME predicate as the page-load APIs:
+    //
+    //   1. Tier 1 + Tier 2 (admin / manager / super admin) → unrestricted,
+    //      short-circuited inside the service.
+    //   2. Tier 3 + Tier 4 → may join iff ANY of these holds against the
+    //      viewer's { self ∪ descendants } set:
+    //        a) board.createdBy in subtree
+    //        b) explicit BoardMembers row (autoAdded=false) for self
+    //        c) any task on the board with assignedTo / createdBy in subtree
+    //        d) task_assignees junction in subtree
+    //        e) task_owners    junction in subtree
+    //
+    // Previous implementation strictly required a BoardMembers row OR
+    // board.createdBy === self for non-admin/manager users. That rejected
+    // assignees whose auto-added BoardMembers row was missing (audit
+    // confirmed 4 rows in production). Page-load visibility worked, so
+    // the task SHOWED up but live updates never arrived — the symptom
+    // users perceived as "task is missing / stale".
+    //
+    // Unauthorised users (canUserSeeBoard → false) do not join the room
+    // and so do not receive any subsequent emitToBoard broadcasts.
     socket.on('board:join', async ({ boardId }) => {
       if (!boardId) return;
       try {
-        // Admins and managers can join any board room
-        if (socket.user.role === 'admin' || socket.user.role === 'manager') {
-          socket.join(`board:${boardId}`);
-          return;
-        }
-        // Members: verify board membership
-        const board = await Board.findByPk(boardId, {
-          include: [{ model: User, as: 'members', attributes: ['id'], through: { attributes: [] } }],
-        });
-        if (!board) return;
-        const isMember = board.members?.some(m => m.id === socket.user.id);
-        if (isMember || board.createdBy === socket.user.id) {
-          socket.join(`board:${boardId}`);
-        }
+        const allowed = await boardVisibility.canUserSeeBoard(socket.user, boardId);
+        if (allowed) socket.join(`board:${boardId}`);
       } catch (err) {
         console.error(`[Socket] board:join error for ${socket.user.name}:`, err.message);
       }
