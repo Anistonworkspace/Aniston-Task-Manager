@@ -179,10 +179,13 @@ router.get('/n8n/users', async (req, res) => {
   }
 });
 
-// POST /api/webhooks/n8n/send-notification - n8n triggers notification
+// POST /api/webhooks/n8n/send-notification - n8n triggers notification.
+// External callers are untrusted: every input passes through sanitization
+// and an idempotencyKey (when provided) so retried webhook deliveries from
+// n8n's "guarantee at least once" delivery model can't fan out N copies.
 router.post('/n8n/send-notification', async (req, res) => {
   try {
-    const { userId, message, type, entityType, entityId } = req.body;
+    const { userId, message, type, entityType, entityId, idempotencyKey } = req.body;
 
     if (!userId || !message) {
       return res.status(400).json({ message: 'userId and message are required' });
@@ -201,29 +204,33 @@ router.post('/n8n/send-notification', async (req, res) => {
     const ALLOWED_TYPES = (Notification.rawAttributes?.type?.values) || [];
     const finalType = type && ALLOWED_TYPES.includes(type) ? type : 'task_updated';
 
-    // Sanitize and bound the message — webhook callers are NOT trusted UI.
-    const { sanitizeNotificationMessage } = require('../utils/sanitize');
-    const safeMessage = sanitizeNotificationMessage(message);
-    if (!safeMessage) {
-      return res.status(400).json({ success: false, message: 'message is empty after sanitization.' });
-    }
-
-    const notification = await Notification.create({
+    // Route through the centralised service so sanitization, dedup, socket
+    // emit, and email delivery are all consistent with in-app sources.
+    // Idempotency key:
+    //  - Caller-supplied if available (best for n8n's at-least-once delivery).
+    //  - Else derived from (entity, message) so an immediate replay collapses
+    //    even without explicit cooperation. Time-bucketed at minute resolution
+    //    so a fresh event with the same body N minutes later still notifies.
+    const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+    const fallbackKey = buildIdempotencyKey(
+      'webhook',
+      entityType || 'task',
+      entityId || 'none',
+      String(message).slice(0, 32),
+      Math.floor(Date.now() / 60000),
+    );
+    const notification = await createNotification({
       userId,
-      message: safeMessage,
       type: finalType,
+      message,
       entityType: entityType || 'task',
       entityId: entityId || null,
-      isRead: false,
+      idempotencyKey: idempotencyKey || fallbackKey,
+      // sanitize: true is the default — service runs sanitizeNotificationMessage
     });
-
-    try {
-      const io = getIO();
-      // Standard payload shape: { notification } so the bell toast/push fire.
-      // (The previous body emitted the raw row at the top level which the
-      // frontend's `data?.notification?.message` reader silently dropped.)
-      io.to(`user:${userId}`).emit('notification:new', { notification });
-    } catch (e) { /* socket may not be initialised yet */ }
+    if (!notification) {
+      return res.status(500).json({ success: false, message: 'Failed to create notification.' });
+    }
 
     res.status(201).json({ success: true, notification });
   } catch (err) {

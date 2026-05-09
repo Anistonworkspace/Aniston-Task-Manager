@@ -2,6 +2,7 @@ const PDFDocument = require('pdfkit');
 const { Task, User, Board, WorkLog } = require('../models');
 const { Op } = require('sequelize');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
+const { isTier4 } = require('../config/tiers');
 
 /**
  * Get the Monday and Sunday of the week containing `dateStr` (ISO string or Date).
@@ -89,7 +90,7 @@ const getWeeklyReview = async (req, res) => {
   try {
     const { date } = req.query;
     // Members can only see their own; managers can specify userId
-    const userId = (req.user.role === 'member') ? req.user.id : (req.query.userId || req.user.id);
+    const userId = isTier4(req.user) ? req.user.id : (req.query.userId || req.user.id);
 
     const data = await fetchReviewData(userId, date);
     res.json({ success: true, data });
@@ -105,7 +106,7 @@ const getWeeklyReview = async (req, res) => {
 const downloadPDF = async (req, res) => {
   try {
     const { date } = req.query;
-    const userId = (req.user.role === 'member') ? req.user.id : (req.query.userId || req.user.id);
+    const userId = isTier4(req.user) ? req.user.id : (req.query.userId || req.user.id);
     const { user, tasks, worklogs, summary, weekRange } = await fetchReviewData(userId, date);
 
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -266,7 +267,7 @@ const downloadPDF = async (req, res) => {
 const downloadCSV = async (req, res) => {
   try {
     const { date } = req.query;
-    const userId = (req.user.role === 'member') ? req.user.id : (req.query.userId || req.user.id);
+    const userId = isTier4(req.user) ? req.user.id : (req.query.userId || req.user.id);
     const { user, tasks, worklogs, summary, weekRange } = await fetchReviewData(userId, date);
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');

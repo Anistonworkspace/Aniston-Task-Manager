@@ -1,7 +1,22 @@
-const { Task, TaskDependency, DependencyRequest, User, Notification, Board } = require('../models');
+const { Task, TaskDependency, DependencyRequest, User, Notification, Board, TaskAssignee } = require('../models');
+const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
 const { emitToUser, emitToBoard } = require('./socketService');
 const { logActivity } = require('./activityService');
+const { createNotification, buildIdempotencyKey } = require('./notificationService');
+// Realtime + board-membership are loaded lazily from inside the materializer
+// to avoid the circular import (boardMembershipService → socketService →
+// dependencyService) that boots when this module is required.
+let _realtime;
+let _boardMembership;
+function realtime() {
+  if (!_realtime) _realtime = require('./realtimeService');
+  return _realtime;
+}
+function boardMembership() {
+  if (!_boardMembership) _boardMembership = require('./boardMembershipService');
+  return _boardMembership;
+}
 
 // Dependency-request statuses that keep the parent task blocked. Rejected
 // counts as blocking on purpose: the parent owner needs to see the dependency
@@ -116,17 +131,24 @@ async function processTaskCompletion(completedTaskId, completedByUserId) {
 
       await depTask.update(updates);
 
-      // Notify the assignee
+      // Notify the assignee. Idempotent on the dep id + assignee so a
+      // re-completion of the same blocker doesn't double-notify if the
+      // dependency processor is invoked twice (which can happen if
+      // processTaskCompletion is called from both controller and service).
       const assigneeId = updates.assignedTo || depTask.assignedTo;
       if (assigneeId) {
-        const notification = await Notification.create({
+        await createNotification({
+          userId: assigneeId,
           type: 'task_assigned',
           message: `Task "${depTask.title}" is now unblocked and ready to work on${updates.assignedTo ? ' (auto-assigned to you)' : ''}`,
           entityType: 'task',
           entityId: depTask.id,
-          userId: assigneeId,
+          boardId: depTask.boardId,
+          idempotencyKey: buildIdempotencyKey('dep-unblock', dep.id, assigneeId),
         });
-        emitToUser(assigneeId, 'notification:new', { notification });
+        // createNotification already fired the 'notification:new' socket
+        // event; we only need the targeted "task:unblocked" event here so
+        // TaskModal/MyWork can show a banner.
         emitToUser(assigneeId, 'task:unblocked', { taskId: depTask.id, title: depTask.title });
       }
 
@@ -351,14 +373,15 @@ async function recomputeParentBlockState(parentTaskId) {
         try {
           const restoredStatus = updates.status || task.status;
           const restoredLabel = (restoredStatus || 'not_started').replace(/_/g, ' ');
-          const notification = await Notification.create({
+          await createNotification({
+            userId: task.assignedTo,
             type: 'task_updated',
             message: `Your task "${task.title}" is no longer blocked. Status restored to ${restoredLabel}.`,
             entityType: 'task',
             entityId: task.id,
-            userId: task.assignedTo,
+            boardId: task.boardId,
+            idempotencyKey: buildIdempotencyKey('dep-restored', task.id, task.assignedTo, Math.floor(Date.now() / 60000)),
           });
-          emitToUser(task.assignedTo, 'notification:new', { notification });
           emitToUser(task.assignedTo, 'task:unblocked', { taskId: task.id, title: task.title });
         } catch (err) {
           console.error('[DependencyService] task:unblocked notification failed:', err.message);
@@ -370,6 +393,259 @@ async function recomputeParentBlockState(parentTaskId) {
       emitToBoard(task.boardId, 'task:updated', { task: task.toJSON() });
     }
   }
+}
+
+// ─── Phase 13: shadow-task materialization ───────────────────────────────
+//
+// A DependencyRequest is the system of record for "blocker work I'm asking
+// you to do for me". The lifecycle (pending → accepted → working_on_it →
+// done | rejected | cancelled) lives on the dep row and never created a
+// Task — that was the original bug this whole subsystem was built to fix.
+//
+// What it didn't solve: the assignee had no way to see the dep work in the
+// Main Table view of their board. Their dependencies page showed it, but
+// the work itself was invisible alongside their regular tasks.
+//
+// Fix: when the assignee transitions OUT of pending (accept / start / done),
+// materialize ONE Task on the parent's board owned by the assignee — a
+// "shadow" of the dep work. The dep row stays the source of truth for
+// status; the shadow Task is just the assignee's board surface.
+//
+// Idempotency: dep.linkedTaskId is the key. Set on first transition, never
+// cleared. Subsequent dep status changes UPDATE the existing task — they
+// never create a second one. A pending → rejected dep never gets a task
+// (nothing was ever shown, nothing to clean up).
+
+// dep.status → linked-task status. Returning null means "leave the task
+// status alone" (e.g. on accepted, the assignee may have already moved
+// the task forward independently).
+function _depStatusToTaskStatus(depStatus) {
+  if (depStatus === 'done')          return 'done';
+  if (depStatus === 'working_on_it') return 'working_on_it';
+  if (depStatus === 'accepted')      return 'not_started';
+  return null;
+}
+
+/**
+ * Create the shadow Task for a dep that has no linked task yet. Called only
+ * by `syncLinkedTaskFromDependency`; never call directly — that's where the
+ * "should we even materialize?" decision lives.
+ *
+ * Side effects:
+ *   - INSERT tasks + INSERT task_assignees (atomic in one transaction)
+ *   - UPDATE dependency_requests.linkedTaskId = new task id
+ *   - autoAddMember(boardId, assignee) so the board appears in the
+ *     assignee's sidebar if they weren't already a member
+ *   - realtime emitTaskCreated → drives the assignee's Board page +
+ *     MyWork list to refresh without a manual reload
+ */
+async function _materializeDependencyTask(dep, actor) {
+  if (!dep || dep.linkedTaskId) return null;
+
+  const parent = await Task.findByPk(dep.parentTaskId, {
+    attributes: ['id', 'groupId', 'boardId', 'isArchived'],
+  });
+  // No parent (deleted) or no boardId — we have nothing to attach to. Bail
+  // silently; the dep lifecycle still works without a shadow surface.
+  const boardId = dep.boardId || parent?.boardId;
+  if (!boardId) {
+    console.warn(`[DependencyService] materialize: dep ${dep.id} has no boardId, skipping`);
+    return null;
+  }
+
+  const groupId = parent?.groupId || 'new';
+  const taskStatus = _depStatusToTaskStatus(dep.status) || 'not_started';
+  const isDone = dep.status === 'done';
+
+  // Append to the end of the parent's group so the shadow row sits visually
+  // near its parent on the Main Table.
+  const maxPosition = await Task.max('position', { where: { boardId, groupId } });
+
+  let created;
+  try {
+    created = await sequelize.transaction(async (t) => {
+      const task = await Task.create({
+        title: dep.title,
+        description: dep.blockingReason || '',
+        status: taskStatus,
+        priority: dep.priority || 'medium',
+        groupId,
+        dueDate: dep.dueDate || null,
+        progress: isDone ? 100 : 0,
+        completedAt: isDone ? new Date() : null,
+        position: (Number.isFinite(maxPosition) ? maxPosition : 0) + 1,
+        tags: ['dependency'],
+        // Back-pointer in customFields too — gives the frontend (and any
+        // future export) a way to recognise a shadow task without joining
+        // the dep table. The board UI doesn't render this any differently
+        // today; it's there for future affordances (e.g. "open parent dep").
+        customFields: {
+          sourceDependencyRequestId: dep.id,
+          sourceParentTaskId: dep.parentTaskId,
+        },
+        boardId,
+        assignedTo: dep.assignedToUserId,
+        createdBy: dep.requestedByUserId,
+        // Skip approval gate: the dep itself is the system of record for
+        // completion. A dep marked 'done' must be reflected on the board
+        // immediately, not held behind another approval round.
+        approvalStatus: isDone ? 'approved' : null,
+      }, { transaction: t });
+
+      // Mirror the controller's TaskAssignee insert so visibility filters
+      // and downstream "is this user an assignee?" checks find the row.
+      await TaskAssignee.bulkCreate([{
+        taskId: task.id,
+        userId: dep.assignedToUserId,
+        role: 'assignee',
+        assignedAt: new Date(),
+        assignerId: dep.requestedByUserId,
+      }], { ignoreDuplicates: true, transaction: t });
+
+      // Persist the back-pointer atomically with the task creation so a
+      // crash between the two cannot leave an orphan task that a retry
+      // would duplicate.
+      dep.linkedTaskId = task.id;
+      await dep.save({ transaction: t });
+
+      return task;
+    });
+  } catch (err) {
+    console.error('[DependencyService] _materializeDependencyTask transaction failed:', err.message);
+    return null;
+  }
+
+  // Auto-add the assignee as a board member so the board shows up in their
+  // sidebar. Idempotent (ON CONFLICT DO NOTHING). Outside the transaction
+  // because boardMembershipService runs its own SQL and can't share a tx.
+  try {
+    await boardMembership().autoAddMember(boardId, dep.assignedToUserId);
+  } catch (err) {
+    // Non-fatal — board visibility may already be granted via hierarchy.
+    console.warn('[DependencyService] autoAddMember failed (non-fatal):', err.message);
+  }
+
+  // Fan out the create. realtimeService figures out which authorized users
+  // (assignee, creator, watchers, ancestors, admins) to deliver to and
+  // emits 'task:created' which the eventRouter routes to
+  // tasks.board.<boardId> + tasks.assignedTo.me — so the assignee's
+  // BoardPage + MyWork refresh without a reload.
+  try {
+    realtime().emitTaskCreated(created, { actorId: actor?.id });
+  } catch (err) {
+    console.warn('[DependencyService] emitTaskCreated failed (non-fatal):', err.message);
+  }
+
+  return created;
+}
+
+/**
+ * Update the existing shadow task to mirror the dep's current state.
+ * Called only by `syncLinkedTaskFromDependency` when dep.linkedTaskId is
+ * already set. If the user manually deleted the shadow task between
+ * transitions, we no-op (don't resurrect — they explicitly removed it).
+ */
+async function _syncExistingLinkedTask(dep, actor) {
+  if (!dep?.linkedTaskId) return null;
+
+  const task = await Task.findByPk(dep.linkedTaskId);
+  if (!task) return null;
+
+  // Cancel/reject — soft-archive so the row disappears from the board but
+  // the audit trail (parent, assignee, history) is preserved. Use the
+  // standard isArchived flag so the existing board query (which excludes
+  // archived rows by default) handles visibility automatically.
+  if (dep.status === 'rejected' || dep.status === 'cancelled') {
+    if (task.isArchived) return task;
+    await task.update({
+      isArchived: true,
+      archivedAt: new Date(),
+      archivedBy: actor?.id || null,
+    });
+    try {
+      // Treat archive as an update so the board page can drop the row via
+      // its existing 'task:updated' handler (it refetches the list, which
+      // now excludes archived). Avoids a separate task:deleted code path.
+      realtime().emitTaskUpdated(task, {
+        actorId: actor?.id,
+        changedFields: ['isArchived'],
+      });
+    } catch (err) {
+      console.warn('[DependencyService] emitTaskUpdated (archive) failed:', err.message);
+    }
+    return task;
+  }
+
+  // Active states — sync status/progress from dep. We deliberately DON'T
+  // touch the task back to 'not_started' on accepted (the assignee may
+  // have moved it forward independently); only 'working_on_it' and 'done'
+  // force a forward transition.
+  const targetStatus = _depStatusToTaskStatus(dep.status);
+  const updates = {};
+  if (targetStatus && targetStatus !== task.status) {
+    if (dep.status === 'working_on_it' && task.status === 'done') {
+      // Edge case: dep was done, then re-opened (cancel-and-recreate path).
+      // Don't downgrade a 'done' task to working_on_it automatically — the
+      // user may have a separate "completed" view of it. Leave it alone.
+    } else if (dep.status === 'accepted') {
+      // Accept-after-already-materialized: leave whatever status the
+      // assignee is on. They may have already started it.
+    } else {
+      updates.status = targetStatus;
+    }
+  }
+  if (dep.status === 'done') {
+    if (task.progress !== 100) updates.progress = 100;
+    if (!task.completedAt) updates.completedAt = new Date();
+    // If a non-super-admin previously set approvalStatus, accept the
+    // approval implicitly — the dep is the source of truth for completion.
+    if (task.approvalStatus !== 'approved') updates.approvalStatus = 'approved';
+  }
+
+  if (Object.keys(updates).length === 0) return task;
+
+  await task.update(updates);
+  try {
+    realtime().emitTaskUpdated(task, {
+      actorId: actor?.id,
+      changedFields: Object.keys(updates),
+    });
+  } catch (err) {
+    console.warn('[DependencyService] emitTaskUpdated (sync) failed:', err.message);
+  }
+  return task;
+}
+
+/**
+ * Single entry point for "after a dep status changed, make the shadow task
+ * reflect that". Called by the controller from updateStatus + cancel paths.
+ * Safe to call on any status transition; it figures out whether to create,
+ * update, archive, or no-op.
+ *
+ * @param {DependencyRequest} dep   The dep instance AFTER the status change
+ *                                  has been persisted.
+ * @param {object}            actor The user driving the transition.
+ * @returns {Promise<Task|null>}    The shadow task (created or updated), or
+ *                                  null if no shadow exists / was needed.
+ */
+async function syncLinkedTaskFromDependency(dep, actor) {
+  if (!dep) return null;
+
+  // Pending — nothing to surface yet. The work is queued; the dep card on
+  // the dependencies page is enough.
+  if (dep.status === 'pending') return null;
+
+  // Already-materialized path: just sync.
+  if (dep.linkedTaskId) {
+    return _syncExistingLinkedTask(dep, actor);
+  }
+
+  // No shadow yet, dep was rejected/cancelled straight from pending — nothing
+  // to materialize, nothing to clean up.
+  if (dep.status === 'rejected' || dep.status === 'cancelled') return null;
+
+  // Active state, no shadow yet → materialize.
+  return _materializeDependencyTask(dep, actor);
 }
 
 /**
@@ -474,14 +750,20 @@ async function dispatchDependencyEvent(event, dep, actor) {
 
   for (const userId of targets) {
     try {
-      const notification = await Notification.create({
+      // Idempotent on (event, dependency, recipient) so a dependency
+      // lifecycle event re-dispatched (e.g. from a retry) doesn't double-
+      // notify each recipient.
+      await createNotification({
+        userId,
         type: entry.type,
         message: entry.message,
         entityType: 'dependency_request',
         entityId: dep.id,
-        userId,
+        idempotencyKey: buildIdempotencyKey('dep-event', event, dep.id, userId),
       });
-      emitToUser(userId, 'notification:new', { notification });
+      // Targeted dep event so the recipient's TaskModal / cross-team page
+      // can update without a full refetch. createNotification already fired
+      // 'notification:new' for the bell.
       emitToUser(userId, `dependency:${event}`, {
         dependencyId: dep.id,
         parentTaskId: dep.parentTaskId,
@@ -514,5 +796,6 @@ module.exports = {
   unlockTaskIfUnblocked,
   recomputeParentBlockState,
   dispatchDependencyEvent,
+  syncLinkedTaskFromDependency,
   BLOCKING_DR_STATUSES,
 };

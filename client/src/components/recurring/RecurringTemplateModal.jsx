@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Calendar, Clock, RefreshCw, AlertTriangle, Save } from 'lucide-react';
+import { Calendar, Clock, RefreshCw, AlertTriangle, Save, CalendarDays } from 'lucide-react';
 import Modal from '../common/Modal';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -13,6 +13,7 @@ import {
   dueTimeToInputValue,
   getMonthlyDaysFromTemplate,
   normalizeFrequencyForUI,
+  buildScheduleSummary,
 } from '../../services/recurringTasks';
 
 /**
@@ -119,6 +120,25 @@ export default function RecurringTemplateModal({
   // case a stale form state slips through — the server still accepts it.
   const requiresWeekdays = form.frequency === 'weekly' || form.frequency === 'custom';
   const requiresDayOfMonth = form.frequency === 'monthly';
+
+  // Live schedule summary computed from the current form state. Same shape
+  // as buildScheduleSummary returns for a persisted template, so a user
+  // editing a template sees the panel update as they toggle weekdays /
+  // day-of-month chips.
+  const liveSchedule = useMemo(() => buildScheduleSummary({
+    frequency: form.frequency,
+    weekdays: form.weekdays,
+    daysOfMonth: form.daysOfMonth,
+    dueTime: form.dueTime ? `${form.dueTime}:00` : null,
+    timezone: form.timezone,
+    startDate: form.startDate,
+    endDate: form.endDate,
+  }), [form.frequency, form.weekdays, form.daysOfMonth, form.dueTime, form.timezone, form.startDate, form.endDate]);
+
+  const selectedAssignee = useMemo(
+    () => users.find((u) => u.id === form.assigneeId) || null,
+    [users, form.assigneeId]
+  );
 
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -304,6 +324,21 @@ export default function RecurringTemplateModal({
             <span>{error}</span>
           </div>
         )}
+
+        {/* Live schedule summary — kept in lock-step with the form state so
+            the user can confirm at a glance what's being saved. Especially
+            important for monthly + custom-weekday rules where the picker
+            below scrolls off-screen on small viewports. */}
+        <ScheduleSummary
+          schedule={liveSchedule}
+          assignee={selectedAssignee}
+          board={selectedBoard}
+          group={form.groupId}
+          priority={form.priority}
+          isActive={form.isActive}
+          isEdit={isEdit}
+          template={template}
+        />
 
         {/* Basic */}
         <Section title="Basics">
@@ -572,6 +607,76 @@ export default function RecurringTemplateModal({
 // ─── Local helpers ─────────────────────────────────────────────────────────
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm bg-surface-100 dark:bg-[#2a2c30] border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary/30 text-text-primary';
+
+/**
+ * ScheduleSummary — a compact "this is what you're saving" panel that
+ * mirrors the form state in plain language. Renders at the top of the
+ * modal so the user can confirm the configured rule without scrolling
+ * back through the schedule controls.
+ *
+ * Pure render — derives entirely from props, no local state. Hidden when
+ * the user hasn't filled in enough to render anything meaningful.
+ */
+function ScheduleSummary({ schedule, assignee, board, group, priority, isActive, isEdit, template }) {
+  if (!schedule) return null;
+  const groupLabel = (() => {
+    if (!group) return null;
+    if (group === 'new') return 'New (default)';
+    const groups = Array.isArray(board?.groups) ? board.groups : [];
+    return groups.find((g) => g && g.id === group)?.title || group;
+  })();
+  return (
+    <div className="rounded-lg border border-border bg-surface-50 dark:bg-[#1c1d20] p-3 space-y-2">
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+        <CalendarDays size={12} />
+        <span>Schedule summary</span>
+        {isEdit && template && (
+          <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-text-tertiary">
+            {template.archivedAt ? 'archived' : (isActive === false ? 'paused' : 'active')}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-text-secondary">
+        <SummaryRow label="Frequency" value={schedule.kind} />
+        <SummaryRow label="When" value={schedule.summary} />
+        <SummaryRow
+          label="Due time"
+          icon={Clock}
+          value={`${schedule.dueTime} ${schedule.timezone ? `(${schedule.timezone})` : ''}`}
+        />
+        <SummaryRow
+          label="Active window"
+          icon={CalendarDays}
+          value={`${schedule.startDate || '—'}${schedule.endDate ? ` → ${schedule.endDate}` : ' → no end date'}`}
+        />
+        {assignee && <SummaryRow label="Assignee" value={assignee.name || assignee.email} />}
+        {board && <SummaryRow label="Board" value={board.name} />}
+        {groupLabel && <SummaryRow label="Group" value={groupLabel} />}
+        {priority && <SummaryRow label="Priority" value={priority} />}
+        {isEdit && template?.lastGeneratedDate && (
+          <SummaryRow label="Last generated" value={String(template.lastGeneratedDate)} />
+        )}
+        {isEdit && template?.nextRunAt && (
+          <SummaryRow label="Next run" value={new Date(template.nextRunAt).toLocaleString()} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SummaryRow({ label, icon: Icon, value }) {
+  return (
+    <div className="flex items-baseline gap-1.5 min-w-0">
+      <span className="text-[10px] uppercase tracking-wide font-semibold text-text-tertiary whitespace-nowrap">
+        {label}
+      </span>
+      <span className="inline-flex items-center gap-1 text-text-primary truncate" title={String(value)}>
+        {Icon && <Icon size={11} className="text-text-tertiary flex-shrink-0" />}
+        {value || '—'}
+      </span>
+    </div>
+  );
+}
 
 function Section({ title, icon: Icon, children }) {
   return (

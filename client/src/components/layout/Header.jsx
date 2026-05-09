@@ -12,10 +12,25 @@ import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import { useToast } from '../common/Toast';
 import { useTheme } from '../../context/ThemeContext';
-import { requestPushPermission, showLocalNotification, isPushSupported, subscribeToPush } from '../../services/pushNotifications';
+import { requestPushPermission, isPushSupported, subscribeToPush, showLocalNotification } from '../../services/pushNotifications';
+
+// Module-scope state for the push pipeline. Survives Header re-mounts (route
+// change, theme toggle, HMR) so we don't re-prompt or re-subscribe on every
+// render — but resets on full page reload, which is the right cadence for
+// retrying a failed subscribe.
+//
+//   pushPermissionAttempted — true once we've called requestPushPermission().
+//                            Re-mounts skip prompting unless we've never
+//                            tried in this session.
+//   pushSubscribeOk         — true once subscribeToPush succeeded. While
+//                            false, we'll retry on next eligible Header
+//                            mount (e.g. after the user logs in, or after
+//                            VAPID is fixed and the page reloads).
+let pushPermissionAttempted = false;
+let pushSubscribeOk = false;
 
 export default function Header({ onToggleSidebar }) {
-  const { user, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions,
+  const { user, authReady, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions,
     isTier1, isTier2, isTier3, isTier4, tierLabel } = useAuth();
   // Mirror the exact gates the sidebar used for these items so visibility
   // stays identical after the move. Each menu row in the profile dropdown is
@@ -29,30 +44,156 @@ export default function Header({ onToggleSidebar }) {
   // showed it unless explicitly denied. Mirror that here so a role that
   // could see Org Chart in the sidebar can also see the new header icon.
   const canSeeOrgChart      = !isExplicitlyDenied('org_chart', 'view', isSuperAdmin, granularPermissions);
-  const { success: toastSuccess, info: toastInfo } = useToast();
+  const { success: toastSuccess, info: toastInfo, notify: toastNotify } = useToast();
   const { darkMode, toggleDarkMode } = useTheme();
   const location = useLocation();
 
-  // Request push notification permission and subscribe to VAPID push
+  // Request push notification permission and subscribe to VAPID push.
+  //
+  // Two guards layered here:
+  //   1. `authReady && user` — never prompt before AuthContext has finished
+  //      its /auth/me bootstrap, and never prompt for an unauthenticated
+  //      visitor. Without this, a logged-out user reaching the app via a
+  //      protected route's spinner could see a permission prompt while we
+  //      were still resolving who they are.
+  //   2. Module-scope `pushPermissionAttempted` — re-mounts of the Header
+  //      (route changes, theme toggle, HMR) do NOT re-prompt. Once per
+  //      browser session is enough; if the user denied once, the permission
+  //      API will short-circuit on subsequent calls anyway, but we don't
+  //      want a no-op dialog flashing the user's attention.
   useEffect(() => {
-    if (isPushSupported()) {
-      requestPushPermission().then((perm) => {
-        if (perm === 'granted') subscribeToPush();
-      });
-    }
-  }, []);
+    if (!authReady || !user) return;
+    if (!isPushSupported()) return;
 
-  // Notification side-effects (toast + browser push) need the raw payload —
-  // useRealtimeEvent is the right hook here. The unread COUNT, on the other
-  // hand, is a derived cache that gets bumped to via the queryKey below.
+    // First-time path: prompt for permission (once per session) and then
+    // subscribe. If the user previously granted permission, the prompt is
+    // skipped and we go straight to subscribe.
+    if (!pushPermissionAttempted) {
+      pushPermissionAttempted = true;
+      requestPushPermission().then(async (perm) => {
+        if (perm !== 'granted') return;
+        const result = await subscribeToPush();
+        pushSubscribeOk = !!result?.ok;
+      });
+      return;
+    }
+
+    // Retry path: a previous subscribe attempt failed (VAPID misconfigured,
+    // network blip, etc.). On each subsequent eligible Header mount we
+    // re-attempt without re-prompting — the permission was already granted.
+    // This makes "fix .env, restart server, reload the tab" recover without
+    // requiring the user to re-allow notifications manually.
+    if (!pushSubscribeOk && Notification.permission === 'granted') {
+      subscribeToPush().then((result) => { pushSubscribeOk = !!result?.ok; });
+    }
+  }, [authReady, user]);
+
+  // Notification side-effects:
+  //
+  //   1. In-app toast — fires unconditionally. Cleanly invisible on
+  //      backgrounded tabs (the user won't see it until they refocus, and
+  //      that's fine).
+  //   2. Foreground OS notification (safety net) — fires ONLY when the tab
+  //      is HIDDEN (document.hidden=true). When the tab is focused, the
+  //      toast is the visible surface and the OS notification would be a
+  //      duplicate in the user's view.
+  //
+  // The safety net uses the SAME stable `notif-<id>` tag the SW push uses,
+  // so when both the SW push (from backend Web Push) AND the foreground
+  // local notification fire for the same event, browsers tag-collapse them
+  // into a single OS-tray entry. That gives us:
+  //   - SW push works (VAPID configured, subscription active) → SW handles
+  //     OS notification, foreground call is a no-op tag-collision update.
+  //   - SW push fails (VAPID misconfig, no subscription) → foreground call
+  //     fires the OS notification anyway, so the user is never silently
+  //     skipped.
+  //   - Tab focused → showLocalNotification's internal `document.hasFocus()`
+  //     guard short-circuits, only the toast fires.
+  //
+  // The structured `notify(...)` toast shape renders as a Teams-style card
+  // with a type-aware title and a click-through to the linked task.
   useRealtimeEvent('notification:new', (data) => {
-    const msg = data?.notification?.message;
-    if (msg) toastInfo(msg);
-    if (msg) {
-      showLocalNotification('Monday Aniston', {
+    const n = data?.notification;
+    const msg = n?.message;
+    if (!msg) return;
+    const titleByType = {
+      task_assigned: 'Task assigned',
+      task_supervisor_added: 'Supervisor role',
+      task_role_changed: 'Role updated',
+      task_removed: 'Removed from task',
+      task_updated: 'Task update',
+      comment_added: 'New comment',
+      due_date: 'Deadline reminder',
+      mention: 'You were mentioned',
+      approval_submitted: 'Approval needed',
+      approval_approved: 'Approval needed',
+      approval_rejected: 'Approval rejected',
+      approval_changes_requested: 'Changes requested',
+      approval_completed: 'Task approved',
+      access_requested: 'Access request',
+      access_approved: 'Access approved',
+      access_rejected: 'Access rejected',
+      extension_requested: 'Extension requested',
+      extension_approved: 'Extension approved',
+      extension_rejected: 'Extension rejected',
+      help_requested: 'Help requested',
+      help_responded: 'Help update',
+      promotion: 'Promotion',
+      priority_change: 'Priority changed',
+      deadline_2day: 'Deadline in 2 days',
+      deadline_2hour: 'Deadline in 2 hours',
+      recurring_generated: 'New recurring task',
+      recurring_missed: 'Recurring task missed',
+    };
+    const toastTitle = titleByType[n?.type] || 'New notification';
+    toastNotify({
+      title: toastTitle,
+      body: msg,
+      duration: 5000,
+      // Click-through: navigate to the linked task / board / etc. Mirrors the
+      // logic in NotificationsPanel's handleNotificationClick.
+      onClick: () => {
+        const boardId = n?.boardId || data?.boardId;
+        if (n?.entityType === 'task' && n?.entityId) {
+          if (boardId) navigate(`/boards/${boardId}?taskId=${n.entityId}`);
+          else navigate(`/my-work?taskId=${n.entityId}`);
+        } else if (n?.entityType === 'board' && n?.entityId) {
+          navigate(`/boards/${n.entityId}`);
+        } else if (n?.entityType === 'meeting') {
+          navigate('/meetings');
+        } else if (n?.entityType === 'access_request') {
+          navigate('/access-requests');
+        } else if (n?.entityType === 'help_request' || n?.entityType === 'dependency_request') {
+          navigate('/cross-team');
+        }
+      },
+    });
+
+    // Safety-net OS notification — covers the case where backend Web Push
+    // is misconfigured (no VAPID, expired subscription, etc.) so the SW
+    // never fires. Internal `document.hasFocus()` guard inside
+    // showLocalNotification means a focused tab silently no-ops; ONLY a
+    // hidden/backgrounded tab fires this. The stable `notif-<id>` tag
+    // matches the SW push tag, so when both fire, browsers collapse them
+    // into a single OS-tray entry.
+    if (n?.id && Notification && Notification.permission === 'granted') {
+      const boardId = n?.boardId || data?.boardId;
+      let url = '/';
+      if (n.entityType === 'task' && n.entityId) {
+        url = boardId ? `/boards/${boardId}?taskId=${n.entityId}` : `/my-work?taskId=${n.entityId}`;
+      } else if (n.entityType === 'board' && n.entityId) {
+        url = `/boards/${n.entityId}`;
+      } else if (n.entityType === 'meeting') {
+        url = '/meetings';
+      } else if (n.entityType === 'access_request') {
+        url = '/access-requests';
+      } else if (n.entityType === 'help_request' || n.entityType === 'dependency_request') {
+        url = '/cross-team';
+      }
+      showLocalNotification(toastTitle, {
         body: msg,
-        tag: `notif-${data?.notification?.id || Date.now()}`,
-        url: data?.notification?.entityType === 'task' ? '/my-work' : '/',
+        tag: `notif-${n.id}`,
+        url,
       });
     }
   });
@@ -67,8 +208,16 @@ export default function Header({ onToggleSidebar }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const menuRef = useRef(null);
 
-  // Load unread count once on mount — socket events keep it updated
-  useEffect(() => { loadUnreadCount(); }, []);
+  // Load unread count once auth has finished bootstrapping. Without the
+  // `authReady && user` gate the fetch could fire during the brief window
+  // where a stale legacy storage token is still attached but the cookie
+  // session has already been invalidated server-side — that produces a 401,
+  // a silent refresh, and a confusing flicker in the bell badge. Gating on
+  // confirmed auth state makes the bell deterministic.
+  useEffect(() => {
+    if (!authReady || !user) return;
+    loadUnreadCount();
+  }, [authReady, user]);
 
   // Unread count is a derived cache — every notification:new + notification:read
   // event invalidates 'notifications.unreadCount' via the router, refetching once.
@@ -90,10 +239,23 @@ export default function Header({ onToggleSidebar }) {
   }, []);
 
   async function loadUnreadCount() {
+    // Defensive guard: the realtime invalidation hook can fire during the
+    // brief window between logout and Header unmount. Without this check we
+    // fire an authenticated GET for a user who just signed out — the
+    // request 401s, the interceptor tries a silent refresh that itself
+    // 401s, and the user is bounced to /login mid-logout, occasionally
+    // racing the explicit navigate('/login') the menu already invoked.
+    if (!authReady || !user) {
+      setUnreadCount(0);
+      return;
+    }
     try {
-      const res = await api.get('/notifications/unread-count');
+      const res = await api.get('/notifications/unread-count', { _silent: true });
       setUnreadCount(res.data.unreadCount || res.data.count || 0);
-    } catch {}
+    } catch {
+      // Silent — interceptor handles 401 with refresh + retry; any other
+      // error is non-actionable for the bell badge.
+    }
   }
 
   // Page title from route
@@ -202,12 +364,29 @@ export default function Header({ onToggleSidebar }) {
           {/* Sub-separator between page-nav icons and notification/system icons */}
           <div className="h-5 w-px bg-border mx-1 hidden sm:block" />
 
-          {/* Notifications */}
-          <button data-tour="notifications" onClick={() => setShowNotifications(!showNotifications)}
-            className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
-            <Bell size={17} strokeWidth={1.8} />
+          {/* Notifications. aria-label is a static description; the badge
+              text becomes part of the accessible name via aria-label so
+              screen readers announce "Notifications, 3 unread" — the
+              `aria-live` on the badge is only triggered when the count
+              changes after first paint, so the user isn't re-announced on
+              every re-render. */}
+          <button
+            data-tour="notifications"
+            onClick={() => setShowNotifications(!showNotifications)}
+            aria-label={unreadCount > 0
+              ? `Notifications, ${unreadCount} unread`
+              : 'Notifications'}
+            aria-expanded={showNotifications}
+            aria-haspopup="dialog"
+            className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary"
+          >
+            <Bell size={17} strokeWidth={1.8} aria-hidden="true" />
             {unreadCount > 0 && (
-              <span className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]">
+              <span
+                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]"
+                aria-live="polite"
+                aria-atomic="true"
+              >
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}

@@ -5,6 +5,7 @@ const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isHierarchyManager } = require('../middleware/taskPermissions');
 const { getDescendantIds } = require('../services/hierarchyService');
+const { isTier4 } = require('../config/tiers');
 
 /**
  * POST /api/worklogs
@@ -26,7 +27,7 @@ const createWorkLog = async (req, res) => {
     }
 
     // Members can only add logs to tasks assigned to them (unless hierarchy manager for subtree tasks)
-    if (req.user.role === 'member' && task.assignedTo !== req.user.id) {
+    if (isTier4(req.user) && task.assignedTo !== req.user.id) {
       const isHierMgr = await isHierarchyManager(req.user, req);
       if (isHierMgr) {
         const descendantIds = await getDescendantIds(req.user.id);
@@ -92,7 +93,7 @@ const getWorkLogs = async (req, res) => {
     if (date) where.date = date;
 
     // Members can only see their own logs (unless hierarchy manager — can see subtree logs)
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       const isHierMgr = await isHierarchyManager(req.user, req);
       if (isHierMgr) {
         const descendantIds = await getDescendantIds(req.user.id);
@@ -147,7 +148,7 @@ const updateWorkLog = async (req, res) => {
     }
 
     // Members can only edit their own logs (unless hierarchy manager for subtree member logs)
-    if (req.user.role === 'member' && worklog.userId !== req.user.id) {
+    if (isTier4(req.user) && worklog.userId !== req.user.id) {
       const isHierMgr = await isHierarchyManager(req.user, req);
       if (!isHierMgr) {
         return res.status(403).json({ success: false, message: 'You can only edit your own work logs.' });

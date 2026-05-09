@@ -5,6 +5,8 @@ const { emitToUser } = require('../services/socketService');
 const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const taskVisibility = require('../services/taskVisibilityService');
+const { isTier4 } = require('../config/tiers');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 
 // POST /api/help-requests
 exports.createHelpRequest = async (req, res) => {
@@ -34,16 +36,21 @@ exports.createHelpRequest = async (req, res) => {
       urgency: urgency || 'medium', preferredTime: preferredTime || null,
     });
 
-    // Notify helper
+    // Notify helper. Idempotent on the help request id.
     const helperMsg = sanitizeNotificationMessage(
       `${sanitizeNotificationField(req.user.name)} needs help with "${sanitizeNotificationField(task.title)}" ` +
       `(${sanitizeNotificationField(urgency || 'medium', 16)} urgency)`
     );
-    const notification = await Notification.create({
-      type: 'help_requested', message: helperMsg,
-      entityType: 'task', entityId: taskId, userId: requestedTo,
+    await createNotification({
+      userId: requestedTo,
+      type: 'help_requested',
+      message: helperMsg,
+      entityType: 'task',
+      entityId: taskId,
+      boardId: task.boardId,
+      idempotencyKey: buildIdempotencyKey('help-requested', hr.id),
+      sanitize: false,
     });
-    emitToUser(requestedTo, 'notification:new', { notification });
 
     logActivity({ action: 'help_requested', description: `${req.user.name} requested help on "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id, meta: { urgency, requestedTo } });
 
@@ -68,7 +75,7 @@ exports.getHelpRequests = async (req, res) => {
     if (req.query.status) where.status = req.query.status;
     if (req.query.taskId) where.taskId = req.query.taskId;
     // Members see their own requests; managers see requests sent to them + all
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       const { Op } = require('sequelize');
       where[Op.or] = [{ requestedBy: req.user.id }, { requestedTo: req.user.id }];
     }
@@ -110,15 +117,21 @@ exports.updateStatus = async (req, res) => {
 
     await hr.update(updates);
 
-    // Notify requester
+    // Notify requester. Idempotent per (helpRequest, status) so the user
+    // can move from pending → in_review → resolved and each transition
+    // notifies once, but a retried PUT to the same status does not.
     const respondedMsg = sanitizeNotificationMessage(
       `Your help request status updated to "${sanitizeNotificationField(status, 32)}"`
     );
-    const respondedNotif = await Notification.create({
-      type: 'help_responded', message: respondedMsg,
-      entityType: 'help_request', entityId: hr.id, userId: hr.requestedBy,
+    await createNotification({
+      userId: hr.requestedBy,
+      type: 'help_responded',
+      message: respondedMsg,
+      entityType: 'help_request',
+      entityId: hr.id,
+      idempotencyKey: buildIdempotencyKey('help-responded', hr.id, status),
+      sanitize: false,
     });
-    emitToUser(hr.requestedBy, 'notification:new', { notification: respondedNotif });
 
     res.json({ success: true, data: { helpRequest: hr } });
   } catch (err) {

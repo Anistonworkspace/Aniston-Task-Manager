@@ -6,6 +6,8 @@ const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
 const dependencyRequestController = require('./dependencyRequestController');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 
 /**
  * GET /api/tasks/:taskId/dependencies
@@ -270,17 +272,24 @@ const delegateTask = async (req, res) => {
     const previousAssignee = task.assignee?.name || 'Unassigned';
     await task.update({ assignedTo: toUserId });
 
-    // Notify new assignee
-    const notification = await Notification.create({
+    // Notify new assignee. Idempotent on the (task, fromUser, toUser) tuple
+    // so a retried delegation POST doesn't double-notify, but a fresh
+    // delegation between the same pair (rare but possible — task delegated
+    // back-and-forth) gets its own row. We include the time bucket to
+    // disambiguate intentional repeats.
+    const safeMsg = sanitizeNotificationMessage(
+      `${sanitizeNotificationField(req.user.name)} delegated task "${sanitizeNotificationField(task.title)}" to you${notes ? `: "${sanitizeNotificationField(notes, 80)}"` : ''}`
+    );
+    await createNotification({
+      userId: toUserId,
       type: 'task_assigned',
-      message: `${req.user.name} delegated task "${task.title}" to you${notes ? `: "${notes}"` : ''}`,
+      message: safeMsg,
       entityType: 'task',
       entityId: taskId,
-      userId: toUserId,
+      boardId: task.boardId,
+      idempotencyKey: buildIdempotencyKey('task-delegated', taskId, req.user.id, toUserId, Math.floor(Date.now() / 60000)),
+      sanitize: false,
     });
-    // Bell update for the new assignee (notification:new is a low-level
-    // primitive, kept as-is — no fan-out needed).
-    emitToUser(toUserId, 'notification:new', { notification });
     // Targeted "you got delegated something" event for the new assignee
     // (TaskModal / MyWork can show a banner).
     emitToUser(toUserId, 'task:delegated', { taskId, title: task.title, fromUser: req.user.name, notes });

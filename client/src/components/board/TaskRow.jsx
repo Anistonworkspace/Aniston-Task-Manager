@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
+import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown, BellRing } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { canArchiveTask, canSetPriorityForTask } from '../../utils/permissions';
+import { canArchiveTask, canSetPriorityForTask, canEditDueDate } from '../../utils/permissions';
 import StatusCell from './StatusCell';
 import MarkDoneApprovalModal from '../task/MarkDoneApprovalModal';
 import ApprovalStepIndicator from './ApprovalStepIndicator';
@@ -17,6 +17,33 @@ import CheckboxCell from './CheckboxCell';
 import LinkCell from './LinkCell';
 import SubtaskCountBadge from './SubtaskCountBadge';
 import TaskReceiptIcon from '../common/TaskReceiptIcon';
+
+/**
+ * Format the alarm-icon hover tooltip. Compact and human-friendly.
+ *
+ *   single reminder, soon  → "Reminder: 2:30 PM today"
+ *   single reminder, far   → "Reminder: May 14, 3:30 PM"
+ *   multiple reminders     → "3 reminders set — next May 14, 3:30 PM"
+ *
+ * Falls back to a generic label if the server hasn't attached
+ * `nextReminderAt` (rare; means an enrichment error).
+ */
+function reminderTooltip(task) {
+  if (!task) return 'Reminder set';
+  const count = Number(task.activeReminderCount || 0);
+  const nextAt = task.nextReminderAt ? new Date(task.nextReminderAt) : null;
+  const isValid = nextAt && !Number.isNaN(nextAt.getTime());
+  let timeLabel = '';
+  if (isValid) {
+    const today = new Date();
+    const sameDay = nextAt.toDateString() === today.toDateString();
+    timeLabel = sameDay
+      ? nextAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      : nextAt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  if (count > 1) return `${count} reminders set${timeLabel ? ` — next ${timeLabel}` : ''}`;
+  return timeLabel ? `Reminder: ${timeLabel}` : 'Reminder set';
+}
 
 const TaskRow = React.memo(function TaskRow({
   task, members = [], color, columns = [], boardId,
@@ -33,7 +60,7 @@ const TaskRow = React.memo(function TaskRow({
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== 'done';
   const daysOverdue = isOverdue ? Math.ceil((new Date() - new Date(task.dueDate)) / (1000 * 60 * 60 * 24)) : 0;
 
-  const { user, isManager, isAdmin, isAssistantManager, isSuperAdmin, granularPermissions } = useAuth();
+  const { user, isTier1, isTier2, isSuperAdmin, granularPermissions } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
 
   // True if the actor cannot assign tasks to OTHERS (default for members; also
@@ -62,8 +89,15 @@ const TaskRow = React.memo(function TaskRow({
     : isOverdue
       ? 'bg-[#fff5f6] hover:bg-[#ffeaee] dark:bg-[#352024] dark:hover:bg-[#3f2730]'
       : 'bg-white hover:bg-[#f5f6f8]';
-  // Strict RBAC: Only Admin/Manager/AssistantManager can edit all fields. Members restricted.
-  const canEditAllFields = !isApproved && (isAdmin || isAssistantManager || (isManager && !!task.creator && task.creator.role !== 'admin'));
+  // Tier-based RBAC: only Tier 1 / Tier 2 get unrestricted "edit all fields"
+  // power. Tier 3 / Tier 4 fall through to the per-task ownership path
+  // (`isOwnTask` below), matching the backend `checkTaskAction('edit')`
+  // gate. The earlier `(isManager && task.creator.role !== 'admin')` clause
+  // was a stale role-string check from before the tier migration; it was
+  // also redundant because `isAdmin` (now Tier1||Tier2 in AuthContext) already
+  // covered the manager case unconditionally. Removed for clarity and to
+  // stop accidentally re-promoting Tier 3 to full edit.
+  const canEditAllFields = !isApproved && (isTier1 || isTier2);
   const isBlockedByDependency = !!task.customFields?.blockedByDependency;
   const canEditStatus = !isApproved && !isBlockedByDependency;
 
@@ -154,16 +188,22 @@ const TaskRow = React.memo(function TaskRow({
         );
       }
       case 'date': {
-        // Due date editability mirrors the backend `checkTaskAction('edit')`
-        // whitelist in server/middleware/taskPermissions.js — assignees AND
-        // creators can update `dueDate` even when they aren't management.
-        // This is critical for the member flow: a member who quick-creates
-        // an unassigned task must be able to set the due date in order to
-        // satisfy the "no assignment without a due date" rule and then
-        // self-assign. Without this fallback, the cell was locked and the
-        // member was stranded.
-        const dateEditable = !isApproved && (canEditAllFields || isOwnTask);
-        return <DateCell value={task.dueDate} onChange={dateEditable ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} />;
+        // Due date editability layers two gates:
+        //   1. Base "can touch dueDate at all" — Tier 1/2 always; Tier 3/4
+        //      only if they are personally on the task (assignee/creator).
+        //   2. Due-date lock — once a dueDate is set on a task, only Tier 1/2
+        //      may change it. Tier 3/4 may still set the INITIAL value
+        //      (existing dueDate is null), e.g. on a self-assigned quick-add.
+        //      Mirrors the backend DUE_DATE_LOCKED gate in updateTask.
+        // When the picker is locked, we render the date as read-only with a
+        // tooltip — never hidden, since lower tiers must still SEE the date.
+        const baseEditable = !isApproved && (canEditAllFields || isOwnTask);
+        const dueDateAllowed = canEditDueDate(user, task);
+        const dateEditable = baseEditable && dueDateAllowed;
+        const lockedReason = baseEditable && !dueDateAllowed
+          ? 'Only Tier 1 or Tier 2 can change this due date.'
+          : undefined;
+        return <DateCell value={task.dueDate} onChange={dateEditable ? (val => onUpdate({ dueDate: val })) : undefined} taskId={task.id} assignedTo={task.assignedTo} estimatedHours={task.estimatedHours} lockedReason={lockedReason} />;
       }
       case 'priority': {
         // Priority editing requires BOTH general edit access on this task AND
@@ -256,6 +296,24 @@ const TaskRow = React.memo(function TaskRow({
               subtask section keeps in sync via BoardPage's count syncer. */}
           <SubtaskCountBadge count={subtaskTotal} doneCount={subtaskDone} className="ml-1" />
           <div className="flex items-center gap-1 flex-shrink-0 text-[#c4c4c4]">
+            {/* Phase 5b — alarm icon when the task has at least one active
+                (unsent, uncancelled) reminder. Server attaches
+                `hasActiveReminder` + `nextReminderAt` + `activeReminderCount`
+                via getReminderSummaryBulk in /api/tasks?boardId=…, so this
+                is a no-op render when the task has no reminders. The icon
+                disappears automatically once the reminder fires (sentAt
+                set), gets cancelled (task complete/archive/delete), or the
+                user clears it from the modal — all of which flip
+                `hasActiveReminder` server-side on the next list refresh. */}
+            {task.hasActiveReminder && (
+              <span
+                className="flex items-center text-amber-600 dark:text-amber-400"
+                title={reminderTooltip(task)}
+                aria-label={reminderTooltip(task)}
+              >
+                <BellRing size={11} />
+              </span>
+            )}
             {/* Daily Work / Recurring instance marker — small icon with tooltip; full badge text
                 is in the modal header so we don't crowd the row. */}
             {task.isRecurringInstance && (

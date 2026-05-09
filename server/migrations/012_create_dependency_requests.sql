@@ -84,6 +84,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS dep_req_active_unique_idx
   ON dependency_requests ("parentTaskId", "assignedToUserId", lower(btrim(title)))
   WHERE status IN ('pending','accepted','working_on_it') AND "archivedAt" IS NULL;
 
+-- Phase 13 — linkedTaskId column. The "shadow" Task created on the
+-- assignee's board when they transition OUT of pending (accept / start /
+-- done). NULL for pending and pending→rejected rows that never produced a
+-- task. Idempotency: the materializer refuses to create a second Task once
+-- this column is set. SET NULL on Task delete so the dep row survives an
+-- independent task delete.
+ALTER TABLE dependency_requests
+  ADD COLUMN IF NOT EXISTS "linkedTaskId" UUID NULL
+  REFERENCES tasks(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS dep_req_linked_task_idx
+  ON dependency_requests ("linkedTaskId")
+  WHERE "linkedTaskId" IS NOT NULL;
+
 -- Extend notifications.type enum with the dependency lifecycle event values.
 -- Each statement is independent so a duplicate-value error on one doesn't
 -- poison the others. Wrapped to a no-op if the enum doesn't exist yet (fresh

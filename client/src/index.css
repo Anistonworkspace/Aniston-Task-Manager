@@ -764,3 +764,187 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .app-shell .bg-sidebar-bg [class*="pl-1"] {
   min-width: 0;
 }
+
+/* ===== v3 Task Modal — animated stripe, sticky purple tabs, colored cards ===== */
+.v3-project-stripe {
+  height: 3px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--proj-color, #6D5CE7) 0%, var(--proj-light, #A78BFA) 50%, var(--proj-color, #6D5CE7) 100%);
+  background-size: 200% 100%;
+  animation: v3Shimmer 8s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes v3Shimmer {
+  0%, 100% { background-position: 0% 0; }
+  50% { background-position: 200% 0; }
+}
+
+.v3-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-bottom: 1px solid #E4E4E7;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dark .v3-tabs { border-bottom-color: #27272a; }
+.v3-tabs::-webkit-scrollbar { display: none; }
+.v3-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.75rem;
+  height: 2.25rem;
+  font-size: 13px;
+  font-weight: 500;
+  color: #52525B;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+  font-feature-settings: 'tnum';
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.dark .v3-tab { color: #A1A1AA; }
+.v3-tab:hover { color: #18181B; }
+.dark .v3-tab:hover { color: #FAFAFA; }
+.v3-tab[aria-selected="true"] { color: #6D5CE7; }
+.dark .v3-tab[aria-selected="true"] { color: #A78BFA; }
+.v3-tab[aria-selected="true"]::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, #6D5CE7, #A78BFA);
+  border-radius: 2px;
+  animation: v3TabIn 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes v3TabIn {
+  from { transform: scaleX(0.4); opacity: 0; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+.v3-tab-count {
+  display: inline-flex;
+  align-items: center;
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: #F4F4F5;
+  color: #52525B;
+  font-size: 10px;
+  font-weight: 600;
+  font-feature-settings: 'tnum';
+}
+.dark .v3-tab-count { background: #27272a; color: #A1A1AA; }
+.v3-tab[aria-selected="true"] .v3-tab-count { background: rgba(109, 92, 231, 0.12); color: #6D5CE7; }
+
+.v3-card {
+  position: relative;
+  background: #FFFFFF;
+  border: 1px solid #EFEFF1;
+  border-radius: 12px;
+  padding: 12px 14px;
+  overflow: hidden;
+}
+.dark .v3-card { background: #1f2025; border-color: #27272a; }
+.v3-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--card-accent, #6D5CE7);
+}
+.v3-card-divider {
+  border-top: 1px dashed #E4E4E7;
+}
+.dark .v3-card-divider { border-top-color: #27272a; }
+
+/* Sticky tabs container — keeps tabs visible while content scrolls below */
+.v3-tabs-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #FFFFFF;
+  margin-left: -1.5rem;
+  margin-right: -1.5rem;
+  padding: 0.5rem 1.5rem 0;
+}
+.dark .v3-tabs-sticky { background: #1E1F23; }
+
+/* Activity ribbon scroll */
+.v3-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+.v3-ribbon::-webkit-scrollbar { display: none; }
+
+/* Recurring icon slow spin */
+.v3-recur-spin { animation: v3RecurSpin 8s linear infinite; }
+@keyframes v3RecurSpin { to { transform: rotate(360deg); } }
+
+/* Status dot soft pulse */
+.v3-pulse-dot { animation: v3SoftPulse 2.4s ease-in-out infinite; }
+@keyframes v3SoftPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Urgent countdown chip pulse — for "Due in Xh" / "Overdue" */
+.v3-urgent-pulse { animation: v3UrgentPulse 1.8s ease-in-out infinite; }
+@keyframes v3UrgentPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.30); }
+  50% { box-shadow: 0 0 0 4px rgba(225, 29, 72, 0); }
+}
+
+/* Section/card slide-up stagger on first mount */
+.v3-stagger > * { animation: v3SlideUp 0.32s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+.v3-stagger > *:nth-child(1) { animation-delay: 0.04s; }
+.v3-stagger > *:nth-child(2) { animation-delay: 0.10s; }
+.v3-stagger > *:nth-child(3) { animation-delay: 0.16s; }
+.v3-stagger > *:nth-child(4) { animation-delay: 0.22s; }
+.v3-stagger > *:nth-child(5) { animation-delay: 0.28s; }
+@keyframes v3SlideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Subtle aurora gradient at top of body for premium polish */
+.v3-aurora {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  height: 80px;
+  pointer-events: none;
+  background: radial-gradient(70% 100% at 30% 0%, rgba(109, 92, 231, 0.05) 0%, transparent 60%),
+              radial-gradient(60% 100% at 80% 0%, rgba(167, 139, 250, 0.04) 0%, transparent 60%);
+  z-index: 0;
+}
+
+/* Button hover lift micro-interaction */
+.v3-lift { transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.15s ease; }
+.v3-lift:hover { transform: translateY(-1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-project-stripe,
+  .v3-tab[aria-selected="true"]::after,
+  .v3-recur-spin,
+  .v3-pulse-dot,
+  .v3-urgent-pulse,
+  .v3-stagger > *,
+  .v3-lift {
+    animation: none !important;
+    transition: none !important;
+  }
+  .v3-lift:hover { transform: none; }
+}

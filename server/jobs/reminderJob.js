@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { Op } = require('sequelize');
 const { Task, User, Board, Notification } = require('../models');
 const { emitToUser } = require('../services/socketService');
+const { withCronLock } = require('./cronLock');
 
 /**
  * Start the reminder cron job.
@@ -9,14 +10,21 @@ const { emitToUser } = require('../services/socketService');
  * - Tasks due in the next 24 hours → notify assignee
  * - Overdue tasks → notify assignee + task creator/manager
  * - Tasks due in 3 days → soft reminder (once per day at 9 AM)
+ *
+ * Multi-replica safety: each tick is wrapped in `withCronLock` so exactly
+ * one backend replica runs the work per tick. Without this, two replicas
+ * would both pass the "did I notify today?" dedup check before either has
+ * inserted a row, producing duplicate notifications + emails.
  */
 function startReminderJob() {
   // Run every hour at minute 0
   cron.schedule('0 * * * *', async () => {
-    console.log('[Reminder] Running reminder check...');
     try {
-      await checkDueSoon();
-      await checkOverdue();
+      await withCronLock('reminderJob:hourly', async () => {
+        console.log('[Reminder] Running reminder check...');
+        await checkDueSoon();
+        await checkOverdue();
+      });
     } catch (err) {
       console.error('[Reminder] Job error:', err);
     }
@@ -25,7 +33,9 @@ function startReminderJob() {
   // Run daily at 9 AM for 3-day reminders
   cron.schedule('0 9 * * *', async () => {
     try {
-      await checkDueIn3Days();
+      await withCronLock('reminderJob:daily9am', async () => {
+        await checkDueIn3Days();
+      });
     } catch (err) {
       console.error('[Reminder] 3-day check error:', err);
     }
@@ -57,29 +67,35 @@ async function checkDueSoon() {
   });
 
   for (const task of tasks) {
-    if (!task.assignee) continue;
+    try {
+      if (!task.assignee) continue;
 
-    // Check if we already sent a due-soon notification today
-    const existing = await Notification.findOne({
-      where: {
-        userId: task.assignee.id,
+      // Check if we already sent a due-soon notification today
+      const existing = await Notification.findOne({
+        where: {
+          userId: task.assignee.id,
+          entityType: 'task',
+          entityId: task.id,
+          type: 'due_date',
+          createdAt: { [Op.gte]: new Date(today) },
+        },
+      });
+      if (existing) continue;
+
+      const isToday = task.dueDate === today;
+      const notification = await Notification.create({
+        type: 'due_date',
+        message: `Task "${task.title}" is due ${isToday ? 'today' : 'tomorrow'}${task.board ? ` on board "${task.board.name}"` : ''}`,
         entityType: 'task',
         entityId: task.id,
-        type: 'due_date',
-        createdAt: { [Op.gte]: new Date(today) },
-      },
-    });
-    if (existing) continue;
-
-    const isToday = task.dueDate === today;
-    const notification = await Notification.create({
-      type: 'due_date',
-      message: `Task "${task.title}" is due ${isToday ? 'today' : 'tomorrow'}${task.board ? ` on board "${task.board.name}"` : ''}`,
-      entityType: 'task',
-      entityId: task.id,
-      userId: task.assignee.id,
-    });
-    emitToUser(task.assignee.id, 'notification:new', { notification });
+        userId: task.assignee.id,
+      });
+      emitToUser(task.assignee.id, 'notification:new', { notification });
+    } catch (err) {
+      // Per-task isolation: a single bad row (e.g. enum violation, FK race)
+      // must not abort the whole batch. Log and continue.
+      console.error(`[Reminder] checkDueSoon row failed for task ${task?.id}:`, err?.message || err);
+    }
   }
 
   if (tasks.length > 0) {
@@ -108,41 +124,45 @@ async function checkOverdue() {
   });
 
   for (const task of tasks) {
-    if (!task.assignee) continue;
+    try {
+      if (!task.assignee) continue;
 
-    // Check if we already sent an overdue notification today
-    const existing = await Notification.findOne({
-      where: {
-        userId: task.assignee.id,
-        entityType: 'task',
-        entityId: task.id,
-        type: 'task_updated',
-        message: { [Op.like]: '%overdue%' },
-        createdAt: { [Op.gte]: new Date(today) },
-      },
-    });
-    if (existing) continue;
-
-    // Notify assignee
-    const notification = await Notification.create({
-      type: 'task_updated',
-      message: `Task "${task.title}" is overdue (due ${task.dueDate})${task.board ? ` on board "${task.board.name}"` : ''}`,
-      entityType: 'task',
-      entityId: task.id,
-      userId: task.assignee.id,
-    });
-    emitToUser(task.assignee.id, 'notification:new', { notification });
-
-    // Also notify creator/manager if different
-    if (task.creator && task.creator.id !== task.assignee.id) {
-      const mgrNotif = await Notification.create({
-        type: 'task_updated',
-        message: `${task.assignee.name}'s task "${task.title}" is overdue (due ${task.dueDate})`,
-        entityType: 'task',
-        entityId: task.id,
-        userId: task.creator.id,
+      // Check if we already sent an overdue notification today
+      const existing = await Notification.findOne({
+        where: {
+          userId: task.assignee.id,
+          entityType: 'task',
+          entityId: task.id,
+          type: 'task_updated',
+          message: { [Op.like]: '%overdue%' },
+          createdAt: { [Op.gte]: new Date(today) },
+        },
       });
-      emitToUser(task.creator.id, 'notification:new', { notification: mgrNotif });
+      if (existing) continue;
+
+      // Notify assignee
+      const notification = await Notification.create({
+        type: 'task_updated',
+        message: `Task "${task.title}" is overdue (due ${task.dueDate})${task.board ? ` on board "${task.board.name}"` : ''}`,
+        entityType: 'task',
+        entityId: task.id,
+        userId: task.assignee.id,
+      });
+      emitToUser(task.assignee.id, 'notification:new', { notification });
+
+      // Also notify creator/manager if different
+      if (task.creator && task.creator.id !== task.assignee.id) {
+        const mgrNotif = await Notification.create({
+          type: 'task_updated',
+          message: `${task.assignee.name}'s task "${task.title}" is overdue (due ${task.dueDate})`,
+          entityType: 'task',
+          entityId: task.id,
+          userId: task.creator.id,
+        });
+        emitToUser(task.creator.id, 'notification:new', { notification: mgrNotif });
+      }
+    } catch (err) {
+      console.error(`[Reminder] checkOverdue row failed for task ${task?.id}:`, err?.message || err);
     }
   }
 
@@ -173,27 +193,31 @@ async function checkDueIn3Days() {
   });
 
   for (const task of tasks) {
-    if (!task.assignee) continue;
+    try {
+      if (!task.assignee) continue;
 
-    const existing = await Notification.findOne({
-      where: {
-        userId: task.assignee.id,
+      const existing = await Notification.findOne({
+        where: {
+          userId: task.assignee.id,
+          entityType: 'task',
+          entityId: task.id,
+          type: 'due_date',
+          createdAt: { [Op.gte]: new Date(today) },
+        },
+      });
+      if (existing) continue;
+
+      const notification = await Notification.create({
+        type: 'due_date',
+        message: `Heads up: "${task.title}" is due in 3 days (${task.dueDate})`,
         entityType: 'task',
         entityId: task.id,
-        type: 'due_date',
-        createdAt: { [Op.gte]: new Date(today) },
-      },
-    });
-    if (existing) continue;
-
-    const notification = await Notification.create({
-      type: 'due_date',
-      message: `Heads up: "${task.title}" is due in 3 days (${task.dueDate})`,
-      entityType: 'task',
-      entityId: task.id,
-      userId: task.assignee.id,
-    });
-    emitToUser(task.assignee.id, 'notification:new', { notification });
+        userId: task.assignee.id,
+      });
+      emitToUser(task.assignee.id, 'notification:new', { notification });
+    } catch (err) {
+      console.error(`[Reminder] checkDueIn3Days row failed for task ${task?.id}:`, err?.message || err);
+    }
   }
 
   if (tasks.length > 0) {

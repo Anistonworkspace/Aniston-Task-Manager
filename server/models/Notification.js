@@ -95,6 +95,18 @@ const Notification = sequelize.define(
         key: 'id',
       },
     },
+    // Phase 3 — centralised notification service. When supplied by the
+    // caller (via notificationService.createNotification) this column is
+    // backed by a partial unique index on (userId, idempotencyKey) so a
+    // duplicate insert for the same logical event collapses to a SELECT.
+    // Nullable: legacy callers and recurring reminders that intentionally
+    // repeat per tick leave it null. The DB index is partial — NULLs do
+    // not collide.
+    idempotencyKey: {
+      type: DataTypes.STRING(120),
+      allowNull: true,
+      defaultValue: null,
+    },
   },
   {
     tableName: 'notifications',

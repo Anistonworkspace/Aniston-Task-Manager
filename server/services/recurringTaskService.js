@@ -40,6 +40,18 @@ const realtime = require('./realtimeService');
 const boardMembershipService = require('./boardMembershipService');
 const logger = require('../utils/logger');
 
+// Lazy requires for two services that we want to invoke fire-and-forget from
+// the post-commit side-effect path. Hoisting them to top-of-file would create
+// a circular import risk (reminderService imports models() which imports the
+// barrel that imports this service via the cron job graph); requiring inside
+// the side-effect keeps the dependency one-way.
+function _reminderService() {
+  try { return require('./reminderService'); } catch (_) { return null; }
+}
+function _calendarService() {
+  try { return require('./calendarService'); } catch (_) { return null; }
+}
+
 // ─── Structured per-template logging ────────────────────────────────────────
 //
 // Every generation attempt — success, skip, or error — emits a single line
@@ -630,11 +642,57 @@ async function afterInstanceCreated(template, task) {
   //    actorId = template.createdBy because the human who set up the
   //    recurrence is the closest analogue to "the user who just created
   //    this task". Some receivers use it to suppress self-echo.
+  //
+  //    extraUserIds (F-6 fix): pre-seed the recipient set with the assignee
+  //    and creator so getAuthorizedRealtimeRecipients can short-circuit the
+  //    junction-table lookup. The just-created task isn't hydrated with
+  //    taskAssignees / owners associations, so without this hint the resolver
+  //    issues 2-3 extra SELECTs against a row we already know about.
   try {
-    realtime.emitTaskCreated(task, { actorId: template.createdBy });
+    realtime.emitTaskCreated(task, {
+      actorId: template.createdBy,
+      extraUserIds: [template.assigneeId, template.createdBy].filter(Boolean),
+    });
   } catch (e) {
     // emitTaskCreated is itself fire-and-forget; this catch is belt+braces.
     logger.warn('[recurringTaskService] emitTaskCreated threw', {
+      templateId: template.id, taskId: task.id, msg: e.message,
+    });
+  }
+
+  // 2b. Schedule pre-deadline reminders (F-1 — parity with normal task
+  //    creation). Mirror taskController.createTask: scheduleReminders is
+  //    upsert-style and skips reminder times already in the past, so it's
+  //    safe to call for instances seeded later in the day. Fire-and-forget.
+  try {
+    const rs = _reminderService();
+    if (rs && task.dueDate) {
+      rs.scheduleReminders(task.id, task.dueDate).catch((err) =>
+        logger.warn('[recurringTaskService] scheduleReminders failed', {
+          taskId: task.id, msg: err.message,
+        })
+      );
+    }
+  } catch (e) {
+    logger.warn('[recurringTaskService] scheduleReminders threw', {
+      templateId: template.id, taskId: task.id, msg: e.message,
+    });
+  }
+
+  // 2c. Sync to Teams/Outlook calendar (F-2 — parity with normal task
+  //    creation). Mirrors taskController.createTask. Service no-ops when the
+  //    assignee has no Teams integration; fire-and-forget.
+  try {
+    const cs = _calendarService();
+    if (cs && task.assignedTo) {
+      cs.createTaskEvent(task.id, task.assignedTo).catch((err) =>
+        logger.warn('[recurringTaskService] calendar createTaskEvent failed', {
+          taskId: task.id, msg: err.message,
+        })
+      );
+    }
+  } catch (e) {
+    logger.warn('[recurringTaskService] calendar sync threw', {
       templateId: template.id, taskId: task.id, msg: e.message,
     });
   }
@@ -666,6 +724,78 @@ async function afterInstanceCreated(template, task) {
     });
   } catch (e) {
     // logActivity is already fire-and-forget but defensive.
+  }
+}
+
+// F-11 — process-local idempotency cache for "preflight failed" notifications.
+// Keyed by `${templateId}:${reason}` and TTL'd implicitly by process lifetime
+// (a process restart resends the notification, which is acceptable: a fresh
+// process means an op event and re-pinging the template owner is fine).
+const _preflightNoticeSent = new Set();
+
+/**
+ * Surface a recurring-template preflight failure (assignee inactive,
+ * board archived, group missing) to the template's creator exactly once
+ * per process, then clear `nextRunAt` so the cron stops re-evaluating it.
+ *
+ * Why "creator" rather than "assignee" or "admin":
+ *   - The creator set up the rule; they're the most likely to act on the
+ *     "your template stopped generating" signal (reassign, restore board,
+ *     update startDate, etc.).
+ *   - Notifying the assignee on `assignee-inactive` would be moot — the
+ *     account is deactivated.
+ *
+ * Reasons that warrant a user-facing notice. Anything outside this list is
+ * either transient (race-lost, fast-path-failed) or expected (before-start-
+ * date, after-end-date) and gets filtered out.
+ */
+const ACTIONABLE_PREFLIGHT_REASONS = new Set([
+  'assignee-inactive',
+  'assignee-missing',
+  'board-archived',
+  'board-missing',
+  'group-missing-on-board',
+]);
+
+async function notifyPreflightFailureOnce(template, reason) {
+  if (!template || !reason) return;
+  if (!ACTIONABLE_PREFLIGHT_REASONS.has(reason)) return;
+  const key = `${template.id}:${reason}`;
+  if (_preflightNoticeSent.has(key)) return;
+  _preflightNoticeSent.add(key);
+
+  // Stop the cron loop from rechecking this template until the operator
+  // intervenes. recomputeNextRunAt would otherwise keep re-scheduling it.
+  try {
+    if (template.nextRunAt !== null) {
+      await template.update({ nextRunAt: null });
+    }
+  } catch (e) {
+    logger.warn('[recurringTaskService] preflight-failure nextRunAt clear failed', {
+      templateId: template.id, msg: e.message,
+    });
+  }
+
+  const friendly = {
+    'assignee-inactive': 'the assignee account is deactivated',
+    'assignee-missing': 'the assignee account no longer exists',
+    'board-archived': 'the board is archived',
+    'board-missing': 'the board no longer exists',
+    'group-missing-on-board': 'the configured group no longer exists on the board',
+  }[reason] || reason;
+
+  try {
+    await sendNotification(
+      template.createdBy,
+      'Recurring template paused',
+      `Your recurring template "${template.title}" has stopped generating because ${friendly}. Edit the template to fix the configuration or reassign it.`,
+      'recurring_generated',
+      template.id
+    );
+  } catch (e) {
+    logger.warn('[recurringTaskService] preflight-failure notification failed', {
+      templateId: template.id, msg: e.message,
+    });
   }
 }
 
@@ -721,7 +851,42 @@ async function seedNextUpcomingInstance(template, options = {}) {
 
   // Compute the next eligible occurrence — today wins if eligible, otherwise
   // the earliest future eligible day inside [startDate, endDate].
-  const occurrenceDate = nextOccurrenceDate(template, fromDate);
+  let occurrenceDate = nextOccurrenceDate(template, fromDate);
+
+  // F-10: avoid creating an instantly-overdue task. If the seed picked
+  // "today" but the configured dueTime has already passed in the template
+  // timezone, skip ahead to TOMORROW and re-run nextOccurrenceDate from
+  // there. Two-step skip rather than a loop because consecutive eligible
+  // days never both fall before "now" (we only just transitioned through
+  // midnight). Caller can still opt into "I know, do it anyway" via
+  // options.allowSameDayOverdue when this is being invoked from a context
+  // (e.g. backfill / generate-now) where past-due is the desired outcome.
+  if (occurrenceDate && !options.allowSameDayOverdue) {
+    const tz = template.timezone || 'UTC';
+    const todayParts = partsInZone(fromDate, tz);
+    const todayStr = formatDateOnly(todayParts.year, todayParts.month, todayParts.day);
+    if (occurrenceDate === todayStr) {
+      const dueAt = dueAtUtc(occurrenceDate, template.dueTime, tz);
+      if (dueAt.getTime() <= fromDate.getTime()) {
+        const tomorrow = addDays(todayParts.year, todayParts.month, todayParts.day, 1);
+        const probe = zonedTimeToUtc(tomorrow.year, tomorrow.month, tomorrow.day, 12, 0, 0, tz);
+        const next = nextOccurrenceDate(template, probe);
+        if (next) {
+          emitGenLog('info', 'skipped', template, {
+            occurrenceDate: todayStr,
+            reason: 'same-day-due-time-passed-skipping-to-next',
+            source,
+          });
+          occurrenceDate = next;
+        }
+        // If no future eligible date exists, leave occurrenceDate as today —
+        // the user explicitly asked for a recurring rule with no upcoming
+        // eligible date, and creating today's overdue row is still the
+        // closest match to their intent.
+      }
+    }
+  }
+
   if (!occurrenceDate) {
     // endDate in the past, or schedule that yields no eligible day in the
     // 366-day search window. Make sure nextRunAt reflects "nothing to do".
@@ -821,6 +986,13 @@ async function runTemplateOnce(template, options = {}) {
   const todayParts = partsInZone(fromDate, tz);
   const todayStr = formatDateOnly(todayParts.year, todayParts.month, todayParts.day);
 
+  // F-3: Cap how many missed eligible days we'll backfill in one tick. A
+  // misconfigured monthly template that fires on day 31 in February 30+ years
+  // ago must not produce hundreds of rows. Daily templates with a one-week
+  // outage stay well under this. Per-tick generated-count is also bounded by
+  // the cron's own batch (200 templates × 31 = a wide cap).
+  const BACKFILL_CAP = Math.max(1, Math.min(31, parseInt(options.backfillCap, 10) || 31));
+
   try {
     // Skip if outside [startDate, endDate] window.
     if (todayStr < String(template.startDate)) {
@@ -839,42 +1011,101 @@ async function runTemplateOnce(template, options = {}) {
       return { templateId: template.id, generated: false, reason: 'after-end-date' };
     }
 
-    const eligible = isOccurrenceEligible(template, {
-      ...todayParts,
-      year: todayParts.year,
-      month: todayParts.month,
-      day: todayParts.day,
-    });
+    // F-3 (bounded backfill): if cron was offline across one or more eligible
+    // days, walk forward from max(startDate, lastGeneratedDate+1) up to today
+    // and generate each missing eligible occurrence. The DB partial unique
+    // index `tasks_recurring_template_occurrence_unique` makes the inner
+    // generateInstance call idempotent, so a concurrent replica or a re-run
+    // can't produce duplicates. We cap the walk to BACKFILL_CAP iterations.
+    //
+    // Why prefer this over a single forward jump: monthly templates can lose
+    // an entire month if the cron is off across the 15th. Daily templates
+    // would otherwise need an explicit "missed days" admin tool. This is the
+    // smallest change that closes the gap without rewriting the cron.
+    const startStr = String(template.startDate);
+    const endStr = template.endDate ? String(template.endDate) : null;
+    let walkStart;
+    if (template.lastGeneratedDate) {
+      const [ly, lm, ld] = String(template.lastGeneratedDate).split('-').map(Number);
+      const next = addDays(ly, lm, ld, 1);
+      const nextStr = formatDateOnly(next.year, next.month, next.day);
+      walkStart = nextStr > startStr ? nextStr : startStr;
+    } else {
+      walkStart = startStr;
+    }
+    // Don't walk into the future.
+    if (walkStart > todayStr) walkStart = todayStr;
 
-    let result = null;
-    if (eligible) {
-      result = await generateInstance(template, todayStr, { source });
-      // Update lastGeneratedDate even if a duplicate already existed (raceLost
-      // OR fast-path-found). This keeps the template clock advancing and
-      // prevents the cron from rechecking the same date forever.
-      if (result.ok) {
-        const desiredLastGenerated = todayStr;
-        if (template.lastGeneratedDate !== desiredLastGenerated) {
-          await template.update({ lastGeneratedDate: desiredLastGenerated });
+    const generated = [];
+    const skipped = [];
+    let lastTouchedDate = null;
+
+    let cursorParts = walkStart.split('-').map(Number);
+    let cursor = { year: cursorParts[0], month: cursorParts[1], day: cursorParts[2] };
+    let iterations = 0;
+    while (iterations < BACKFILL_CAP) {
+      const dateStr = formatDateOnly(cursor.year, cursor.month, cursor.day);
+      if (dateStr > todayStr) break;
+      if (endStr && dateStr > endStr) break;
+
+      const probe = new Date(Date.UTC(cursor.year, cursor.month - 1, cursor.day, 12, 0, 0));
+      const parts = partsInZone(probe, tz);
+      const candidate = { ...parts, year: cursor.year, month: cursor.month, day: cursor.day };
+
+      if (isOccurrenceEligible(template, candidate)) {
+        const result = await generateInstance(template, dateStr, { source });
+        if (result.ok) {
+          if (result.created) generated.push({ dateStr, taskId: result.task?.id });
+          else skipped.push({ dateStr, reason: 'already-exists' });
+          lastTouchedDate = dateStr;
+        } else {
+          // Pre-flight failed (e.g. assignee inactive). Log and stop walking
+          // — there's no point hammering subsequent days with the same
+          // condition.
+          emitGenLog('warn', 'skipped', template, {
+            occurrenceDate: dateStr, reason: result.reason, source,
+          });
+          // F-11: surface persistent generation failures to the template's
+          // creator and clear nextRunAt so the cron stops thrashing. Notify
+          // only on actionable reasons, idempotent via a flag we attach to
+          // the template (see notifyPreflightFailureOnce below).
+          await notifyPreflightFailureOnce(template, result.reason).catch(() => {});
+          break;
         }
       }
-    } else {
+
+      const next = addDays(cursor.year, cursor.month, cursor.day, 1);
+      cursor = next;
+      iterations += 1;
+    }
+
+    // Advance lastGeneratedDate to the most recent eligible date we touched.
+    // Forward-only — never regress.
+    if (lastTouchedDate && lastTouchedDate !== template.lastGeneratedDate
+        && (!template.lastGeneratedDate || lastTouchedDate > String(template.lastGeneratedDate))) {
+      await template.update({ lastGeneratedDate: lastTouchedDate });
+    }
+
+    // Always recompute nextRunAt — covers (a) generated something, advance to
+    // the next eligible day after the last touched date; (b) nothing
+    // eligible in the walk, advance past `today` to the next eligible date.
+    const next = await recomputeNextRunAt(template, { fromDate });
+
+    if (generated.length === 0 && skipped.length === 0) {
       emitGenLog('info', 'skipped', template, {
-        occurrenceDate: todayStr, reason: 'not-eligible-today', source,
+        occurrenceDate: todayStr, reason: 'no-eligible-day-in-window', source,
       });
     }
 
-    // Always recompute nextRunAt — covers (a) generated today, advance to
-    // tomorrow's eligible date, and (b) not eligible today, advance to next
-    // eligible date.
-    const next = await recomputeNextRunAt(template, { fromDate });
-
     return {
       templateId: template.id,
-      generated: !!(result && result.created),
-      alreadyExisted: !!(result && !result.created),
-      occurrenceDate: eligible ? todayStr : null,
+      generated: generated.length > 0,
+      generatedCount: generated.length,
+      backfilled: generated.length > 1,
+      alreadyExisted: skipped.length > 0,
+      occurrenceDate: lastTouchedDate,
       nextRunAt: next ? next.nextRunAt : null,
+      details: { generated, skipped },
     };
   } catch (err) {
     logger.error('[recurringTaskService] runTemplateOnce failed', {
@@ -887,6 +1118,387 @@ async function runTemplateOnce(template, options = {}) {
     });
     return { templateId: template.id, generated: false, error: err.message };
   }
+}
+
+// ─── Public: reassign open instances when template assignee changes ─────────
+
+/**
+ * Reassign every OPEN generated instance of `template` from `oldAssigneeId`
+ * to `newAssigneeId`. "Open" = not archived, status not 'done'. Historical
+ * (completed / archived) rows are intentionally untouched per spec — they
+ * are the audit trail of who did the work.
+ *
+ * Per-task atomic write inside a single transaction:
+ *   - tasks.assignedTo                 → newAssigneeId
+ *   - task_assignees role='assignee'   → delete OLD, upsert NEW
+ *   - task_owners (primary)            → delete OLD, upsert NEW with isPrimary
+ *
+ * Side-effects (post-commit, fire-and-forget per row):
+ *   - boardMembershipService.autoAddMember(boardId, newAssigneeId)
+ *   - boardMembershipService.cleanupIfNoTasksRemain(oldAssigneeId, boardId)
+ *   - reminderService.rescheduleReminders(taskId, newDueDate)
+ *   - calendarService.deleteTaskEvent(taskId, oldAssigneeId)
+ *     + calendarService.createTaskEvent(taskId, newAssigneeId)
+ *   - realtime.emitTaskUpdated(task, { extraUserIds: [oldAssigneeId, newAssigneeId] })
+ *   - sendNotification(newAssigneeId, 'task_assigned')
+ *
+ * Idempotent: re-running with the same arguments is a no-op once everything
+ * is in sync. The TaskAssignee/TaskOwner unique-on-(taskId,userId,role) /
+ * (taskId,userId) indexes guarantee no duplicate rows.
+ *
+ * Returns:
+ *   { ok: true, reassigned: N, alreadyConsistent: M, errors: [{ taskId, msg }] }
+ *
+ * Never throws — controller can surface `errors` to the user as a partial
+ * success warning.
+ */
+async function reassignOpenInstances(template, oldAssigneeId, newAssigneeId, options = {}) {
+  if (!template) return { ok: false, reason: 'template-missing' };
+  if (!oldAssigneeId || !newAssigneeId) {
+    return { ok: false, reason: 'missing-assignee-ids' };
+  }
+  if (String(oldAssigneeId) === String(newAssigneeId)) {
+    return { ok: true, reassigned: 0, alreadyConsistent: 0, errors: [], reason: 'no-op' };
+  }
+
+  // Open = not archived AND not completed. We intentionally exclude rows
+  // already pointing at newAssigneeId — they're already in sync (e.g. from a
+  // prior partial reassignment or an admin who already touched them).
+  const openInstances = await Task.findAll({
+    where: {
+      recurringTemplateId: template.id,
+      isRecurringInstance: true,
+      isArchived: false,
+      status: { [Op.ne]: 'done' },
+    },
+    attributes: ['id', 'boardId', 'assignedTo', 'dueDate', 'occurrenceDate', 'status'],
+    order: [['occurrenceDate', 'DESC']],
+  });
+
+  if (openInstances.length === 0) {
+    return { ok: true, reassigned: 0, alreadyConsistent: 0, errors: [] };
+  }
+
+  const actorId = options.actorId || newAssigneeId;
+  let reassigned = 0;
+  let alreadyConsistent = 0;
+  const errors = [];
+  const touchedBoards = new Set();
+  const touchedTasks = [];
+
+  for (const inst of openInstances) {
+    const t = await sequelize.transaction();
+    try {
+      // 1. Pivot the legacy scalar column. Only writes when the row actually
+      //    needs to change so a re-run is a no-op.
+      let didChange = false;
+      if (String(inst.assignedTo) !== String(newAssigneeId)) {
+        await inst.update({ assignedTo: newAssigneeId }, { transaction: t });
+        didChange = true;
+      }
+
+      // 2. task_assignees row — replace OLD assignee role row with NEW. Use
+      //    findOrCreate to absorb the case where NEW already has a row
+      //    (e.g. previous reassignment that crashed mid-flight).
+      await TaskAssignee.destroy({
+        where: { taskId: inst.id, role: 'assignee', userId: { [Op.ne]: newAssigneeId } },
+        transaction: t,
+      });
+      const [taRow, taCreated] = await TaskAssignee.findOrCreate({
+        where: { taskId: inst.id, userId: newAssigneeId, role: 'assignee' },
+        defaults: {
+          assignedAt: new Date(),
+          assignerId: actorId,
+        },
+        transaction: t,
+      });
+      if (taCreated) didChange = true;
+      // Touch unused var to satisfy linter without changing semantics.
+      void taRow;
+
+      // 3. task_owners row — clear all owners pointing at someone other than
+      //    NEW, then upsert NEW as primary.
+      await TaskOwner.destroy({
+        where: { taskId: inst.id, userId: { [Op.ne]: newAssigneeId } },
+        transaction: t,
+      });
+      const [toRow, toCreated] = await TaskOwner.findOrCreate({
+        where: { taskId: inst.id, userId: newAssigneeId },
+        defaults: { isPrimary: true },
+        transaction: t,
+      });
+      if (toCreated) {
+        didChange = true;
+      } else if (!toRow.isPrimary) {
+        await toRow.update({ isPrimary: true }, { transaction: t });
+        didChange = true;
+      }
+
+      await t.commit();
+
+      if (didChange) {
+        reassigned += 1;
+        touchedTasks.push(inst);
+        touchedBoards.add(inst.boardId);
+      } else {
+        alreadyConsistent += 1;
+      }
+    } catch (err) {
+      try { await t.rollback(); } catch (_) { /* ignore */ }
+      errors.push({ taskId: inst.id, msg: err.message });
+      logger.error('[recurringTaskService] reassign tx failed', {
+        templateId: template.id,
+        taskId: inst.id,
+        oldAssigneeId,
+        newAssigneeId,
+        msg: err.message,
+      });
+    }
+  }
+
+  // Post-commit side-effects. Each block is its own try/catch so one failure
+  // never suppresses the others.
+
+  // Auto-add NEW assignee to every touched board (idempotent ON CONFLICT).
+  for (const bid of touchedBoards) {
+    try {
+      await boardMembershipService.autoAddMember(bid, newAssigneeId);
+    } catch (e) {
+      logger.warn('[recurringTaskService] reassign autoAddMember failed', {
+        boardId: bid, userId: newAssigneeId, msg: e.message,
+      });
+    }
+  }
+
+  // Cleanup OLD assignee from each touched board IF they have no other
+  // visibility into it. Helper checks creator / explicit / remaining task
+  // membership before deleting — safe.
+  for (const bid of touchedBoards) {
+    try {
+      await boardMembershipService.cleanupIfNoTasksRemain(oldAssigneeId, bid);
+    } catch (e) {
+      logger.warn('[recurringTaskService] reassign cleanupIfNoTasksRemain failed', {
+        boardId: bid, userId: oldAssigneeId, msg: e.message,
+      });
+    }
+  }
+
+  // Per-task realtime + reminder + calendar updates.
+  for (const inst of touchedTasks) {
+    // Reminders — old reminders still reference taskId (which doesn't move),
+    // but rescheduleReminders cancels + recreates. Safe.
+    try {
+      const rs = _reminderService();
+      if (rs && inst.dueDate) {
+        rs.rescheduleReminders(inst.id, inst.dueDate).catch(() => {});
+      }
+    } catch (_) { /* fire-and-forget */ }
+
+    // Calendar — delete from OLD mailbox, create on NEW mailbox.
+    try {
+      const cs = _calendarService();
+      if (cs) {
+        cs.deleteTaskEvent(inst.id, oldAssigneeId).catch(() => {});
+        cs.createTaskEvent(inst.id, newAssigneeId).catch(() => {});
+      }
+    } catch (_) { /* fire-and-forget */ }
+
+    // Realtime — emit task:updated to BOTH old (so they drop the row from
+    // MyWork) and new (so they pick it up) plus all other authorized
+    // recipients computed from the task's own associations.
+    try {
+      // Reload to capture the updated assignedTo + freshly-written junction
+      // rows so getAuthorizedRealtimeRecipients sees the new state. Cheap
+      // single-row fetch.
+      const fresh = await Task.findByPk(inst.id, {
+        include: [
+          { model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'], required: false },
+          { model: TaskOwner, as: 'owners', through: { attributes: ['isPrimary'] }, required: false },
+        ],
+      });
+      if (fresh) {
+        realtime.emitTaskUpdated(fresh, {
+          actorId,
+          changedFields: ['assignedTo'],
+          extraUserIds: [oldAssigneeId, newAssigneeId].filter(Boolean),
+        });
+      }
+    } catch (e) {
+      logger.warn('[recurringTaskService] reassign emitTaskUpdated failed', {
+        taskId: inst.id, msg: e.message,
+      });
+    }
+
+    // Notification to NEW assignee, unless they're the actor (e.g. admin
+    // reassigned to themselves — no point pinging themselves).
+    try {
+      if (String(newAssigneeId) !== String(actorId)) {
+        await sendNotification(
+          newAssigneeId,
+          'Recurring task assigned',
+          `You've been assigned the recurring task "${template.title}" for ${inst.occurrenceDate || inst.dueDate}.`,
+          'recurring_generated',
+          inst.id
+        );
+      }
+    } catch (e) {
+      logger.warn('[recurringTaskService] reassign notification failed', {
+        taskId: inst.id, userId: newAssigneeId, msg: e.message,
+      });
+    }
+  }
+
+  // Activity log — one summary entry per reassignment (per template, not per
+  // instance), so the audit trail is readable.
+  try {
+    logActivity({
+      action: 'recurring_template_reassigned',
+      description: `Reassigned ${reassigned} open instance(s) of "${template.title}" to new assignee`,
+      entityType: 'recurring_template',
+      entityId: template.id,
+      taskId: null,
+      boardId: template.boardId,
+      userId: actorId,
+      meta: {
+        oldAssigneeId,
+        newAssigneeId,
+        reassigned,
+        alreadyConsistent,
+        errors: errors.length,
+      },
+    });
+  } catch (_) { /* fire-and-forget */ }
+
+  return { ok: true, reassigned, alreadyConsistent, errors };
+}
+
+// ─── Public: mirror a renamed recurring instance into its template ─────────
+
+/**
+ * When a generated recurring instance is renamed (via the task modal), the
+ * Recurring Work page would otherwise keep showing the original template
+ * title — that page reads `recurring_task_templates.title`, not
+ * `tasks.title`. This helper mirrors the new title onto the template so:
+ *
+ *   - The Recurring Work list reflects the latest user-intent title.
+ *   - Future generated occurrences inherit the new title at generation
+ *     time (`generateInstance` copies `template.title` into the new task).
+ *
+ * Scope (deliberately narrow):
+ *   - Updates ONLY the parent template's `title` column.
+ *   - Does NOT mass-rename other open instances — preserves work-in-progress
+ *     on different occurrence dates.
+ *   - Does NOT touch historical / done / archived instances — preserves
+ *     audit trail.
+ *
+ * Idempotent — re-running with the same `newTitle` short-circuits when the
+ * template already matches.
+ *
+ * Permission: this helper trusts that the caller has already authorized the
+ * rename (taskController's title-lock gate restricts task title edits to
+ * Tier 1). Calling it from a context that bypasses that gate is the
+ * caller's bug.
+ *
+ * Side-effects (post-update, fire-and-forget — failures are logged but
+ * never thrown):
+ *   - Realtime: `recurring_template:updated` to assignee + creator +
+ *     ancestors + admins (minus actor).
+ *   - Activity log: `recurring_template_title_mirrored`.
+ *
+ * @returns {Promise<{ ok: boolean, mirrored: boolean, reason?: string,
+ *                     templateId?: string, previousTitle?: string,
+ *                     newTitle?: string }>}
+ */
+async function mirrorRecurringInstanceTitle({ task, newTitle, previousTitle, actorId }) {
+  if (!task || !task.id) return { ok: false, mirrored: false, reason: 'task-missing' };
+  if (!task.isRecurringInstance) return { ok: true, mirrored: false, reason: 'not-recurring-instance' };
+  if (!task.recurringTemplateId) return { ok: true, mirrored: false, reason: 'no-template-id' };
+  if (typeof newTitle !== 'string') return { ok: true, mirrored: false, reason: 'non-string-title' };
+  if (newTitle === previousTitle) return { ok: true, mirrored: false, reason: 'unchanged' };
+
+  let tpl;
+  try {
+    tpl = await RecurringTaskTemplate.findByPk(task.recurringTemplateId);
+  } catch (e) {
+    logger.warn('[recurringTaskService.mirrorRecurringInstanceTitle] template lookup failed', {
+      taskId: task.id, templateId: task.recurringTemplateId, msg: e.message,
+    });
+    return { ok: false, mirrored: false, reason: `lookup-failed: ${e.message}` };
+  }
+  if (!tpl) return { ok: true, mirrored: false, reason: 'template-missing' };
+  if (tpl.title === newTitle) {
+    return { ok: true, mirrored: false, reason: 'template-already-matches', templateId: tpl.id };
+  }
+
+  try {
+    await tpl.update({ title: newTitle });
+  } catch (e) {
+    logger.warn('[recurringTaskService.mirrorRecurringInstanceTitle] template update failed', {
+      taskId: task.id, templateId: tpl.id, msg: e.message,
+    });
+    return { ok: false, mirrored: false, reason: `update-failed: ${e.message}`, templateId: tpl.id };
+  }
+
+  // Post-commit fan-out. Each side effect runs in its own try/catch so a
+  // socket / hierarchy / activity-log failure can never bubble back into
+  // the caller's response path.
+  try {
+    const socketService = require('./socketService');
+    const hierarchyService = require('./hierarchyService');
+    const { User } = require('../models');
+    const { Op: SeqOp } = require('sequelize');
+    const userIds = new Set();
+    if (tpl.assigneeId) userIds.add(String(tpl.assigneeId));
+    if (tpl.createdBy) userIds.add(String(tpl.createdBy));
+    try {
+      let cursor = tpl.assigneeId;
+      const visited = new Set();
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const parent = await hierarchyService.getPrimaryManagerId(cursor);
+        if (!parent) break;
+        userIds.add(String(parent));
+        cursor = parent;
+      }
+    } catch { /* hierarchy walk is best-effort */ }
+    try {
+      const admins = await User.findAll({
+        where: { isActive: true, [SeqOp.or]: [{ role: 'admin' }, { isSuperAdmin: true }] },
+        attributes: ['id'],
+        raw: true,
+      });
+      for (const a of admins) userIds.add(String(a.id));
+    } catch { /* defensive */ }
+    if (actorId) userIds.delete(String(actorId));
+    const recipients = Array.from(userIds);
+    if (recipients.length > 0) {
+      socketService.emitToUsers('recurring_template:updated', {
+        template: typeof tpl.toJSON === 'function' ? tpl.toJSON() : tpl,
+        actorId: actorId || null,
+        source: 'mirrorRecurringInstanceTitle',
+        timestamp: Date.now(),
+      }, recipients);
+    }
+  } catch (emitErr) {
+    logger.warn('[recurringTaskService.mirrorRecurringInstanceTitle] emit failed', {
+      taskId: task.id, templateId: tpl.id, msg: emitErr.message,
+    });
+  }
+
+  try {
+    logActivity({
+      action: 'recurring_template_title_mirrored',
+      description: `Mirrored task title rename onto recurring template: "${previousTitle}" → "${newTitle}"`,
+      entityType: 'recurring_template',
+      entityId: tpl.id,
+      taskId: task.id,
+      boardId: task.boardId,
+      userId: actorId,
+      meta: { previousTitle, newTitle, recurringTemplateId: tpl.id },
+    });
+  } catch { /* fire-and-forget */ }
+
+  return { ok: true, mirrored: true, templateId: tpl.id, previousTitle, newTitle };
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────
@@ -908,6 +1520,8 @@ module.exports = {
   generateInstance,
   runTemplateOnce,
   seedNextUpcomingInstance,
+  reassignOpenInstances,
+  mirrorRecurringInstanceTitle,
 
   // Diagnostics (read-only)
   validateTemplateForGeneration,

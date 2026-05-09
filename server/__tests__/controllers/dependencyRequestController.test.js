@@ -46,9 +46,12 @@ jest.mock('../../models', () => {
 });
 
 jest.mock('../../services/dependencyService', () => ({
-  recomputeParentBlockState: jest.fn(),
-  dispatchDependencyEvent:   jest.fn(),
-  isTaskBlocked:             jest.fn(),
+  recomputeParentBlockState:      jest.fn(),
+  dispatchDependencyEvent:        jest.fn(),
+  isTaskBlocked:                  jest.fn(),
+  // Phase 13 — shadow-task materializer. Tests that exercise accept /
+  // start / done / cancel will assert it gets called with the right dep.
+  syncLinkedTaskFromDependency:   jest.fn(),
 }));
 
 jest.mock('../../services/activityService', () => ({
@@ -443,6 +446,147 @@ describe('Scenario E — admin override', () => {
       action: 'dependency_request_cancelled',
       meta: expect.objectContaining({ adminOverride: false }),
     }));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Scenario F — Phase 13 shadow-task materialization
+//
+// The dep is the source of truth, but the assignee also needs the work to
+// surface on their board. Verify the controller hands every status update
+// + cancel path off to the materializer so it can decide whether to create,
+// sync, or archive the shadow task.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Scenario F — Phase 13 shadow-task materialization', () => {
+  it('accept → calls syncLinkedTaskFromDependency with the post-update dep', async () => {
+    const dep = makeDep({ status: 'pending' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'accepted' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    const [passedDep, passedActor] = depService.syncLinkedTaskFromDependency.mock.calls[0];
+    // Sync runs AFTER the status mutation — important so the materializer
+    // can branch on the new state ('pending' would no-op).
+    expect(passedDep.status).toBe('accepted');
+    expect(passedActor.id).toBe('shub-id');
+  });
+
+  it('working_on_it → calls syncLinkedTaskFromDependency', async () => {
+    const dep = makeDep({ status: 'accepted' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'working_on_it' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    expect(depService.syncLinkedTaskFromDependency.mock.calls[0][0].status).toBe('working_on_it');
+  });
+
+  it('done → calls syncLinkedTaskFromDependency', async () => {
+    const dep = makeDep({ status: 'working_on_it' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'done' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    expect(depService.syncLinkedTaskFromDependency.mock.calls[0][0].status).toBe('done');
+  });
+
+  it('reject → still calls syncLinkedTaskFromDependency so a previously-materialized shadow can be archived', async () => {
+    // working_on_it → rejected: a shadow task was created on accept/start;
+    // the helper is responsible for archiving it. The controller's job is
+    // just to invoke the helper with the post-update dep.
+    const dep = makeDep({ status: 'working_on_it', linkedTaskId: 'task-shadow-1' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'rejected', reason: 'blocked elsewhere' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    expect(depService.syncLinkedTaskFromDependency.mock.calls[0][0].status).toBe('rejected');
+  });
+
+  it('cancel → calls syncLinkedTaskFromDependency so any shadow task can be archived', async () => {
+    const dep = makeDep({ status: 'accepted', linkedTaskId: 'task-shadow-1' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { reason: 'no longer needed' },
+      user: makeUser({ id: 'sunny-id' }), // requester
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.cancelDependency(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    expect(depService.syncLinkedTaskFromDependency.mock.calls[0][0].status).toBe('cancelled');
+  });
+
+  it('failed sync does NOT 500 the status update — controller swallows the error', async () => {
+    // A flaky DB / boardMembership write must never break the dep-status
+    // request itself. The dep is the source of truth; the shadow task is
+    // a courtesy surface.
+    depService.syncLinkedTaskFromDependency.mockRejectedValueOnce(new Error('boom'));
+
+    const dep = makeDep({ status: 'pending' });
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'accepted' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    // Status update still succeeded.
+    expect(dep.status).toBe('accepted');
+    expect(res.status).not.toHaveBeenCalledWith(500);
+    // And the controller still went on to dispatch the lifecycle notification.
+    expect(depService.dispatchDependencyEvent).toHaveBeenCalledWith('accepted', dep, req.user);
+  });
+
+  it('reject straight from pending — no shadow ever created — call still fires (helper no-ops internally)', async () => {
+    // The controller doesn't know whether a shadow exists; it always calls
+    // the helper. The helper is responsible for the "no-op when there's
+    // nothing to archive" branch. We just verify the call happens.
+    const dep = makeDep({ status: 'pending' }); // no linkedTaskId
+    const req = {
+      params: { dependencyId: 'dep-1' },
+      body: { status: 'rejected', reason: 'wrong person' },
+      user: makeUser({ id: 'shub-id' }),
+      dependencyRequest: dep,
+    };
+    const res = buildRes();
+
+    await ctrl.updateStatus(req, res);
+
+    expect(depService.syncLinkedTaskFromDependency).toHaveBeenCalledTimes(1);
+    expect(depService.syncLinkedTaskFromDependency.mock.calls[0][0].linkedTaskId).toBeUndefined();
   });
 });
 

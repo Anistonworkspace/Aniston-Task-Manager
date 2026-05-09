@@ -385,6 +385,37 @@ export function canEditTaskTitle(user, task, granularPermissions = {}) {
 }
 
 /**
+ * Can this user change this task's due date?
+ *
+ * Mirrors the backend rule in `taskController.updateTask` (DUE_DATE_LOCKED
+ * branch) — once a task has a due date, only Tier 1 / Tier 2 may change
+ * it. Tier 3 / Tier 4 may still SET the initial due date on a task that
+ * has none (e.g. a self-assigned task they just quick-created), but may
+ * not keep changing it after that. Lower tiers must use the due-date
+ * extension workflow to request a change from a manager.
+ *
+ * Used by board cells, the task modal, and any other surface that exposes
+ * a date picker. The visual state for a locked picker is "disabled +
+ * tooltip", never hidden — a Tier 3/4 actor must still see the existing
+ * due date clearly so they know what they're working against.
+ *
+ * NOTE: when called WITHOUT a task (e.g. for a brand-new task being
+ * created in the modal), returns true — the gate only fires on existing
+ * tasks with an existing due date.
+ */
+export function canEditDueDate(user, task) {
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  const tier = resolveTier(user);
+  if (tier === TIER_1 || tier === TIER_2) return true;
+  // Tier 3 / Tier 4: allowed only on the INITIAL set. The frontend treats
+  // a missing task or a task with no existing dueDate as "initial set"
+  // (mirrors the backend gate which is keyed on `task.dueDate`).
+  if (!task) return true;
+  return !task.dueDate;
+}
+
+/**
  * Can this user archive (soft-delete) this task?
  *
  * Archive is a SEPARATE action from permanent delete. Tier 1 (Super Admin)

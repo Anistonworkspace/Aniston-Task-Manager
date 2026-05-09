@@ -5,6 +5,7 @@ import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import { RealtimeProvider } from './realtime';
 import { ToastProvider } from './components/common/Toast';
+import { ConfirmProvider } from './components/common/ConfirmDialog';
 import { ThemeProvider } from './context/ThemeContext';
 import { FontSizeProvider } from './context/FontSizeContext';
 import { UndoProvider } from './context/UndoContext';
@@ -17,13 +18,40 @@ import './index.css';
 // a push notification body — if no client is authenticated (e.g. user just
 // logged out and a stale push lands), the SW shows a generic "sign in to
 // view" card instead of the actual message body.
+//
+// D-1 Phase 2 migration: the auth token now lives in an httpOnly cookie, so
+// we cannot read it from JS. AuthContext sets `window.__ANISTON_AUTH__` to
+// 'authenticated' or 'loggedOut' as the source of truth for this check.
+// Fallback to legacy storage keys is kept for any pre-Phase-2 sessions that
+// haven't reloaded yet.
+//
+// Also handle SW → client NAVIGATE messages so service-worker-driven
+// notification clicks land on the right SPA route via React Router.
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', (event) => {
-    if (event.data?.type !== 'AUTH_CHECK') return;
-    const port = event.ports?.[0];
-    if (!port) return;
-    const authenticated = !!(sessionStorage.getItem('token') || localStorage.getItem('token'));
-    try { port.postMessage({ authenticated }); } catch { /* ignore */ }
+    const data = event.data;
+    if (!data) return;
+    if (data.type === 'AUTH_CHECK') {
+      const port = event.ports?.[0];
+      if (!port) return;
+      const flag = (typeof window !== 'undefined' && window.__ANISTON_AUTH__) || null;
+      const authenticated = flag
+        ? flag === 'authenticated'
+        : !!(sessionStorage.getItem('token') || localStorage.getItem('token'));
+      try { port.postMessage({ authenticated }); } catch { /* ignore */ }
+      return;
+    }
+    if (data.type === 'NAVIGATE' && typeof data.url === 'string') {
+      try {
+        // Defer to history API; the BrowserRouter picks it up. Use full URL
+        // construction so query strings (?taskId=…) are preserved.
+        const url = new URL(data.url, window.location.origin);
+        window.history.pushState({}, '', url.pathname + url.search + url.hash);
+        // Nudge React Router to re-evaluate the location.
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      } catch { /* ignore */ }
+      return;
+    }
   });
 }
 
@@ -67,9 +95,11 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             <RealtimeProvider>
               <UndoProvider>
                 <ToastProvider>
-                  <ErrorBoundary>
-                    <App />
-                  </ErrorBoundary>
+                  <ConfirmProvider>
+                    <ErrorBoundary>
+                      <App />
+                    </ErrorBoundary>
+                  </ConfirmProvider>
                 </ToastProvider>
               </UndoProvider>
             </RealtimeProvider>

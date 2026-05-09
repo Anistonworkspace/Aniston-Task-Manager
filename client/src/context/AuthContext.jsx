@@ -36,6 +36,31 @@ const logoutChannel =
     ? new BroadcastChannel(LOGOUT_CHANNEL_NAME)
     : null;
 
+/**
+ * Tell every active service worker about our auth state. The SW reads this
+ * to decide whether to render real push bodies or a generic "sign in to view"
+ * card on stale post-logout pushes. Mirrors `window.__ANISTON_AUTH__` so the
+ * AUTH_CHECK fast path (main.jsx) and the SW fast path stay aligned.
+ *
+ * Best-effort: missing SW or postMessage failures are silent. The decision
+ * is also fenced by the backend deactivating the push row, so this is one
+ * of two independent layers stopping the post-logout body leak.
+ */
+function broadcastAuthStateToSW(state) {
+  try { window.__ANISTON_AUTH__ = state; } catch { /* ignore */ }
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+  navigator.serviceWorker.ready
+    .then((reg) => {
+      try { reg.active && reg.active.postMessage({ type: 'AUTH_STATE', state }); } catch { /* ignore */ }
+    })
+    .catch(() => { /* ignore — SW may not be installed yet */ });
+  try {
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'AUTH_STATE', state });
+    }
+  } catch { /* ignore */ }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(sessionStorage.getItem('token'));
@@ -104,6 +129,10 @@ export function AuthProvider({ children }) {
     // reconnect attempt with a stale token is refused. Different from the
     // softer disconnect() used in HMR / reconnects.
     disconnectForLogout();
+    // Tell the SW we're logged out so any stale pushes that arrive in the
+    // next few minutes render the generic "sign in to view" card instead of
+    // leaking task titles to the OS tray.
+    broadcastAuthStateToSW('loggedOut');
   }, []);
 
   /**
@@ -231,6 +260,8 @@ export function AuthProvider({ children }) {
       const u = res.data?.data?.user || res.data?.user || res.data;
       setUser(u);
       connect();
+      // Tell the SW we're authenticated so stale-push detection trusts it.
+      broadcastAuthStateToSW('authenticated');
       if (u?.id) await loadPermissions();
     } catch (err) {
       // 401 here is the normal "no session" path — silent. Any other
@@ -361,6 +392,7 @@ export function AuthProvider({ children }) {
     setUser(newUser);
     lastActivityRef.current = Date.now();
     connect();
+    broadcastAuthStateToSW('authenticated');
     // Load permission grants after login (await so UI has grants before navigating)
     await loadPermissions();
     return newUser;
@@ -378,6 +410,7 @@ export function AuthProvider({ children }) {
       setUser(u);
       lastActivityRef.current = Date.now();
       connect();
+      broadcastAuthStateToSW('authenticated');
       loadPermissions();
       return u;
     } catch (err) {
@@ -420,9 +453,17 @@ export function AuthProvider({ children }) {
   const canManage = isTier1 || isTier2;       // admin+manager+T1 (was already this)
   const isDirector = ['director', 'vp', 'ceo'].includes(user?.hierarchyLevel);
 
+  // `authReady` is the canonical "auth bootstrap finished" flag. Consumers
+  // that need to defer side-effects until the cookie session has been
+  // verified should gate on this rather than (loading || !user) — it stays
+  // true even after a logout-then-login cycle, which is the right semantics
+  // for "we know whether the user is logged in" (the answer might be "no").
+  // Callers still check `user` separately when they need an actual identity.
+  const authReady = !loading;
+
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, loginWithToken, logout, updateProfile,
+      user, token, loading, authReady, login, loginWithToken, logout, updateProfile,
       // Tier API (canonical)
       tier, isTier1, isTier2, isTier3, isTier4, hasTierAtLeast, tierLabel,
       // Legacy aliases (deprecated)

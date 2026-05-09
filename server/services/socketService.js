@@ -222,20 +222,49 @@ const emitToUsers = (event, data, userIds = []) => {
   }
 };
 
-/** Emit an event to a specific user's personal room. Also sends push notification for notification:new events. */
+/**
+ * Emit an event to a specific user's personal room. Also sends a Web Push
+ * for `notification:new` events so the OS-tray notification fires even when
+ * the tab is unfocused or closed.
+ *
+ * The push payload carries the notification id, entity type, entity id, and
+ * board id so the service worker can:
+ *   1. Use a stable `notif-<id>` tag (prevents silent collapse + dedupes
+ *      with any foreground-rendered notification using the same tag).
+ *   2. Build a deep-link path even if the backend `url` is generic.
+ */
 const emitToUser = (userId, event, data) => {
   if (ioInstance) {
     ioInstance.to(`user:${userId}`).emit(event, data);
   }
-  // Send push notification for new notifications (fire-and-forget)
   if (event === 'notification:new' && data?.notification?.message) {
     try {
       const { sendPushToUser } = require('./pushService');
+      const n = data.notification;
+      const entityType = n.entityType || null;
+      const entityId = n.entityId || null;
+      const boardId = n.boardId || data?.boardId || null;
+      let url = '/';
+      if (entityType === 'task' && entityId) {
+        url = boardId ? `/boards/${boardId}?taskId=${entityId}` : `/my-work?taskId=${entityId}`;
+      } else if (entityType === 'board' && entityId) {
+        url = `/boards/${entityId}`;
+      } else if (entityType === 'meeting') {
+        url = '/meetings';
+      } else if (entityType === 'access_request') {
+        url = '/access-requests';
+      } else if (entityType === 'help_request' || entityType === 'dependency_request') {
+        url = '/cross-team';
+      }
       sendPushToUser(userId, {
         title: 'Monday Aniston',
-        body: data.notification.message,
-        tag: `notif-${data.notification.id || Date.now()}`,
-        url: data.notification.entityType === 'task' ? '/my-work' : '/',
+        body: n.message,
+        tag: `notif-${n.id || Date.now()}`,
+        notificationId: n.id || null,
+        entityType,
+        entityId,
+        boardId,
+        url,
       }).catch(() => {}); // Silently ignore push failures
     } catch (e) { /* pushService not available */ }
   }
@@ -358,6 +387,22 @@ const disconnectUser = async (userId, socketId = null) => {
   return count;
 };
 
+/**
+ * Broadcast an event to EVERY authenticated socket. Use sparingly — most
+ * events should target a board room or specific user rooms. Reserved for
+ * data that is org-wide and permission-gated at fetch time, e.g.
+ * `org:hierarchy:changed` (every viewer's GET is gated by
+ * requirePermission('org_chart','view'), so a stale event reaching a
+ * forbidden tab is harmless — the tab just refetches and gets a 403,
+ * which the existing AccessDenied flow already handles).
+ *
+ * No-op if Socket.io has not been initialised (e.g. during tests).
+ */
+const broadcastAll = (event, data) => {
+  if (!ioInstance) return;
+  ioInstance.emit(event, data);
+};
+
 module.exports = {
   initializeSocket,
   getIO,
@@ -365,6 +410,7 @@ module.exports = {
   emitToUser,
   emitToUsers,
   emitToBoardAndUsers,
+  broadcastAll,
   forceUserLeaveBoard,
   disconnectUser,
 };

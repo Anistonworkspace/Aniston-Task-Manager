@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticate, managerOrAdmin } = require('../middleware/auth');
 const { isHierarchyManager } = require('../middleware/taskPermissions');
+const { isTier4 } = require('../config/tiers');
 const { requestExtension, getExtensions, approveExtension, rejectExtension } = require('../controllers/dueDateExtensionController');
 const router = express.Router();
 
@@ -10,7 +11,7 @@ const managerOrAdminOrHierarchy = async (req, res, next) => {
     return next();
   }
   // Check if member is a hierarchy manager
-  if (req.user && req.user.role === 'member') {
+  if (req.user && isTier4(req.user)) {
     const isHierMgr = await isHierarchyManager(req.user, req);
     if (isHierMgr) return next();
   }

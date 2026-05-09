@@ -2,6 +2,7 @@ const { Automation, Task, User, Notification, Board } = require('../models');
 const { emitToUser } = require('./socketService');
 const calendarService = require('./calendarService');
 const logger = require('../utils/logger');
+const { createNotification, buildIdempotencyKey } = require('./notificationService');
 
 /**
  * Trigger calendar sync for a task that was mutated by an automation action.
@@ -80,11 +81,18 @@ async function executeAction(auto, context) {
       const targetId = config.targetUserId || task.assignedTo || task.createdBy;
       if (!targetId) break;
       const msg = config.notifyMessage || `Automation "${auto.name}" triggered for "${task.title}"`;
-      const notification = await Notification.create({
-        type: 'task_updated', message: msg,
-        entityType: 'task', entityId: task.id, userId: targetId,
+      // Idempotent on (automation, task, recipient) within a 1-minute window
+      // — automations can fire repeatedly on the same task (status flap),
+      // but a single trigger event must produce exactly one notification.
+      await createNotification({
+        userId: targetId,
+        type: 'task_updated',
+        message: msg,
+        entityType: 'task',
+        entityId: task.id,
+        boardId: task.boardId,
+        idempotencyKey: buildIdempotencyKey('automation-notify', auto.id, task.id, targetId, Math.floor(Date.now() / 60000)),
       });
-      emitToUser(targetId, 'notification:new', { notification });
       break;
     }
     case 'change_status': {
@@ -112,12 +120,15 @@ async function executeAction(auto, context) {
       if (config.targetUserId) {
         const prevAssignedTo = task.assignedTo;
         await Task.update({ assignedTo: config.targetUserId }, { where: { id: task.id } });
-        const notification = await Notification.create({
+        await createNotification({
+          userId: config.targetUserId,
           type: 'task_assigned',
           message: `Auto-assigned: "${task.title}" (automation: ${auto.name})`,
-          entityType: 'task', entityId: task.id, userId: config.targetUserId,
+          entityType: 'task',
+          entityId: task.id,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('automation-assign', auto.id, task.id, config.targetUserId, Math.floor(Date.now() / 60000)),
         });
-        emitToUser(config.targetUserId, 'notification:new', { notification });
         syncCalendarForAutomation(task.id, prevAssignedTo, config.targetUserId);
       }
       break;
@@ -126,11 +137,15 @@ async function executeAction(auto, context) {
       // Notify all board members or specific user
       const msg = config.notifyMessage || `"${task.title}" triggered automation "${auto.name}"`;
       if (config.targetUserId) {
-        const n = await Notification.create({
-          type: 'task_updated', message: msg,
-          entityType: 'task', entityId: task.id, userId: config.targetUserId,
+        await createNotification({
+          userId: config.targetUserId,
+          type: 'task_updated',
+          message: msg,
+          entityType: 'task',
+          entityId: task.id,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('automation-send', auto.id, task.id, config.targetUserId, Math.floor(Date.now() / 60000)),
         });
-        emitToUser(config.targetUserId, 'notification:new', { notification: n });
       }
       break;
     }

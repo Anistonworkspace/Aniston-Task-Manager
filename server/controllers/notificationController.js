@@ -1,6 +1,95 @@
-const { Notification } = require('../models');
+const { Notification, Task, Board } = require('../models');
 const { Op } = require('sequelize');
 const { emitToUser } = require('../services/socketService');
+const taskVisibility = require('../services/taskVisibilityService');
+const boardVisibility = require('../services/boardVisibilityService');
+
+/**
+ * Visibility filter — Phase 6 (audit P0 #4).
+ *
+ * After fetching the user's own notification rows, drop the ones whose
+ * `entityType === 'task'` or `'board'` references a resource the user can
+ * NO LONGER see. Closes the leak where a user demoted from Tier 2 to Tier 4
+ * (or removed from a board) keeps reading task titles + board names in
+ * their inbox.
+ *
+ * Notifications referring to deleted entities are KEPT — they represent a
+ * historical event for the user and don't disclose current sensitive state.
+ *
+ * Notifications for non-task/board entities (access_request, help_request,
+ * meeting, dependency_request, user, etc.) are KEPT unconditionally — those
+ * are scoped to the recipient and don't carry transitive resource leakage.
+ */
+async function filterByVisibility(rows, user) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+
+  // Collect distinct entity ids by type. Each set fetched in a single round
+  // trip; visibility checks then run in-memory against the loaded rows.
+  const taskIds = new Set();
+  const boardIds = new Set();
+  for (const n of rows) {
+    if (!n.entityId) continue;
+    if (n.entityType === 'task') taskIds.add(n.entityId);
+    else if (n.entityType === 'board') boardIds.add(n.entityId);
+  }
+
+  if (taskIds.size === 0 && boardIds.size === 0) return rows;
+
+  let taskMap = new Map();
+  let boardMap = new Map();
+
+  if (taskIds.size > 0) {
+    try {
+      const tasks = await Task.findAll({
+        where: { id: { [Op.in]: [...taskIds] } },
+        // Minimal columns for the visibility predicate. taskVisibilityService
+        // tolerates a slim object — it reads boardId / assignedTo / createdBy.
+        attributes: ['id', 'boardId', 'assignedTo', 'createdBy', 'isArchived'],
+      });
+      for (const t of tasks) taskMap.set(t.id, t);
+    } catch (e) { /* fail-open: rather show old notifs than 500 the panel */ }
+  }
+  if (boardIds.size > 0) {
+    try {
+      const boards = await Board.findAll({
+        where: { id: { [Op.in]: [...boardIds] } },
+        attributes: ['id'],
+      });
+      for (const b of boards) boardMap.set(b.id, b);
+    } catch (e) { /* fail-open */ }
+  }
+
+  const out = [];
+  for (const n of rows) {
+    if (n.entityType === 'task' && n.entityId) {
+      const task = taskMap.get(n.entityId);
+      if (!task) {
+        // Task deleted — keep the notification; the row only carries the
+        // historical message text, not live state.
+        out.push(n);
+        continue;
+      }
+      try {
+        const ok = await taskVisibility.canViewTask(user, task);
+        if (ok) out.push(n);
+        // else: silently drop — the user no longer has access to this task,
+        // so showing the notification (with its task title in the message)
+        // would leak data they shouldn't see.
+      } catch { out.push(n); /* fail-open on visibility errors */ }
+    } else if (n.entityType === 'board' && n.entityId) {
+      const board = boardMap.get(n.entityId);
+      if (!board) { out.push(n); continue; }
+      try {
+        const ok = await boardVisibility.canUserSeeBoard(user, n.entityId);
+        if (ok) out.push(n);
+      } catch { out.push(n); }
+    } else {
+      // Non-task/board entity types are RBAC-scoped by userId already.
+      out.push(n);
+    }
+  }
+  return out;
+}
 
 /**
  * GET /api/notifications
@@ -18,12 +107,22 @@ const getNotifications = async (req, res) => {
       where.isRead = false;
     }
 
-    const { rows: notifications, count: total } = await Notification.findAndCountAll({
+    // Over-fetch to absorb the visibility filter — if the user just lost
+    // access to a few task notifications, the page-of-20 still has 20 rows
+    // after filtering. 3x is a heuristic that's small enough to keep the
+    // query cheap and big enough to handle the common case (a Tier 2 → 4
+    // demotion losing 5–10 board notifs out of a 20-row page). For users
+    // with no recent visibility changes, this costs an extra 40 rows.
+    const fetchLimit = limit * 3;
+    const { rows: rawNotifications, count: total } = await Notification.findAndCountAll({
       where,
       order: [['createdAt', 'DESC']],
-      limit,
+      limit: fetchLimit,
       offset,
     });
+    const filtered = await filterByVisibility(rawNotifications, req.user);
+    // Slice down to the page size the client asked for.
+    const notifications = filtered.slice(0, limit);
 
     res.json({
       success: true,
@@ -32,6 +131,11 @@ const getNotifications = async (req, res) => {
         pagination: {
           page,
           limit,
+          // total is BEFORE filtering — best-effort; the filter is per-row
+          // and we don't want to scan the full table just to compute the
+          // exact filtered count. The pagination cursor (page) advances
+          // client-side; running out of rows surfaces as an empty page,
+          // which the panel handles cleanly.
           total,
           totalPages: Math.ceil(total / limit),
         },
@@ -109,6 +213,17 @@ const markAllRead = async (req, res) => {
 
 /**
  * GET /api/notifications/unread-count
+ *
+ * Returns the raw count without the visibility filter. Applying the filter
+ * here would require loading every unread row + a per-row task/board fetch
+ * — way too expensive for the bell badge that polls on every page change.
+ *
+ * The trade-off: right after a Tier 2 → Tier 4 demotion the badge may
+ * briefly over-count by the number of unread board/task notifs the user
+ * just lost access to. Opening the panel runs the filter and the realtime
+ * `notification:read` event the panel emits invalidates the count, so the
+ * over-count converges within seconds. No information leak — the badge
+ * shows a NUMBER, not the message text.
  */
 const getUnreadCount = async (req, res) => {
   try {

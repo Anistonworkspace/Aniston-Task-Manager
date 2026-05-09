@@ -54,6 +54,11 @@ const REALTIME_EVENTS = [
   'meeting:accepted', 'meeting:declined',
   // Permissions
   'permissions:updated',
+  // Org Chart — fired by promotionController.{updateManager,promoteUser} and
+  // every mutating method in managerRelationController. OrgChartPage
+  // subscribes via useRealtimeEvent and refetches on receipt so other tabs
+  // / other users see hierarchy changes without a manual reload.
+  'org:hierarchy:changed',
 ];
 
 const RealtimeContext = createContext(null);

@@ -1,5 +1,6 @@
 const { Activity, User, Task } = require('../models');
 const { Op } = require('sequelize');
+const { isTier4 } = require('../config/tiers');
 
 /**
  * GET /api/activities?taskId=...&boardId=...&userId=...&limit=...&offset=...
@@ -16,7 +17,7 @@ const getActivities = async (req, res) => {
     if (userId) where.userId = userId;
 
     // Members can only see activities on tasks assigned to them
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       const myTasks = await Task.findAll({
         where: { assignedTo: req.user.id },
         attributes: ['id'],

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { parseISO, isPast, isToday } from 'date-fns';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Lock } from 'lucide-react';
 import api from '../../services/api';
 import { formatTaskDate, toInputDate } from '../../utils/dateFormat';
 
@@ -25,7 +25,7 @@ import { formatTaskDate, toInputDate } from '../../utils/dateFormat';
  * 101+. We feature-detect and fall back to focusing the input (browsers that
  * lack `showPicker` reveal their picker on focus anyway).
  */
-export default function DateCell({ value, onChange, taskId, assignedTo, estimatedHours }) {
+export default function DateCell({ value, onChange, taskId, assignedTo, estimatedHours, lockedReason }) {
   const inputRef = useRef(null);
   const [hasConflict, setHasConflict] = useState(false);
   const [conflictTooltip, setConflictTooltip] = useState('');
@@ -35,6 +35,12 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
   const [draft, setDraft] = useState(null);
   const displayValue = draft ?? value;
   const readOnly = typeof onChange !== 'function';
+  // `lockedReason` is set when read-only-ness comes from a tier rule (e.g.
+  // Tier 3/4 may not change a due date that's already set) rather than
+  // generic non-editability (no permission at all). When present we render
+  // the field as read-only WITH a lock affordance + tooltip so the user
+  // can see the date but understands why they cannot change it.
+  const isTierLocked = readOnly && !!lockedReason;
 
   const checkConflictsForDate = useCallback(async (dateVal) => {
     if (!dateVal || !assignedTo) {
@@ -157,7 +163,8 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
           className={`w-full h-full flex items-center justify-center text-text-tertiary text-xs ${
             readOnly ? 'cursor-default' : 'hover:text-text-secondary cursor-pointer'
           }`}
-          aria-label="Set due date"
+          title={isTierLocked ? lockedReason : undefined}
+          aria-label={isTierLocked ? lockedReason : 'Set due date'}
         >
           —
         </button>
@@ -166,6 +173,11 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
   }
 
   // Date set — show the formatted pill; clicking re-opens the picker.
+  // When tier-locked, the cell stays clickable-looking enough to be visible
+  // but `disabled` blocks the picker, and a Lock icon + tooltip make the
+  // restriction obvious. Conflict warning still wins for the tooltip slot
+  // when both apply.
+  const tooltip = hasConflict ? conflictTooltip : (isTierLocked ? lockedReason : undefined);
   return (
     <div className="relative w-full h-full">
       {hiddenInput}
@@ -176,11 +188,15 @@ export default function DateCell({ value, onChange, taskId, assignedTo, estimate
         onKeyDown={handleKeyDown}
         className={`w-full h-full text-xs font-medium inline-flex items-center justify-center gap-0.5 ${
           overdue ? 'text-danger' : today ? 'text-primary' : 'text-text-primary'
-        } ${readOnly ? 'cursor-default' : 'hover:underline cursor-pointer'}`}
-        title={hasConflict ? conflictTooltip : undefined}
+        } ${readOnly ? 'cursor-default' : 'hover:underline cursor-pointer'} ${
+          isTierLocked ? 'opacity-80' : ''
+        }`}
+        title={tooltip}
+        aria-label={isTierLocked ? `${formatTaskDate(displayValue)} — ${lockedReason}` : undefined}
       >
         {formatTaskDate(displayValue)}
         {hasConflict && <AlertTriangle size={10} className="text-yellow-500 ml-0.5" />}
+        {isTierLocked && !hasConflict && <Lock size={9} className="text-text-tertiary ml-0.5" aria-hidden="true" />}
       </button>
     </div>
   );

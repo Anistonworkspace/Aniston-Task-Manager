@@ -84,6 +84,19 @@ const DependencyRequest = sequelize.define('DependencyRequest', {
   // ("hide from active views"). Mirrors the TaskDependency archive pattern.
   archivedAt: { type: DataTypes.DATE, allowNull: true },
   archivedBy: { type: DataTypes.UUID, allowNull: true },
+  // Phase 13 — materialized "shadow" task for the assignee's board surface.
+  // When the assignee transitions OUT of pending (accept / start / done), we
+  // create a single Task on the parent's board owned by the assignee so the
+  // dep work is visible alongside their other work. This column is the
+  // idempotency key — set exactly once on first transition; subsequent
+  // status changes sync TO this task instead of creating a new one. Stays
+  // null for deps that are rejected straight from pending (no Task ever
+  // appeared, nothing to clean up).
+  linkedTaskId: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    defaultValue: null,
+  },
 }, {
   tableName: 'dependency_requests',
   timestamps: true,
@@ -95,6 +108,7 @@ const DependencyRequest = sequelize.define('DependencyRequest', {
     { fields: ['status'] },
     { fields: ['dueDate'] },
     { fields: ['createdAt'] },
+    { fields: ['linkedTaskId'] },
   ],
 });
 

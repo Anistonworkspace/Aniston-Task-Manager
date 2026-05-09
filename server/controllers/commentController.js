@@ -5,6 +5,7 @@ const teamsWebhook = require('../services/teamsWebhook');
 const teamsNotif = require('../services/teamsNotificationService');
 const { sanitizeInput, sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const taskVisibility = require('../services/taskVisibilityService');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 
 /**
  * POST /api/comments
@@ -62,16 +63,20 @@ const addComment = async (req, res) => {
       `${safeActor} mentioned you in a comment on "${safeTitle}"`
     );
 
-    // Notify task assignee (if different from commenter)
+    // Notify task assignee (if different from commenter). Idempotency keyed
+    // on the comment id so a retried POST (network blip + replay) cannot
+    // produce two notification rows for the same logical comment event.
     if (task.assignedTo && task.assignedTo !== req.user.id) {
-      const notification = await Notification.create({
+      await createNotification({
+        userId: task.assignedTo,
         type: 'comment_added',
         message: commentMsg,
         entityType: 'task',
         entityId: taskId,
-        userId: task.assignedTo,
+        boardId: task.boardId,
+        idempotencyKey: buildIdempotencyKey('comment-added', comment.id, task.assignedTo),
+        sanitize: false, // already sanitized above
       });
-      emitToUser(task.assignedTo, 'notification:new', { notification });
     }
 
     // ── Mentions (RBAC-safe) ──────────────────────────────────
@@ -102,27 +107,31 @@ const addComment = async (req, res) => {
         if (mu.id === req.user.id) continue; // self-mention noop
         if (mu.id === task.assignedTo) continue; // already notified above
         if (!authorizedRecipients.has(mu.id)) continue; // RBAC: skip users who can't see the task
-        const n = await Notification.create({
+        await createNotification({
+          userId: mu.id,
           type: 'mention',
           message: mentionMsg,
           entityType: 'task',
           entityId: taskId,
-          userId: mu.id,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('comment-mention', comment.id, mu.id),
+          sanitize: false,
         });
-        emitToUser(mu.id, 'notification:new', { notification: n });
       }
     }
 
-    // Notify task creator (if different from commenter and assignee)
+    // Notify task creator (if different from commenter and assignee).
     if (task.createdBy !== req.user.id && task.createdBy !== task.assignedTo) {
-      const notification = await Notification.create({
+      await createNotification({
+        userId: task.createdBy,
         type: 'comment_added',
         message: commentMsg,
         entityType: 'task',
         entityId: taskId,
-        userId: task.createdBy,
+        boardId: task.boardId,
+        idempotencyKey: buildIdempotencyKey('comment-added', comment.id, task.createdBy),
+        sanitize: false,
       });
-      emitToUser(task.createdBy, 'notification:new', { notification });
     }
 
     // CP-3 RBAC: emit comment events only to authorized recipients of the

@@ -174,6 +174,20 @@ export function routeEvent(event, payload = {}) {
       break;
     }
 
+    case 'recurring_template:created':
+    case 'recurring_template:updated':
+    case 'recurring_template:paused':
+    case 'recurring_template:resumed':
+    case 'recurring_template:archived': {
+      // The Recurring Work page lists templates; bust its query so other
+      // viewers see pause/resume/archive without manual refresh. Updates
+      // that change the assignee also produce task:updated events for the
+      // affected open instances (see reassignOpenInstances) — those drive
+      // tasks.assignedTo.me / tasks.board.<id> invalidation independently.
+      out.push('recurring.list');
+      break;
+    }
+
     case 'permissions:updated': {
       // Permission changes potentially affect EVERY task list the user is
       // looking at — easier to just bust the user's main caches.

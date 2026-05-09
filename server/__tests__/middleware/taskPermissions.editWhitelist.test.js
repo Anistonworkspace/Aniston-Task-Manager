@@ -101,8 +101,18 @@ describe('checkTaskAction("edit") — assignee/creator whitelist', () => {
     expect(result.reason).toBe('supervisor_read_only');
   });
 
-  it('admin gets unrestricted edit (allowedFields = null)', async () => {
+  it('Tier 2 admin gets unrestricted edit (allowedFields = null)', async () => {
     const user = { id: ME, role: 'admin', isSuperAdmin: false };
+    const task = makeTask({ createdBy: OTHER, assignedTo: OTHER });
+    const result = await checkTaskAction('edit', user, task, [], {});
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('tier_full_access');
+    expect(result.allowedFields).toBeNull();
+  });
+
+  it('Tier 1 super admin gets unrestricted edit', async () => {
+    const user = { id: ME, role: 'admin', isSuperAdmin: true };
     const task = makeTask({ createdBy: OTHER, assignedTo: OTHER });
     const result = await checkTaskAction('edit', user, task, [], {});
 
@@ -110,7 +120,23 @@ describe('checkTaskAction("edit") — assignee/creator whitelist', () => {
     expect(result.allowedFields).toBeNull();
   });
 
-  it('manager inside subtree gets unrestricted edit', async () => {
+  it('Tier 2 manager gets unrestricted edit even OUTSIDE subtree', async () => {
+    // Bug-fix regression: previously a Tier 2 user with role='manager' was
+    // gated on `isTier2or3 && inSubtree`, which 403'd them on any task
+    // outside their org subtree. Tier 2 admin/super-admin had no such gate
+    // — the asymmetry was the headline bug. Now both Tier 2 variants
+    // resolve to `tier_full_access` unconditionally.
+    visibility.canViewTask.mockResolvedValueOnce(false);
+    const user = { id: ME, role: 'manager', isSuperAdmin: false };
+    const task = makeTask({ createdBy: OTHER, assignedTo: OTHER });
+    const result = await checkTaskAction('edit', user, task, [], {});
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('tier_full_access');
+    expect(result.allowedFields).toBeNull();
+  });
+
+  it('Tier 2 manager INSIDE subtree also unrestricted (same outcome as outside)', async () => {
     visibility.canViewTask.mockResolvedValueOnce(true);
     const user = { id: ME, role: 'manager', isSuperAdmin: false };
     const task = makeTask({ createdBy: OTHER, assignedTo: OTHER });
@@ -120,12 +146,29 @@ describe('checkTaskAction("edit") — assignee/creator whitelist', () => {
     expect(result.allowedFields).toBeNull();
   });
 
-  it('manager OUTSIDE subtree falls back to creator/assignee path (no edit if not linked)', async () => {
-    visibility.canViewTask.mockResolvedValueOnce(false);
-    const user = { id: ME, role: 'manager', isSuperAdmin: false };
+  it('Tier 3 (assistant_manager) inside subtree NO LONGER gets full edit — falls back to assignee/creator path', async () => {
+    // Tightening: Tier 3 used to get `subtree_management` (allowedFields:
+    // null) on tasks inside their subtree. Per the new rule, only Tier 1/2
+    // get full edit; Tier 3 is "limited access". Without an assignee/
+    // creator link they're denied even inside the subtree.
+    visibility.canViewTask.mockResolvedValueOnce(true);
+    const user = { id: ME, role: 'assistant_manager', isSuperAdmin: false };
     const task = makeTask({ createdBy: OTHER, assignedTo: OTHER });
     const result = await checkTaskAction('edit', user, task, [], {});
 
     expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('no_edit_permission');
+  });
+
+  it('Tier 3 (assistant_manager) AS CREATOR gets the assignee whitelist (not full edit)', async () => {
+    visibility.canViewTask.mockResolvedValueOnce(true);
+    const user = { id: ME, role: 'assistant_manager', isSuperAdmin: false };
+    const task = makeTask({ createdBy: ME, assignedTo: OTHER });
+    const result = await checkTaskAction('edit', user, task, [], {});
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('assignee_restricted');
+    expect(result.allowedFields).not.toBeNull();
+    expect(result.allowedFields).not.toContain('title');
   });
 });

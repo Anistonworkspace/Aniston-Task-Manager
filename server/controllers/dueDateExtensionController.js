@@ -3,6 +3,8 @@ const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { getDescendantIds } = require('../services/hierarchyService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+const { isTier4 } = require('../config/tiers');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 
 // POST /api/extensions — request due date extension
 exports.requestExtension = async (req, res) => {
@@ -28,8 +30,22 @@ exports.requestExtension = async (req, res) => {
       currentUser = await User.findByPk(currentUser.managerId, { attributes: ['id', 'managerId'] });
     }
 
-    // Also include all admin/manager role users (existing behavior)
-    const managers = await User.findAll({ where: { role: ['admin', 'manager'], isActive: true }, attributes: ['id'] });
+    // Also include all Tier 1 + Tier 2 users (super admins, admins, managers).
+    // Phase 6 fix: previously the filter was `role: ['admin', 'manager']`,
+    // which excluded Tier-1 super admins whose legacy role field is anything
+    // other than 'admin' (possible after a re-tier). Adding the OR closes
+    // that hole without breaking existing behaviour for the common case.
+    const { Op } = require('sequelize');
+    const managers = await User.findAll({
+      where: {
+        isActive: true,
+        [Op.or]: [
+          { isSuperAdmin: true },
+          { role: { [Op.in]: ['admin', 'manager'] } },
+        ],
+      },
+      attributes: ['id'],
+    });
     for (const mgr of managers) recipientIds.add(mgr.id);
 
     // Include hierarchy managers by walking up from the task assignee's management chain
@@ -47,12 +63,20 @@ exports.requestExtension = async (req, res) => {
     const reqMsg = sanitizeNotificationMessage(
       `${sanitizeNotificationField(req.user.name)} requested due date extension for "${sanitizeNotificationField(task.title)}"`
     );
+    // Idempotency keyed on the extension request id so a retried HTTP request
+    // (network blip + replay) does not produce duplicate notifications for
+    // the same extension across the manager fan-out.
     for (const recipientId of recipientIds) {
-      const notification = await Notification.create({
-        type: 'extension_requested', message: reqMsg,
-        entityType: 'task', entityId: taskId, userId: recipientId,
+      await createNotification({
+        userId: recipientId,
+        type: 'extension_requested',
+        message: reqMsg,
+        entityType: 'task',
+        entityId: taskId,
+        boardId: task.boardId,
+        idempotencyKey: buildIdempotencyKey('extension-requested', ext.id, recipientId),
+        sanitize: false,
       });
-      emitToUser(recipientId, 'notification:new', { notification });
     }
 
     logActivity({ action: 'extension_requested', description: `${req.user.name} requested due date extension for "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id });
@@ -75,7 +99,7 @@ exports.getExtensions = async (req, res) => {
     const where = {};
     if (req.query.status) where.status = req.query.status;
     if (req.query.taskId) where.taskId = req.query.taskId;
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       const isHierMgr = await isHierarchyManager(req.user, req);
       if (isHierMgr) {
         // Hierarchy manager can see own requests + requests from subtree members
@@ -117,11 +141,16 @@ exports.approveExtension = async (req, res) => {
     const approvedMsg = sanitizeNotificationMessage(
       `Your due date extension for "${sanitizeNotificationField(ext.task.title)}" was approved`
     );
-    const approvedNotif = await Notification.create({
-      type: 'extension_approved', message: approvedMsg,
-      entityType: 'task', entityId: ext.taskId, userId: ext.requestedBy,
+    await createNotification({
+      userId: ext.requestedBy,
+      type: 'extension_approved',
+      message: approvedMsg,
+      entityType: 'task',
+      entityId: ext.taskId,
+      boardId: ext.task?.boardId || null,
+      idempotencyKey: buildIdempotencyKey('extension-approved', ext.id),
+      sanitize: false,
     });
-    emitToUser(ext.requestedBy, 'notification:new', { notification: approvedNotif });
 
     res.json({ success: true, data: { extension: ext } });
   } catch (err) {
@@ -140,11 +169,16 @@ exports.rejectExtension = async (req, res) => {
     const rejectedMsg = sanitizeNotificationMessage(
       `Your due date extension for "${sanitizeNotificationField(ext.task.title)}" was rejected`
     );
-    const rejectedNotif = await Notification.create({
-      type: 'extension_rejected', message: rejectedMsg,
-      entityType: 'task', entityId: ext.taskId, userId: ext.requestedBy,
+    await createNotification({
+      userId: ext.requestedBy,
+      type: 'extension_rejected',
+      message: rejectedMsg,
+      entityType: 'task',
+      entityId: ext.taskId,
+      boardId: ext.task?.boardId || null,
+      idempotencyKey: buildIdempotencyKey('extension-rejected', ext.id),
+      sanitize: false,
     });
-    emitToUser(ext.requestedBy, 'notification:new', { notification: rejectedNotif });
 
     res.json({ success: true, data: { extension: ext } });
   } catch (err) {

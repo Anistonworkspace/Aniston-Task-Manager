@@ -1,15 +1,34 @@
 const { ManagerRelation, User } = require('../models');
 const { Op } = require('sequelize');
+const hierarchy = require('../services/hierarchyService');
+const { logActivity } = require('../services/activityService');
+const { broadcastAll } = require('../services/socketService');
+
+// Sensitive User columns that must NEVER appear in API responses (mirrors the
+// allowlist in promotionController). The `manager` includes used below were
+// already attribute-restricted, but we keep this constant in scope for future
+// endpoints that need it.
+const USER_SAFE_ATTRS = ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'];
 
 /**
- * GET /api/manager-relations/:employeeId
+ * Emit `org:hierarchy:changed` after any structural mutation. Permission-gated
+ * GET on the receiving side means broadcasting widely is safe.
+ */
+function emitHierarchyChanged(payload) {
+  try {
+    broadcastAll('org:hierarchy:changed', { ...payload, timestamp: new Date().toISOString() });
+  } catch (e) { /* socket optional */ }
+}
+
+/**
+ * GET /api/manager-relations/:employeeId  (also /api/multi-manager/:employeeId)
  * Returns all manager relations for a given employee.
  */
 exports.getRelationsForEmployee = async (req, res) => {
   try {
     const relations = await ManagerRelation.findAll({
       where: { employeeId: req.params.employeeId },
-      include: [{ model: User, as: 'manager', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'] }],
+      include: [{ model: User, as: 'manager', attributes: USER_SAFE_ATTRS }],
       order: [['isPrimary', 'DESC'], ['createdAt', 'ASC']],
     });
     res.json({ success: true, data: { relations } });
@@ -20,15 +39,23 @@ exports.getRelationsForEmployee = async (req, res) => {
 };
 
 /**
- * POST /api/manager-relations
+ * POST /api/manager-relations  (also /api/multi-manager)
  * Add a new manager relation for an employee.
  * Body: { employeeId, managerId, relationType, isPrimary }
+ *
+ * SECURITY (audit B4/B5): The previous version trusted whatever managerOrAdmin
+ * let through. That allowed a Tier-2 user to wire any employee to any manager
+ * across branches. This version delegates to hierarchy.canEditHierarchy which
+ * enforces:
+ *   - actor cannot reparent themselves
+ *   - target cannot be Tier 1 (super admins are top-of-org by definition)
+ *   - proposed manager cannot be Tier 1
+ *   - branch-scope (managers only inside their own subtree)
+ *   - cycle protection
  */
 exports.addRelation = async (req, res) => {
   try {
     const { employeeId, managerId, relationType = 'functional', isPrimary = false } = req.body;
-
-    console.log('[ManagerRelation] addRelation payload:', { employeeId, managerId, relationType, isPrimary });
 
     if (!employeeId || !managerId) {
       return res.status(400).json({ success: false, message: 'employeeId and managerId are required.' });
@@ -37,10 +64,17 @@ exports.addRelation = async (req, res) => {
       return res.status(400).json({ success: false, message: 'An employee cannot be their own manager.' });
     }
 
+    // Scope check — uses canEditHierarchy because adding a manager relation,
+    // primary or not, is a hierarchy mutation. The same gate covers Tier 1
+    // protection for both target and proposed manager.
+    const auth = await hierarchy.canEditHierarchy(req.user, employeeId, managerId);
+    if (!auth.allowed) {
+      return res.status(403).json({ success: false, message: auth.reason || 'Not authorized.' });
+    }
+
     // Check for duplicate
     const existing = await ManagerRelation.findOne({ where: { employeeId, managerId } });
     if (existing) {
-      console.log('[ManagerRelation] addRelation duplicate blocked:', { employeeId, managerId, existingId: existing.id });
       return res.status(409).json({ success: false, message: 'This manager relation already exists.' });
     }
 
@@ -51,12 +85,21 @@ exports.addRelation = async (req, res) => {
     }
 
     const relation = await ManagerRelation.create({ employeeId, managerId, relationType, isPrimary });
-    console.log('[ManagerRelation] addRelation created:', { relationId: relation.id, employeeId, managerId, relationType, isPrimary });
 
-    // Include manager data in response
+    // Include manager data in response — attributes already restricted above.
     const full = await ManagerRelation.findByPk(relation.id, {
-      include: [{ model: User, as: 'manager', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'] }],
+      include: [{ model: User, as: 'manager', attributes: USER_SAFE_ATTRS }],
     });
+
+    logActivity({
+      action: 'manager_relation_added',
+      description: `${req.user.name} added a ${relationType} manager relation`,
+      entityType: 'user',
+      entityId: employeeId,
+      userId: req.user.id,
+      meta: { managerId, relationType, isPrimary },
+    });
+    emitHierarchyChanged({ type: 'manager_relation_added', employeeId, managerId, relationType, isPrimary, actorId: req.user.id });
 
     res.status(201).json({ success: true, data: { relation: full } });
   } catch (err) {
@@ -66,8 +109,11 @@ exports.addRelation = async (req, res) => {
 };
 
 /**
- * PUT /api/manager-relations/:id
+ * PUT /api/manager-relations/:id  (also /api/multi-manager/:id)
  * Update an existing relation (relationType, isPrimary).
+ *
+ * SECURITY: same scope gate as addRelation. Promoting a secondary relation to
+ * primary is a hierarchy mutation — must be authorised by canEditHierarchy.
  */
 exports.updateRelation = async (req, res) => {
   try {
@@ -76,7 +122,15 @@ exports.updateRelation = async (req, res) => {
 
     const { relationType, isPrimary } = req.body;
 
-    if (isPrimary) {
+    // If isPrimary is being SET (not just left unchanged), re-validate scope
+    // against the (employee, manager) of this row. updateRelation is
+    // effectively "make THIS relation the primary one", which is the same
+    // structural mutation as setPrimaryManager.
+    if (isPrimary === true) {
+      const auth = await hierarchy.canEditHierarchy(req.user, relation.employeeId, relation.managerId);
+      if (!auth.allowed) {
+        return res.status(403).json({ success: false, message: auth.reason || 'Not authorized.' });
+      }
       // Clear other primary flags for this employee
       await ManagerRelation.update({ isPrimary: false }, { where: { employeeId: relation.employeeId, isPrimary: true, id: { [Op.ne]: relation.id } } });
       // Sync User.managerId
@@ -88,6 +142,16 @@ exports.updateRelation = async (req, res) => {
       ...(isPrimary !== undefined && { isPrimary }),
     });
 
+    logActivity({
+      action: 'manager_relation_updated',
+      description: `${req.user.name} updated a manager relation`,
+      entityType: 'user',
+      entityId: relation.employeeId,
+      userId: req.user.id,
+      meta: { relationId: relation.id, relationType, isPrimary },
+    });
+    emitHierarchyChanged({ type: 'manager_relation_updated', employeeId: relation.employeeId, managerId: relation.managerId, actorId: req.user.id });
+
     res.json({ success: true, data: { relation } });
   } catch (err) {
     console.error('[ManagerRelation] updateRelation error:', err.message);
@@ -96,17 +160,26 @@ exports.updateRelation = async (req, res) => {
 };
 
 /**
- * DELETE /api/manager-relations/:id
+ * DELETE /api/manager-relations/:id  (also /api/multi-manager/:id)
  * Remove a manager relation. If it was primary, clear User.managerId.
+ *
+ * SECURITY: scope-checked via canEditHierarchy (the relation row tells us the
+ * employee, so we can re-validate). The Tier-2 destructive guard
+ * (assertCanDelete) remains in place from the previous version.
  */
 exports.removeRelation = async (req, res) => {
   try {
-    console.log('[ManagerRelation] removeRelation requested:', { relationId: req.params.id });
-
     const relation = await ManagerRelation.findByPk(req.params.id);
     if (!relation) {
-      console.log('[ManagerRelation] removeRelation not found:', req.params.id);
       return res.status(404).json({ success: false, message: 'Relation not found.' });
+    }
+
+    // Scope check — caller must have authority over this employee's hierarchy.
+    // Pass null as proposed manager since deletion is conceptually "remove
+    // this link"; we only need the employee-side authority.
+    const auth = await hierarchy.canEditHierarchy(req.user, relation.employeeId, null);
+    if (!auth.allowed) {
+      return res.status(403).json({ success: false, message: auth.reason || 'Not authorized.' });
     }
 
     // Phase 7 — Tier-2 destructive guard. Removing a manager relation
@@ -119,7 +192,6 @@ exports.removeRelation = async (req, res) => {
     const employeeId = relation.employeeId;
     const managerId = relation.managerId;
     await relation.destroy();
-    console.log('[ManagerRelation] removeRelation destroyed:', { relationId: req.params.id, employeeId, managerId, wasPrimary });
 
     // If we removed the primary, pick the next relation as primary or clear managerId
     if (wasPrimary) {
@@ -127,12 +199,20 @@ exports.removeRelation = async (req, res) => {
       if (nextPrimary) {
         await nextPrimary.update({ isPrimary: true });
         await User.update({ managerId: nextPrimary.managerId }, { where: { id: employeeId } });
-        console.log('[ManagerRelation] removeRelation promoted next:', { newPrimaryId: nextPrimary.id, newManagerId: nextPrimary.managerId });
       } else {
         await User.update({ managerId: null }, { where: { id: employeeId } });
-        console.log('[ManagerRelation] removeRelation cleared managerId for employee:', employeeId);
       }
     }
+
+    logActivity({
+      action: 'manager_relation_removed',
+      description: `${req.user.name} removed a manager relation`,
+      entityType: 'user',
+      entityId: employeeId,
+      userId: req.user.id,
+      meta: { relationId: req.params.id, managerId, wasPrimary },
+    });
+    emitHierarchyChanged({ type: 'manager_relation_removed', employeeId, managerId, wasPrimary, actorId: req.user.id });
 
     res.json({ success: true, message: 'Manager relation removed.' });
   } catch (err) {
@@ -142,9 +222,13 @@ exports.removeRelation = async (req, res) => {
 };
 
 /**
- * POST /api/manager-relations/sync
+ * POST /api/manager-relations/sync  (also /api/multi-manager/sync)
  * Migrate existing managerId data into manager_relations table.
  * Idempotent — safe to call multiple times.
+ *
+ * No per-row scope check here: this is a one-shot data-migration helper
+ * (admin-only via route middleware) that just mirrors existing User.managerId
+ * data into the junction table. It does not introduce any new relationships.
  */
 exports.syncFromManagerId = async (req, res) => {
   try {
@@ -162,6 +246,16 @@ exports.syncFromManagerId = async (req, res) => {
       });
       if (wasCreated) created++;
     }
+
+    logActivity({
+      action: 'manager_relations_synced',
+      description: `${req.user.name} synced manager relations from legacy managerId`,
+      entityType: 'system',
+      entityId: null,
+      userId: req.user.id,
+      meta: { created, total: usersWithManager.length },
+    });
+    if (created > 0) emitHierarchyChanged({ type: 'manager_relations_synced', created, actorId: req.user.id });
 
     res.json({ success: true, message: `Synced ${created} new relations from existing managerId data. ${usersWithManager.length - created} already existed.` });
   } catch (err) {

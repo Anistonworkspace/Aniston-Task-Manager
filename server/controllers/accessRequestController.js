@@ -1,8 +1,11 @@
 const { AccessRequest, User, Notification, PermissionGrant } = require('../models');
 const { sequelize } = require('../config/db');
+const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+const { isTier4 } = require('../config/tiers');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 
 // GET /api/access-requests — list requests (admin sees all, user sees own)
 exports.getAccessRequests = async (req, res) => {
@@ -12,7 +15,7 @@ exports.getAccessRequests = async (req, res) => {
     if (status) where.status = status;
 
     // Non-admin only sees own requests
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       where.userId = req.user.id;
     }
 
@@ -49,10 +52,26 @@ exports.createAccessRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'You already have a pending request for this resource.' });
     }
 
-    // Pre-fetch admins outside the transaction. The list rarely changes and
-    // there's no benefit to reading it within the lock window — keeps the
-    // transaction tight to just the writes.
-    const admins = await User.findAll({ where: { role: 'admin', isActive: true } });
+    // Pre-fetch approvers outside the transaction. The list rarely changes
+    // and there's no benefit to reading it within the lock window — keeps
+    // the transaction tight to just the writes.
+    //
+    // Recipients = Tier 1 + Tier 2 (super-admins, admins, managers).
+    // Pre-Phase-3, the user table dual-tracks legacy `role`/`isSuperAdmin`
+    // and the new `tier` column. We OR both so a row missing the tier
+    // backfill still resolves correctly. This closes audit P0-#5: the
+    // previous filter `role: 'admin'` excluded Tier 1 super-admins whose
+    // role field is anything else and Tier 2 managers (`role: 'manager'`)
+    // who were also empowered to approve.
+    const admins = await User.findAll({
+      where: {
+        isActive: true,
+        [Op.or]: [
+          { isSuperAdmin: true },
+          { role: { [Op.in]: ['admin', 'manager'] } },
+        ],
+      },
+    });
     const safeName = sanitizeNotificationField(req.user.name);
     const safeRequestType = sanitizeNotificationField(requestType, 32);
     const safeResourceType = sanitizeNotificationField(resourceType, 64);
@@ -88,16 +107,24 @@ exports.createAccessRequest = async (req, res) => {
 
         // Bulk insert: one round trip instead of N, and atomic with the
         // request creation. If any admin row is invalid the whole batch
-        // (and the request) rolls back.
+        // (and the request) rolls back. Idempotency keys derive from the
+        // created.id so a retried HTTP request that somehow bypassed the
+        // pre-check guard would collide on the partial unique index and
+        // bulkCreate would fail — preferable to silently doubling rows.
         const notifPayloads = admins.map((admin) => ({
           type: 'access_requested',
           message: adminMsg,
           entityType: 'access_request',
           entityId: created.id,
           userId: admin.id,
+          idempotencyKey: buildIdempotencyKey('access-requested', created.id, admin.id),
         }));
         const notifs = notifPayloads.length > 0
-          ? await Notification.bulkCreate(notifPayloads, { transaction: t, returning: true })
+          ? await Notification.bulkCreate(notifPayloads, {
+              transaction: t,
+              returning: true,
+              ignoreDuplicates: true, // benign on retries; idempotency-key index is the safety net
+            })
           : [];
 
         return { request: created, notifications: notifs };
@@ -231,20 +258,23 @@ exports.approveRequest = async (req, res) => {
     // expect. The locked instance from inside the transaction won't have it.
     request.requester = preReq.requester;
 
-    // Notify requester
+    // Notify requester. Idempotent on the request id — a retried PUT
+    // /:id/approve cannot double-notify even if the lock pattern were ever
+    // bypassed.
     const approvedMsg = sanitizeNotificationMessage(
       `Your ${sanitizeNotificationField(request.requestType, 32)} access request for ` +
       `${sanitizeNotificationField(request.resourceType, 64)} was approved by ` +
       `${sanitizeNotificationField(req.user.name)}`
     );
-    const approvedNotif = await Notification.create({
+    await createNotification({
+      userId: request.userId,
       type: 'access_approved',
       message: approvedMsg,
       entityType: 'access_request',
       entityId: request.id,
-      userId: request.userId,
+      idempotencyKey: buildIdempotencyKey('access-approved', request.id),
+      sanitize: false,
     });
-    emitToUser(request.userId, 'notification:new', { notification: approvedNotif });
 
     logActivity({
       action: 'access_approved',
@@ -312,20 +342,21 @@ exports.rejectRequest = async (req, res) => {
     }
     request.requester = preReq.requester;
 
-    // Notify requester
+    // Notify requester. Idempotent on the request id.
     const rejectedMsg = sanitizeNotificationMessage(
       `Your ${sanitizeNotificationField(request.requestType, 32)} access request for ` +
       `${sanitizeNotificationField(request.resourceType, 64)} was rejected by ` +
       `${sanitizeNotificationField(req.user.name)}`
     );
-    const rejectedNotif = await Notification.create({
+    await createNotification({
+      userId: request.userId,
       type: 'access_rejected',
       message: rejectedMsg,
       entityType: 'access_request',
       entityId: request.id,
-      userId: request.userId,
+      idempotencyKey: buildIdempotencyKey('access-rejected', request.id),
+      sanitize: false,
     });
-    emitToUser(request.userId, 'notification:new', { notification: rejectedNotif });
 
     logActivity({
       action: 'access_rejected',

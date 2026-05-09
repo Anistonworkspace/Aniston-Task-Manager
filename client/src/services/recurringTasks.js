@@ -191,6 +191,57 @@ export function getMonthlyDaysFromTemplate(template) {
   return [];
 }
 
+/**
+ * Build a structured schedule summary for the Recurring Work UI. Distinct
+ * from `formatSchedule` (which is a one-line label for table rows) — this
+ * returns the discrete pieces so the modal / detail panel can lay them out
+ * with icons and labels:
+ *
+ *   { kind: 'Daily' | 'Weekdays' | 'Custom days' | 'Monthly', summary,
+ *     days: string[]|null, dueTime, timezone, startDate, endDate }
+ *
+ * Frequency 'custom' is treated as 'Custom days' (alias of weekly).
+ */
+export function buildScheduleSummary(template) {
+  if (!template) return null;
+  const dueTime = formatDueTime12h(template.dueTime);
+  const tz = template.timezone || 'UTC';
+  const startDate = template.startDate || null;
+  const endDate = template.endDate || null;
+  const base = { dueTime, timezone: tz, startDate, endDate, days: null };
+
+  switch (template.frequency) {
+    case 'daily':
+      return { ...base, kind: 'Daily', summary: 'Every day' };
+    case 'weekdays':
+      return { ...base, kind: 'Weekdays', summary: 'Mon – Sat (Sunday excluded)' };
+    case 'weekly':
+    case 'custom': {
+      const list = (Array.isArray(template.weekdays) ? template.weekdays : [])
+        .map((d) => WEEKDAY_LABELS[d])
+        .filter(Boolean);
+      return {
+        ...base,
+        kind: 'Custom days',
+        summary: list.length ? list.join(', ') : 'No weekdays selected',
+        days: list,
+      };
+    }
+    case 'monthly': {
+      const list = getMonthlyDaysFromTemplate(template);
+      const labelled = list.map((d) => `Day ${d}`);
+      return {
+        ...base,
+        kind: 'Monthly',
+        summary: labelled.length ? labelled.join(', ') : 'No days selected',
+        days: labelled,
+      };
+    }
+    default:
+      return { ...base, kind: template.frequency || '—', summary: template.frequency || '' };
+  }
+}
+
 /** "1" → "st", "2" → "nd", "3" → "rd", everything else → "th". Locale-agnostic. */
 function ordinalSuffix(n) {
   const v = n % 100;
@@ -228,4 +279,5 @@ export default {
   dueTimeToInputValue,
   getMonthlyDaysFromTemplate,
   normalizeFrequencyForUI,
+  buildScheduleSummary,
 };

@@ -10,3 +10,14 @@ server/uploads/*
 *.log
 .claude/
 .playwright-mcp/
+
+# Debugging screenshots / images at the repo root only.
+# Root-anchored so legitimate assets under client/public/icons/, client/src/assets/,
+# server/uploads/ etc. are NOT affected. (Already-tracked PNGs are unaffected by gitignore.)
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+screenshots/
+debug-screenshots/

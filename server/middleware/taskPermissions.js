@@ -4,13 +4,13 @@ const { Op } = require('sequelize');
 const { safeUUID } = require('../utils/safeSql');
 const taskVisibility = require('../services/taskVisibilityService');
 const logger = require('../utils/logger');
-// D-7: tier helpers replace ad-hoc role-string checks in checkTaskAction
-// below. The legacy `role === 'admin'` super-admin bypass at the top of the
-// function is INTENTIONALLY left as-is — the new mapping treats role='admin'
-// without isSuperAdmin as tier 2, but historic behaviour gave those users
-// "full access". Tightening that is a deliberate behaviour change tracked
-// separately, NOT an automated refactor target.
-const { resolveTier, TIER_2, TIER_3, TIER_4 } = require('../config/tiers');
+// Tier helpers — single source of truth for RBAC. The `edit` action is
+// keyed off the canonical tier value (1..4) only; legacy role-string checks
+// have been removed so a Tier 2 user with role='manager' and one with
+// role='admin' resolve identically (both are full-edit). Subtree scoping
+// for Tier 3 management actions still uses taskVisibilityService — that's
+// orthogonal to tier identity.
+const { resolveTier, TIER_1, TIER_2, TIER_3, TIER_4 } = require('../config/tiers');
 
 // ── Table existence cache (shared across all middleware calls) ───────────
 const _tableCache = {};
@@ -121,25 +121,25 @@ async function buildTaskVisibilityFilter(user /*, boardId */) {
  * @returns {Promise<{ allowed: boolean, reason: string, allowedFields: string[]|null }>}
  */
 async function checkTaskAction(action, user, task, taskAssignees = [], req) {
-  const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
+  const tier = resolveTier(user);
 
-  // Super admin / admin — full access always.
-  // (Kept as a literal role-string check for the reasons in the import block:
-  // a non-super-admin admin-role user is tier 2 in the new mapping, but the
-  // historic "admin = full access" behaviour is preserved here. Touching this
-  // line tightens permissions, which is a deliberate decision separate from
-  // the D-7 mechanical migration.)
-  if (isSuperAdmin || role === 'admin') {
-    return { allowed: true, reason: 'admin_access', allowedFields: null };
+  // Tier 1 (Super Admin) and Tier 2 (Admin / Manager) — full edit access on
+  // every task in the system, with no subtree restriction. This is the
+  // canonical "management" surface: write actions trust tier identity, NOT
+  // role strings. A Tier 2 user with role='manager' and one with role='admin'
+  // resolve identically here — fixing the asymmetric block on managers
+  // outside their org subtree. Subtree scoping still applies to Tier 3
+  // (assistant_manager) below.
+  if (isSuperAdmin || tier === TIER_1 || tier === TIER_2) {
+    return { allowed: true, reason: 'tier_full_access', allowedFields: null };
   }
 
-  // D-7: from this point onward, the population is `role IN ('manager',
-  // 'assistant_manager', 'member')` (i.e. tier 2/3/4 — admin/super already
-  // returned above). Resolve once and use the canonical tier value for the
-  // switch instead of re-comparing role strings on every case branch.
-  const tier = resolveTier(user);
-  const isTier2or3 = tier === TIER_2 || tier === TIER_3;
+  // From here down, the population is Tier 3 (assistant_manager) and Tier 4
+  // (member). Tier 3 retains subtree-scoped management privileges for
+  // non-edit actions (status/reassign/delete/manage_members); for the
+  // primary `edit` action, both tiers fall to the assignee/creator
+  // whitelist with the same dueDate-locking rule.
 
   // Find user's membership role in this task
   const userAssignment = taskAssignees.find(ta => ta.userId === user.id);
@@ -180,8 +180,9 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'edit_status': {
-      // Manager / assistant_manager: full edit on tasks inside their subtree.
-      if (isTier2or3 && inSubtree) {
+      // Tier 3 (assistant_manager): subtree-scoped management still grants
+      // unrestricted status edits inside the subtree.
+      if (tier === TIER_3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management', allowedFields: null };
       }
       if (isAssignee || isTaskCreator || task.assignedTo === user.id) {
@@ -191,20 +192,29 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'edit': {
-      // Manager / assistant_manager: full edit on tasks inside their subtree.
-      if (isTier2or3 && inSubtree) {
-        return { allowed: true, reason: 'subtree_management', allowedFields: null };
-      }
-      // Assignee / creator — can update the self-management whitelist.
+      // Tier 3 / Tier 4 — both fall to the assignee/creator whitelist for the
+      // primary `edit` action. Tier 3 used to get full edit inside its
+      // subtree; that was widening into "may rewrite anyone in my org's
+      // tasks". The product rule is now: only Tier 1 / Tier 2 may edit
+      // arbitrary fields; Tier 3 (and Tier 4) edit through the same
+      // narrow whitelist when they're personally on the task.
+      //
       // `assignedTo` is INCLUDED so a member-creator can self-assign their
       // own task once they've set a due date. The actual "can this user
       // assign target X" decision is left to `checkAssignmentAuthority`
       // (deny non-self for members lacking tasks.assign_others) and
       // `needsDueDateForAssignment` (block any assignment without a due
       // date) downstream in the controller — this whitelist only governs
-      // *which fields are even readable* from the body. Without
-      // `assignedTo` here, the field would be silently dropped and the
-      // member's self-assign call would no-op.
+      // *which fields are even readable* from the body.
+      //
+      // `dueDate` is also INCLUDED here so the field can reach the
+      // controller, but the controller layers a separate "due-date lock"
+      // gate on top: Tier 3 / Tier 4 may only set the INITIAL due date
+      // (existing value null). Once a due date is on the task, only
+      // Tier 1 / Tier 2 may change it. See `updateTask` and
+      // `bulkUpdateTasks`. We deliberately keep dueDate in the whitelist
+      // (rather than stripping it) so the controller can return a clear
+      // 403 with `code: DUE_DATE_LOCKED` instead of a silent no-op.
       if (isAssignee || task.assignedTo === user.id || isTaskCreator) {
         // NOTE: `title` is intentionally OMITTED here. Per the title-lock
         // rule (Tier 1 only post-creation), assignees and creators may not
@@ -233,15 +243,16 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'reassign': {
-      // Only manager+ acting on a task INSIDE their subtree.
-      if (isTier2or3 && inSubtree) {
+      // Tier 3 may reassign INSIDE their subtree. (Tier 1/2 already returned
+      // tier_full_access at the top.)
+      if (tier === TIER_3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management' };
       }
       return { allowed: false, reason: 'insufficient_role_for_reassign' };
     }
 
     case 'delete': {
-      if (isTier2or3 && inSubtree) {
+      if (tier === TIER_3 && inSubtree) {
         return { allowed: true, reason: 'subtree_management' };
       }
       // Members can archive their own tasks
@@ -252,18 +263,15 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'create': {
-      // Tier 2/3 (manager, assistant_manager) — unrestricted create.
-      if (isTier2or3) {
+      // Tier 3 (assistant_manager) — unrestricted create (T1/T2 already
+      // returned at the top of the function).
+      if (tier === TIER_3) {
         return { allowed: true, reason: 'can_create' };
       }
       // Tier 4 (member) — allowed to create. Downstream gates (`assign_others`
       // permission via checkAssignmentAuthority, plus needsDueDateForAssignment)
       // restrict member creates to *self-assigned tasks without due dates*,
-      // which is the documented "personal task" path. Blocking here outright
-      // produced a frontend/backend mismatch: the BoardPage inline "+ Add task"
-      // payload sets the creator as self-assignee, but the request was 403'd
-      // before any of those downstream checks ran. See PROGRESS audit RBAC
-      // Finding 1 + permissions matrix in client/src/utils/permissions.js.
+      // which is the documented "personal task" path.
       if (tier === TIER_4) {
         return { allowed: true, reason: 'member_self_create' };
       }
@@ -271,7 +279,7 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
     }
 
     case 'manage_members': {
-      if (isTier2or3 && inSubtree) {
+      if (tier === TIER_3 && inSubtree) {
         return { allowed: true, reason: 'can_manage_members' };
       }
       return { allowed: false, reason: 'insufficient_role_for_member_management' };

@@ -490,13 +490,19 @@ app.use('/api/board-orders', boardOrderRoutes);
 app.use('/api/system-settings', systemSettingsRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
+// /api/multi-manager/* — the legacy alias the OrgChartPage actually calls on
+// drag-drop. Audit B4 fix: this surface previously lacked requirePermission,
+// so a Tier-2 user with an explicit DENY override could still mutate the
+// chart here even though the canonical /api/promotions/relations/* path was
+// gated. Now matches the canonical gates 1:1.
 const { authenticate: mrAuth, managerOrAdmin: mrMgr } = require('./middleware/auth');
+const { requirePermission: mrPerm } = require('./middleware/permissions');
 const mrCtrl = require('./controllers/managerRelationController');
-app.get('/api/multi-manager/:employeeId', mrAuth, mrCtrl.getRelationsForEmployee);
-app.post('/api/multi-manager', mrAuth, mrMgr, mrCtrl.addRelation);
-app.put('/api/multi-manager/:id', mrAuth, mrMgr, mrCtrl.updateRelation);
-app.delete('/api/multi-manager/:id', mrAuth, mrMgr, mrCtrl.removeRelation);
-app.post('/api/multi-manager/sync', mrAuth, mrMgr, mrCtrl.syncFromManagerId);
+app.get('/api/multi-manager/:employeeId', mrAuth, mrPerm('org_chart', 'view'), mrCtrl.getRelationsForEmployee);
+app.post('/api/multi-manager', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.addRelation);
+app.put('/api/multi-manager/:id', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.updateRelation);
+app.delete('/api/multi-manager/:id', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.removeRelation);
+app.post('/api/multi-manager/sync', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.syncFromManagerId);
 
 // Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
 app.use('/api', dependencyRoutes);
@@ -720,6 +726,61 @@ const start = async () => {
         ON notifications ("entityType", "entityId")`);
     } catch (e) {
       console.warn('[Server] notifications index migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: task_reminders extension (offset / custom) ──────
+    // Phase 5 (task-level reminders). Adds two nullable columns and replaces
+    // the legacy `(taskId, reminderType)` unique constraint with an
+    // expression-based one that includes offsetMinutes + customReminderAt so
+    // multiple offset reminders (e.g. "1 day before" AND "1 hour before") on
+    // the same task are allowed, while a duplicate (same task + same offset)
+    // is still blocked at the DB level.
+    try {
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS "offsetMinutes" INTEGER DEFAULT NULL`);
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS "customReminderAt" TIMESTAMP WITH TIME ZONE DEFAULT NULL`);
+      // Drop the legacy strict unique on (taskId, reminderType). Two ways
+      // it might exist: as a UNIQUE CONSTRAINT (older Sequelize sync) or as
+      // a UNIQUE INDEX (newer migration). Try both, ignore errors.
+      await sequelize.query(`ALTER TABLE task_reminders
+        DROP CONSTRAINT IF EXISTS idx_task_reminder_unique`).catch(() => {});
+      await sequelize.query(`DROP INDEX IF EXISTS idx_task_reminder_unique`).catch(() => {});
+      // New expression-based dedup. Postgres treats two NULLs as distinct in
+      // a unique index, so we COALESCE both nullable columns to a sentinel
+      // value the user can never legitimately pass. -1 is unreachable as a
+      // minute offset (we validate >0 server-side); '1970-01-01 UTC' is
+      // unreachable as a future reminder timestamp.
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_task_reminder_dedup
+        ON task_reminders (
+          "taskId",
+          "reminderType",
+          COALESCE("offsetMinutes", -1),
+          COALESCE("customReminderAt", '1970-01-01 00:00:00+00'::timestamptz)
+        )`);
+      console.log('[Server] task_reminders Phase 5 migration ensured.');
+    } catch (e) {
+      console.warn('[Server] task_reminders Phase 5 migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: notifications.idempotencyKey column + partial unique index ─
+    // Phase 3 (Notification system fix pass). Adds the column used by the
+    // centralised notificationService.createNotification() to deduplicate
+    // logical events across concurrent callers, retries, and cron ticks.
+    //
+    // The unique index is PARTIAL (`WHERE "idempotencyKey" IS NOT NULL`) so
+    // legacy callers that omit the key continue to work — multiple NULL rows
+    // are allowed. Adding the column is non-blocking under normal load
+    // (`ADD COLUMN ... DEFAULT NULL` is metadata-only in modern Postgres).
+    try {
+      await sequelize.query(`ALTER TABLE notifications
+        ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(120) DEFAULT NULL`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency
+        ON notifications ("userId", "idempotencyKey")
+        WHERE "idempotencyKey" IS NOT NULL`);
+      console.log('[Server] notifications.idempotencyKey column ensured.');
+    } catch (e) {
+      console.warn('[Server] notifications.idempotencyKey migration warning:', e.message?.slice(0, 200));
     }
 
     // Create task_owners table for multi-owner support
@@ -1290,6 +1351,17 @@ const start = async () => {
       `CREATE UNIQUE INDEX IF NOT EXISTS dep_req_active_unique_idx
         ON dependency_requests ("parentTaskId", "assignedToUserId", lower(btrim(title)))
         WHERE status IN ('pending','accepted','working_on_it') AND "archivedAt" IS NULL`,
+      // Phase 13 — back-pointer to the materialized "shadow" Task on the
+      // assignee's board. Idempotency key for materialization (controller
+      // refuses to create a second Task once this column is non-null).
+      // SET NULL on Task delete so the dep row survives even if the surface
+      // task is removed independently.
+      `ALTER TABLE dependency_requests
+         ADD COLUMN IF NOT EXISTS "linkedTaskId" UUID NULL
+         REFERENCES tasks(id) ON DELETE SET NULL`,
+      `CREATE INDEX IF NOT EXISTS dep_req_linked_task_idx
+         ON dependency_requests ("linkedTaskId")
+         WHERE "linkedTaskId" IS NOT NULL`,
     ]) {
       try {
         await sequelize.query(stmt);
@@ -1576,6 +1648,44 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] users.tier migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: hierarchy integrity constraints (migration 015) ──
+    // Mirrors server/migrations/015_hierarchy_constraints.sql. Self-installing
+    // for the same reason as 014 — production deploys never invoke run_*.js
+    // scripts directly. Idempotent: NOT EXISTS guard for the constraint,
+    // CREATE INDEX IF NOT EXISTS for the indexes. NOT VALID + VALIDATE
+    // pattern means legacy self-referencing rows surface as a clear notice
+    // (see migration file) rather than a silent skip.
+    try {
+      const [userTablesHier] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
+      );
+      if (userTablesHier.length > 0) {
+        await sequelize.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'users_no_self_manager'
+            ) THEN
+              ALTER TABLE users
+                ADD CONSTRAINT users_no_self_manager
+                CHECK ("managerId" IS NULL OR "managerId" <> id) NOT VALID;
+              BEGIN
+                ALTER TABLE users VALIDATE CONSTRAINT users_no_self_manager;
+              EXCEPTION WHEN check_violation THEN
+                RAISE NOTICE 'users_no_self_manager VALIDATE failed — clear self-referencing rows.';
+              END;
+            END IF;
+          END $$;
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_users_manager_id ON users("managerId")`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_users_is_active ON users("isActive")`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)`);
+        console.log('[Server] hierarchy constraint + indexes ensured (mig 015).');
+      }
+    } catch (e) {
+      console.warn('[Server] hierarchy constraints migration warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: refresh_tokens table (D-2 — token rotation/denylist).

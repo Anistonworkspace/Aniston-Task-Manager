@@ -1,21 +1,153 @@
 import React, { useState, useEffect, createContext, useContext, useCallback, useMemo, useRef } from 'react';
-import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, AlertTriangle, Bell } from 'lucide-react';
 
-// Suppress an identical (type+message) toast fired within this window. A single
-// failed action can trigger two paths — the local handler's toast.error() and
-// the global axios interceptor's `api-error` event — both surfacing the same
-// server message. 1500ms is short enough that intentional repeats (e.g. two
-// successful saves in a row) still surface.
+/**
+ * Toast (Microsoft Teams-style) — bigger, readable, hover-pauses, click-through.
+ *
+ * Public API (backwards compatible):
+ *   - toast(message, type, duration)            // legacy positional
+ *   - toast({ title, body, type, duration, onClick, icon })  // structured
+ *   - success(msg) / error(msg) / warning(msg) / info(msg)
+ *   - notify({ title, body, ... })              // alias for the structured form
+ *   - remove(id)
+ *
+ * Behavioural changes from the previous version:
+ *   1. Default duration is 5000ms (was 4000) — matches the user-facing
+ *      "stay for 5 seconds" requirement.
+ *   2. Hovering or focusing a toast PAUSES its dismiss timer; leaving
+ *      RESUMES it. Implemented per-toast so multiple toasts pause
+ *      independently.
+ *   3. Toasts can carry a structured payload (title + body) and an
+ *      `onClick` handler so clicks on the body navigate (used by the
+ *      Header to open the linked task when a `notification:new` arrives).
+ *   4. Each toast is a focusable region with role="status" — screen
+ *      readers announce new toasts; Esc closes the focused one.
+ */
+
 const TOAST_DEDUP_WINDOW_MS = 1500;
+const DEFAULT_DURATION_MS = 5000;
+const MAX_TOASTS = 5;
 
 const ToastContext = createContext(null);
 
 const ICONS = {
-  success: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10 border-success/20' },
-  error: { icon: AlertCircle, color: 'text-danger', bg: 'bg-danger/10 border-danger/20' },
-  warning: { icon: AlertTriangle, color: 'text-warning', bg: 'bg-warning/10 border-warning/20' },
-  info: { icon: Info, color: 'text-primary', bg: 'bg-primary/10 border-primary/20' },
+  success: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10 border-success/30' },
+  error:   { icon: AlertCircle,   color: 'text-danger',  bg: 'bg-danger/10 border-danger/30'  },
+  warning: { icon: AlertTriangle, color: 'text-warning', bg: 'bg-warning/10 border-warning/30' },
+  info:    { icon: Info,          color: 'text-primary', bg: 'bg-primary/10 border-primary/30' },
+  // 'notification' style differs from 'info' visually — used by the bell-driven
+  // toasts to feel more like a Teams card and less like a status banner.
+  notification: { icon: Bell, color: 'text-primary', bg: 'bg-white dark:bg-[#1F2024] border-border' },
 };
+
+/**
+ * Single toast item. Owns its own dismiss timer so hover-to-pause is
+ * isolated per-toast — pausing one doesn't pause the others.
+ *
+ * Timer model: on mount, schedule a setTimeout for `remaining` ms. On
+ * hover/focus we clear the timer and snapshot how much time is left. On
+ * leave/blur we re-schedule with the remaining time. This gives the user
+ * a guarantee that whatever fraction of the 5s they hadn't yet "consumed"
+ * before hovering is what they get when they leave.
+ */
+function ToastItem({ toast, onClose }) {
+  const { id, type = 'info', duration = DEFAULT_DURATION_MS, title, body, message, onClick, icon: customIcon } = toast;
+  const cfg = ICONS[type] || ICONS.info;
+  const Icon = customIcon || cfg.icon;
+
+  // Timer state lives in refs so we don't trigger re-renders on every tick.
+  const timerRef = useRef(null);
+  const remainingRef = useRef(duration);
+  const startedAtRef = useRef(Date.now());
+  const pausedRef = useRef(false);
+  const containerRef = useRef(null);
+
+  const start = useCallback(() => {
+    if (duration <= 0) return; // 0 = sticky, never auto-dismiss
+    if (timerRef.current) clearTimeout(timerRef.current);
+    startedAtRef.current = Date.now();
+    pausedRef.current = false;
+    timerRef.current = setTimeout(() => onClose(id), remainingRef.current);
+  }, [duration, id, onClose]);
+
+  const pause = useCallback(() => {
+    if (pausedRef.current || duration <= 0) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    const elapsed = Date.now() - startedAtRef.current;
+    remainingRef.current = Math.max(0, remainingRef.current - elapsed);
+    pausedRef.current = true;
+  }, [duration]);
+
+  // Initial schedule + cleanup on unmount.
+  useEffect(() => {
+    start();
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [start]);
+
+  // Esc on the focused toast dismisses it. We only handle keys when the
+  // toast itself (or one of its children) is focused so we don't compete
+  // with global Esc handlers on modals.
+  const handleKeyDown = useCallback((e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose(id);
+    }
+  }, [id, onClose]);
+
+  const handleBodyClick = useCallback((e) => {
+    if (typeof onClick !== 'function') return;
+    // Don't trigger the body action if the click hit the close button.
+    if (e.target.closest('[data-toast-close]')) return;
+    onClick(toast);
+    onClose(id);
+  }, [onClick, toast, id, onClose]);
+
+  const isNotification = type === 'notification';
+  const computedTitle = title || (isNotification ? 'New notification' : null);
+  const computedBody = body || message || '';
+  const clickable = typeof onClick === 'function';
+
+  return (
+    <div
+      ref={containerRef}
+      role={type === 'error' || type === 'warning' ? 'alert' : 'status'}
+      aria-live={type === 'error' || type === 'warning' ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      tabIndex={0}
+      onMouseEnter={pause}
+      onMouseLeave={start}
+      onFocus={pause}
+      onBlur={start}
+      onKeyDown={handleKeyDown}
+      className={`pointer-events-auto flex items-start gap-3.5 px-5 py-4 rounded-xl border shadow-xl backdrop-blur-sm w-full ${cfg.bg} dark:shadow-2xl text-text-primary outline-none focus:ring-2 focus:ring-primary/50 transition-shadow`}
+      style={{ animation: 'toastIn 0.25s cubic-bezier(0.21, 1.02, 0.73, 1)' }}
+    >
+      <div className={`flex-shrink-0 mt-0.5 ${cfg.color}`}>
+        <Icon size={22} aria-hidden="true" />
+      </div>
+      <div
+        className={`flex-1 min-w-0 ${clickable ? 'cursor-pointer' : ''}`}
+        onClick={handleBodyClick}
+        onKeyDown={(e) => { if (clickable && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleBodyClick(e); } }}
+        role={clickable ? 'button' : undefined}
+        tabIndex={clickable ? 0 : -1}
+      >
+        {computedTitle && (
+          <p className="text-[15px] font-semibold leading-tight mb-1 break-words">{computedTitle}</p>
+        )}
+        <p className="text-sm text-text-primary leading-snug break-words whitespace-pre-line">{computedBody}</p>
+      </div>
+      <button
+        data-toast-close
+        onClick={() => onClose(id)}
+        aria-label="Dismiss notification"
+        className="flex-shrink-0 mt-0.5 p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-surface/50 transition-colors"
+      >
+        <X size={18} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
@@ -24,15 +156,52 @@ export function ToastProvider({ children }) {
   // decisions are stable across renders.
   const recentToastsRef = useRef(new Map());
 
-  const addToast = useCallback((message, type = 'info', duration = 4000) => {
-    const dedupKey = `${type}::${typeof message === 'string' ? message : JSON.stringify(message)}`;
+  const removeToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  /**
+   * Add a toast.
+   *
+   * Two call shapes supported:
+   *   addToast('hello', 'success')                 // legacy positional
+   *   addToast({ title: '…', body: '…', type: 'notification', onClick: fn })
+   *
+   * Returns the toast id (or null if deduplicated).
+   */
+  const addToast = useCallback((firstArg, type = 'info', duration = DEFAULT_DURATION_MS) => {
+    let payload;
+    if (firstArg && typeof firstArg === 'object' && !React.isValidElement(firstArg)) {
+      payload = {
+        title: firstArg.title || null,
+        body: firstArg.body || firstArg.message || '',
+        type: firstArg.type || 'info',
+        duration: typeof firstArg.duration === 'number' ? firstArg.duration : DEFAULT_DURATION_MS,
+        onClick: typeof firstArg.onClick === 'function' ? firstArg.onClick : null,
+        icon: firstArg.icon || null,
+      };
+    } else {
+      payload = {
+        title: null,
+        body: typeof firstArg === 'string' ? firstArg : JSON.stringify(firstArg),
+        type,
+        duration,
+        onClick: null,
+        icon: null,
+      };
+    }
+
+    // Dedup window keyed on (type + body + title) so two paths reacting to
+    // the same event don't both fire (e.g. local handler + api-error
+    // interceptor). 1500ms is short enough that intentional repeats still
+    // surface.
+    const dedupKey = `${payload.type}::${payload.title || ''}::${payload.body}`;
     const now = Date.now();
     const last = recentToastsRef.current.get(dedupKey);
     if (last && now - last < TOAST_DEDUP_WINDOW_MS) {
       return null;
     }
     recentToastsRef.current.set(dedupKey, now);
-    // Bound the dedup map so a long session doesn't grow it unbounded.
     if (recentToastsRef.current.size > 50) {
       for (const [k, t] of recentToastsRef.current.entries()) {
         if (now - t > TOAST_DEDUP_WINDOW_MS * 4) recentToastsRef.current.delete(k);
@@ -41,62 +210,49 @@ export function ToastProvider({ children }) {
 
     const id = now + Math.random();
     setToasts(prev => {
-      const updated = [...prev, { id, message, type, duration }];
-      // Keep max 5 toasts visible — remove oldest if exceeded
-      return updated.length > 5 ? updated.slice(-5) : updated;
+      const updated = [...prev, { id, ...payload }];
+      // Keep at most MAX_TOASTS visible — drop the OLDEST when over.
+      return updated.length > MAX_TOASTS ? updated.slice(-MAX_TOASTS) : updated;
     });
-    if (duration > 0) {
-      setTimeout(() => {
-        setToasts(prev => prev.filter(t => t.id !== id));
-      }, duration);
-    }
     return id;
-  }, []);
-
-  const removeToast = useCallback((id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
   // Listen for global API error events
   useEffect(() => {
     function handleApiError(e) {
       const { message } = e.detail || {};
-      if (message) addToast(message, 'error', 5000);
+      if (message) addToast({ body: message, type: 'error', duration: 5000 });
     }
     window.addEventListener('api-error', handleApiError);
     return () => window.removeEventListener('api-error', handleApiError);
   }, [addToast]);
 
   // Memoise the context value so consumers' useCallback/useEffect deps don't
-  // see a fresh reference every render. Without this, callers like
-  //   const { error } = useToast();
-  //   const load = useCallback(..., [..., error]);
-  //   useEffect(() => { load(); }, [load]);
-  // would refire load() on every render → at React render speed this becomes
-  // a per-IP request storm against /api/boards/:id, /api/tasks, etc., which
-  // then trips express-rate-limit and produces "Too many requests" toast spam.
+  // see a fresh reference every render. (Same reason as the previous
+  // implementation — without this, BoardPage's per-IP request storm came back.)
   const value = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast]);
 
   return (
     <ToastContext.Provider value={value}>
       {children}
-      {/* Toast Container */}
-      <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-[380px]">
-        {toasts.map(toast => {
-          const cfg = ICONS[toast.type] || ICONS.info;
-          const Icon = cfg.icon;
-          return (
-            <div key={toast.id}
-              className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm ${cfg.bg} animate-slide-in`}
-              style={{ animation: 'toastIn 0.3s ease-out' }}>
-              <Icon size={16} className={`${cfg.color} mt-0.5 flex-shrink-0`} />
-              <p className="text-sm text-text-primary flex-1">{toast.message}</p>
-              <button onClick={() => removeToast(toast.id)} className="text-text-tertiary hover:text-text-secondary flex-shrink-0 mt-0.5">
-                <X size={14} />
-              </button>
-            </div>
-          );
-        })}
+      {/*
+        Toast container — TOP-RIGHT positioning so notifications appear in
+        the natural reading-flow corner, below the header (top-[64px] offset
+        clears the 52px header + ~12px gap so the toast doesn't kiss the
+        bell button). max-w-[460px] on desktop, viewport-minus-margin on
+        mobile.
+        `pointer-events-none` on the container so the layout doesn't block
+        clicks on the page beneath when toasts aren't covering the area;
+        individual toasts re-enable pointer events.
+      */}
+      <div
+        className="fixed top-[64px] right-4 z-[100] flex flex-col gap-2.5 max-w-[460px] w-[calc(100vw-2rem)] sm:w-[460px] pointer-events-none"
+        aria-live="polite"
+        aria-relevant="additions"
+      >
+        {toasts.map(toast => (
+          <ToastItem key={toast.id} toast={toast} onClose={removeToast} />
+        ))}
       </div>
     </ToastContext.Provider>
   );
@@ -107,6 +263,7 @@ export function ToastProvider({ children }) {
 // useCallback dep array.
 const NOOP_TOAST = Object.freeze({
   toast: () => {},
+  notify: () => {},
   success: () => {},
   error: () => {},
   warning: () => {},
@@ -116,18 +273,16 @@ const NOOP_TOAST = Object.freeze({
 
 export function useToast() {
   const ctx = useContext(ToastContext);
-  // The returned object MUST be stable across renders. The previous
-  // implementation built a fresh object literal (with new arrow functions for
-  // success/error/...) every call, so callers like
-  //   const { error } = useToast();
-  //   const load = useCallback(..., [..., error]);
-  // saw a different `error` identity every render → useCallback churned →
-  // useEffect([load]) refired → infinite render-rate refetch loop on the
-  // BoardPage which produced the per-IP retry storm we hit in production.
+  // The returned object MUST be stable across renders (see history note in
+  // earlier version). useMemo on the ctx identity gives that stability.
   return useMemo(() => {
     if (!ctx) return NOOP_TOAST;
     return {
       toast: ctx.addToast,
+      // notify(...) is the structured shape — used by the bell handler so
+      // notification:new events render as Teams-style cards with title+body
+      // and an onClick that opens the linked task.
+      notify: (payload) => ctx.addToast({ type: 'notification', ...payload }),
       success: (msg) => ctx.addToast(msg, 'success'),
       error: (msg) => ctx.addToast(msg, 'error'),
       warning: (msg) => ctx.addToast(msg, 'warning'),

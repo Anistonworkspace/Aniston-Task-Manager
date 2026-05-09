@@ -40,6 +40,7 @@ const {
 const { sendNotification } = require('../services/notificationService');
 const recurringTaskService = require('../services/recurringTaskService');
 const logger = require('../utils/logger');
+const { withCronLock } = require('./cronLock');
 
 const CRON_EXPR = '*/10 * * * *';
 
@@ -97,15 +98,26 @@ async function getActiveManagerIds(userId) {
 }
 
 /**
- * Return active admin / super-admin user ids. Capped to a small number for
- * defensive blast-radius control.
+ * Return active Tier 1 + Tier 2 user ids — i.e. every "admin" target by the
+ * canonical tier model (super admin, admin, manager). Capped to a small
+ * number for defensive blast-radius control.
+ *
+ * Phase 6 fix (audit P0): the previous filter was `role:'admin' OR
+ * isSuperAdmin`, which excluded Tier-2 managers (`role:'manager'`). Under the
+ * tier model, Tier 2 is "admin + manager combined" — both should escalate.
+ * The OR over both legacy fields and the future-friendly is-supervisor flag
+ * keeps this correct whether or not a given user has been backfilled to the
+ * `tier` column.
  */
 async function getEscalationAdminIds(limit = 5) {
   try {
     const admins = await User.findAll({
       where: {
         isActive: true,
-        [Op.or]: [{ role: 'admin' }, { isSuperAdmin: true }],
+        [Op.or]: [
+          { isSuperAdmin: true },
+          { role: { [Op.in]: ['admin', 'manager'] } },
+        ],
       },
       attributes: ['id'],
       order: [['createdAt', 'ASC']],
@@ -299,8 +311,12 @@ function startMissedRecurringTaskJob() {
   cron.schedule(CRON_EXPR, async () => {
     const start = Date.now();
     try {
-      const result = await tickOnce(new Date());
-      if (result.processed > 0 || result.errors > 0) {
+      // Wrap in cronLock so only one replica scans the candidate set per
+      // tick. The per-row conditional UPDATE inside tickOnce is still the
+      // hard guarantee against duplicate notifications, but the lock saves
+      // the multi-replica scan cost (5xx queries per tick × N replicas).
+      const result = await withCronLock('missedRecurringTaskJob', () => tickOnce(new Date()));
+      if (result && (result.processed > 0 || result.errors > 0)) {
         logger.info(
           `[MissedRecurringJob] tick: processed=${result.processed} escalated=${result.escalated} `
           + `skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`

@@ -57,6 +57,7 @@ async function tickOnce(now = new Date()) {
   if (candidates.length === 0) return { processed: 0, generated: 0, skipped: 0, errors: 0 };
 
   let generated = 0;
+  let backfilled = 0;
   let skipped = 0;
   let errors = 0;
   for (const tpl of candidates) {
@@ -70,8 +71,15 @@ async function tickOnce(now = new Date()) {
         logger.warn('[RecurringGenJob] Template error', { templateId: tpl.id, msg: result.error });
         continue;
       }
-      if (result.generated) generated += 1;
-      else skipped += 1;
+      if (result.generated) {
+        // F-3: count instances created beyond "today" as backfill. Surfaces
+        // the cron-downtime catch-up to operators in the per-tick log line.
+        const count = result.generatedCount || (result.generated ? 1 : 0);
+        generated += count;
+        if (count > 1) backfilled += count - 1;
+      } else {
+        skipped += 1;
+      }
     } catch (err) {
       // Defensive: runTemplateOnce already swallows errors; this catch is a
       // belt-and-braces guard so an unexpected throw doesn't kill the loop.
@@ -84,7 +92,7 @@ async function tickOnce(now = new Date()) {
     }
   }
 
-  return { processed: candidates.length, generated, skipped, errors };
+  return { processed: candidates.length, generated, backfilled, skipped, errors };
 }
 
 function startRecurringTemplateGenerationJob() {
@@ -102,7 +110,7 @@ function startRecurringTemplateGenerationJob() {
           // Only log when there's signal — keeps quiet days quiet.
           logger.info(
             `[RecurringGenJob] tick: processed=${result.processed} generated=${result.generated} `
-            + `skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`
+            + `backfilled=${result.backfilled || 0} skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`
           );
         }
       } catch (err) {

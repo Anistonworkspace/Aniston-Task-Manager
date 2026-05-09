@@ -2,12 +2,14 @@ import React, { useEffect, useState } from 'react';
 import {
   RefreshCw, Plus, Pause, Play, Archive as ArchiveIcon, Pencil, AlertCircle,
   ChevronDown, ChevronRight, Clock, Calendar, ShieldAlert, CheckCircle2,
+  CalendarDays, FolderTree,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
 import RecurringTemplateModal from '../components/recurring/RecurringTemplateModal';
 import Avatar from '../components/common/Avatar';
+import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import {
   listTemplates,
   pauseTemplate,
@@ -45,6 +47,15 @@ export default function RecurringWorkPage() {
 
   useEffect(() => { load(); }, [tab]);
 
+  // F-9: live refresh when ANY user creates / updates / pauses / archives a
+  // template that's visible to the current viewer. The server-side recipient
+  // resolution (emitTemplateEvent) already gates the event; the page just
+  // needs to listen and refetch.
+  useRealtimeQuery({
+    queryKey: 'recurring.list',
+    refetch: load,
+  });
+
   async function load() {
     setLoading(true);
     try {
@@ -59,6 +70,31 @@ export default function RecurringWorkPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  /**
+   * Apply an optimistic local update from the saved template returned by
+   * `createTemplate` / `updateTemplate`. Belt-and-braces refresh: the
+   * subsequent `load()` does an authoritative re-fetch, but if that hits a
+   * stale read (proxy cache, slow socket, etc.) the optimistic patch keeps
+   * the row in sync with what the server just confirmed it persisted.
+   *
+   * Idempotent — replacing a row by id is safe even if the server already
+   * sent the realtime invalidation that triggered a load() in parallel.
+   */
+  function applyOptimisticTemplate(saved) {
+    if (!saved || !saved.id) return;
+    setTemplates((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const isArchivedRow = !!saved.archivedAt;
+      const tabHidesRow = tab === 'archived' ? !isArchivedRow : isArchivedRow;
+      const next = list.filter((t) => t && t.id !== saved.id);
+      // Only insert when the row belongs in the current tab. An archive-then-
+      // active toggle bumps the row out of view via the filter; load() will
+      // confirm.
+      if (!tabHidesRow) next.unshift(saved);
+      return next;
+    });
   }
 
   function handleNew() {
@@ -187,7 +223,12 @@ export default function RecurringWorkPage() {
         isOpen={showModal}
         onClose={() => setShowModal(false)}
         template={editing}
-        onSaved={() => load()}
+        onSaved={(saved) => {
+          // Apply the saved row immediately (covers stale-read edge cases),
+          // then re-fetch the list authoritatively.
+          applyOptimisticTemplate(saved);
+          load();
+        }}
       />
     </div>
   );
@@ -199,6 +240,17 @@ function TemplateRow({ tpl, expanded, instances, instancesLoading, onToggleExpan
   const isArchived = !!tpl.archivedAt;
   const assignee = tpl.assignee;
   const board = tpl.board;
+
+  // Resolve the human-readable group label by matching template.groupId
+  // against the eager-loaded board.groups JSONB. Falls back to the raw
+  // groupId so the row always shows *something*.
+  const groupLabel = React.useMemo(() => {
+    if (!tpl.groupId) return null;
+    if (tpl.groupId === 'new') return 'New (default)';
+    const groups = Array.isArray(board?.groups) ? board.groups : [];
+    const match = groups.find((g) => g && g.id === tpl.groupId);
+    return match?.title || tpl.groupId;
+  }, [tpl.groupId, board]);
 
   return (
     <div className={
@@ -218,6 +270,7 @@ function TemplateRow({ tpl, expanded, instances, instancesLoading, onToggleExpan
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-sm text-text-primary truncate">{tpl.title}</span>
             <StateBadge tpl={tpl} />
+            <PriorityBadge priority={tpl.priority} />
             {tpl.escalateIfMissed && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300" title="Escalates to manager / admin if missed">
                 <ShieldAlert size={10} /> Escalates
@@ -232,6 +285,17 @@ function TemplateRow({ tpl, expanded, instances, instancesLoading, onToggleExpan
               <span className="inline-flex items-center gap-1 truncate" title={board.name}>
                 <span className="w-2 h-2 rounded-full" style={{ background: board.color || '#0073ea' }} />
                 {board.name}
+              </span>
+            )}
+            {groupLabel && (
+              <span className="inline-flex items-center gap-1 truncate" title={`Group: ${groupLabel}`}>
+                <FolderTree size={11} /> {groupLabel}
+              </span>
+            )}
+            {(tpl.startDate || tpl.endDate) && (
+              <span className="inline-flex items-center gap-1" title="Active window">
+                <CalendarDays size={11} />
+                {tpl.startDate || '—'}{tpl.endDate ? ` → ${tpl.endDate}` : ' → no end'}
               </span>
             )}
             {tpl.lastGeneratedDate && (
@@ -292,10 +356,26 @@ function StateBadge({ tpl }) {
   return <Pill color="green">Active</Pill>;
 }
 
+const PRIORITY_COLORS = {
+  low: 'gray',
+  medium: 'gray',
+  high: 'amber',
+  critical: 'red',
+};
+function PriorityBadge({ priority }) {
+  if (!priority) return null;
+  const color = PRIORITY_COLORS[priority] || 'gray';
+  // Don't render a pill for the default "medium" priority — keeps rows
+  // visually quiet for the common case while still surfacing high/critical.
+  if (priority === 'medium') return null;
+  return <Pill color={color}>{priority}</Pill>;
+}
+
 function Pill({ color, children }) {
   const map = {
     green: 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300',
     amber: 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
+    red: 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-300',
     gray: 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-gray-300',
   };
   return (

@@ -320,6 +320,10 @@ Task.hasMany(TaskDependency, { as: 'dependents', foreignKey: 'dependsOnTaskId' }
 // User FKs use SET NULL so historical rows survive user deletion (the UI
 // renders "Assignee unavailable" / "Requester unavailable" in that case).
 DependencyRequest.belongsTo(Task,      { as: 'parentTask',       foreignKey: 'parentTaskId',           onDelete: 'CASCADE' });
+// Phase 13 — back-pointer to the materialized shadow Task created on
+// first transition out of pending. SET NULL so the dep row survives a
+// task delete; the dep stays as the system of record either way.
+DependencyRequest.belongsTo(Task,      { as: 'linkedTask',       foreignKey: 'linkedTaskId',           onDelete: 'SET NULL' });
 DependencyRequest.belongsTo(User,      { as: 'requestedBy',      foreignKey: 'requestedByUserId',      onDelete: 'SET NULL' });
 DependencyRequest.belongsTo(User,      { as: 'assignedTo',       foreignKey: 'assignedToUserId',       onDelete: 'SET NULL' });
 DependencyRequest.belongsTo(User,      { as: 'originalAssigner', foreignKey: 'originalAssignerUserId', onDelete: 'SET NULL' });

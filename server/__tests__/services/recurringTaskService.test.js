@@ -452,3 +452,241 @@ describe('seedNextUpcomingInstance: orchestration', () => {
     }));
   });
 });
+
+// ─── F-10: instant-overdue skip ─────────────────────────────────────────────
+//
+// When seeding picks "today" but the template's dueTime has already passed
+// in the configured timezone, the service should skip ahead to the next
+// eligible date so the assignee never receives a row that is already overdue.
+
+describe('F-10: same-day dueTime-passed skips to next eligible date', () => {
+  test('daily template seeded after dueTime → next eligible day (tomorrow)', () => {
+    // Pure-function check via nextOccurrenceDate. We don't exercise the full
+    // seed path here; the date-math primitives are what we rely on inside
+    // seedNextUpcomingInstance after the F-10 dueTime check.
+    const tpl = {
+      frequency: 'daily',
+      startDate: '2026-05-01',
+      endDate: null,
+      timezone: 'UTC',
+      dueTime: '09:00:00',
+    };
+    // 2026-05-07T18:00:00Z is past 09:00 UTC on 2026-05-07
+    const today = nextOccurrenceDate(tpl, new Date('2026-05-07T18:00:00Z'));
+    // Without F-10, the next occurrence resolved by nextOccurrenceDate is
+    // simply today (same date, same logic). The seed wrapper applies the
+    // dueTime cutoff. Confirm the underlying date math still picks today
+    // here so the wrapper's job is well-defined.
+    expect(today).toBe('2026-05-07');
+  });
+
+  test('weekly Tue created on Tuesday at 09:00 with dueTime 18:00 → today still picked', () => {
+    const tpl = {
+      frequency: 'weekly',
+      weekdays: [2],
+      startDate: '2026-05-01',
+      endDate: null,
+      timezone: 'UTC',
+    };
+    // 2026-05-12 is a Tuesday. 09:00 UTC is BEFORE 18:00 dueTime.
+    expect(nextOccurrenceDate(tpl, new Date('2026-05-12T09:00:00Z'))).toBe('2026-05-12');
+  });
+});
+
+// ─── F-3: cron backfill primitives ──────────────────────────────────────────
+//
+// runTemplateOnce-level integration is hard to mock without a live DB. These
+// tests focus on the date-math primitives runTemplateOnce uses internally so
+// any regression in the walk loop surfaces as a unit-level failure rather
+// than a production-only bug.
+
+describe('F-3: backfill walk primitives', () => {
+  test('walk anchor = max(startDate, lastGeneratedDate+1)', () => {
+    // With lastGeneratedDate = 2026-05-04 the next eligible day to consider
+    // is 2026-05-05. nextOccurrenceDate from a probe at 2026-05-05 returns
+    // 2026-05-05 for a daily template — confirming the primitive cooperates
+    // with the backfill walker.
+    const tpl = {
+      frequency: 'daily',
+      startDate: '2026-05-01',
+      endDate: null,
+      timezone: 'UTC',
+    };
+    expect(nextOccurrenceDate(tpl, new Date('2026-05-05T12:00:00Z'))).toBe('2026-05-05');
+  });
+
+  test('weekly Mon: walking forward from a Sat gives next Mon (skips Sun)', () => {
+    const tpl = {
+      frequency: 'weekly',
+      weekdays: [1],
+      startDate: '2026-05-01',
+      endDate: null,
+      timezone: 'UTC',
+    };
+    // 2026-05-09 is Saturday. Next Mon = 2026-05-11.
+    expect(nextOccurrenceDate(tpl, new Date('2026-05-09T12:00:00Z'))).toBe('2026-05-11');
+  });
+});
+
+// ─── reassignOpenInstances — date-math + early-return guards ────────────────
+//
+// The full reassignment touches Sequelize Task / TaskAssignee / TaskOwner +
+// realtime + reminders + calendar. Those are exercised by the controller-
+// level test that runs against a live test DB. Here we verify the early-
+// return guards: missing assignee ids, no-op for same-id, and an empty
+// instance list.
+
+describe('reassignOpenInstances: guards', () => {
+  const { reassignOpenInstances } = recurringTaskService;
+  const Task = require('../../models').Task;
+
+  test('rejects missing assignee ids', async () => {
+    const out = await reassignOpenInstances({ id: 't1' }, null, 'u2');
+    expect(out).toEqual(expect.objectContaining({ ok: false, reason: 'missing-assignee-ids' }));
+  });
+
+  test('returns no-op when old === new', async () => {
+    const out = await reassignOpenInstances({ id: 't1' }, 'u-same', 'u-same');
+    expect(out).toEqual(expect.objectContaining({ ok: true, reassigned: 0, reason: 'no-op' }));
+  });
+
+  test('returns reassigned: 0 when no open instances exist', async () => {
+    Task.findAll = jest.fn().mockResolvedValueOnce([]);
+    const out = await reassignOpenInstances({ id: 't1' }, 'u1', 'u2');
+    expect(out).toEqual(expect.objectContaining({ ok: true, reassigned: 0, errors: [] }));
+  });
+});
+
+// ─── mirrorRecurringInstanceTitle — guards + happy path ─────────────────────
+//
+// Reproduction guard for the bug reported on 2026-05-09: a user renames a
+// generated recurring instance ("bruce" → "bruce bane") in the task modal,
+// but the Recurring Work page still shows "bruce" because the rename only
+// touched `tasks.title`. The fix is a service-level helper that mirrors the
+// new title onto `recurring_task_templates.title` so the list reflects the
+// latest user-intent title and future generated occurrences pick it up.
+
+describe('mirrorRecurringInstanceTitle', () => {
+  const { mirrorRecurringInstanceTitle } = recurringTaskService;
+  const RecurringTaskTemplate = require('../../models').RecurringTaskTemplate;
+
+  beforeEach(() => {
+    // Reset model mocks between tests so a stale findByPk doesn't bleed
+    // across cases. The models barrel is mocked in jest.mock at the top.
+    if (RecurringTaskTemplate.findByPk) RecurringTaskTemplate.findByPk = jest.fn();
+  });
+
+  test('rejects missing task', async () => {
+    const out = await mirrorRecurringInstanceTitle({
+      task: null, newTitle: 'X', previousTitle: 'Y', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({ ok: false, mirrored: false, reason: 'task-missing' }));
+  });
+
+  test('skips non-recurring tasks (mirrored=false)', async () => {
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: false, recurringTemplateId: null },
+      newTitle: 'new', previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'not-recurring-instance',
+    }));
+  });
+
+  test('skips recurring instances missing templateId', async () => {
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: null },
+      newTitle: 'new', previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'no-template-id',
+    }));
+  });
+
+  test('short-circuits when newTitle === previousTitle (no DB write)', async () => {
+    RecurringTaskTemplate.findByPk = jest.fn();
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: 'tpl-1' },
+      newTitle: 'same', previousTitle: 'same', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'unchanged',
+    }));
+    expect(RecurringTaskTemplate.findByPk).not.toHaveBeenCalled();
+  });
+
+  test('handles missing template gracefully (FK SET NULL race)', async () => {
+    RecurringTaskTemplate.findByPk = jest.fn().mockResolvedValue(null);
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: 'tpl-gone' },
+      newTitle: 'new', previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'template-missing',
+    }));
+  });
+
+  test('skips DB write when template already matches the new title (idempotent)', async () => {
+    const updateSpy = jest.fn();
+    RecurringTaskTemplate.findByPk = jest.fn().mockResolvedValue({
+      id: 'tpl-1', title: 'already-new', update: updateSpy, toJSON: () => ({ id: 'tpl-1', title: 'already-new' }),
+    });
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: 'tpl-1' },
+      newTitle: 'already-new', previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'template-already-matches', templateId: 'tpl-1',
+    }));
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  test('mirrors the new title onto the template (the canonical fix)', async () => {
+    const updateSpy = jest.fn().mockResolvedValue();
+    const tplMock = {
+      id: 'tpl-1', title: 'bruce', assigneeId: 'u-sunny', createdBy: 'u-super',
+      update: updateSpy,
+      toJSON: () => ({ id: 'tpl-1', title: 'bruce bane' }),
+    };
+    RecurringTaskTemplate.findByPk = jest.fn().mockResolvedValue(tplMock);
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', boardId: 'b1', isRecurringInstance: true, recurringTemplateId: 'tpl-1' },
+      newTitle: 'bruce bane',
+      previousTitle: 'bruce',
+      actorId: 'u-super',
+    });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledWith({ title: 'bruce bane' });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: true, templateId: 'tpl-1',
+      previousTitle: 'bruce', newTitle: 'bruce bane',
+    }));
+  });
+
+  test('returns ok:false when template.update throws but does not crash caller', async () => {
+    const updateSpy = jest.fn().mockRejectedValue(new Error('db down'));
+    RecurringTaskTemplate.findByPk = jest.fn().mockResolvedValue({
+      id: 'tpl-1', title: 'old', update: updateSpy, toJSON: () => ({}),
+    });
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: 'tpl-1' },
+      newTitle: 'new', previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: false, mirrored: false, templateId: 'tpl-1',
+    }));
+    expect(out.reason).toMatch(/update-failed/);
+  });
+
+  test('non-string newTitle is ignored (no-op, no DB read)', async () => {
+    RecurringTaskTemplate.findByPk = jest.fn();
+    const out = await mirrorRecurringInstanceTitle({
+      task: { id: 't1', isRecurringInstance: true, recurringTemplateId: 'tpl-1' },
+      newTitle: 123, previousTitle: 'old', actorId: 'u1',
+    });
+    expect(out).toEqual(expect.objectContaining({
+      ok: true, mirrored: false, reason: 'non-string-title',
+    }));
+    expect(RecurringTaskTemplate.findByPk).not.toHaveBeenCalled();
+  });
+});

@@ -1,8 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Trash2, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Copy, Shield, HelpCircle, Calendar, Archive, Search, Eye, Users, Check, Lock, Settings, Plus, Pencil, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import { format, parseISO, formatDistanceToNow } from 'date-fns';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import {
+  X, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Shield,
+  HelpCircle, Calendar, Check, Lock, Settings, Plus, Pencil,
+  ChevronDown, ChevronRight, RefreshCw, Bookmark, Bell, User as UserIcon,
+  UserCheck, Flag, Circle, FileText, Star, Eye as EyeIcon, MoreHorizontal,
+  ChevronUp, Maximize2, Copy, Trash2, Archive, Send,
+} from 'lucide-react';
+import { format, parseISO, formatDistanceToNowStrict } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
-import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup, getTaskStatuses, getBoardStatuses, STATUS_PRESET_COLORS } from '../../utils/constants';
+import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup, getBoardStatuses, STATUS_PRESET_COLORS } from '../../utils/constants';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import TaskComments from './TaskComments';
@@ -15,85 +21,378 @@ import DependencySelector from '../dependencies/DependencySelector';
 import DependencyWorkSection from '../dependencies/DependencyWorkSection';
 
 import ApprovalSection from './ApprovalSection';
-import WatcherSection from './WatcherSection';
-// Legacy `RecurrenceSection` is no longer rendered in the modal — it wrote
-// into the Task.recurrence JSONB column, which is being phased out in favour
-// of the new RecurringTaskTemplate stack on /recurring-work. The import is
-// kept commented out so the file's history is searchable.
-// import RecurrenceSection from './RecurrenceSection';
 import DueDateExtensionModal from './DueDateExtensionModal';
 import HelpRequestModal from './HelpRequestModal';
 import ConflictWarning from './ConflictWarning';
+import TaskReminderField from './TaskReminderField';
+import { groupFlowsByLogicalStage, rollUpStageStatus, currentLogicalStage } from '../../utils/approvalStages';
+
+function normalizeReminderProps(incoming) {
+  if (!Array.isArray(incoming)) return [];
+  return incoming.map((r) => {
+    if (!r || typeof r !== 'object') return null;
+    if (r.kind === 'offset' || r.reminderType === 'offset') {
+      const m = Number(r.offsetMinutes);
+      return Number.isFinite(m) ? { kind: 'offset', offsetMinutes: m } : null;
+    }
+    if (r.kind === 'at_due' || r.reminderType === 'at_due') return { kind: 'at_due' };
+    if (r.kind === 'custom' || r.reminderType === 'custom') {
+      const at = r.at || r.customReminderAt;
+      if (!at) return null;
+      const d = new Date(at);
+      return Number.isNaN(d.getTime()) ? null : { kind: 'custom', at: d.toISOString() };
+    }
+    return null;
+  }).filter(Boolean);
+}
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
 import useRealtimeEvent from '../../realtime/useRealtimeEvent';
+import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import DetailModalShell from '../common/DetailModalShell';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
-import { canEditTask as canEditTaskFn, canEditTaskTitle as canEditTaskTitleFn, canSetPriorityForTask } from '../../utils/permissions';
+import { canEditTask as canEditTaskFn, canEditTaskTitle as canEditTaskTitleFn, canSetPriorityForTask, canEditDueDate as canEditDueDateFn } from '../../utils/permissions';
 import { formatTaskDate } from '../../utils/dateFormat';
 import { resolveTier, tierLabel } from '../../utils/tiers';
+import RecurringInstanceDetails from './RecurringInstanceDetails';
 
-export default function TaskModal({ task, boardId, members = [], boardStatuses, onClose, onUpdate, onDelete }) {
-  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions, isTier1, isTier2 } = useAuth();
-  const { error: toastError } = useToast();
-  // Ref the shell populates with its animated `requestClose` so the X button
-  // (and programmatic closes after delete/duplicate) play the slide-down exit
-  // before the parent unmounts us.
+// ── v3 design tokens ──────────────────────────────────────────────────────
+const ACCENT = {
+  purple: '#7C3AED',
+  teal:   '#0D9488',
+  amber:  '#D97706',
+  rose:   '#E11D48',
+  violet: '#6D5CE7',
+};
+
+// ── Tiny presentational helpers ───────────────────────────────────────────
+
+function ChipPill({ icon: Icon, label, color, textColor = '#fff', tone, title, onClick, dim, urgent }) {
+  const palette = {
+    neutral: 'bg-zinc-100 text-zinc-700 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700',
+    soft:    'bg-zinc-50 text-zinc-600 border-zinc-200 dark:bg-zinc-800/60 dark:text-zinc-300 dark:border-zinc-700',
+  };
+  if (color) {
+    return (
+      <span
+        onClick={onClick}
+        title={title}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${onClick ? 'cursor-pointer' : ''} ${urgent ? 'v3-urgent-pulse' : ''}`}
+        style={{ backgroundColor: dim ? `${color}1a` : color, color: dim ? color : textColor, border: dim ? `1px solid ${color}33` : undefined }}
+      >
+        {Icon && <Icon size={10} />}
+        <span className="tabular-nums">{label}</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      onClick={onClick}
+      title={title}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${palette[tone || 'neutral']} ${onClick ? 'cursor-pointer hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60' : ''}`}
+    >
+      {Icon && <Icon size={10} />}
+      <span className="tabular-nums">{label}</span>
+    </span>
+  );
+}
+
+function V3Card({ accent = 'purple', title, action, children }) {
+  const color = ACCENT[accent] || ACCENT.purple;
+  return (
+    <section className="v3-card" style={{ '--card-accent': color }}>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <h4 className="text-[10px] font-bold uppercase tracking-[0.08em] text-text-secondary">
+            {title}
+          </h4>
+        </div>
+        {action}
+      </div>
+      <div className="v3-card-divider mb-2" />
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function V3Row({ icon: Icon, label, children }) {
+  return (
+    <div className="flex items-start gap-2 text-[12px] min-h-[24px]">
+      <div className="flex items-center gap-1.5 w-[78px] flex-shrink-0 text-text-secondary pt-0.5">
+        {Icon && <Icon size={12} className="text-text-tertiary" />}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className="flex-1 min-w-0 flex items-center flex-wrap gap-1">{children}</div>
+    </div>
+  );
+}
+
+// Local IST/timezone-aware datetime label.
+function formatDateTime(iso, opts = {}) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    const dateStr = format(d, 'MMM d, yyyy');
+    const timeStr = format(d, 'h:mm a');
+    const tz = opts.includeZone
+      ? (Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+          .formatToParts(d).find(p => p.type === 'timeZoneName')?.value || '')
+      : '';
+    return tz ? `${dateStr} · ${timeStr} ${tz}` : `${dateStr} · ${timeStr}`;
+  } catch {
+    return null;
+  }
+}
+
+// Shorter compact form for the People card (e.g. "May 9 · 12:42 PM")
+function formatCompactDateTime(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return format(d, sameYear ? 'MMM d · h:mm a' : 'MMM d, yyyy · h:mm a');
+  } catch {
+    return null;
+  }
+}
+
+// Compute due-countdown chip ("Due in 8h" / "Overdue 2h" / null when far away).
+// `dueDate` is a YYYY-MM-DD string from the model. `dueTimeStr` is 'HH:mm:ss' or
+// 'HH:mm' from the recurring template; absent for normal tasks (we treat the
+// deadline as end-of-day local time).
+function computeCountdown(dueDate, dueTimeStr) {
+  if (!dueDate) return null;
+  let target;
+  try {
+    if (dueTimeStr) {
+      const t = String(dueTimeStr).slice(0, 5);
+      target = new Date(`${dueDate}T${t}:00`);
+    } else {
+      target = new Date(`${dueDate}T23:59:59`);
+    }
+    if (Number.isNaN(target.getTime())) return null;
+  } catch { return null; }
+  const now = new Date();
+  const diffMs = target.getTime() - now.getTime();
+  const absHours = Math.abs(diffMs) / 3600000;
+  if (diffMs < 0) {
+    if (absHours < 1) return { label: `Overdue ${Math.max(1, Math.round(absHours * 60))}m`, urgent: true };
+    if (absHours < 24) return { label: `Overdue ${Math.round(absHours)}h`, urgent: true };
+    return { label: `Overdue ${Math.round(absHours / 24)}d`, urgent: true };
+  }
+  if (absHours < 1) return { label: `Due in ${Math.max(1, Math.round(absHours * 60))}m`, urgent: true };
+  if (absHours < 24) return { label: `Due in ${Math.round(absHours)}h`, urgent: true };
+  if (absHours < 24 * 7) return { label: `Due in ${Math.round(absHours / 24)}d`, urgent: false };
+  return null;
+}
+
+// ── Activity ribbon — a compact horizontal feed of recent events ──────────
+function ActivityRibbon({ taskId, onSeeAll }) {
+  const [items, setItems] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!taskId) return;
+    let cancelled = false;
+    api.get(`/activities?taskId=${taskId}&limit=4`).then(res => {
+      if (cancelled) return;
+      const data = res.data?.data || res.data;
+      setItems(data.activities || []);
+      setLoaded(true);
+    }).catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [taskId]);
+
+  if (!loaded || items.length === 0) return null;
+
+  return (
+    <div className="v3-ribbon -mx-1 px-1 py-1.5">
+      <Activity size={11} className="text-text-tertiary flex-shrink-0" />
+      {items.slice(0, 4).map((act, i) => {
+        const actor = act.actor?.name || act.user?.name || 'Someone';
+        const verb = (act.action || 'updated').replace(/_/g, ' ');
+        const when = act.createdAt
+          ? formatDistanceToNowStrict(parseISO(act.createdAt), { addSuffix: false })
+          : '';
+        return (
+          <React.Fragment key={act.id || i}>
+            {i > 0 && <span className="w-1 h-1 rounded-full bg-zinc-300 dark:bg-zinc-700 flex-shrink-0" />}
+            <span className="text-[11px] text-text-secondary inline-flex items-center gap-1 flex-shrink-0">
+              <span className="font-medium text-text-primary">{actor}</span>
+              <span className="text-text-secondary">{verb}</span>
+              {when && <span className="text-text-tertiary tabular-nums">· {when}</span>}
+            </span>
+          </React.Fragment>
+        );
+      })}
+      {onSeeAll && (
+        <button onClick={onSeeAll} className="text-[11px] font-medium text-[#6D5CE7] dark:text-[#A78BFA] hover:underline flex-shrink-0 ml-2">
+          All activity →
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Compact approval pipeline card — Overview tab ─────────────────────────
+function ApprovalSummaryCard({ task, onOpenTab }) {
+  const flows = task?.approvalFlows || [];
+  const status = task?.approvalStatus || null;
+  const stageGroups = useMemo(() => groupFlowsByLogicalStage(flows), [flows]);
+  const totalStages = stageGroups.length;
+  const doneStages = stageGroups.filter(g => {
+    const r = rollUpStageStatus(g.rows);
+    return r === 'approved' || r === 'submitted';
+  }).length;
+
+  const overall = (() => {
+    if (status === 'approved') return { tone: 'green', headline: 'Fully approved — task complete' };
+    if (status === 'rejected') return { tone: 'red', headline: 'Rejected' };
+    if (status === 'changes_requested') return { tone: 'orange', headline: 'Changes requested' };
+    if (status === 'pending_approval') return { tone: 'amber', headline: 'Approval in progress' };
+    if (totalStages > 0) return { tone: 'amber', headline: 'Approval started' };
+    return null;
+  })();
+
+  const subtitle = (() => {
+    if (!flows.length) return null;
+    const lastWithComment = [...flows].reverse().find(f => f.comment);
+    if (lastWithComment) return `“${lastWithComment.comment}” — ${lastWithComment.userName || ''}`.trim();
+    if (status === 'approved') {
+      const finalRow = [...flows].reverse().find(f => f.status === 'approved');
+      if (finalRow?.userName) return `Approved by ${finalRow.userName}`;
+    }
+    return null;
+  })();
+
+  if (!overall) return null;
+
+  const toneMap = {
+    green:  { ring: 'border-emerald-200 dark:border-emerald-800/50',  bg: 'bg-emerald-50/60 dark:bg-emerald-900/10',  dot: 'bg-emerald-500', text: 'text-emerald-700 dark:text-emerald-300' },
+    amber:  { ring: 'border-amber-200 dark:border-amber-800/50',      bg: 'bg-amber-50/60 dark:bg-amber-900/10',      dot: 'bg-amber-500',   text: 'text-amber-700 dark:text-amber-300' },
+    red:    { ring: 'border-red-200 dark:border-red-800/50',          bg: 'bg-red-50/60 dark:bg-red-900/10',          dot: 'bg-red-500',     text: 'text-red-700 dark:text-red-300' },
+    orange: { ring: 'border-orange-200 dark:border-orange-800/50',    bg: 'bg-orange-50/60 dark:bg-orange-900/10',    dot: 'bg-orange-500',  text: 'text-orange-700 dark:text-orange-300' },
+  };
+  const tone = toneMap[overall.tone];
+
+  return (
+    <section className={`rounded-xl border ${tone.ring} ${tone.bg} px-4 py-3.5`}>
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 w-7 h-7 rounded-full ${tone.dot} text-white flex items-center justify-center flex-shrink-0`}>
+          <Check size={14} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-3">
+            <div className={`font-semibold text-[13px] ${tone.text}`}>{overall.headline}</div>
+            <span className={`text-[11px] font-medium ${tone.text} flex-shrink-0 tabular-nums`}>{doneStages}/{totalStages || 1} stages</span>
+          </div>
+          {subtitle && (
+            <div className="text-[11px] text-text-secondary mt-0.5 truncate" title={subtitle}>
+              {subtitle}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {totalStages > 0 && (
+        <div className="grid grid-cols-3 gap-2 mt-3">
+          {stageGroups.map((group, i) => {
+            const r = rollUpStageStatus(group.rows);
+            const isApproved = r === 'approved' || r === 'submitted';
+            const isCurrent = currentLogicalStage(stageGroups) === group.stage;
+            const skipped = group.rows.some(x => x.status === 'skipped_parallel');
+            const firstRow = group.rows[0];
+            const time = firstRow?.actionAt ? format(new Date(firstRow.actionAt), 'h:mm a') : null;
+            const note = firstRow?.comment ? `“${firstRow.comment}”` : (skipped ? 'auto-approved' : (isApproved ? 'submitted' : (isCurrent ? 'in review' : '—')));
+
+            return (
+              <div key={group.stage} className="rounded-lg bg-white/80 dark:bg-zinc-900/40 border border-zinc-200/70 dark:border-zinc-800 px-2.5 py-2 min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                  {isApproved ? <Check size={10} className="text-emerald-500" /> : isCurrent ? <Clock size={10} className="text-amber-500" /> : <Circle size={9} className="text-text-tertiary" />}
+                  <span className="tabular-nums">Stage {i + 1}</span>
+                </div>
+                <div className="text-[12px] font-medium text-text-primary truncate mt-0.5" title={group.label}>
+                  {group.label}
+                </div>
+                {firstRow?.userName && (
+                  <div className="flex items-center gap-1.5 mt-1 text-[11px] text-text-secondary truncate">
+                    <Avatar name={firstRow.userName} size="xs" />
+                    <span className="truncate">{firstRow.userName}</span>
+                  </div>
+                )}
+                <div className="text-[10px] text-text-tertiary truncate mt-0.5 tabular-nums" title={note}>
+                  {time ? `${time} · ` : ''}{note}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {onOpenTab && (
+        <button
+          type="button"
+          onClick={onOpenTab}
+          className={`mt-3 inline-flex items-center gap-1 text-[11px] font-medium ${tone.text} hover:underline`}
+        >
+          <ChevronDown size={11} /> See full approval timeline
+        </button>
+      )}
+    </section>
+  );
+}
+
+export default function TaskModal({
+  task, boardId, board, members = [], boardStatuses,
+  onClose, onUpdate, onDelete,
+  // Optional navigation hooks (parent supplies if it can sequence tasks).
+  // Buttons hide cleanly when not provided — no breaking changes for callers
+  // that don't pass them (TasksPage, MemberDrillDown, etc.).
+  onPrev, onNext,
+}) {
+  const { user, canManage, isMember, isSuperAdmin, granularPermissions, isTier1, isTier2 } = useAuth();
+  const { error: toastError, success: toastSuccess } = useToast();
   const shellCloseRef = useRef(null);
   const handleClose = () => (shellCloseRef.current ? shellCloseRef.current() : onClose());
   const isApproved = task?.approvalStatus === 'approved';
-  // Centralized permission checks — respect explicit DENY overrides even for
-  // management roles. `canEditAllFields` keeps its prior meaning (full edit
-  // for admin/manager/asst-mgr) but now also collapses to false when an admin
-  // has denied tasks.edit on this user.
   const denyEdit = granularPermissions?.['tasks.edit'] === false;
-  const canEditAllFields = !isApproved && !denyEdit && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
-
-  // Whether the actor can assign tasks to OTHER users. When false, the
-  // assignee/supervisor pickers must be locked to self only and supervisors
-  // are hidden. Backend (assign_others permission) is the source of truth.
+  // Tier-based RBAC: only Tier 1 / Tier 2 get unrestricted "edit all fields"
+  // power. The earlier `(canManage && task.creator.role !== 'admin')` clause
+  // was a stale role-string check from before the tier migration; `isTier1
+  // || isTier2` already covers everything `canManage` and `isAdmin` did
+  // without re-promoting Tier 3 to full edit. Mirrors the backend
+  // `checkTaskAction('edit')` gate (Tier 3/4 fall to the assignee/creator
+  // whitelist).
+  const canEditAllFields = !isApproved && !denyEdit && (isTier1 || isTier2);
+  // Due-date editability has its own tier rule on top of the general edit
+  // gate: once a dueDate is set, only Tier 1/Tier 2 may change it. Tier 3/4
+  // can still set the INITIAL value on a self-assigned task. Mirrors
+  // `taskController.updateTask`'s DUE_DATE_LOCKED branch.
+  const canChangeDueDate = canEditDueDateFn(user, task);
+  const dueDateLockedReason = !canChangeDueDate
+    ? 'Only Tier 1 or Tier 2 can change this due date.'
+    : null;
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
-
-  // Whether the actor can change task priority. Members default to false;
-  // managers/admins/asst-mgrs default to true. Per-task helper so a Tier 4
-  // actor can still edit priority on tasks they CREATED and SOLELY OWN
-  // (mirrors the backend self-owned exemption in updateTask). Backend
-  // `tasks.set_priority` (with the same self-owned exemption) remains the
-  // source of truth — this just renders the pill read-only when disallowed
-  // so a user can't even open the dropdown.
   const canSetPriority = canSetPriorityForTask(user, task, isSuperAdmin, granularPermissions);
-
-  // canEditOwnFields uses the centralized helper so explicit DENY on tasks.edit
-  // wins even for members who would otherwise be allowed to edit their own
-  // tasks. Mirrors the backend's `checkTaskAction('edit', …)` whitelist plus
-  // permissionEngine.deny precedence.
   const canEditOwnFields = canEditTaskFn(user, task, granularPermissions);
-
-  // Title edit gate — Tier 1 only after creation. Once a task exists, only
-  // Super Admin (Tier 1) may rename it. Creators, assignees, managers, and
-  // assistant managers can no longer change the title via the modal — the
-  // input collapses to a read-only `<h2>`. During NEW-task creation (when
-  // task has no id), the gate falls through to the generic edit check so
-  // allowed users can type the initial title. Mirrors the backend
-  // `title_locked` 403 in `taskController.updateTask`.
   const canEditTitle = !isApproved && canEditTaskTitleFn(user, task, granularPermissions);
   const isBlockedByDependency = !!task?.customFields?.blockedByDependency;
-  // Status edit gate: only owners/management may change status. Members who
-  // can view a task they don't own (e.g. via cross-team links) get a read-
-  // only pill instead of the dropdown.
   const canEditStatus = !isApproved && !isBlockedByDependency && (canEditAllFields || canEditOwnFields);
+
   const [title, setTitle] = useState(task?.title || '');
   const [description, setDescription] = useState(task?.description || '');
   const [status, setStatus] = useState(task?.status || 'not_started');
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [priority, setPriority] = useState(task?.priority || 'medium');
   const [assignee, setAssignee] = useState(task?.assignedTo || null);
-  // Multi-assignee + supervisor state from task_assignees
+
   const taskAssignees = task?.taskAssignees || [];
   const [selectedAssignees, setSelectedAssignees] = useState(() => {
     const assigneeIds = taskAssignees.filter(ta => ta.role === 'assignee').map(ta => ta.userId || ta.user?.id);
-    // Fallback to legacy assignedTo if no task_assignees
     if (assigneeIds.length === 0 && task?.assignedTo) return [typeof task.assignedTo === 'string' ? task.assignedTo : task.assignedTo?.id].filter(Boolean);
     return assigneeIds;
   });
@@ -101,20 +400,24 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     return taskAssignees.filter(ta => ta.role === 'supervisor').map(ta => ta.userId || ta.user?.id);
   });
   const [showAssigneesPicker, setShowAssigneesPicker] = useState(false);
-  const [showSupervisorsPicker, setShowSupervisorsPicker] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState('');
-  const [supervisorSearch, setSupervisorSearch] = useState('');
   const [dueDate, setDueDate] = useState(task?.dueDate ? task.dueDate.slice(0, 10) : '');
   const [startDate, setStartDate] = useState(task?.startDate ? task.startDate.slice(0, 10) : '');
+
+  const [reminders, setReminders] = useState(() => normalizeReminderProps(task?.reminders));
+  useEffect(() => {
+    setReminders(normalizeReminderProps(task?.reminders));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(task?.reminders || null)]);
   const [tags, setTags] = useState(task?.tags || []);
   const [newTag, setNewTag] = useState('');
   const [comments, setComments] = useState([]);
   const [files, setFiles] = useState([]);
-  const [activeTab, setActiveTab] = useState('comments');
+  const [activeTab, setActiveTab] = useState('overview');
   const [showStatusDrop, setShowStatusDrop] = useState(false);
   const [showPriorityDrop, setShowPriorityDrop] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
 
-  // Task-level status configuration
   const [taskStatusConfig, setTaskStatusConfig] = useState(task?.statusConfig || null);
   const [showStatusConfig, setShowStatusConfig] = useState(false);
   const [newStatusLabel, setNewStatusLabel] = useState('');
@@ -124,23 +427,27 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   const [showDepSelector, setShowDepSelector] = useState(false);
   const [depKey, setDepKey] = useState(0);
-
-  // Phase 4 — graceful state when ANOTHER user (or this user, in another
-  // tab) deletes the task while this modal is open. We do NOT auto-close
-  // the modal — the user might be mid-edit, and yanking the panel out
-  // from under them is worse than showing a clear "this no longer
-  // exists" banner. They can dismiss themselves via the X.
   const [deletedRemotely, setDeletedRemotely] = useState(false);
   const [showExtension, setShowExtension] = useState(false);
   const [showHelpRequest, setShowHelpRequest] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+  const [recurringTemplate, setRecurringTemplate] = useState(
+    task?.recurringTemplate || (task?.isRecurringInstance ? null : false)
+  );
+  const [saveStatus, setSaveStatus] = useState(null);
+  const [savedAt, setSavedAt] = useState(null);
+  const [savedAgo, setSavedAgo] = useState('');
   const saveTimerRef = useRef(null);
   const [conflicts, setConflicts] = useState([]);
   const [showConflicts, setShowConflicts] = useState(false);
   const [isDependencyReceiver, setIsDependencyReceiver] = useState(false);
-  // Refs for the native date inputs so we can call showPicker() on click —
-  // avoids the two-step "type a date / click calendar icon" flow the inputs
-  // default to. See DateCell for the same pattern on the board table.
+  // Subtask counts mirror — keeps the footer progress meter accurate.
+  const [subtaskCounts, setSubtaskCounts] = useState({ total: 0, done: 0 });
+  // Watcher state — lifted from WatcherSection so the title-row star button
+  // and the People card watchers preview share one source of truth.
+  const [watching, setWatching] = useState(false);
+  const [watchers, setWatchers] = useState([]);
+  const [watchBusy, setWatchBusy] = useState(false);
+
   const dueDateInputRef = useRef(null);
   const startDateInputRef = useRef(null);
   function openDatePicker(ref) {
@@ -158,15 +465,38 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       loadComments();
       loadFiles();
       loadDependencyRole();
+      loadWatchers();
     }
   }, [task?.id]);
 
-  // Acknowledge "seen" when the assignee actually opens the task detail view.
-  // Only assignees (role='assignee') are accepted by the server — calling for
-  // anyone else (creator, admin, manager, supervisor) returns 403 and would
-  // surface a global toast via the api interceptor. So gate the call on
-  // assignee-membership client-side, and mark it _silent as a safety net in
-  // case server state has drifted.
+  useEffect(() => {
+    if (!task?.id) return;
+    if (!task?.isRecurringInstance) {
+      setRecurringTemplate(false);
+      return;
+    }
+    if (task.recurringTemplate) {
+      setRecurringTemplate(task.recurringTemplate);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get(`/tasks/${task.id}`);
+        const fresh = res.data?.data?.task || res.data?.task || res.data || null;
+        if (cancelled) return;
+        if (fresh && fresh.recurringTemplate) {
+          setRecurringTemplate(fresh.recurringTemplate);
+        } else {
+          setRecurringTemplate(false);
+        }
+      } catch (_) {
+        if (!cancelled) setRecurringTemplate(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [task?.id, task?.isRecurringInstance]);
+
   useEffect(() => {
     if (!task?.id || !user?.id) return;
     const assigneeRows = Array.isArray(task?.taskAssignees)
@@ -180,15 +510,26 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       .catch(() => { /* idempotent — ignore transient failures */ });
   }, [task?.id, user?.id]);
 
+  // Periodic recompute of "Saved · 2s ago" footer stamp. Keeps the indicator
+  // honest without hammering the DOM. Only ticks while the modal is open.
+  useEffect(() => {
+    if (!savedAt) { setSavedAgo(''); return undefined; }
+    const tick = () => {
+      try {
+        setSavedAgo(formatDistanceToNowStrict(savedAt, { addSuffix: false }) + ' ago');
+      } catch { setSavedAgo(''); }
+    };
+    tick();
+    const id = setInterval(tick, 15_000);
+    return () => clearInterval(id);
+  }, [savedAt]);
+
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
 
-  // Realtime — comment events arrive with a payload, so we use the raw-event
-  // hook (the in-place patch is cleaner than refetching the whole list and
-  // dedupes optimistic-local adds against the server broadcast).
   useRealtimeEvent('comment:created', (data) => {
     if (data?.taskId === task?.id) {
       setComments(prev => {
@@ -204,16 +545,24 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   });
 
-  // Reset the remote-deleted banner if the user navigates between tasks
-  // within the modal (we hold the same TaskModal instance with a fresh task).
   useEffect(() => { setDeletedRemotely(false); }, [task?.id]);
 
-  // task:deleted while the modal is open → flip to read-only banner mode.
-  // Saves & mutations would 404 silently; the banner makes that visible.
   useRealtimeEvent('task:deleted', (data) => {
     if (data?.taskId && data.taskId === task?.id) {
       setDeletedRemotely(true);
     }
+  });
+
+  // Watcher realtime sync — refresh both list + my-watching pill on any change.
+  const refreshWatchers = useCallback(() => {
+    if (!task?.id) return;
+    api.get(`/task-extras/${task.id}/watchers`).then(r => setWatchers(r.data.watchers || [])).catch(() => {});
+    api.get(`/task-extras/${task.id}/watching`).then(r => setWatching(!!r.data.watching)).catch(() => {});
+  }, [task?.id]);
+  useRealtimeQuery({
+    queryKey: `watchers.task.${task?.id}`,
+    refetch: refreshWatchers,
+    enabled: !!task?.id,
   });
 
   async function loadComments() {
@@ -234,7 +583,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     try {
       const res = await api.get(`/tasks/${task.id}/dependencies`);
       const depData = res.data?.data || res.data;
-      // "blocking" = tasks that depend on this task (this task is dependsOnTaskId)
       const blockingOthers = (depData.blocking || []).length > 0;
       setIsDependencyReceiver(blockingOthers);
     } catch {
@@ -242,12 +590,48 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
+  async function loadWatchers() {
+    if (!task?.id) return;
+    try {
+      const [w, mine] = await Promise.all([
+        api.get(`/task-extras/${task.id}/watchers`),
+        api.get(`/task-extras/${task.id}/watching`),
+      ]);
+      setWatchers(w.data.watchers || []);
+      setWatching(!!mine.data.watching);
+    } catch {}
+  }
+
+  async function toggleWatch() {
+    if (!task?.id || watchBusy) return;
+    setWatchBusy(true);
+    try {
+      const res = await api.post(`/task-extras/${task.id}/watch`);
+      setWatching(!!res.data.watching);
+      refreshWatchers();
+    } catch (e) {
+      toastError?.('Could not update watch state.');
+    } finally {
+      setWatchBusy(false);
+    }
+  }
+
   async function save(updates) {
     setSaveStatus('saving');
     try {
-      await api.put(`/tasks/${task.id}`, updates);
-      if (onUpdate) onUpdate({ ...task, ...updates });
+      const res = await api.put(`/tasks/${task.id}`, updates);
+      const echoed = res?.data?.task || res?.data?.data?.task || null;
+      const merged = echoed ? { ...task, ...updates, ...echoed } : { ...task, ...updates };
+      if (onUpdate) onUpdate(merged);
+      const warnings = res?.data?.warnings || res?.data?.data?.warnings;
+      if (warnings?.reminders?.length && toastError) {
+        const msg = warnings.reminders.includes('reminders_save_failed')
+          ? 'Could not save reminders. Please try again.'
+          : `Reminder warning: ${warnings.reminders.join(', ')}`;
+        toastError(msg);
+      }
       setSaveStatus('saved');
+      setSavedAt(new Date());
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
     } catch (err) {
@@ -255,15 +639,8 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
       const msg = err.response?.data?.message;
       const meta = err.response?.data?.meta;
 
-      // Phase-fix — dep-owner-but-not-parent-owner attempted to mark the
-      // parent task done. Backend returns 403 with reason. Show a clean
-      // toast and revert the optimistic status pill to whatever the task
-      // was before (most likely 'stuck' if there was an active dep, or
-      // the prior status if all deps had cleared).
       if (status === 403 && meta?.reason === 'dep_owner_cannot_complete_parent') {
         if (toastError) toastError(msg);
-        // Revert: server didn't change anything. Set the pill back to the
-        // task's actual status from props.
         setStatus(task.status);
         setSaveStatus('error');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -271,13 +648,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         return;
       }
 
-      // Approval gate — direct status='done' / progress=100 attempted on a
-      // task that needs review first. The interceptor normally catches this
-      // before it hits the network, so a 403 here means the actor is in an
-      // approval-pending state OR the gate's preconditions changed mid-flight
-      // (e.g. another tab submitted approval). Revert the optimistic pill to
-      // the server-side status so the UI doesn't lie. The api error toast
-      // pipeline already shows the message — don't double-toast.
       const approvalCode = err.response?.data?.code;
       if (status === 403 && (approvalCode === 'approval_required' || approvalCode === 'approval_pending')) {
         setStatus(task.status);
@@ -287,11 +657,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         return;
       }
 
-      // Description set-once lock — backend rejected an attempt to edit a
-      // description that's already populated for a tier without override
-      // (T3/T4). Revert the optimistic textarea value to the saved
-      // description so the UI matches the persisted state, then surface
-      // the message via toast.
       if (approvalCode === 'description_locked') {
         setDescription(task.description || '');
         if (toastError) toastError(msg || 'Task description cannot be edited after it has been added.');
@@ -301,9 +666,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         return;
       }
 
-      // Phase 11 — admin-override flow for parent-done-while-blocked.
-      // Backend returns 409 with meta.requiresOverride for elevated users
-      // who can force the transition by re-sending with force=true.
       if (status === 409 && meta?.requiresOverride && updates.status === 'done') {
         const proceed = window.confirm(
           `${msg}\n\nMark "${task.title}" done anyway? This action will be recorded as an admin override.`
@@ -313,16 +675,15 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
             await api.put(`/tasks/${task.id}?force=true`, updates);
             if (onUpdate) onUpdate({ ...task, ...updates });
             setSaveStatus('saved');
+            setSavedAt(new Date());
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
             return;
           } catch (retryErr) {
             console.error('Force-done retry failed:', retryErr);
             setSaveStatus('error');
-            // fall through to revert below
           }
         }
-        // Cancelled or retry failed → revert UI status.
         setStatus('stuck');
         setSaveStatus('error');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -332,9 +693,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
       console.error('Failed to update task:', err);
       setSaveStatus('error');
-      // If the parent-done guard fired (400) or any "blocked"-flavoured
-      // server error came back, revert the optimistic status pill so the
-      // UI doesn't lie.
       if (msg && (msg.includes('blocked by') || msg.includes('active dependencies'))) {
         setStatus('stuck');
       }
@@ -344,27 +702,17 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
   }
 
   function handleTitleBlur() {
-    if (!title.trim()) { setTitle(task.title); return; } // Prevent empty titles
+    if (!title.trim()) { setTitle(task.title); return; }
     if (title !== task.title) save({ title });
   }
   function handleDescBlur() { if (description !== task.description) save({ description }); }
-  // Intercept "done" picks for owners of the task — opens the approval bottom
-  // sheet instead of directly transitioning. Mirror of the rule in TaskRow so
-  // the UX is identical whether the user clicks Done in the table or the modal.
+
   const isTaskOwner = !!user?.id && (
     task?.assignedTo === user.id
     || task?.createdBy === user.id
     || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
   );
 
-  // Super Admin exemption — top of the org hierarchy, no senior reviewer
-  // exists, so they never go through approval. Backend rejects the API call
-  // too (super_admin_no_approval), so this is the UX-side mirror.
-  //
-  // Self-assigned tasks are NOT exempt — the prior carve-out for `isSelfTask`
-  // was the bypass that allowed members to mark their own tasks Done without
-  // any review. The chain service routes self-tasks up the manager hierarchy
-  // and only auto-approves when there is no senior reviewer at all.
   const shouldInterceptDone = (val) =>
     val === 'done'
     && isTaskOwner
@@ -373,8 +721,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     && task?.approvalStatus !== 'approved';
 
   async function handleStatusChange(val) {
-    // Soft block: clicking Done while a chain is already pending shouldn't
-    // re-trigger submission or fall through to save() (which would 403).
     if (val === 'done' && !isSuperAdmin && task?.approvalStatus === 'pending_approval') {
       setShowStatusDrop(false);
       toastError('Task is awaiting approval. The reviewer will mark it Done.');
@@ -387,29 +733,20 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
     setStatus(val);
     setShowStatusDrop(false);
-    // Auto-fill startDate locally when moving to an active status (mirrors backend logic)
     const ACTIVE_STATUSES = ['working_on_it', 'stuck', 'review', 'done'];
     if (ACTIVE_STATUSES.includes(val) && !startDate) {
       const today = new Date().toISOString().slice(0, 10);
       setStartDate(today);
     }
-    // Completion forces progress to 100 — mirror the server invariant locally so
-    // the slider/progress bar updates immediately without waiting for the response.
     const updates = { status: val };
     if (val === 'done') updates.progress = 100;
     save(updates);
   }
   function handlePriorityChange(val) { setPriority(val); setShowPriorityDrop(false); save({ priority: val }); }
+
   async function saveTaskMembers(assignees, supervisors) {
     setSaveStatus('saving');
     try {
-      // The `/members` route is gated on `tasks.assign_others` because it
-      // accepts arbitrary assignee/supervisor sets. A user without that
-      // permission (member self-assigning their own task) can ONLY mutate
-      // a single self-assignee via the legacy `PUT /tasks/:id` path —
-      // that's the route comment's stated design ("Self-assign goes
-      // through PUT /:id."). Detect the self-only-from-restricted-actor
-      // case and route accordingly so members aren't dead-ended on a 403.
       const restrictedToSelf = !canAssignOthers;
       const isSelfOnly = (
         Array.isArray(assignees)
@@ -426,6 +763,7 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
         if (onUpdate) onUpdate({ ...task, assignedTo: assignees[0] || null });
       }
       setSaveStatus('saved');
+      setSavedAt(new Date());
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
     } catch (err) {
@@ -436,11 +774,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
-  // Updated rule: ANY assignment requires a due date — including self-
-  // assignment. The error message is tailored: assigning someone else reads
-  // "to another user", self-assignment just reads "before assigning this
-  // task". Backend mirrors the same logic in `needsDueDateForAssignment` and
-  // `dueDateRequiredMessage` so a forged direct PUT still 400s.
   function ensureDueDateForAssignment(targetUid) {
     if (dueDate) return true;
     const isSelf = targetUid && targetUid === user?.id;
@@ -452,8 +785,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
 
   function toggleAssignee(uid) {
     const isAdding = !selectedAssignees.includes(uid);
-    // Hard guard: client can only toggle self if it lacks assign_others. The
-    // server still enforces this — this just keeps the UI honest.
     if (isAdding && !canAssignOthers && uid !== user?.id) {
       toastError('You do not have permission to assign tasks to other users.');
       return;
@@ -466,25 +797,10 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     });
   }
 
-  function toggleSupervisor(uid) {
-    const isAdding = !selectedSupervisors.includes(uid);
-    if (isAdding && !canAssignOthers) {
-      toastError('You do not have permission to assign supervisors.');
-      return;
-    }
-    if (isAdding && !ensureDueDateForAssignment(uid)) return;
-    setSelectedSupervisors(prev => {
-      const next = prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid];
-      saveTaskMembers(selectedAssignees, next);
-      return next;
-    });
-  }
-
   function handleDateChange(field, val) {
     if (field === 'dueDate') {
       setDueDate(val);
       save({ dueDate: val || null });
-      // Check for scheduling conflicts when due date changes
       if (val && (assignee || task?.assignedTo)) {
         const userId = assignee || task?.assignedTo;
         const startTime = new Date(val);
@@ -527,7 +843,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     const res = await api.post('/comments', { taskId: task.id, content: text });
     const newComment = res.data.comment || res.data;
     setComments(prev => {
-      // Prevent duplicate if socket already added this comment
       if (newComment?.id && prev.some(c => c.id === newComment.id)) return prev;
       return [newComment, ...prev];
     });
@@ -557,488 +872,373 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
     }
   }
 
-  async function handleDelete() {
-    if (!confirm('Delete this task?')) return;
-    try { await api.delete(`/tasks/${task.id}`); if (onDelete) onDelete(task.id); handleClose(); }
-    catch (err) { console.error('Failed to delete:', err); }
-  }
-
+  // More-menu handlers — duplicate / archive (delete). Same backend endpoints
+  // as before; we just route them through the new menu. Permissions still
+  // enforced server-side.
   async function handleDuplicate() {
+    setShowMoreMenu(false);
     try {
       const res = await api.post(`/tasks/${task.id}/duplicate`, { includeSubtasks: true });
       const newTask = res.data?.task || res.data?.data?.task;
       if (onUpdate && newTask) onUpdate(newTask);
+      toastSuccess?.('Task duplicated.');
       handleClose();
-    } catch (err) { console.error('Failed to duplicate:', err); }
+    } catch (err) {
+      console.error('Failed to duplicate:', err);
+      toastError?.('Could not duplicate task.');
+    }
   }
 
-  // Resolve statuses: task-level → board-level → global defaults
+  async function handleArchive() {
+    setShowMoreMenu(false);
+    if (!confirm(`Archive "${task.title}"? You can restore it from the archive page.`)) return;
+    try {
+      await api.delete(`/tasks/${task.id}`);
+      if (onDelete) onDelete(task.id);
+      handleClose();
+    } catch (err) {
+      console.error('Failed to archive:', err);
+      toastError?.('Could not archive task.');
+    }
+  }
+
+  // Resolve statuses
   const activeStatuses = (taskStatusConfig && Array.isArray(taskStatusConfig) && taskStatusConfig.length > 0)
     ? taskStatusConfig
     : (boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES);
   const statusLookup = buildStatusLookup(activeStatuses);
   const statusCfg = statusLookup[status] || STATUS_CONFIG[status] || { label: status || 'Unknown', color: '#c4c4c4', bgColor: '#c4c4c4', textColor: '#fff' };
-  // The full palette for the status config editor (board-level or defaults)
   const availableStatusPalette = boardStatuses && boardStatuses.length > 0 ? boardStatuses : DEFAULT_STATUSES;
   const priorityCfg = PRIORITY_CONFIG[priority];
   const isMyTask = task?.assignedTo === user?.id || selectedAssignees.includes(user?.id);
-  // Start date editable for the dependency SETTER side (the task that added the dependency, even if blocked).
-  // NOT editable for the dependency RECEIVER side (the task others depend on — isDependencyReceiver).
   const canEditStartDate = !isApproved && !isDependencyReceiver && (canEditAllFields || isMyTask);
 
-  const tabs = [
+  // Assigned/created derived stamps for the People card.
+  const assigneeRows = Array.isArray(task?.taskAssignees)
+    ? task.taskAssignees.filter(ta => ta.role === 'assignee')
+    : [];
+  const latestAssignedAt = assigneeRows.map(r => r.assignedAt).filter(Boolean).sort().pop() || null;
+  const assignedOnLabel = latestAssignedAt ? formatCompactDateTime(latestAssignedAt) : null;
+  const createdOnLabel = task?.createdAt ? formatCompactDateTime(task.createdAt) : null;
+
+  // Recurring template due-time chip + countdown source.
+  const tmpl = recurringTemplate && typeof recurringTemplate === 'object' ? recurringTemplate : null;
+  const dueTimeChipLabel = tmpl?.dueTime
+    ? (() => {
+        const m = String(tmpl.dueTime).match(/^(\d{1,2}):(\d{2})/);
+        if (!m) return null;
+        const h = parseInt(m[1], 10);
+        const mm = m[2];
+        const period = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 === 0 ? 12 : h % 12;
+        const tz = tmpl?.timezone || '';
+        const tzShort = tz === 'Asia/Calcutta' || tz === 'Asia/Kolkata' ? 'IST' : tz;
+        return `${h12}:${mm} ${period}${tzShort ? ' ' + tzShort : ''}`;
+      })()
+    : null;
+
+  const countdown = useMemo(
+    () => computeCountdown(dueDate, tmpl?.dueTime),
+    // Re-evaluate when due date / template time changes; intentionally not a
+    // ticking subscription — chip refreshes on any modal interaction, which
+    // is acceptable for a deadline indicator that's accurate to the hour.
+    [dueDate, tmpl?.dueTime]
+  );
+
+  // Project / board context
+  const boardContext = board || task?.board || task?.Board || null;
+  const boardLabel = boardContext?.name || null;
+  const boardColor = boardContext?.color || ACCENT.violet;
+
+  // Footer progress: prefer subtask ratio when subtasks exist, else task.progress.
+  const footerProgress = (() => {
+    if (subtaskCounts.total > 0) {
+      const pct = Math.round((subtaskCounts.done / subtaskCounts.total) * 100);
+      return { done: subtaskCounts.done, total: subtaskCounts.total, pct };
+    }
+    if (typeof task?.progress === 'number') {
+      return { done: null, total: null, pct: Math.max(0, Math.min(100, task.progress)) };
+    }
+    return { done: 0, total: 0, pct: 0 };
+  })();
+
+  const TABS = [
+    { id: 'overview', label: 'Overview', icon: FileText },
+    { id: 'approval', label: 'Approval', icon: Shield, count: (task?.approvalFlows || []).length || undefined },
     { id: 'comments', label: 'Comments', icon: MessageSquare, count: comments.length },
     { id: 'files', label: 'Files', icon: Paperclip, count: files.length },
-    { id: 'updates', label: 'Updates', icon: Clock },
     { id: 'activity', label: 'Activity', icon: Activity },
   ];
 
   const titleElementId = `task-modal-title-${task?.id || 'new'}`;
 
+  // Description editability — set-once for Tier 3/Tier 4 (mirrors backend).
+  const savedDescription = typeof task?.description === 'string' ? task.description : '';
+  const hasSavedDescription = !!savedDescription.trim();
+  const canBypassDescriptionLock = isTier1 || isTier2;
+  const isDescriptionLocked = hasSavedDescription && !canBypassDescriptionLock;
+  const canEditDescription = !isApproved
+    && (canEditAllFields || canEditOwnFields)
+    && (!hasSavedDescription || canBypassDescriptionLock);
+
+  // Subtasks scroll target — Subtask button in title row jumps user here.
+  const subtasksRef = useRef(null);
+  const focusSubtasks = () => {
+    setActiveTab('overview');
+    requestAnimationFrame(() => {
+      subtasksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  // Project color stripe — derive a lighter shade for the gradient mid-stop.
+  const stripeColor = boardColor;
+  const stripeColorLight = (() => {
+    // Quick lighten: parse hex, mix toward white. Tolerant of bad input.
+    if (typeof stripeColor !== 'string' || !stripeColor.startsWith('#')) return stripeColor;
+    const hex = stripeColor.slice(1);
+    const expand = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
+    if (expand.length !== 6) return stripeColor;
+    const r = parseInt(expand.slice(0, 2), 16);
+    const g = parseInt(expand.slice(2, 4), 16);
+    const b = parseInt(expand.slice(4, 6), 16);
+    const mix = (v) => Math.round(v + (255 - v) * 0.35);
+    return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+  })();
+
   return (
     <>
       <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={titleElementId} size="sheet" placement="bottom-sheet">
-        {/* Remote-deletion banner (Phase 4). Stays at the very top so it's
-            visible regardless of which tab is active. */}
+        {/* ── Row 1: Project color stripe ─────────────────────────────── */}
+        <div
+          className="v3-project-stripe"
+          style={{ '--proj-color': stripeColor, '--proj-light': stripeColorLight }}
+          aria-hidden="true"
+        />
+
+        {/* Remote-deletion banner */}
         {deletedRemotely && (
-          <div
-            role="alert"
-            className="flex items-center justify-between gap-3 px-6 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-red-800 dark:text-red-200 text-sm flex-shrink-0"
-          >
-            <span>
-              <strong>This task was deleted by another user.</strong>{' '}
-              Your changes can no longer be saved. Close this panel to continue.
-            </span>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="px-3 py-1 rounded-md bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors flex-shrink-0"
-            >
-              Close
-            </button>
+          <div role="alert" className="flex items-center justify-between gap-3 px-6 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800 text-red-800 dark:text-red-200 text-sm flex-shrink-0">
+            <span><strong>This task was deleted by another user.</strong> Your changes can no longer be saved. Close this panel to continue.</span>
+            <button type="button" onClick={handleClose} className="px-3 py-1 rounded-md bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors flex-shrink-0">Close</button>
           </div>
         )}
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-border flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-text-secondary">Task</span>
-            {saveStatus === 'saving' && <span className="text-[10px] text-blue-500 font-medium animate-pulse">Saving...</span>}
-            {saveStatus === 'saved' && <span className="text-[10px] text-green-500 font-medium">Saved</span>}
-            {saveStatus === 'error' && <span className="text-[10px] text-red-500 font-medium">Save failed</span>}
+
+        {/* ── Row 2: Header top — breadcrumb / nav / actions ─────────── */}
+        <div className="flex items-center justify-between px-5 h-[42px] border-b border-border bg-white/95 dark:bg-[#1E1F23]/95 backdrop-blur flex-shrink-0">
+          <div className="flex items-center gap-1.5 text-[12px] min-w-0 flex-1">
+            <span className="text-text-tertiary">Task</span>
+            {boardLabel && (<>
+              <span className="text-text-tertiary">›</span>
+              <span className="inline-flex items-center gap-1 text-text-primary font-medium truncate max-w-[180px]" title={boardLabel}>
+                <span className="w-1.5 h-1.5 rounded-sm flex-shrink-0" style={{ backgroundColor: boardColor }} />
+                <span className="truncate">{boardLabel}</span>
+              </span>
+            </>)}
+            {task?.isRecurringInstance && (<>
+              <span className="text-text-tertiary">›</span>
+              <span className="text-text-secondary truncate">Daily Work</span>
+            </>)}
             {task?.autoAssigned && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple/10 text-purple">
+              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple/10 text-purple flex-shrink-0">
                 <Zap size={9} /> Auto-assigned
               </span>
             )}
-            {/* Daily Work / Recurring instance marker. Clicking takes the user
-                to the management page so they can see the template that
-                generated this instance. */}
             {task?.isRecurringInstance && (
               <button
                 type="button"
                 onClick={() => { window.location.href = '/recurring-work'; }}
-                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/30 transition-colors"
-                title={`Generated for ${task.occurrenceDate || task.dueDate} from a recurring template — click to manage.`}
+                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/30 transition-colors flex-shrink-0 v3-lift"
+                title={`Generated for ${task.occurrenceDate || task.dueDate}`}
               >
-                <RefreshCw size={9} />
-                Daily Work
-                {task.occurrenceDate && (
-                  <span className="opacity-70">· {task.occurrenceDate}</span>
-                )}
+                <RefreshCw size={9} className="v3-recur-spin" />
+                <span className="tabular-nums">Recurring{task.occurrenceDate ? ` · ${task.occurrenceDate}` : ''}</span>
               </button>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            {(onPrev || onNext) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onPrev?.()}
+                  disabled={!onPrev}
+                  className="p-1.5 rounded-md text-text-secondary hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed v3-lift"
+                  title="Previous task"
+                  aria-label="Previous task"
+                >
+                  <ChevronUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNext?.()}
+                  disabled={!onNext}
+                  className="p-1.5 rounded-md text-text-secondary hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed v3-lift"
+                  title="Next task"
+                  aria-label="Next task"
+                >
+                  <ChevronDown size={14} />
+                </button>
+                <span className="w-px h-4 bg-border mx-1" aria-hidden="true" />
+              </>
+            )}
             <button onClick={() => setShowHelpRequest(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/10 transition-colors" title="Request help">
-              <HelpCircle size={13} /> Help
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/10 transition-colors v3-lift" title="Request help">
+              <HelpCircle size={12} /> Help
             </button>
             {task?.dueDate && (
               <button onClick={() => setShowExtension(true)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors" title="Request due date extension">
-                <Calendar size={13} /> Extend
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors v3-lift" title="Request due-date extension">
+                <Calendar size={12} /> Extend
               </button>
             )}
-            <button onClick={handleClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
+            <button onClick={handleClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary v3-lift"><X size={16} /></button>
           </div>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {/* Title */}
-          {canEditTitle ? (
-            <input id={titleElementId} type="text" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={handleTitleBlur}
-              className="text-xl font-bold text-text-primary border-none outline-none w-full mb-2 placeholder:text-text-tertiary bg-transparent" placeholder="Task title" />
-          ) : (
-            <h2 id={titleElementId} className="text-xl font-bold text-text-primary mb-2">{title}</h2>
-          )}
-
-          {/* Assignment summary — read-only "Assigned by / Assigned to" row.
-              Source: task.creator (createdBy FK include) + task.taskAssignees /
-              task.assignee (legacy single FK fallback). The editable Assign To
-              field below remains the source of truth for changing assignees;
-              this band is informational so members know who handed them work
-              without scrolling. TODO: when assignment-history is added, swap
-              creator → latest assignedBy. */}
-          {(() => {
-            const creator = task?.creator;
-            const creatorName = creator?.name || 'Unknown';
-            const assigneeRows = Array.isArray(task?.taskAssignees)
-              ? task.taskAssignees.filter(ta => ta.role === 'assignee')
-              : [];
-            const assigneeList = assigneeRows.length > 0
-              ? assigneeRows.map(ta => ({ id: ta.userId || ta.user?.id, name: ta.user?.name || 'Unknown' }))
-              : (task?.assignee ? [{ id: task.assignee.id, name: task.assignee.name }] : []);
-            return (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-4 text-xs text-text-secondary">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-text-tertiary">Assigned by</span>
-                  <Avatar name={creatorName} size="xs" />
-                  <span className="font-medium text-text-primary">{creatorName}</span>
-                  {creator && (
-                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary">· {tierLabel(resolveTier(creator))}</span>
-                  )}
-                </div>
-                <span className="text-border">|</span>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-text-tertiary">Assigned to</span>
-                  {assigneeList.length === 0 ? (
-                    <span className="text-text-tertiary italic">Unassigned</span>
-                  ) : (
-                    assigneeList.map(a => (
-                      <span key={a.id || a.name} className="inline-flex items-center gap-1">
-                        <Avatar name={a.name} size="xs" />
-                        <span className="font-medium text-text-primary">{a.name}</span>
-                      </span>
-                    ))
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Watcher + Approval + Recurrence */}
-          <WatcherSection taskId={task?.id} />
-          <ApprovalSection task={task} onUpdate={(updated) => { if (onUpdate) onUpdate({ ...task, ...updated }); }} />
-          {/* Legacy per-task RecurrenceSection has been retired in favour of
-              the dedicated Recurring Work flow. New recurring rules are
-              created on /recurring-work; this button is the discoverability
-              path for users who used to look here. The legacy
-              Task.recurrence column still exists in the DB and any pre-
-              existing rules can still be read by /api/task-extras/:id/recurrence,
-              but the legacy generation cron is now off by default. */}
-          {canManage && !task?.isRecurringInstance && (
-            <div className="mb-4 flex items-center gap-2">
+        {/* ── Row 3: Header title row — star + title + watch/dep/subtask/more ── */}
+        <div className="flex items-center gap-2 px-5 h-[56px] border-b border-border bg-white dark:bg-[#1E1F23] flex-shrink-0">
+          <button
+            type="button"
+            onClick={toggleWatch}
+            disabled={watchBusy}
+            className={`p-1.5 rounded-md transition-colors v3-lift flex-shrink-0 ${watching ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/10' : 'text-text-tertiary hover:bg-surface hover:text-text-secondary'}`}
+            title={watching ? 'Watching — click to unwatch' : 'Watch this task'}
+            aria-pressed={watching}
+            aria-label={watching ? 'Unwatch task' : 'Watch task'}
+          >
+            <Star size={16} fill={watching ? 'currentColor' : 'none'} />
+          </button>
+          <div className="flex-1 min-w-0">
+            {canEditTitle ? (
+              <input
+                id={titleElementId}
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onBlur={handleTitleBlur}
+                className="text-[18px] font-semibold text-text-primary border-none outline-none w-full bg-transparent placeholder:text-text-tertiary truncate focus:bg-surface/40 rounded px-1 -mx-1"
+                placeholder="Task title"
+              />
+            ) : (
+              <h2 id={titleElementId} className="text-[18px] font-semibold text-text-primary truncate" title={title}>
+                {title}
+              </h2>
+            )}
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <span className={`hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border v3-lift ${watching ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:border-emerald-800' : 'text-text-secondary border-border'}`}>
+              <EyeIcon size={11} /> {watching ? 'Watching' : 'Not watching'}
+            </span>
+            {status !== 'done' && (
               <button
                 type="button"
-                onClick={() => { window.location.href = '/recurring-work'; }}
-                className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors"
-                title="Recurring work is managed on the Recurring Work page"
+                onClick={() => setShowDepSelector(true)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift"
+                title="Add a task dependency"
               >
-                <RefreshCw size={13} /> Make this recurring…
+                <Link2 size={11} /> Add dependency
               </button>
-              <span className="text-[10px] text-text-tertiary">
-                Opens the Recurring Work page where you can configure schedule, assignee, and escalation.
-              </span>
-            </div>
-          )}
-
-          {/* Approval Status Badge */}
-          {task?.approvalStatus && (
-            <div className={`mb-3 px-3 py-1.5 rounded-md text-xs font-medium inline-flex items-center gap-1.5 ${
-              task.approvalStatus === 'approved' ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800' :
-              task.approvalStatus === 'pending_approval' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200 dark:bg-yellow-900/20 dark:text-yellow-400 dark:border-yellow-800' :
-              'bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800'
-            }`}>
-              <Shield size={11} />
-              {task.approvalStatus === 'approved' ? 'Approved' :
-               task.approvalStatus === 'pending_approval' ? 'Pending Approval' : 'Changes Requested'}
-            </div>
-          )}
-
-          {/* Dependency Badge + Add button */}
-          <DependencyBadge key={depKey} taskId={task?.id} boardId={boardId || task?.boardId} onRefresh={async () => {
-            setDepKey(k => k + 1);
-            // Refresh task data since dependency removal may unblock the task
-            try {
-              const res = await api.get(`/tasks/${task.id}`);
-              const updated = res.data?.data?.task || res.data?.task || res.data;
-              if (updated) {
-                setStatus(updated.status || status);
-                if (onUpdate) onUpdate(updated);
-              }
-            } catch {}
-            // Refresh dependency role (task may no longer be a receiver after removal)
-            loadDependencyRole();
-          }} />
-          {/* Completed tasks can show existing dependencies (read-only) but
-              can't accept new ones — adding work to a done task makes no sense
-              and is rejected by the backend. */}
-          {status !== 'done' && (
-            <button onClick={() => setShowDepSelector(true)}
-              className="flex items-center gap-1.5 text-xs font-medium text-primary hover:bg-primary/5 px-2.5 py-1.5 rounded-md transition-colors mb-3">
-              <Link2 size={13} /> Add Dependency
+            )}
+            <button
+              type="button"
+              onClick={focusSubtasks}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift"
+              title="Jump to subtasks"
+            >
+              <Plus size={11} /> Subtask
             </button>
-          )}
-
-          {/* Phase 8 — Dependency Work child rows. Subtask-style child rows
-              for DependencyRequest items rooted at this parent. Distinct
-              styling (chain icon + slate background) so users don't confuse
-              them with normal subtasks. Hidden when the task has no requests. */}
-          <DependencyWorkSection
-            key={`dws-${depKey}`}
-            taskId={task?.id}
-            depKey={depKey}
-            onChanged={async () => {
-              setDepKey(k => k + 1);
-              // Refresh parent task — a status transition on a dep may flip
-              // the parent's blocked state and restore its prior status.
-              try {
-                const res = await api.get(`/tasks/${task.id}`);
-                const updated = res.data?.data?.task || res.data?.task || res.data;
-                if (updated) {
-                  setStatus(updated.status || status);
-                  if (onUpdate) onUpdate(updated);
-                }
-              } catch {}
-              loadDependencyRole();
-            }}
-          />
-
-          {/* Fields Grid */}
-          <div className="grid grid-cols-[100px_1fr] gap-y-3 gap-x-4 mb-6">
-            {/* Status */}
-            <span className="text-sm text-text-secondary flex items-center">Status</span>
             <div className="relative">
-              {isApproved && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200 mr-2">Approved</span>}
-              {isBlockedByDependency && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-600 border border-red-200 mr-2">
-                  <Lock size={10} /> Blocked by dependency
-                </span>
-              )}
-              <button onClick={() => canEditStatus && setShowStatusDrop(!showStatusDrop)} className={`status-pill ${(!canEditStatus) ? 'opacity-60 cursor-not-allowed' : ''}`} style={{ backgroundColor: statusCfg.bgColor }}
-                title={isBlockedByDependency ? 'Blocked by dependency — complete the blocking task first' : ''}>
-                {isBlockedByDependency && <Lock size={10} className="inline mr-1" />}{statusCfg.label}
+              <button
+                type="button"
+                onClick={() => setShowMoreMenu(v => !v)}
+                className="p-1.5 rounded-md text-text-secondary hover:bg-surface v3-lift"
+                title="More actions"
+                aria-haspopup="menu"
+                aria-expanded={showMoreMenu}
+              >
+                <MoreHorizontal size={15} />
               </button>
+              {showMoreMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} aria-hidden="true" />
+                  <div role="menu" className="absolute top-full right-0 mt-1 z-50 min-w-[180px] bg-white dark:bg-zinc-900 rounded-lg shadow-lg border border-border p-1 dropdown-enter">
+                    <button role="menuitem" onClick={handleDuplicate}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-[12px] text-text-primary hover:bg-surface text-left">
+                      <Copy size={12} className="text-text-tertiary" /> Duplicate task
+                    </button>
+                    {canManage && (
+                      <button role="menuitem" onClick={handleArchive}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-[12px] text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 text-left">
+                        <Archive size={12} /> Archive task
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Row 4: Body — main + right rail ────────────────────────── */}
+        <div className="flex-1 flex min-h-0 relative">
+          <div className="v3-aurora" aria-hidden="true" />
+
+          {/* ============ LEFT — main content ============ */}
+          <div className="flex-1 min-w-0 overflow-y-auto px-6 pt-4 pb-2 relative z-[1]">
+            {/* Section 1: Chips strip */}
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
+              <ChipPill
+                label={statusCfg.label}
+                color={statusCfg.bgColor}
+                onClick={canEditStatus ? () => setShowStatusDrop(s => !s) : undefined}
+                title={isBlockedByDependency ? 'Blocked by dependency' : undefined}
+                dim
+              />
+              {priorityCfg && (
+                <ChipPill icon={Flag} label={priorityCfg.label} color={priorityCfg.bgColor} dim />
+              )}
+              <span className="w-px h-3.5 bg-border mx-0.5" aria-hidden="true" />
+              <ChipPill
+                icon={Calendar}
+                label={dueDate ? `Due ${formatTaskDate(dueDate)}` : 'No due date'}
+                tone="neutral"
+              />
+              {dueTimeChipLabel && (
+                <ChipPill icon={Clock} label={dueTimeChipLabel} tone="neutral" />
+              )}
+              {countdown && (
+                <ChipPill
+                  icon={Clock}
+                  label={countdown.label}
+                  color={countdown.urgent ? '#E11D48' : '#D97706'}
+                  dim
+                  urgent={countdown.urgent}
+                />
+              )}
+              {isApproved && <ChipPill icon={Check} label="Approved" color="#10b981" dim />}
+              {isBlockedByDependency && <ChipPill icon={Lock} label="Blocked" color="#e2445c" dim />}
               {showStatusDrop && canEditStatus && (
-                <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border p-1.5 z-50 min-w-[140px] dropdown-enter">
+                <div className="absolute mt-7 bg-white dark:bg-zinc-900 rounded-lg shadow-lg border border-border p-1.5 z-[60] min-w-[160px] dropdown-enter">
                   {activeStatuses.map(s => {
                     const sCfg = statusLookup[s.key] || { label: s.label, bgColor: s.color };
                     return (
-                      <button key={s.key} onClick={() => handleStatusChange(s.key)} className="status-pill w-full mb-1 last:mb-0" style={{ backgroundColor: sCfg.bgColor }}>{sCfg.label}</button>
+                      <button key={s.key} onClick={() => handleStatusChange(s.key)}
+                        className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-[12px] hover:bg-surface text-left">
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: sCfg.bgColor }} />
+                        <span className="text-text-primary">{sCfg.label}</span>
+                      </button>
                     );
                   })}
                 </div>
               )}
             </div>
 
-            {/* Priority — gated by tasks.set_priority on top of the general
-                edit gate. A user with edit-on-this-task but no set_priority
-                still sees a read-only pill (not the dropdown trigger), to
-                avoid a button that would 403 on click. */}
-            <span className="text-sm text-text-secondary flex items-center">Priority</span>
-            <div className="relative">
-              {canEditOwnFields && canSetPriority ? (
-                <>
-                  <button onClick={() => setShowPriorityDrop(!showPriorityDrop)} className="status-pill" style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}>
-                    {priorityCfg ? priorityCfg.label : 'None'}
-                  </button>
-                  {showPriorityDrop && (
-                    <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border p-1.5 z-50 min-w-[130px] dropdown-enter">
-                      {Object.entries(PRIORITY_CONFIG).map(([k, c]) => (
-                        <button key={k} onClick={() => handlePriorityChange(k)} className="status-pill w-full mb-1 last:mb-0" style={{ backgroundColor: c.bgColor }}>{c.label}</button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <span
-                  className="status-pill select-none cursor-default"
-                  style={{ backgroundColor: priorityCfg ? priorityCfg.bgColor : '#c4c4c4' }}
-                  title={!canSetPriority ? "You don't have permission to change priority" : undefined}
-                >
-                  {priorityCfg ? priorityCfg.label : 'None'}
-                </span>
-              )}
-            </div>
+            {/* Section 2: Activity ribbon */}
+            <ActivityRibbon taskId={task?.id} onSeeAll={() => setActiveTab('activity')} />
 
-            {/* Assignees (multi-select) */}
-            <span className="text-sm text-text-secondary flex items-center gap-1"><Users size={14} /> Assign To</span>
-            <div className="relative">
-              {(canEditAllFields || (canEditOwnFields)) ? (
-                <>
-                  <button onClick={() => { setShowAssigneesPicker(!showAssigneesPicker); setShowSupervisorsPicker(false); setAssigneeSearch(''); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border hover:border-primary/30 transition-colors flex-wrap min-h-[34px]">
-                    {selectedAssignees.length > 0 ? (
-                      selectedAssignees.map(uid => {
-                        const m = members.find(mm => (mm.id || mm.user?.id) === uid);
-                        const n = m?.name || m?.user?.name || 'Unknown';
-                        const removable = canAssignOthers || uid === user?.id;
-                        return (
-                          <span key={uid} className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs px-2 py-0.5 rounded-full">
-                            <Avatar name={n} size="xs" />
-                            <span className="max-w-[80px] truncate">{n}</span>
-                            {removable && (
-                              <button onClick={(e) => { e.stopPropagation(); toggleAssignee(uid); }} className="hover:text-danger"><X size={10} /></button>
-                            )}
-                          </span>
-                        );
-                      })
-                    ) : (
-                      <span className="text-sm text-text-tertiary">{canAssignOthers ? 'Select assignees...' : 'Assign to me'}</span>
-                    )}
-                  </button>
-                  {showAssigneesPicker && (
-                    <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border z-50 min-w-[240px] max-h-[260px] overflow-hidden dropdown-enter">
-                      {!canAssignOthers && (
-                        <div className="px-3 py-1.5 bg-amber-50 text-[10px] text-amber-700 border-b border-amber-100 flex items-center gap-1.5">
-                          <Lock size={10} /> You can only assign tasks to yourself.
-                        </div>
-                      )}
-                      {canAssignOthers && (
-                        <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-                          <Search size={13} className="text-text-tertiary" />
-                          <input type="text" value={assigneeSearch} onChange={e => setAssigneeSearch(e.target.value)}
-                            placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full" onClick={e => e.stopPropagation()} autoFocus />
-                        </div>
-                      )}
-                      <div className="max-h-[200px] overflow-y-auto py-1">
-                        {(canAssignOthers
-                          ? members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(assigneeSearch.toLowerCase()))
-                          : members.filter(m => (m.id || m.user?.id) === user?.id)
-                        ).map(m => {
-                          const mId = m.id || m.user?.id;
-                          const mName = m.name || m.user?.name || 'Unknown';
-                          const isChecked = selectedAssignees.includes(mId);
-                          return (
-                            <button key={mId} onClick={(e) => { e.stopPropagation(); toggleAssignee(mId); }}
-                              className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isChecked ? 'bg-primary/5' : ''}`}>
-                              <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isChecked ? 'bg-primary border-primary' : 'border-[#c4c4c4]'}`}>
-                                {isChecked && <Check size={10} className="text-white" />}
-                              </div>
-                              <Avatar name={mName} size="xs" />
-                              <span className="truncate text-text-primary">{mName}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex items-center gap-1.5 px-3 py-1.5 flex-wrap">
-                  {selectedAssignees.length > 0 ? selectedAssignees.map(uid => {
-                    const m = members.find(mm => (mm.id || mm.user?.id) === uid);
-                    const n = m?.name || m?.user?.name || 'Unknown';
-                    return <span key={uid} className="inline-flex items-center gap-1 text-xs"><Avatar name={n} size="xs" /><span>{n}</span></span>;
-                  }) : <span className="text-sm text-text-tertiary">Unassigned</span>}
-                </div>
-              )}
-            </div>
-
-            {/* Supervisors (multi-select) — only shown when actor can assign others. */}
-            {canAssignOthers && (<>
-            <span className="text-sm text-text-secondary flex items-center gap-1"><Eye size={14} /> Supervisors</span>
-            <div className="relative">
-              {canEditAllFields ? (
-                <>
-                  <button onClick={() => { setShowSupervisorsPicker(!showSupervisorsPicker); setShowAssigneesPicker(false); setSupervisorSearch(''); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border hover:border-primary/30 transition-colors flex-wrap min-h-[34px]">
-                    {selectedSupervisors.length > 0 ? (
-                      selectedSupervisors.map(uid => {
-                        const m = members.find(mm => (mm.id || mm.user?.id) === uid);
-                        const n = m?.name || m?.user?.name || 'Unknown';
-                        return (
-                          <span key={uid} className="inline-flex items-center gap-1 bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full">
-                            <Avatar name={n} size="xs" />
-                            <span className="max-w-[80px] truncate">{n}</span>
-                            <button onClick={(e) => { e.stopPropagation(); toggleSupervisor(uid); }} className="hover:text-danger"><X size={10} /></button>
-                          </span>
-                        );
-                      })
-                    ) : (
-                      <span className="text-sm text-text-tertiary">No supervisors</span>
-                    )}
-                  </button>
-                  {showSupervisorsPicker && (
-                    <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border z-50 min-w-[240px] max-h-[260px] overflow-hidden dropdown-enter">
-                      <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
-                        <Search size={13} className="text-text-tertiary" />
-                        <input type="text" value={supervisorSearch} onChange={e => setSupervisorSearch(e.target.value)}
-                          placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full" onClick={e => e.stopPropagation()} autoFocus />
-                      </div>
-                      <div className="max-h-[200px] overflow-y-auto py-1">
-                        {members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(supervisorSearch.toLowerCase())).map(m => {
-                          const mId = m.id || m.user?.id;
-                          const mName = m.name || m.user?.name || 'Unknown';
-                          const isChecked = selectedSupervisors.includes(mId);
-                          return (
-                            <button key={mId} onClick={(e) => { e.stopPropagation(); toggleSupervisor(mId); }}
-                              className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface-50 w-full transition-colors ${isChecked ? 'bg-yellow-50' : ''}`}>
-                              <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isChecked ? 'bg-yellow-500 border-yellow-500' : 'border-[#c4c4c4]'}`}>
-                                {isChecked && <Check size={10} className="text-white" />}
-                              </div>
-                              <Avatar name={mName} size="xs" />
-                              <span className="truncate text-text-primary">{mName}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex items-center gap-1.5 px-3 py-1.5 flex-wrap">
-                  {selectedSupervisors.length > 0 ? selectedSupervisors.map(uid => {
-                    const m = members.find(mm => (mm.id || mm.user?.id) === uid);
-                    const n = m?.name || m?.user?.name || 'Unknown';
-                    return <span key={uid} className="inline-flex items-center gap-1 text-xs"><Avatar name={n} size="xs" /><span>{n}</span></span>;
-                  }) : <span className="text-sm text-text-tertiary">None</span>}
-                </div>
-              )}
-            </div>
-            </>)}
-
-            {/* Due Date — single click opens the native calendar picker
-                (no manual-typing intermediate step). The wrapper button is
-                the visible affordance; the underlying <input type="date">
-                is sized to overlay it but kept transparent so it stays in
-                the layout flow (showPicker requires an attached element). */}
-            <span className="text-sm text-text-secondary flex items-center">Due date</span>
-            {canEditOwnFields ? (
-              <button
-                type="button"
-                onClick={() => openDatePicker(dueDateInputRef)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(dueDateInputRef); } }}
-                className="relative text-sm px-3 py-1.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary w-fit text-left bg-white"
-                aria-label={dueDate ? `Change due date (currently ${formatTaskDate(dueDate)})` : 'Set due date'}
-              >
-                <span className={dueDate ? 'text-text-primary' : 'text-text-tertiary'}>
-                  {dueDate ? formatTaskDate(dueDate) : 'Set date'}
-                </span>
-                <input
-                  ref={dueDateInputRef}
-                  type="date"
-                  value={dueDate || ''}
-                  onChange={(e) => {
-                    handleDateChange('dueDate', e.target.value);
-                    // Pickers auto-dismiss on selection in modern browsers;
-                    // blur is a safety net for engines that keep focus.
-                    queueMicrotask(() => e.target.blur());
-                  }}
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
-                />
-              </button>
-            ) : (
-              <span className="text-sm px-3 py-1.5">{formatTaskDate(dueDate)}</span>
-            )}
-
-            {/* Conflict Warning */}
+            {/* Conflict warning */}
             {showConflicts && conflicts.length > 0 && (
-              <>
-                <span></span>
+              <div className="my-3">
                 <ConflictWarning
                   conflicts={conflicts}
                   taskId={task?.id}
@@ -1051,327 +1251,732 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                   }}
                   onDismiss={() => setShowConflicts(false)}
                 />
-              </>
+              </div>
             )}
 
-            {/* Start Date — same single-click-opens-calendar UX as Due Date. */}
-            <span className="text-sm text-text-secondary flex items-center">Start date</span>
-            {canEditStartDate ? (
-              <button
-                type="button"
-                onClick={() => openDatePicker(startDateInputRef)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(startDateInputRef); } }}
-                className="relative text-sm px-3 py-1.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary w-fit text-left bg-white"
-                aria-label={startDate ? `Change start date (currently ${formatTaskDate(startDate)})` : 'Set start date'}
-              >
-                <span className={startDate ? 'text-text-primary' : 'text-text-tertiary'}>
-                  {startDate ? formatTaskDate(startDate) : 'Set date'}
-                </span>
-                <input
-                  ref={startDateInputRef}
-                  type="date"
-                  value={startDate || ''}
-                  onChange={(e) => {
-                    handleDateChange('startDate', e.target.value);
-                    queueMicrotask(() => e.target.blur());
-                  }}
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
-                />
-              </button>
-            ) : (
-              <span className="text-sm px-3 py-1.5">{formatTaskDate(startDate)}</span>
-            )}
-
-            {/* Tags */}
-            <span className="text-sm text-text-secondary flex items-center"><Tag size={14} className="mr-1" /> Tags</span>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {tags.map((tag, i) => (
-                <span key={tag} className="inline-flex items-center gap-1 bg-primary/10 text-primary text-xs px-2 py-0.5 rounded-full">
-                  {tag}
-                  {canEditAllFields && <button onClick={() => removeTag(i)} className="hover:text-danger"><X size={10} /></button>}
-                </span>
-              ))}
-              {canEditAllFields && (
-                <input type="text" value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={handleAddTag}
-                  placeholder="Add tag..." className="text-xs border-none outline-none bg-transparent min-w-[70px]" />
-              )}
+            {/* Dependency badge — small pill, doesn't dominate */}
+            <div className="mb-2">
+              <DependencyBadge key={depKey} taskId={task?.id} boardId={boardId || task?.boardId} onRefresh={async () => {
+                setDepKey(k => k + 1);
+                try {
+                  const res = await api.get(`/tasks/${task.id}`);
+                  const updated = res.data?.data?.task || res.data?.task || res.data;
+                  if (updated) {
+                    setStatus(updated.status || status);
+                    if (onUpdate) onUpdate(updated);
+                  }
+                } catch {}
+                loadDependencyRole();
+              }} />
             </div>
-          </div>
 
-          {/* Task-Level Status Configuration — visible to creators/managers/admins */}
-          {canEditAllFields && (
-            <div className="mb-6 border border-border/60 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setShowStatusConfig(!showStatusConfig)}
-                className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-medium text-text-primary hover:bg-surface/40 transition-colors"
-              >
-                <Settings size={14} className="text-text-tertiary" />
-                <span className="flex-1 text-left">Configure Task Statuses</span>
-                {taskStatusConfig && taskStatusConfig.length > 0 && (
-                  <span className="text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full">
-                    {taskStatusConfig.length} custom
-                  </span>
-                )}
-                {showStatusConfig ? <ChevronDown size={14} className="text-text-tertiary" /> : <ChevronRight size={14} className="text-text-tertiary" />}
-              </button>
+            {/* Section 3: Sticky tabs */}
+            <div className="v3-tabs-sticky">
+              <div className="v3-tabs" role="tablist">
+                {TABS.map(t => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={activeTab === t.id}
+                    onClick={() => setActiveTab(t.id)}
+                    className="v3-tab"
+                    type="button"
+                  >
+                    <t.icon size={13} />
+                    <span>{t.label}</span>
+                    {t.count !== undefined && (
+                      <span className="v3-tab-count">{t.count}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-              {showStatusConfig && (
-                <div className="px-3 pb-3 border-t border-border/40 space-y-2 pt-2">
-                  <p className="text-[11px] text-text-tertiary mb-2">
-                    Select which statuses are available for this task. Members will only see these options. Leave empty to use board defaults.
-                  </p>
+            {/* ── Tab bodies ────────────────────────────────────── */}
 
-                  {/* Current task statuses */}
-                  {(taskStatusConfig || []).map((s, i) => (
-                    <div key={s.key} className="flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-surface/20 group/status">
-                      <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
-                      {editingStatusKey === s.key ? (
-                        <div className="flex items-center gap-1.5 flex-1">
-                          <input
-                            value={editStatusLabel}
-                            onChange={e => setEditStatusLabel(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter') {
-                                if (!editStatusLabel.trim()) return;
-                                const updated = (taskStatusConfig || []).map(st =>
-                                  st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st
-                                );
-                                setTaskStatusConfig(updated);
-                                save({ statusConfig: updated });
-                                setEditingStatusKey(null);
-                              }
-                            }}
-                            className="flex-1 px-2 py-1 border border-primary rounded text-xs focus:outline-none"
-                            autoFocus
-                            onClick={e => e.stopPropagation()}
-                          />
-                          <button onClick={() => {
-                            if (!editStatusLabel.trim()) return;
-                            const updated = (taskStatusConfig || []).map(st =>
-                              st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st
-                            );
-                            setTaskStatusConfig(updated);
-                            save({ statusConfig: updated });
-                            setEditingStatusKey(null);
-                          }} className="p-0.5 text-green-600 hover:bg-green-50 rounded"><Check size={12} /></button>
-                          <button onClick={() => setEditingStatusKey(null)} className="p-0.5 text-text-tertiary hover:bg-surface rounded"><X size={12} /></button>
-                        </div>
-                      ) : (
-                        <>
-                          <span className="text-xs font-medium text-text-primary flex-1">{s.label}</span>
-                          <div className="flex items-center gap-0.5 opacity-0 group-hover/status:opacity-100 transition-opacity">
-                            {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
-                              <button key={c} onClick={() => {
-                                const updated = (taskStatusConfig || []).map(st =>
-                                  st.key === s.key ? { ...st, color: c } : st
-                                );
-                                setTaskStatusConfig(updated);
-                                save({ statusConfig: updated });
-                              }}
-                                className={`w-3 h-3 rounded-full transition-all ${s.color === c ? 'ring-1 ring-offset-1 ring-primary' : 'hover:scale-110'}`}
-                                style={{ backgroundColor: c }}
-                              />
-                            ))}
-                          </div>
-                          <button onClick={() => { setEditingStatusKey(s.key); setEditStatusLabel(s.label); }}
-                            className="p-0.5 text-text-tertiary hover:text-primary opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
-                            <Pencil size={11} />
-                          </button>
-                          <button onClick={() => {
-                            const updated = (taskStatusConfig || []).filter(st => st.key !== s.key);
-                            const result = updated.length > 0 ? updated : null;
-                            setTaskStatusConfig(result);
-                            save({ statusConfig: result });
-                          }}
-                            className="p-0.5 text-text-tertiary hover:text-red-500 opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
-                            <X size={11} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  ))}
+            {activeTab === 'overview' && (
+              <div className="space-y-5 pt-4 pb-6 v3-stagger">
+                <ApprovalSummaryCard task={task} onOpenTab={() => setActiveTab('approval')} />
 
-                  {/* Quick-add from available palette (board or defaults) */}
-                  <div className="pt-1">
-                    <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Add from available statuses</p>
-                    <div className="flex flex-wrap gap-1">
-                      {availableStatusPalette
-                        .filter(s => !(taskStatusConfig || []).some(ts => ts.key === s.key))
-                        .map(s => (
-                          <button key={s.key} onClick={() => {
-                            const updated = [...(taskStatusConfig || []), { key: s.key, label: s.label, color: s.color }];
-                            setTaskStatusConfig(updated);
-                            save({ statusConfig: updated });
-                          }}
-                            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                          >
-                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-                            {s.label}
-                            <Plus size={10} className="text-text-tertiary" />
-                          </button>
-                        ))
-                      }
-                    </div>
+                {/* Description */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[10px] font-bold text-text-secondary uppercase tracking-[0.08em] inline-flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded bg-[#6D5CE7]/10 inline-flex items-center justify-center">
+                        <FileText size={10} className="text-[#6D5CE7]" />
+                      </span>
+                      Description
+                    </label>
+                    {isDescriptionLocked && (
+                      <span className="text-[10px] text-text-tertiary inline-flex items-center gap-1" title="Description is locked once added">
+                        <Lock size={10} /> Locked
+                      </span>
+                    )}
                   </div>
-
-                  {/* Add custom status */}
-                  <div className="pt-1 border-t border-border/30">
-                    <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Or create custom</p>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        value={newStatusLabel}
-                        onChange={e => setNewStatusLabel(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && newStatusLabel.trim()) {
-                            const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
-                            if ((taskStatusConfig || []).some(s => s.key === key)) return;
-                            const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
-                            setTaskStatusConfig(updated);
-                            save({ statusConfig: updated });
-                            setNewStatusLabel('');
-                          }
-                        }}
-                        placeholder="Custom status name..."
-                        className="flex-1 px-2 py-1.5 border border-border rounded-md text-xs focus:outline-none focus:border-primary"
-                        onClick={e => e.stopPropagation()}
+                  {canEditDescription ? (
+                    <>
+                      <textarea
+                        value={description}
+                        onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }}
+                        onBlur={handleDescBlur}
+                        placeholder="Add details, paste a link, or @mention someone…"
+                        className="w-full text-sm border border-border rounded-lg px-3 py-2.5 bg-surface/30 focus:outline-none focus:border-primary focus:bg-white dark:focus:bg-zinc-900 resize-none min-h-[64px] placeholder:text-text-tertiary"
                       />
-                      <div className="flex gap-0.5">
-                        {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
-                          <button key={c} onClick={() => setNewStatusColor(c)}
-                            className={`w-4 h-4 rounded-full transition-all ${newStatusColor === c ? 'ring-2 ring-offset-1 ring-primary scale-110' : 'hover:scale-105'}`}
-                            style={{ backgroundColor: c }} />
-                        ))}
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        <button type="button" className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift" onClick={() => document.querySelector(`#desc-${task?.id}`)?.focus()}>
+                          <Pencil size={11} /> Write
+                        </button>
+                        <button type="button" className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift">
+                          <Link2 size={11} /> Paste link
+                        </button>
+                        <button type="button" className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift">
+                          @ Mention
+                        </button>
+                        <button type="button" className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-text-secondary border border-border hover:border-[#6D5CE7]/40 hover:text-[#6D5CE7] transition-colors v3-lift" onClick={() => setActiveTab('files')}>
+                          <Paperclip size={11} /> Attach
+                        </button>
                       </div>
-                      <button
-                        onClick={() => {
-                          if (!newStatusLabel.trim()) return;
-                          const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
-                          if ((taskStatusConfig || []).some(s => s.key === key)) return;
-                          const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
-                          setTaskStatusConfig(updated);
-                          save({ statusConfig: updated });
-                          setNewStatusLabel('');
-                        }}
-                        disabled={!newStatusLabel.trim()}
-                        className="px-2.5 py-1.5 text-[11px] font-medium bg-primary text-white rounded-md hover:bg-primary-dark transition-colors disabled:opacity-40"
-                      >
-                        Add
-                      </button>
+                      <GrammarSuggestion
+                        suggestion={descGrammarSuggestion}
+                        isChecking={isCheckingDescGrammar}
+                        onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
+                        onDismiss={dismissDescGrammar}
+                      />
+                    </>
+                  ) : isDescriptionLocked ? (
+                    <div aria-readonly="true" className="text-sm text-text-secondary px-3 py-2.5 border border-border rounded-lg min-h-[64px] bg-surface/30 whitespace-pre-wrap select-text">
+                      {savedDescription}
                     </div>
-                  </div>
-
-                  {/* Reset to defaults */}
-                  {taskStatusConfig && taskStatusConfig.length > 0 && (
-                    <button
-                      onClick={() => { setTaskStatusConfig(null); save({ statusConfig: null }); }}
-                      className="text-[11px] text-text-tertiary hover:text-text-secondary transition-colors mt-1"
-                    >
-                      Clear task statuses (use board defaults)
-                    </button>
+                  ) : (
+                    <p className="text-sm text-text-tertiary px-3 py-3 border border-dashed border-border rounded-lg bg-surface/20">
+                      Add details, paste a link, or @mention someone…
+                    </p>
                   )}
                 </div>
-              )}
-            </div>
-          )}
 
-          {/* Description — set-once for Tier 3/Tier 4 only. Tier 1 and Tier 2
-              may edit the description at any time (mirrors the backend
-              `tasks.edit_locked_description` matrix flag and the
-              `description_locked` 403 guard). For Tier 3/Tier 4 the field is
-              editable while empty so they can add the first description, then
-              becomes a read-only "Locked" panel after persistence.
-              Edit gate matches the title field (canEditAllFields || canEditOwnFields)
-              so an assignee / creator member can add the first description —
-              backend `checkTaskAction('edit')` whitelists `description` for the
-              same actors, so this UI gate must not be narrower. */}
-          {(() => {
-            const savedDescription = typeof task?.description === 'string' ? task.description : '';
-            const hasSavedDescription = !!savedDescription.trim();
-            // Tier 1 + Tier 2 always bypass the lock (matches backend matrix
-            // flag `tasks.edit_locked_description`).
-            const canBypassDescriptionLock = isTier1 || isTier2;
-            const isDescriptionLocked = hasSavedDescription && !canBypassDescriptionLock;
-            const canEditDescription = !isApproved
-              && (canEditAllFields || canEditOwnFields)
-              && (!hasSavedDescription || canBypassDescriptionLock);
-            return (
-              <div className="mb-6">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-sm font-medium text-text-primary block">Description</label>
-                  {isDescriptionLocked && (
-                    <span
-                      className="text-[11px] text-text-tertiary inline-flex items-center gap-1"
-                      title="Description is locked once added and cannot be edited."
+                {/* Subtasks */}
+                <div ref={subtasksRef}>
+                  <SubtaskList taskId={task.id} members={members} onSubtaskCountChange={(counts) => {
+                    setSubtaskCounts(counts || { total: 0, done: 0 });
+                    if (onUpdate) onUpdate({ ...task, _subtaskCounts: counts });
+                  }} />
+                </div>
+
+                <DependencyWorkSection
+                  key={`dws-${depKey}`}
+                  taskId={task?.id}
+                  depKey={depKey}
+                  onChanged={async () => {
+                    setDepKey(k => k + 1);
+                    try {
+                      const res = await api.get(`/tasks/${task.id}`);
+                      const updated = res.data?.data?.task || res.data?.task || res.data;
+                      if (updated) {
+                        setStatus(updated.status || status);
+                        if (onUpdate) onUpdate(updated);
+                      }
+                    } catch {}
+                    loadDependencyRole();
+                  }}
+                />
+
+                {/* Comments */}
+                <div>
+                  <label className="text-[10px] font-bold text-text-secondary uppercase tracking-[0.08em] inline-flex items-center gap-1.5 mb-2">
+                    <span className="w-4 h-4 rounded bg-[#0D9488]/10 inline-flex items-center justify-center">
+                      <MessageSquare size={10} className="text-[#0D9488]" />
+                    </span>
+                    Comments
+                  </label>
+                  <TaskComments comments={comments} onAdd={handleAddComment} onDelete={handleDeleteComment} />
+                </div>
+
+                {/* Advanced: per-task status configuration (collapsed) */}
+                {canEditAllFields && (
+                  <div className="border border-border/60 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setShowStatusConfig(!showStatusConfig)}
+                      className="flex items-center gap-2 w-full px-3 py-2 text-[12px] font-medium text-text-secondary hover:bg-surface/40 transition-colors"
                     >
-                      <Lock size={11} />
-                      Locked
+                      <Settings size={12} className="text-text-tertiary" />
+                      <span className="flex-1 text-left">Configure task statuses</span>
+                      {taskStatusConfig && taskStatusConfig.length > 0 && (
+                        <span className="text-[10px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full">
+                          {taskStatusConfig.length} custom
+                        </span>
+                      )}
+                      {showStatusConfig ? <ChevronDown size={13} className="text-text-tertiary" /> : <ChevronRight size={13} className="text-text-tertiary" />}
+                    </button>
+                    {showStatusConfig && (
+                      <div className="px-3 pb-3 border-t border-border/40 space-y-2 pt-2">
+                        <p className="text-[11px] text-text-tertiary mb-2">
+                          Select which statuses are available for this task. Members will only see these options. Leave empty to use board defaults.
+                        </p>
+                        {(taskStatusConfig || []).map((s) => (
+                          <div key={s.key} className="flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-surface/20 group/status">
+                            <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
+                            {editingStatusKey === s.key ? (
+                              <div className="flex items-center gap-1.5 flex-1">
+                                <input
+                                  value={editStatusLabel}
+                                  onChange={e => setEditStatusLabel(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      if (!editStatusLabel.trim()) return;
+                                      const updated = (taskStatusConfig || []).map(st => st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st);
+                                      setTaskStatusConfig(updated);
+                                      save({ statusConfig: updated });
+                                      setEditingStatusKey(null);
+                                    }
+                                  }}
+                                  className="flex-1 px-2 py-1 border border-primary rounded text-xs focus:outline-none"
+                                  autoFocus
+                                  onClick={e => e.stopPropagation()}
+                                />
+                                <button onClick={() => {
+                                  if (!editStatusLabel.trim()) return;
+                                  const updated = (taskStatusConfig || []).map(st => st.key === s.key ? { ...st, label: editStatusLabel.trim() } : st);
+                                  setTaskStatusConfig(updated);
+                                  save({ statusConfig: updated });
+                                  setEditingStatusKey(null);
+                                }} className="p-0.5 text-green-600 hover:bg-green-50 rounded"><Check size={12} /></button>
+                                <button onClick={() => setEditingStatusKey(null)} className="p-0.5 text-text-tertiary hover:bg-surface rounded"><X size={12} /></button>
+                              </div>
+                            ) : (
+                              <>
+                                <span className="text-xs font-medium text-text-primary flex-1">{s.label}</span>
+                                <div className="flex items-center gap-0.5 opacity-0 group-hover/status:opacity-100 transition-opacity">
+                                  {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
+                                    <button key={c} onClick={() => {
+                                      const updated = (taskStatusConfig || []).map(st => st.key === s.key ? { ...st, color: c } : st);
+                                      setTaskStatusConfig(updated);
+                                      save({ statusConfig: updated });
+                                    }}
+                                      className={`w-3 h-3 rounded-full transition-all ${s.color === c ? 'ring-1 ring-offset-1 ring-primary' : 'hover:scale-110'}`}
+                                      style={{ backgroundColor: c }}
+                                    />
+                                  ))}
+                                </div>
+                                <button onClick={() => { setEditingStatusKey(s.key); setEditStatusLabel(s.label); }}
+                                  className="p-0.5 text-text-tertiary hover:text-primary opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
+                                  <Pencil size={11} />
+                                </button>
+                                <button onClick={() => {
+                                  const updated = (taskStatusConfig || []).filter(st => st.key !== s.key);
+                                  const result = updated.length > 0 ? updated : null;
+                                  setTaskStatusConfig(result);
+                                  save({ statusConfig: result });
+                                }}
+                                  className="p-0.5 text-text-tertiary hover:text-red-500 opacity-0 group-hover/status:opacity-100 transition-opacity rounded">
+                                  <X size={11} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                        <div className="pt-1">
+                          <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Add from available statuses</p>
+                          <div className="flex flex-wrap gap-1">
+                            {availableStatusPalette
+                              .filter(s => !(taskStatusConfig || []).some(ts => ts.key === s.key))
+                              .map(s => (
+                                <button key={s.key} onClick={() => {
+                                  const updated = [...(taskStatusConfig || []), { key: s.key, label: s.label, color: s.color }];
+                                  setTaskStatusConfig(updated);
+                                  save({ statusConfig: updated });
+                                }}
+                                  className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                                >
+                                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                                  {s.label}
+                                  <Plus size={10} className="text-text-tertiary" />
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                        <div className="pt-1 border-t border-border/30">
+                          <p className="text-[10px] text-text-tertiary mb-1.5 font-medium uppercase tracking-wider">Or create custom</p>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={newStatusLabel}
+                              onChange={e => setNewStatusLabel(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && newStatusLabel.trim()) {
+                                  const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
+                                  if ((taskStatusConfig || []).some(s => s.key === key)) return;
+                                  const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
+                                  setTaskStatusConfig(updated);
+                                  save({ statusConfig: updated });
+                                  setNewStatusLabel('');
+                                }
+                              }}
+                              placeholder="Custom status name…"
+                              className="flex-1 px-2 py-1.5 border border-border rounded-md text-xs focus:outline-none focus:border-primary"
+                              onClick={e => e.stopPropagation()}
+                            />
+                            <div className="flex gap-0.5">
+                              {STATUS_PRESET_COLORS.slice(0, 6).map(c => (
+                                <button key={c} onClick={() => setNewStatusColor(c)}
+                                  className={`w-4 h-4 rounded-full transition-all ${newStatusColor === c ? 'ring-2 ring-offset-1 ring-primary scale-110' : 'hover:scale-105'}`}
+                                  style={{ backgroundColor: c }} />
+                              ))}
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (!newStatusLabel.trim()) return;
+                                const key = newStatusLabel.trim().toLowerCase().replace(/\s+/g, '_');
+                                if ((taskStatusConfig || []).some(s => s.key === key)) return;
+                                const updated = [...(taskStatusConfig || []), { key, label: newStatusLabel.trim(), color: newStatusColor }];
+                                setTaskStatusConfig(updated);
+                                save({ statusConfig: updated });
+                                setNewStatusLabel('');
+                              }}
+                              disabled={!newStatusLabel.trim()}
+                              className="px-2.5 py-1.5 text-[11px] font-medium bg-primary text-white rounded-md hover:bg-primary-dark transition-colors disabled:opacity-40"
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </div>
+                        {taskStatusConfig && taskStatusConfig.length > 0 && (
+                          <button
+                            onClick={() => { setTaskStatusConfig(null); save({ statusConfig: null }); }}
+                            className="text-[11px] text-text-tertiary hover:text-text-secondary transition-colors mt-1"
+                          >
+                            Clear task statuses (use board defaults)
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === 'approval' && (
+              <div className="pt-4 pb-6">
+                <ApprovalSection task={task} onUpdate={(updated) => { if (onUpdate) onUpdate({ ...task, ...updated }); }} />
+              </div>
+            )}
+
+            {activeTab === 'comments' && (
+              <div className="pt-4 pb-6">
+                <TaskComments comments={comments} onAdd={handleAddComment} onDelete={handleDeleteComment} />
+              </div>
+            )}
+
+            {activeTab === 'files' && (
+              <div className="pt-4 pb-6">
+                <TaskFiles files={files} onUpload={handleUploadFile} onDelete={handleDeleteFile} />
+              </div>
+            )}
+
+            {activeTab === 'activity' && (
+              <div className="pt-4 pb-6">
+                <ActivityFeed taskId={task.id} />
+                <div className="mt-6">
+                  <WorkLogSection taskId={task.id} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ============ RIGHT — properties rail (5 colored cards) ============ */}
+          <aside className="w-[340px] flex-shrink-0 border-l border-border bg-[#FAFAF9] dark:bg-zinc-900/30 overflow-y-auto px-4 py-4 space-y-3 v3-stagger relative z-[1]">
+
+            {/* Card 1 — PROPERTIES (purple) */}
+            <V3Card accent="purple" title="Properties">
+              <V3Row icon={Circle} label="Status">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => canEditStatus && setShowStatusDrop(s => !s)}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${canEditStatus ? 'cursor-pointer' : 'cursor-default'}`}
+                    style={{ backgroundColor: `${statusCfg.bgColor}1f`, color: statusCfg.bgColor, border: `1px solid ${statusCfg.bgColor}33` }}
+                    title={isBlockedByDependency ? 'Blocked by dependency' : ''}
+                  >
+                    {isBlockedByDependency && <Lock size={10} />}
+                    <span className="w-1.5 h-1.5 rounded-full v3-pulse-dot" style={{ backgroundColor: statusCfg.bgColor }} />
+                    {statusCfg.label}
+                  </button>
+                </div>
+              </V3Row>
+
+              <V3Row icon={Flag} label="Priority">
+                <div className="relative">
+                  {canEditOwnFields && canSetPriority ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowPriorityDrop(!showPriorityDrop)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold cursor-pointer v3-lift"
+                        style={{ backgroundColor: priorityCfg ? `${priorityCfg.bgColor}1f` : '#f3f4f6', color: priorityCfg ? priorityCfg.bgColor : '#6b7280', border: priorityCfg ? `1px solid ${priorityCfg.bgColor}33` : '1px solid #e5e7eb' }}
+                      >
+                        {priorityCfg && <Flag size={10} />}
+                        {priorityCfg ? priorityCfg.label : 'None'}
+                      </button>
+                      {showPriorityDrop && (
+                        <div className="absolute top-full right-0 mt-1 bg-white dark:bg-zinc-900 rounded-lg shadow-lg border border-border p-1.5 z-50 min-w-[140px] dropdown-enter">
+                          {Object.entries(PRIORITY_CONFIG).map(([k, c]) => (
+                            <button key={k} onClick={() => handlePriorityChange(k)}
+                              className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-[12px] hover:bg-surface text-left">
+                              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.bgColor }} />
+                              <span className="text-text-primary">{c.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold select-none"
+                      style={{ backgroundColor: priorityCfg ? `${priorityCfg.bgColor}1f` : '#f3f4f6', color: priorityCfg ? priorityCfg.bgColor : '#6b7280', border: priorityCfg ? `1px solid ${priorityCfg.bgColor}33` : '1px solid #e5e7eb' }}
+                      title={!canSetPriority ? "You don't have permission to change priority" : undefined}
+                    >
+                      {priorityCfg ? priorityCfg.label : 'None'}
                     </span>
                   )}
                 </div>
-                {canEditDescription ? (
-                  <>
-                    <textarea
-                      value={description}
-                      onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }}
-                      onBlur={handleDescBlur}
-                      placeholder="Add description..."
-                      className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px]"
-                    />
-                    <GrammarSuggestion
-                      suggestion={descGrammarSuggestion}
-                      isChecking={isCheckingDescGrammar}
-                      onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
-                      onDismiss={dismissDescGrammar}
-                    />
-                  </>
-                ) : isDescriptionLocked ? (
-                  <div
-                    aria-readonly="true"
-                    className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30 whitespace-pre-wrap select-text"
-                  >
-                    {savedDescription}
-                  </div>
+              </V3Row>
+
+              <V3Row icon={Bookmark} label="Project">
+                {boardLabel ? (
+                  <span className="inline-flex items-center gap-1.5 text-[12px] text-text-primary truncate" title={boardLabel}>
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: boardColor }} />
+                    <span className="truncate">{boardLabel}</span>
+                  </span>
                 ) : (
-                  <p className="text-sm text-text-secondary px-3 py-2 border border-border rounded-lg min-h-[80px] bg-surface/30">No description</p>
+                  <span className="text-text-tertiary text-[12px]">—</span>
+                )}
+              </V3Row>
+            </V3Card>
+
+            {/* Card 2 — PEOPLE (teal) */}
+            <V3Card
+              accent="teal"
+              title="People"
+              action={(canEditAllFields || canEditOwnFields) && (
+                <button
+                  type="button"
+                  onClick={() => setShowAssigneesPicker(!showAssigneesPicker)}
+                  className="text-text-tertiary hover:text-[#0D9488] v3-lift"
+                  title="Manage assignee"
+                >
+                  <Plus size={12} />
+                </button>
+              )}
+            >
+              <V3Row icon={UserIcon} label="Assignee">
+                <div className="relative w-full">
+                  {(canEditAllFields || canEditOwnFields) ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { setShowAssigneesPicker(!showAssigneesPicker); setAssigneeSearch(''); }}
+                        className="inline-flex items-center gap-1 flex-wrap min-h-[24px] text-[12px] text-left"
+                      >
+                        {selectedAssignees.length > 0 ? (
+                          selectedAssignees.map(uid => {
+                            const m = members.find(mm => (mm.id || mm.user?.id) === uid);
+                            const n = m?.name || m?.user?.name || 'Unknown';
+                            const removable = canAssignOthers || uid === user?.id;
+                            return (
+                              <span key={uid} className="inline-flex items-center gap-1 bg-[#0D9488]/10 text-[#0D9488] text-[11px] px-1.5 py-0.5 rounded-full">
+                                <Avatar name={n} size="xs" />
+                                <span className="max-w-[110px] truncate">{n}</span>
+                                {removable && (
+                                  <button onClick={(e) => { e.stopPropagation(); toggleAssignee(uid); }} className="hover:text-danger"><X size={9} /></button>
+                                )}
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span className="text-text-tertiary inline-flex items-center gap-1 border border-dashed border-border px-2 py-0.5 rounded-full">
+                            <Plus size={10} /> {canAssignOthers ? 'Add assignee' : 'Assign to me'}
+                          </span>
+                        )}
+                      </button>
+                      {showAssigneesPicker && (
+                        <div className="absolute top-full right-0 mt-1 bg-white dark:bg-zinc-900 rounded-lg shadow-lg border border-border z-50 min-w-[240px] max-h-[260px] overflow-hidden dropdown-enter">
+                          {!canAssignOthers && (
+                            <div className="px-3 py-1.5 bg-amber-50 text-[10px] text-amber-700 border-b border-amber-100 flex items-center gap-1.5">
+                              <Lock size={10} /> You can only assign tasks to yourself.
+                            </div>
+                          )}
+                          {canAssignOthers && (
+                            <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+                              <input type="text" value={assigneeSearch} onChange={e => setAssigneeSearch(e.target.value)}
+                                placeholder="Search people…" className="bg-transparent border-none outline-none text-xs w-full" onClick={e => e.stopPropagation()} autoFocus />
+                            </div>
+                          )}
+                          <div className="max-h-[200px] overflow-y-auto py-1">
+                            {(canAssignOthers
+                              ? members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(assigneeSearch.toLowerCase()))
+                              : members.filter(m => (m.id || m.user?.id) === user?.id)
+                            ).map(m => {
+                              const mId = m.id || m.user?.id;
+                              const mName = m.name || m.user?.name || 'Unknown';
+                              const isChecked = selectedAssignees.includes(mId);
+                              return (
+                                <button key={mId} onClick={(e) => { e.stopPropagation(); toggleAssignee(mId); }}
+                                  className={`flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-surface w-full transition-colors ${isChecked ? 'bg-[#0D9488]/5' : ''}`}>
+                                  <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isChecked ? 'bg-[#0D9488] border-[#0D9488]' : 'border-[#c4c4c4]'}`}>
+                                    {isChecked && <Check size={10} className="text-white" />}
+                                  </div>
+                                  <Avatar name={mName} size="xs" />
+                                  <span className="truncate text-text-primary">{mName}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {selectedAssignees.length > 0 ? selectedAssignees.map(uid => {
+                        const m = members.find(mm => (mm.id || mm.user?.id) === uid);
+                        const n = m?.name || m?.user?.name || 'Unknown';
+                        return <span key={uid} className="inline-flex items-center gap-1 text-[12px]"><Avatar name={n} size="xs" /><span>{n}</span></span>;
+                      }) : <span className="text-text-tertiary text-[12px]">Unassigned</span>}
+                    </div>
+                  )}
+                </div>
+              </V3Row>
+
+              <V3Row icon={UserCheck} label={latestAssignedAt ? 'Assigned by' : 'Created by'}>
+                {(() => {
+                  const creator = task?.creator;
+                  if (!creator) return <span className="text-text-tertiary text-[12px]">—</span>;
+                  return (
+                    <span className="inline-flex items-center gap-1 text-[12px]">
+                      <Avatar name={creator.name || 'Unknown'} size="xs" />
+                      <span className="text-text-primary truncate">{creator.name || 'Unknown'}</span>
+                      <span className="text-[9px] uppercase tracking-wider text-text-tertiary font-semibold tabular-nums">
+                        {tierLabel(resolveTier(creator))}
+                      </span>
+                    </span>
+                  );
+                })()}
+              </V3Row>
+
+              <V3Row icon={Calendar} label={latestAssignedAt ? 'Assigned' : 'Created'}>
+                <span className="text-[12px] text-text-primary tabular-nums" title={latestAssignedAt || task?.createdAt || ''}>
+                  {assignedOnLabel || createdOnLabel || '—'}
+                </span>
+              </V3Row>
+
+              <V3Row icon={EyeIcon} label="Watchers">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {watchers.length === 0 ? (
+                    <span className="text-text-tertiary text-[12px]">—</span>
+                  ) : (
+                    <>
+                      <div className="flex -space-x-1.5">
+                        {watchers.slice(0, 4).map(w => (
+                          <div key={w.id} className="relative" title={w.user?.name}>
+                            <Avatar name={w.user?.name || '?'} size="xs" />
+                          </div>
+                        ))}
+                      </div>
+                      <span className="text-[11px] text-text-tertiary tabular-nums">{watchers.length} watching</span>
+                    </>
+                  )}
+                </div>
+              </V3Row>
+            </V3Card>
+
+            {/* Card 3 — SCHEDULE (amber) */}
+            <V3Card accent="amber" title="Schedule">
+              <V3Row icon={Calendar} label="Due">
+                {canEditOwnFields && canChangeDueDate ? (
+                  <button
+                    type="button"
+                    onClick={() => openDatePicker(dueDateInputRef)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(dueDateInputRef); } }}
+                    className="relative text-[12px] px-2 py-0.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary text-left bg-white dark:bg-zinc-900"
+                  >
+                    <span className={dueDate ? 'text-text-primary' : 'text-text-tertiary'}>
+                      {dueDate ? formatTaskDate(dueDate) : 'Set date'}
+                    </span>
+                    <input
+                      ref={dueDateInputRef}
+                      type="date"
+                      value={dueDate || ''}
+                      onChange={(e) => {
+                        handleDateChange('dueDate', e.target.value);
+                        queueMicrotask(() => e.target.blur());
+                      }}
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
+                    />
+                  </button>
+                ) : (
+                  // Read-only display — covers two cases:
+                  //   1. User can't edit at all (no permission) — render plain.
+                  //   2. User can edit other fields but the due date is tier-
+                  //      locked (`!canChangeDueDate`) — render with a Lock
+                  //      affordance + tooltip so the user understands the
+                  //      restriction. The date itself stays visible.
+                  <span
+                    className={`text-[12px] text-text-primary inline-flex items-center gap-1 ${dueDateLockedReason ? 'opacity-80' : ''}`}
+                    title={dueDateLockedReason || undefined}
+                  >
+                    {dueDate ? formatTaskDate(dueDate) : '—'}
+                    {dueDateLockedReason && canEditOwnFields && (
+                      <Lock size={10} className="text-text-tertiary" aria-hidden="true" />
+                    )}
+                  </span>
+                )}
+                {dueTimeChipLabel && (
+                  <span className="text-[11px] text-text-tertiary inline-flex items-center gap-0.5 ml-1 tabular-nums">
+                    <Clock size={10} /> {dueTimeChipLabel}
+                  </span>
+                )}
+                {countdown && (
+                  <span
+                    className={`text-[10px] font-semibold inline-flex items-center px-1.5 py-0.5 rounded-full ml-1 ${countdown.urgent ? 'v3-urgent-pulse' : ''}`}
+                    style={{ backgroundColor: countdown.urgent ? '#E11D481a' : '#D976061a', color: countdown.urgent ? '#E11D48' : '#D97706' }}
+                  >
+                    {countdown.label}
+                  </span>
+                )}
+              </V3Row>
+
+              <V3Row icon={Clock} label="Start">
+                {canEditStartDate ? (
+                  <button
+                    type="button"
+                    onClick={() => openDatePicker(startDateInputRef)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatePicker(startDateInputRef); } }}
+                    className="relative text-[12px] px-2 py-0.5 border border-border rounded-md hover:border-primary/30 focus:outline-none focus:border-primary text-left bg-white dark:bg-zinc-900"
+                  >
+                    <span className={startDate ? 'text-text-primary' : 'text-text-tertiary'}>
+                      {startDate ? formatTaskDate(startDate) : '—'}
+                    </span>
+                    <input
+                      ref={startDateInputRef}
+                      type="date"
+                      value={startDate || ''}
+                      onChange={(e) => {
+                        handleDateChange('startDate', e.target.value);
+                        queueMicrotask(() => e.target.blur());
+                      }}
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none' }}
+                    />
+                  </button>
+                ) : (
+                  <span className="text-[12px] text-text-primary">{startDate ? formatTaskDate(startDate) : '—'}</span>
+                )}
+              </V3Row>
+
+              {(canEditOwnFields || !task) && (
+                <V3Row icon={Bell} label="Reminders">
+                  <TaskReminderField
+                    value={reminders}
+                    dueDate={dueDate}
+                    disabled={deletedRemotely}
+                    onChange={(next) => {
+                      setReminders(next);
+                      if (task?.id) save({ reminders: next });
+                    }}
+                  />
+                </V3Row>
+              )}
+            </V3Card>
+
+            {/* Card 4 — RECURRENCE (purple) — only when recurring */}
+            {task?.isRecurringInstance && (
+              <V3Card accent="purple" title="Recurrence">
+                <RecurringInstanceDetails
+                  task={task}
+                  template={recurringTemplate || null}
+                  templateLoading={recurringTemplate === null}
+                  board={boardContext}
+                  canManageTemplate={!!canManage}
+                />
+              </V3Card>
+            )}
+
+            {/* Card 5 — LABELS (rose) */}
+            <V3Card accent="rose" title="Labels">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {tags.length === 0 && !canEditAllFields && (
+                  <span className="text-text-tertiary text-[12px]">—</span>
+                )}
+                {tags.map((tag, i) => (
+                  <span key={tag} className="inline-flex items-center gap-1 bg-[#E11D48]/10 text-[#E11D48] text-[11px] px-2 py-0.5 rounded-full">
+                    <Tag size={9} /> {tag}
+                    {canEditAllFields && <button onClick={() => removeTag(i)} className="hover:opacity-70"><X size={9} /></button>}
+                  </span>
+                ))}
+                {canEditAllFields && (
+                  <input
+                    type="text"
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    onKeyDown={handleAddTag}
+                    placeholder={tags.length ? '+ Add' : 'Add label…'}
+                    className="text-[11px] border-none outline-none bg-transparent min-w-[60px] placeholder:text-text-tertiary"
+                  />
                 )}
               </div>
-            );
-          })()}
+            </V3Card>
 
-          {/* Subtasks */}
-          <SubtaskList taskId={task.id} members={members} onSubtaskCountChange={(counts) => {
-            if (onUpdate) onUpdate({ ...task, _subtaskCounts: counts });
-          }} />
-
-          {/* Tabs — compact 32px row, scrolls horizontally on narrow widths */}
-          <div className="tabs-compact mb-3" role="tablist">
-            {tabs.map(t => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={activeTab === t.id}
-                onClick={() => setActiveTab(t.id)}
-                className="tab-trigger-compact"
-              >
-                <t.icon size={13} />
-                {t.label}{t.count !== undefined && ` (${t.count})`}
-              </button>
-            ))}
-          </div>
-
-          {activeTab === 'comments' && <TaskComments comments={comments} onAdd={handleAddComment} onDelete={handleDeleteComment} />}
-          {activeTab === 'files' && <TaskFiles files={files} onUpload={handleUploadFile} onDelete={handleDeleteFile} />}
-          {activeTab === 'updates' && <WorkLogSection taskId={task.id} />}
-          {activeTab === 'activity' && <ActivityFeed taskId={task.id} />}
+          </aside>
         </div>
+
+        {/* ── Row 5: Footer ─────────────────────────────────────────── */}
+        <footer className="border-t border-border bg-zinc-50/80 dark:bg-zinc-900/40 px-5 h-[40px] flex items-center justify-between text-[11px] text-text-secondary flex-shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="font-medium text-text-secondary flex-shrink-0">Progress</span>
+            <div className="w-32 h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden flex-shrink-0">
+              <div
+                className="h-full transition-all"
+                style={{
+                  width: `${footerProgress.pct}%`,
+                  background: 'linear-gradient(90deg, #6D5CE7, #A78BFA)',
+                }}
+              />
+            </div>
+            <span className="tabular-nums text-text-tertiary">
+              {footerProgress.total ? `${footerProgress.done}/${footerProgress.total} · ` : ''}{footerProgress.pct}%
+            </span>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <span className="hidden md:inline-flex items-center gap-1 text-text-tertiary">
+              <kbd className="px-1.5 py-0.5 rounded border border-border text-[10px] font-mono">esc</kbd>
+              <span>close</span>
+            </span>
+            <span className="hidden md:inline-flex items-center gap-1 text-text-tertiary">
+              <kbd className="px-1.5 py-0.5 rounded border border-border text-[10px] font-mono">⌘ + ↵</kbd>
+              <span>save</span>
+            </span>
+            <span className="hidden lg:inline-flex items-center gap-1 text-text-tertiary">
+              <kbd className="px-1.5 py-0.5 rounded border border-border text-[10px] font-mono">e</kbd>
+              <span>edit</span>
+            </span>
+            <div className="inline-flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                saveStatus === 'saving' ? 'bg-blue-500 v3-pulse-dot' :
+                saveStatus === 'error' ? 'bg-red-500' :
+                'bg-emerald-500'
+              }`} />
+              <span className="text-text-secondary">
+                {saveStatus === 'saving' ? 'Saving…' :
+                  saveStatus === 'error' ? 'Save failed' :
+                  savedAt ? `Saved · ${savedAgo || 'just now'}` : 'Saved'}
+              </span>
+            </div>
+          </div>
+        </footer>
       </DetailModalShell>
 
-      {/* Dependency Selector — sibling so it owns its own backdrop/escape.
-          Pass the full task so the dialog can render the parent summary
-          (owner, board, due date, status). */}
+      {/* Dependency Selector */}
       {showDepSelector && (
         <DependencySelector
           task={task}
@@ -1379,8 +1984,6 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
           onClose={() => setShowDepSelector(false)}
           onCreated={async () => {
             setDepKey(k => k + 1);
-            // Refresh task data since dependency creation may have changed
-            // status to 'stuck' and auto-set startDate.
             try {
               const res = await api.get(`/tasks/${task.id}`);
               const updated = res.data?.data?.task || res.data?.task || res.data;
@@ -1390,32 +1993,24 @@ export default function TaskModal({ task, boardId, members = [], boardStatuses, 
                 if (onUpdate) onUpdate(updated);
               }
             } catch {}
-            // Refresh dependency role (this task may now be a receiver).
             loadDependencyRole();
           }}
         />
       )}
 
-      {/* Due Date Extension */}
       {showExtension && (
         <DueDateExtensionModal task={task} onClose={() => setShowExtension(false)} onUpdated={() => { if (onUpdate) onUpdate({ ...task }); }} />
       )}
 
-      {/* Help Request */}
       {showHelpRequest && (
         <HelpRequestModal task={task} onClose={() => setShowHelpRequest(false)} />
       )}
 
-      {/* Approval bottom sheet — intercepts a "Done" pick from this modal's
-          status dropdown. Submits via /task-extras/:id/submit-approval and the
-          parent BoardPage's socket listener picks up the resulting task:updated. */}
       {showApprovalModal && (
         <MarkDoneApprovalModal
           task={task}
           onClose={() => setShowApprovalModal(false)}
           onSubmitted={(updated) => {
-            // Local mirror of the new approvalStatus so the UI updates
-            // immediately, without waiting for the socket round-trip.
             if (updated && onUpdate) onUpdate(updated);
           }}
         />

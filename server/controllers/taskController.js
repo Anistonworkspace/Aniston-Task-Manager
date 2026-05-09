@@ -12,11 +12,21 @@ const { logActivity } = require('../services/activityService');
 const depService = require('../services/dependencyService');
 const { processAutomations } = require('../services/automationService');
 const { safeUUID } = require('../utils/safeSql');
-const { sanitizeInput } = require('../utils/sanitize');
+const { sanitizeInput, sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 const calendarService = require('../services/calendarService');
 const { checkConflicts: detectConflicts, autoReschedule: rescheduleTask, getScheduleSummary } = require('../services/conflictDetectionService');
 const { buildTaskVisibilityFilter, checkTaskAction } = require('../middleware/taskPermissions');
-const { scheduleReminders, cancelReminders, rescheduleReminders } = require('../services/reminderService');
+const {
+  scheduleReminders,
+  cancelReminders,
+  rescheduleReminders,
+  applyReminderSpecs,
+  normalizeReminderSpecs,
+  getUserReminderSpecs,
+  getReminderSummary,
+  getReminderSummaryBulk,
+} = require('../services/reminderService');
 const { notifyNewAssignments, diffAndNotify } = require('../services/assignmentNotificationService');
 const receiptService = require('../services/taskReceiptService');
 const teamsNotif = require('../services/teamsNotificationService');
@@ -25,6 +35,7 @@ const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/task
 const boardMembershipService = require('../services/boardMembershipService');
 const { hasPermission: enginePermission } = require('../services/permissionEngine');
 const { isSelfOwnedTask, isSelfOwnedCreate } = require('../utils/taskOwnership');
+const recurringTaskService = require('../services/recurringTaskService');
 
 /**
  * Centralized check: can this user assign a task to the given target user IDs?
@@ -249,6 +260,9 @@ const createTask = async (req, res) => {
       dueDate, startDate, tags, customFields, boardId,
       assignedTo, ownerIds, supervisors, statusConfig,
       plannedStartTime, plannedEndTime, estimatedHours,
+      // Phase 5 — task-level reminder specs from the create modal:
+      // [{ kind: 'offset', offsetMinutes: 60 }, { kind: 'custom', at: '<ISO>' }]
+      reminders,
     } = req.body;
 
     // Verify board exists
@@ -590,6 +604,31 @@ const createTask = async (req, res) => {
       );
     }
 
+    // Phase 5 — apply user-configured task reminders.
+    //
+    // We AWAIT this call (vs the previous fire-and-forget) so the response
+    // reflects the persisted state. The earlier non-awaited version masked
+    // the Sequelize.upsert + expression-unique-index bug that silently
+    // failed: clients got a 201 with the task body but no reminder rows
+    // were ever inserted. Awaiting catches the failure and lets us surface
+    // it in `data.warnings` so the modal can show "couldn't save reminders"
+    // without aborting the whole task create.
+    const reminderWarnings = [];
+    if (Array.isArray(reminders) && reminders.length > 0) {
+      const { specs, errors } = normalizeReminderSpecs(reminders);
+      if (errors.length) reminderWarnings.push(...errors);
+      try {
+        await applyReminderSpecs(task.id, specs, { dueDate });
+      } catch (err) {
+        logger.warn('[Task] Failed to apply user reminder specs:', err.message);
+        reminderWarnings.push('reminders_save_failed');
+      }
+    }
+    // Stash warnings on the task object so the response payload below can
+    // forward them to the client. Non-enumerable so we don't accidentally
+    // serialize them into the toJSON shape.
+    Object.defineProperty(task, '_reminderWarnings', { value: reminderWarnings, enumerable: false });
+
     // Attach receipt summary so the creator sees the initial "single tick"
     // state immediately on their own create response.
     const createdTaskJSON = fullTask ? fullTask.toJSON() : null;
@@ -757,6 +796,29 @@ const getTasks = async (req, res) => {
       return plain;
     });
 
+    // Phase 5b — bulk-enrich each task with its reminder summary so the
+    // board row can render the alarm icon without an extra request per
+    // task. Single grouped query for the whole list — no N+1.
+    try {
+      const summaryMap = await getReminderSummaryBulk(tasksWithCounts.map(t => t.id));
+      for (const t of tasksWithCounts) {
+        const s = summaryMap.get(t.id);
+        if (s) {
+          t.hasActiveReminder = true;
+          t.nextReminderAt = s.nextReminderAt;
+          t.activeReminderCount = s.activeReminderCount;
+        } else {
+          t.hasActiveReminder = false;
+          t.nextReminderAt = null;
+          t.activeReminderCount = 0;
+        }
+      }
+    } catch (e) {
+      // Non-fatal — alarm icons just won't render for this list. Toast
+      // pipeline + reminder firing are unaffected.
+      logger.warn('[Task] reminder summary enrichment failed:', e?.message);
+    }
+
     // Fire-and-forget: mark fetched tasks as delivered for this user. The
     // service is idempotent — only transitions rows where deliveredAt IS NULL.
     // We then emit `task:receipt` so the assigner's open board updates live.
@@ -799,12 +861,40 @@ const getTasks = async (req, res) => {
  */
 const getTask = async (req, res) => {
   try {
-    const task = await Task.findByPk(req.params.id, {
-      include: [
-        ...(await getTaskIncludes()),
-        { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-      ],
-    });
+    // Lazy-require RecurringTaskTemplate so this controller doesn't hard-fail
+    // on installs that haven't yet run the recurring-tasks migration. The
+    // include is `required: false` so non-recurring tasks return cleanly with
+    // recurringTemplate = null.
+    let recurringTemplateInclude = null;
+    try {
+      const { RecurringTaskTemplate } = require('../models');
+      if (RecurringTaskTemplate) {
+        recurringTemplateInclude = {
+          model: RecurringTaskTemplate,
+          as: 'recurringTemplate',
+          required: false,
+          attributes: [
+            'id', 'title', 'description',
+            'frequency', 'weekdays', 'dayOfMonth', 'daysOfMonth',
+            'dueTime', 'timezone',
+            'startDate', 'endDate',
+            'priority', 'groupId',
+            'isActive', 'archivedAt',
+            'lastGeneratedDate', 'nextRunAt',
+            'escalateIfMissed', 'escalationTargets',
+            'assigneeId', 'createdBy', 'boardId',
+          ],
+        };
+      }
+    } catch (_) { /* model not loaded — leave include null */ }
+
+    const includes = [
+      ...(await getTaskIncludes()),
+      { model: Board, as: 'board', attributes: ['id', 'name', 'color', 'groups'] },
+    ];
+    if (recurringTemplateInclude) includes.push(recurringTemplateInclude);
+
+    const task = await Task.findByPk(req.params.id, { include: includes });
 
     if (!task) {
       return res.status(404).json({ success: false, message: 'Task not found.' });
@@ -838,6 +928,25 @@ const getTask = async (req, res) => {
         flows: taskJSON.approvalFlows || [],
         user: req.user,
       });
+    }
+
+    // Phase 5 — attach the user-configured reminder specs so the Edit modal
+    // can hydrate its checkbox/dropdown selection. We swallow errors here
+    // because a missing/old reminder schema must not 500 the task fetch.
+    //
+    // Also attach the compact summary so the modal AND the parent (board
+    // row) can show the alarm icon without an extra request.
+    try {
+      taskJSON.reminders = await getUserReminderSpecs(req.params.id);
+      const summary = await getReminderSummary(req.params.id);
+      taskJSON.hasActiveReminder = summary.hasActiveReminder;
+      taskJSON.nextReminderAt = summary.nextReminderAt;
+      taskJSON.activeReminderCount = summary.activeReminderCount;
+    } catch (e) {
+      taskJSON.reminders = [];
+      taskJSON.hasActiveReminder = false;
+      taskJSON.nextReminderAt = null;
+      taskJSON.activeReminderCount = 0;
     }
 
     res.json({ success: true, data: { task: taskJSON } });
@@ -956,6 +1065,47 @@ const updateTask = async (req, res) => {
       editPermission.allowedFields = ['status', 'progress'];
     }
 
+    // ── Due-date lock for Tier 3 / Tier 4 ──────────────────────────────
+    //
+    // Once a task has a due date, only Tier 1 / Tier 2 may change it.
+    // Tier 3 / Tier 4 may still set the INITIAL due date on a task whose
+    // existing dueDate is null (e.g. a self-assigned task they just
+    // quick-created and are now adding a due date to). After that the
+    // field is locked for them — they have to go through the due-date
+    // extension workflow (POST /api/extensions) to request a change,
+    // which a manager approves.
+    //
+    // Applied BEFORE the allowedFields whitelist filter so a forged
+    // request that sneaks dueDate into the body still 403s with a clear
+    // machine-readable code instead of being silently dropped. No-op
+    // resends (incoming === existing) are allowed for everyone so
+    // optimistic clients that always include dueDate in PATCH-style
+    // payloads don't break.
+    if (req.body.dueDate !== undefined) {
+      const incomingRaw = req.body.dueDate;
+      // Normalize to YYYY-MM-DD string form for comparison — server stores
+      // dueDate as a DATEONLY string, but optimistic clients sometimes
+      // send a full ISO timestamp.
+      const normalize = (v) => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'string') return v.length >= 10 ? v.slice(0, 10) : v;
+        try { return new Date(v).toISOString().slice(0, 10); } catch { return null; }
+      };
+      const incoming = normalize(incomingRaw);
+      const existing = normalize(task.dueDate);
+      const sameAsExisting = incoming === existing;
+      if (!sameAsExisting && existing) {
+        const { hasTierAtLeast: hasTierAtLeastFn, TIER_2 } = require('../config/tiers');
+        if (!hasTierAtLeastFn(req.user, TIER_2)) {
+          return res.status(403).json({
+            success: false,
+            message: 'Only Tier 1 or Tier 2 can change this due date. Use "Request extension" to ask a manager to update it.',
+            code: 'DUE_DATE_LOCKED',
+          });
+        }
+      }
+    }
+
     const isMember = req.user.role === 'member';
     const isManager = req.user.role === 'manager';
     const isAssistantManager = req.user.role === 'assistant_manager';
@@ -1060,6 +1210,12 @@ const updateTask = async (req, res) => {
     const previousAssignee = task.assignedTo;
     const previousDueDate = task.dueDate;
     const previousIsArchived = task.isArchived;
+    // Snapshot title BEFORE the update so we can detect a change and mirror
+    // it into the recurring template (when this is a generated recurring
+    // instance). The Recurring Work page reads `template.title`; without
+    // this mirror, the list keeps showing the original template title even
+    // after the user renamed the visible task. See post-update sync block.
+    const previousTitle = task.title;
 
     // Members cannot modify statusConfig — only creators/managers/admins
     if (updates.statusConfig !== undefined && isMember) {
@@ -1307,6 +1463,44 @@ const updateTask = async (req, res) => {
 
     await task.update(updates);
 
+    // ── Recurring instance → template title mirror ──
+    //
+    // When the user renames a generated recurring instance (e.g. "bruce" →
+    // "bruce bane" in the task modal), the Recurring Work page would
+    // otherwise keep showing the original template title because that page
+    // reads `recurring_task_templates.title` while we've only written
+    // `tasks.title`. The service-level helper handles the actual mirror,
+    // socket fan-out, and activity log — see recurringTaskService.
+    // mirrorRecurringInstanceTitle for the full contract. We invoke it
+    // fire-and-forget so any internal failure can never fail the user-
+    // visible task update.
+    //
+    // Permission note: the title-lock gate above already restricts task-
+    // title edits to Tier 1, so by the time we reach this line either
+    // req.user IS Tier 1 or the new title equals the previous title (no-op
+    // echo). The helper itself short-circuits when newTitle === previousTitle.
+    if (
+      typeof updates.title === 'string'
+      && updates.title !== previousTitle
+      && task.isRecurringInstance
+      && task.recurringTemplateId
+    ) {
+      try {
+        await recurringTaskService.mirrorRecurringInstanceTitle({
+          task: { id: task.id, boardId: task.boardId, isRecurringInstance: task.isRecurringInstance, recurringTemplateId: task.recurringTemplateId },
+          newTitle: updates.title,
+          previousTitle,
+          actorId: req.user.id,
+        });
+      } catch (err) {
+        logger.warn('[Task] Recurring-template title mirror failed', {
+          taskId: task.id,
+          recurringTemplateId: task.recurringTemplateId,
+          msg: err.message,
+        });
+      }
+    }
+
     // ── Auto-group assignment: move task to matching group when status changes ──
     // Skipped when the same request also sets groupId explicitly (e.g. drag-drop
     // that intentionally lands the task in a chosen group) — the caller's choice wins.
@@ -1545,16 +1739,22 @@ const updateTask = async (req, res) => {
         completedByName: req.user.name,
       });
 
-      // Notify the creator if they didn't complete it themselves
+      // Notify the creator if they didn't complete it themselves. Idempotent
+      // on the task id so a flapping done-undone-done sequence by the same
+      // assignee doesn't spam the creator (the message stays "completed").
       if (task.createdBy !== req.user.id) {
-        const notification = await Notification.create({
+        await createNotification({
+          userId: task.createdBy,
           type: 'task_updated',
-          message: `${req.user.name} completed "${task.title}" on board "${task.board.name}"`,
+          message: sanitizeNotificationMessage(
+            `${sanitizeNotificationField(req.user.name)} completed "${sanitizeNotificationField(task.title)}" on board "${sanitizeNotificationField(task.board.name)}"`
+          ),
           entityType: 'task',
           entityId: task.id,
-          userId: task.createdBy,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('task-completed', task.id, task.createdBy),
+          sanitize: false,
         });
-        emitToUser(task.createdBy, 'notification:new', { notification });
       }
 
       // Process dependency chain — unblock dependent tasks & auto-assign
@@ -1566,11 +1766,45 @@ const updateTask = async (req, res) => {
       );
     }
 
-    // Reschedule deadline reminders if dueDate changed (and task is not done)
+    // Reschedule deadline reminders if dueDate changed (and task is not done).
+    // The reminder service preserves user-set offset/at_due rows by
+    // recomputing their scheduledFor against the new dueDate; only the
+    // legacy 2_day/2_hour rows are torn down and recreated.
     if (changes.dueDate && task.status !== 'done') {
       rescheduleReminders(task.id, updates.dueDate).catch(err =>
         logger.warn('[Task] Failed to reschedule reminders:', err.message)
       );
+    }
+
+    // Phase 5 — if the caller sent a `reminders` array, treat it as the
+    // authoritative set of user-configured reminders for this task.
+    //
+    // Authorization: only callers with FULL edit permission can mutate
+    // reminders. A status-only actor (`allowedFields=['status','progress']`)
+    // or an archive-only actor (`allowedFields=['isArchived']`) must not
+    // be able to clear someone else's reminders by piggybacking the field
+    // on their request. Sending an empty array clears all user-set
+    // reminders; omitting the field leaves the existing ones untouched.
+    //
+    // AWAITED so a Sequelize / DB error in applyReminderSpecs surfaces
+    // instead of being lost to a fire-and-forget catch. The task PUT
+    // still succeeds even if reminders fail (we never want a small
+    // reminder bug to block status changes etc.) — failures land in
+    // `data.warnings` so the client can show a banner.
+    const updateReminderWarnings = [];
+    if (
+      req.body.reminders !== undefined
+      && task.status !== 'done'
+      && !editPermission.allowedFields // full edit, not a field-restricted edit
+    ) {
+      const { specs, errors } = normalizeReminderSpecs(req.body.reminders);
+      if (errors.length) updateReminderWarnings.push(...errors);
+      try {
+        await applyReminderSpecs(task.id, specs, { dueDate: updates.dueDate ?? task.dueDate });
+      } catch (err) {
+        logger.warn('[Task] Failed to apply user reminder specs on update:', err.message);
+        updateReminderWarnings.push('reminders_save_failed');
+      }
     }
 
     // Teams chat notifications for deadline and status changes (fire-and-forget)
@@ -1759,12 +1993,28 @@ const updateTask = async (req, res) => {
     const updatedTaskJSON = fullTask ? fullTask.toJSON() : null;
     if (updatedTaskJSON) {
       updatedTaskJSON._receipt = receiptService.buildSummary(updatedTaskJSON, req.user.id);
+      // Phase 5b — return the freshly persisted reminder specs + summary so
+      // the modal re-hydrates correctly on save (no stale chips on reopen).
+      try {
+        updatedTaskJSON.reminders = await getUserReminderSpecs(task.id);
+        const summary = await getReminderSummary(task.id);
+        updatedTaskJSON.hasActiveReminder = summary.hasActiveReminder;
+        updatedTaskJSON.nextReminderAt = summary.nextReminderAt;
+        updatedTaskJSON.activeReminderCount = summary.activeReminderCount;
+      } catch (e) {
+        // Non-fatal — the modal can still re-fetch via GET /tasks/:id.
+        updatedTaskJSON.reminders = [];
+      }
     }
 
     res.json({
       success: true,
       message: 'Task updated successfully.',
       data: { task: updatedTaskJSON || fullTask },
+      // Surface non-blocking reminder warnings (validation errors,
+      // partial save failures) so the client can show a banner without
+      // failing the whole update.
+      ...(updateReminderWarnings.length ? { warnings: { reminders: updateReminderWarnings } } : {}),
     });
   } catch (error) {
     logger.error('[Task] Update error:', error);
@@ -1824,6 +2074,41 @@ const deleteTask = async (req, res) => {
         description: `${req.user.name} archived task "${task.title}"`,
         entityType: 'task', entityId: task.id, taskId: task.id, boardId: task.boardId, userId: req.user.id,
       });
+
+      // Phase 6 — notify assignees other than the actor when their task is
+      // archived. Otherwise the row vanishes from their list with no audit
+      // trail. Idempotency keyed on (task) so a retried PUT doesn't re-fire.
+      try {
+        const assigneeRows = await TaskAssignee.findAll({
+          where: { taskId: task.id, role: 'assignee' },
+          attributes: ['userId'],
+          raw: true,
+        });
+        const recipients = new Set(assigneeRows.map((r) => r.userId).filter(Boolean));
+        if (task.assignedTo) recipients.add(task.assignedTo);
+        recipients.delete(req.user.id); // actor already knows
+        const archMsg = sanitizeNotificationMessage(
+          `${sanitizeNotificationField(req.user.name)} archived task "${sanitizeNotificationField(task.title)}"`
+        );
+        for (const uid of recipients) {
+          await createNotification({
+            userId: uid,
+            type: 'task_updated',
+            message: archMsg,
+            entityType: 'task',
+            entityId: task.id,
+            boardId: task.boardId,
+            // Idempotency: one row per (task, recipient). A task can't be
+            // archived twice — re-archiving an already-archived task takes
+            // a different code path — so the time bucket isn't needed.
+            idempotencyKey: buildIdempotencyKey('task-archived', task.id, uid),
+            sanitize: false,
+          });
+        }
+      } catch (err) {
+        logger.warn('[Task] Archive notification fan-out failed:', err.message);
+      }
+
       // Archive fires task:updated so the row disappears from any list
       // viewing un-archived tasks (board, MyWork, dashboard). Fan-out
       // includes assignees / watchers so it disappears from THEIR lists too.
@@ -2148,6 +2433,33 @@ const bulkUpdateTasks = async (req, res) => {
           code: 'approval_required',
           meta: { blockedCount: blocked.length, totalCount: completionTargets.length },
         });
+      }
+    }
+
+    // ── Bulk due-date lock for Tier 3 / Tier 4 ───────────────────────────
+    //
+    // Mirrors the single-task path in updateTask. If a Tier 3/4 user is
+    // bulk-changing dueDate, every task in the selection MUST currently
+    // have a null dueDate (initial-set semantics). A single already-dated
+    // task in the selection collapses the entire bulk back to 403 — bulk
+    // is not an escape hatch for the per-task lock.
+    if (safeUpdates.dueDate !== undefined) {
+      const { hasTierAtLeast: hasTierAtLeastFnBulk, TIER_2: TIER_2_BULK } = require('../config/tiers');
+      if (!hasTierAtLeastFnBulk(req.user, TIER_2_BULK)) {
+        const datedRows = await Task.findAll({
+          where: { id: { [Op.in]: taskIds } },
+          attributes: ['id', 'dueDate'],
+          raw: true,
+        });
+        const blocked = datedRows.filter((t) => t.dueDate);
+        if (blocked.length > 0) {
+          return res.status(403).json({
+            success: false,
+            message: 'Only Tier 1 or Tier 2 can change due dates that are already set. Use "Request extension" to ask a manager.',
+            code: 'DUE_DATE_LOCKED',
+            meta: { lockedCount: blocked.length, totalCount: datedRows.length },
+          });
+        }
       }
     }
 
@@ -2678,14 +2990,21 @@ const manageTaskMembers = async (req, res) => {
         catch (err) { logger.warn('[Task] Board membership cleanup (updateTaskMembers) failed:', err.message); }
       }
       for (const uid of newAssigneeIds) {
-        const notification = await Notification.create({
+        // Idempotent on the (task, recipient) pair within a 1-minute bucket
+        // so a retried PUT doesn't double-notify, but a true reassign-cycle
+        // (assigned → removed → re-assigned later) still lands a fresh row.
+        await createNotification({
+          userId: uid,
           type: 'task_assigned',
-          message: `${req.user.name} assigned you to "${task.title}"`,
+          message: sanitizeNotificationMessage(
+            `${sanitizeNotificationField(req.user.name)} assigned you to "${sanitizeNotificationField(task.title)}"`
+          ),
           entityType: 'task',
           entityId: task.id,
-          userId: uid,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('task-assigned', task.id, uid, Math.floor(Date.now() / 60000)),
+          sanitize: false,
         });
-        emitToUser(uid, 'notification:new', { notification });
       }
 
       // Teams notifications for assignee changes
@@ -2734,14 +3053,18 @@ const manageTaskMembers = async (req, res) => {
         catch (err) { logger.warn('[Task] Board membership cleanup (supervisors/updateTaskMembers) failed:', err.message); }
       }
       for (const uid of newSupervisorIds) {
-        const notification = await Notification.create({
-          type: 'task_assigned',
-          message: `${req.user.name} added you as supervisor on "${task.title}"`,
+        await createNotification({
+          userId: uid,
+          type: 'task_supervisor_added',
+          message: sanitizeNotificationMessage(
+            `${sanitizeNotificationField(req.user.name)} added you as supervisor on "${sanitizeNotificationField(task.title)}"`
+          ),
           entityType: 'task',
           entityId: task.id,
-          userId: uid,
+          boardId: task.boardId,
+          idempotencyKey: buildIdempotencyKey('task-supervisor', task.id, uid, Math.floor(Date.now() / 60000)),
+          sanitize: false,
         });
-        emitToUser(uid, 'notification:new', { notification });
       }
 
       // Teams notifications for supervisor changes

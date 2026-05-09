@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
+import { useConfirm } from '../components/common/ConfirmDialog';
+import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import AccessDenied from '../components/common/AccessDenied';
 import { isExplicitlyDenied } from '../utils/permissions';
 import { TIER_1, TIER_2, TIER_3, TIER_4, resolveTier, tierLabel, tiersGrantableBy } from '../utils/tiers';
@@ -45,16 +47,41 @@ function tierColorOf(user) {
   return TIER_COLORS[resolveTier(user)] || TIER_COLORS[TIER_4];
 }
 
-// ═══ SINGLE CARD (draggable independently) ═══
-function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, onEdit, onPromote, onChangeManager, onViewHistory, onDragStartCard, onDropOnCard, onClick }) {
+// ═══ SINGLE CARD (ChartHop-style: avatar + name/title + bottom colored band) ═══
+//
+// Card layout (top-to-bottom):
+//   ┌────────────────────────────────────┐
+//   │ [avatar]   Name                    │   ← top-band (white)
+//   │            Title / designation     │
+//   ├────────────────────────────────────┤
+//   │  Department · Tier label · N reports│   ← bottom band (dept colour)
+//   └────────────────────────────────────┘
+//
+// Tier 1 cards are slightly larger (w=180 vs 156) per the redesign brief —
+// leadership reads as visually heavier. Tier 4 is unchanged. The bottom band
+// uses the hierarchyLevel/tier colour at full saturation; band text is white
+// and high-contrast, mirroring ChartHop reference.
+function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, reportCount = 0, onEdit, onPromote, onChangeManager, onViewHistory, onDragStartCard, onDropOnCard, onClick }) {
   const [hovered, setHovered] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const avatarUrl = node.avatar ? (node.avatar.startsWith?.('http') ? node.avatar : node.avatar.startsWith?.('/') ? node.avatar : `/${node.avatar}`) : null;
+  const tier = resolveTier(node);
+  const isTier1Card = tier === TIER_1 || node.isSuperAdmin;
+  const cardWidth = isTier1Card ? 184 : 156;
+  // Show BOTH department and tier on the bottom band. Department is the
+  // primary label (left); tier is always shown on the right as a small pill
+  // so the user can read it at a glance regardless of how the colour palette
+  // happens to overlap with the department colour.
+  //
+  // "Unassigned" displayed when a user has no department on file (per the
+  // brief — never invent a department; never fall back to the tier label).
+  const deptLabel = node.department || 'Unassigned';
+  const tierBadgeLabel = tierLabel(tier);
 
   return (
     <div
       className="relative"
-      draggable={canDrag ? 'true' : 'false'}
+      draggable={canDrag && !isTier1Card ? 'true' : 'false'}
       onDragStart={e => {
         e.stopPropagation();
         e.dataTransfer.setData('text/plain', node.id);
@@ -71,45 +98,73 @@ function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, onEdit, onPro
       onDrop={e => { e.preventDefault(); e.stopPropagation(); setIsDragOver(false); onDropOnCard(node); }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={canDrag ? { cursor: 'grab' } : undefined}
+      style={canDrag && !isTier1Card ? { cursor: 'grab' } : undefined}
     >
       <div
-        className={`card-inner bg-white rounded-lg border transition-all duration-150 select-none
-          ${isSelected ? 'border-blue-400 ring-2 ring-blue-100 shadow-md' : isDragOver ? 'border-blue-400 ring-2 ring-blue-400 shadow-lg scale-105' : hovered ? 'shadow-md border-gray-200' : 'border-gray-100 shadow-sm'}
-          ${canDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
-        style={{ width: 150 }}
+        className={`card-inner bg-white rounded-xl border overflow-hidden transition-all duration-150 select-none
+          ${isSelected
+            ? 'border-blue-400 ring-2 ring-blue-100 shadow-lg'
+            : isDragOver
+              ? 'border-blue-400 ring-2 ring-blue-400 shadow-xl -translate-y-0.5'
+              : hovered
+                ? 'shadow-md border-gray-200 -translate-y-0.5'
+                : 'border-gray-200 shadow-sm'}
+          ${canDrag && !isTier1Card ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+        style={{ width: cardWidth }}
         onClick={(e) => { e.stopPropagation(); onClick(node); }}
       >
-        <div className="h-[3px] rounded-t-lg" style={{ backgroundColor: hlColor }} />
-        <div className="px-2.5 py-2.5 text-center">
-          {canDrag && (
-            <div className="absolute top-1 left-1 text-gray-300">
-              <GripVertical size={12} />
+        {/* Top section — white background, avatar + name/title */}
+        <div className="flex items-center gap-2.5 px-3 py-2.5">
+          {canDrag && !isTier1Card && (
+            <div className="absolute top-1.5 left-1.5 text-gray-300 opacity-0 group-hover:opacity-100">
+              <GripVertical size={11} />
             </div>
           )}
-          <div className="w-10 h-10 rounded-full mx-auto mb-1.5 flex items-center justify-center text-xs font-bold text-white"
+          <div className={`flex-shrink-0 ${isTier1Card ? 'w-10 h-10' : 'w-9 h-9'} rounded-full flex items-center justify-center text-[11px] font-bold text-white`}
             style={{ backgroundColor: hlColor }}>
-            {avatarUrl ? <img src={avatarUrl} className="w-10 h-10 rounded-full object-cover" alt="" /> : node.name?.charAt(0)?.toUpperCase()}
+            {avatarUrl ? <img src={avatarUrl} className={`${isTier1Card ? 'w-10 h-10' : 'w-9 h-9'} rounded-full object-cover`} alt="" /> : node.name?.charAt(0)?.toUpperCase()}
           </div>
-          <p className="text-[11px] font-semibold text-gray-800 truncate leading-tight">{node.name}</p>
-          <p className="text-[9px] text-gray-400 truncate mt-0.5">{node.designation || node.title || ''}</p>
-          <span className="inline-block mt-1 text-[8px] font-medium px-1.5 py-0.5 rounded-full"
-            style={{ backgroundColor: `${hlColor}15`, color: hlColor }}>{hlLabel}</span>
-          {node._isSecondaryRef && (
-            <span className="block mt-0.5 text-[7px] font-medium px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-500 border border-dashed border-purple-200">
-              {node._secondaryRelationType === 'dotted_line' ? '┈ Dotted Line' : node._secondaryRelationType === 'project' ? '◈ Project' : '◇ Functional'}
-            </span>
-          )}
-          {(node.managerRelations || []).length > 1 && !node._isSecondaryRef && (
-            <span className="block mt-0.5 text-[7px] text-gray-400">
-              +{node.managerRelations.length - 1} more manager{node.managerRelations.length > 2 ? 's' : ''}
-            </span>
+          <div className="flex-1 min-w-0">
+            <p className={`${isTier1Card ? 'text-[12px]' : 'text-[11px]'} font-semibold text-gray-800 truncate leading-tight`}>{node.name}</p>
+            <p className="text-[9.5px] text-gray-400 truncate leading-tight mt-0.5">{node.designation || node.title || ''}</p>
+          </div>
+        </div>
+
+        {/* Bottom band — department LEFT, tier badge RIGHT, both always shown.
+            Tier badge is a translucent white pill so it stays legible on every
+            band colour (the band itself is the hierarchyLevel/tier colour). */}
+        <div
+          className="w-full px-2.5 py-1 flex items-center justify-between gap-1.5 text-[9px] font-medium"
+          style={{ backgroundColor: hlColor, color: '#fff' }}
+        >
+          <span className="truncate flex-1 min-w-0" title={deptLabel}>{deptLabel}</span>
+          <span
+            className="flex-shrink-0 px-1.5 py-px rounded-full text-[8.5px] font-semibold tracking-tight"
+            style={{ backgroundColor: 'rgba(255,255,255,0.22)', color: '#fff' }}
+            title={tierBadgeLabel}
+          >
+            {tierBadgeLabel}
+          </span>
+          {reportCount > 0 && (
+            <span className="flex-shrink-0 opacity-85" title={`${reportCount} direct ${reportCount === 1 ? 'report' : 'reports'}`}>+{reportCount}</span>
           )}
         </div>
+
+        {/* Secondary-relation / multi-manager hints — kept compact on top of card */}
+        {node._isSecondaryRef && (
+          <span className="absolute top-1 right-1 text-[7.5px] font-medium px-1.5 py-px rounded-full bg-purple-50 text-purple-500 border border-dashed border-purple-200">
+            {node._secondaryRelationType === 'dotted_line' ? '┈' : node._secondaryRelationType === 'project' ? '◈' : '◇'}
+          </span>
+        )}
+        {(node.managerRelations || []).length > 1 && !node._isSecondaryRef && (
+          <span className="absolute top-1 right-1 text-[7.5px] text-gray-400 bg-white/70 px-1 rounded">
+            +{node.managerRelations.length - 1}
+          </span>
+        )}
       </div>
 
-      {/* Hover actions — only in edit mode */}
-      {hovered && canDrag && (
+      {/* Hover actions — only in edit mode AND not Tier 1 */}
+      {hovered && canDrag && !isTier1Card && (
         <div className="absolute -top-1.5 -right-1.5 flex gap-px z-20">
           <button onClick={(e) => { e.stopPropagation(); onEdit(node); }} className="w-5 h-5 rounded-full bg-gray-500 text-white flex items-center justify-center shadow-sm hover:bg-gray-600" title="Edit Profile">
             <Edit2 size={9} />
@@ -126,7 +181,20 @@ function PersonCard({ node, hlColor, hlLabel, canDrag, isSelected, onEdit, onPro
   );
 }
 
-// ═══ TREE NODE (recursive with connectors) ═══
+// ═══ TREE NODE (recursive with thin orthogonal connectors) ═══
+//
+// Connector design (ChartHop-style):
+//   - 1px neutral grey (#E1E5EB) lines, no shadow
+//   - vertical drop from parent → horizontal joiner across siblings →
+//     vertical drop into each child, forming clean right angles
+//   - sibling-bar width derived from CARD_WIDTH + COL_GAP so spacing is
+//     constant regardless of card content (avoids the off-centre layout
+//     the screenshot showed when children had different widths)
+const COL_GAP = 28;       // px between sibling cards
+const CARD_W = 156;       // matches PersonCard non-Tier-1 width
+const ROW_DROP = 14;      // vertical line length above each child
+const ROW_DROP_TOP = 12;  // vertical line dropping from parent
+const CONNECTOR_COLOR = '#E1E5EB';
 function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers }) {
   const [expanded, setExpanded] = useState(depth < 2);
   const hasChildren = node.children?.length > 0;
@@ -135,29 +203,47 @@ function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers 
   // Display priority: explicit hierarchyLevel label → fallback to tier label.
   // Old role names (Admin/Manager/Asst. Manager/Member) are never shown.
   const hlLabel = hlInfo?.label || tierLabel(resolveTier(node));
+  const reportCount = hasChildren ? node.children.filter(c => !c._isSecondaryRef).length : 0;
 
   return (
     <div className="flex flex-col items-center">
       <div className="relative">
-        <PersonCard node={node} hlColor={hlColor} hlLabel={hlLabel} canDrag={canDrag} isSelected={selectedId === node.id} {...handlers} />
+        <PersonCard node={node} hlColor={hlColor} hlLabel={hlLabel} canDrag={canDrag} isSelected={selectedId === node.id} reportCount={reportCount} {...handlers} />
         {hasChildren && (
           <button onClick={() => setExpanded(!expanded)}
-            className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center z-10 hover:bg-gray-50 transition-colors">
-            <span className="text-[8px] text-gray-500 font-bold">{expanded ? '−' : node.children.length}</span>
+            aria-label={expanded ? 'Collapse subordinates' : `Expand ${node.children.length} subordinates`}
+            className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center z-10 hover:bg-gray-50 hover:border-gray-300 transition-colors">
+            <span className="text-[9px] text-gray-500 font-semibold">{expanded ? '−' : node.children.length}</span>
           </button>
         )}
       </div>
 
       {expanded && hasChildren && (
-        <div className="flex flex-col items-center mt-3">
-          <div className="w-px h-3 bg-gray-200" />
+        <div className="flex flex-col items-center" style={{ marginTop: 6 }}>
+          {/* Vertical drop from parent */}
+          <div style={{ width: 1, height: ROW_DROP_TOP, backgroundColor: CONNECTOR_COLOR }} />
+          {/* Horizontal sibling bar — constant-width per-child slot keeps the
+              layout symmetrical even when children have varying widths. */}
           {node.children.length > 1 && (
-            <div className="h-px bg-gray-200" style={{ width: `${(node.children.length - 1) * 166}px` }} />
+            <div
+              style={{
+                height: 1,
+                backgroundColor: CONNECTOR_COLOR,
+                width: `${(node.children.length - 1) * (CARD_W + COL_GAP)}px`,
+              }}
+            />
           )}
-          <div className="flex gap-4 items-start">
+          <div className="flex items-start" style={{ gap: COL_GAP }}>
             {node.children.map((child, ci) => (
               <div key={child._isSecondaryRef ? `${child.id}-sec-${ci}` : child.id} className="flex flex-col items-center">
-                <div className={`w-px h-2 ${child._isSecondaryRef ? 'border-l border-dashed border-purple-300' : 'bg-gray-200'}`} />
+                <div
+                  style={{
+                    width: 1,
+                    height: ROW_DROP,
+                    backgroundColor: child._isSecondaryRef ? 'transparent' : CONNECTOR_COLOR,
+                    borderLeft: child._isSecondaryRef ? '1px dashed #C9B8E0' : 'none',
+                  }}
+                />
                 <TreeNode node={child} hierarchyLevels={hierarchyLevels} canDrag={canDrag} selectedId={selectedId} depth={depth + 1} handlers={handlers} />
               </div>
             ))}
@@ -169,7 +255,7 @@ function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers 
 }
 
 // ═══ EDIT EMPLOYEE MODAL ═══
-function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved }) {
+function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved, toastError }) {
   const { user: actor } = useAuth();
   const initialTier = resolveTier(user);
   const [form, setForm] = useState({
@@ -218,7 +304,7 @@ function EditEmployeeModal({ user, hierarchyLevels, onClose, onSaved }) {
       onClose();
     } catch (err) {
       console.error('[OrgChart] Edit failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to update');
+      toastError?.(err.response?.data?.message || 'Failed to update');
     } finally { setSaving(false); }
   }
 
@@ -539,7 +625,8 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
 // ═══ MAIN PAGE ═══
 export default function OrgChartPage() {
   const { canManage, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+  const confirm = useConfirm();
 
   // Defense-in-depth guard. The /org-chart route is also wrapped in
   // <PermissionRoute>, but a page-level check ensures that if permissions
@@ -578,12 +665,27 @@ export default function OrgChartPage() {
   const [editMode, setEditMode] = useState(false);
   const [dropRootHover, setDropRootHover] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
+  // Department filter chip state. Empty string = "All depts". Filters the
+  // tree at render time (filterTree() now also matches department).
+  const [deptFilter, setDeptFilter] = useState('');
 
   // Skip the fetch entirely when an explicit DENY is in place so we don't
   // trigger 403 toasts for a user that is correctly blocked. Re-runs on
   // permissions:updated (granularPermissions changes) so revoking a deny
   // restores the chart without a manual reload.
   useEffect(() => { if (!orgChartViewDenied) fetchData(); }, [orgChartViewDenied]);
+
+  // Realtime — refetch when ANY user mutates the hierarchy. Server emits
+  // 'org:hierarchy:changed' from promotionController + managerRelationController
+  // after every successful write. Debounce burst-refetches (e.g. a manager
+  // dragging multiple users in quick succession would otherwise hammer the
+  // GET endpoint) — 400ms window collapses bursts into one refetch.
+  const hierarchyRefetchTimerRef = useRef(null);
+  useRealtimeEvent('org:hierarchy:changed', () => {
+    if (orgChartViewDenied) return;
+    if (hierarchyRefetchTimerRef.current) clearTimeout(hierarchyRefetchTimerRef.current);
+    hierarchyRefetchTimerRef.current = setTimeout(() => { fetchData(); }, 400);
+  });
 
   // Wheel zoom
   useEffect(() => {
@@ -625,9 +727,33 @@ export default function OrgChartPage() {
   }
 
   // Drag card handlers (HTML5 drag — only moves the card, NOT the canvas)
-  function onDragStartCard(node) { setDragNode(node); }
+  function onDragStartCard(node) {
+    // Tier 1 frontend block — these users are top-of-org and must remain root.
+    // Backend (hierarchyService.canEditHierarchy) is still authoritative; this
+    // is a UX shortcut that surfaces the rule before the user drops.
+    if (resolveTier(node) === TIER_1 || node.isSuperAdmin) {
+      toastInfo('Tier 1 users cannot be reassigned because they are top-level organization users.');
+      setDragNode(null);
+      return;
+    }
+    setDragNode(node);
+  }
   async function onDropOnCard(targetNode) {
     if (!dragNode || dragNode.id === targetNode.id) { setDragNode(null); return; }
+
+    // Defensive: even if onDragStartCard let it through (race / future change),
+    // re-check Tier 1 on drop. Backend would reject anyway, but the friendly
+    // toast is much nicer than a 403 error toast.
+    //
+    // ASYMMETRIC RULE:
+    //   - dragNode = Tier 1   → BLOCK (Tier 1 cannot be reassigned)
+    //   - targetNode = Tier 1 → ALLOW (Tier 1 IS valid as someone's manager)
+    // The earlier version of this block also rejected Tier 1 as the target,
+    // which prevented legitimate "Mayank reports to the CEO" assignments.
+    if (resolveTier(dragNode) === TIER_1 || dragNode.isSuperAdmin) {
+      toastInfo('Tier 1 users cannot be reassigned because they are top-level organization users.');
+      setDragNode(null); return;
+    }
 
     // Prevent circular (only relevant for primary manager)
     function isDescendant(parent, childId) {
@@ -639,7 +765,7 @@ export default function OrgChartPage() {
     const alreadyLinked = existingRelations.some(r => String(r.managerId) === String(targetNode.id));
 
     if (alreadyLinked) {
-      alert(`${dragNode.name} is already assigned to ${targetNode.name}.`);
+      toastInfo(`${dragNode.name} is already assigned to ${targetNode.name}.`);
       setDragNode(null); return;
     }
 
@@ -649,26 +775,30 @@ export default function OrgChartPage() {
     if (!hasAnyManager) {
       // First manager — set as primary
       if (isDescendant(dragNode, targetNode.id)) {
-        alert('Cannot move a parent under their own subordinate.');
+        toastError('Cannot move a parent under their own subordinate.');
         setDragNode(null); return;
       }
-      const confirmed = confirm(
-        `Assign "${targetNode.name}" as primary manager for "${dragNode.name}"?`
-      );
-      if (!confirmed) { setDragNode(null); return; }
+      const ok = await confirm({
+        title: 'Assign primary manager?',
+        body: `Assign "${targetNode.name}" as primary manager for "${dragNode.name}"?`,
+        confirmLabel: 'Assign manager',
+      });
+      if (!ok) { setDragNode(null); return; }
       try {
         await api.put('/promotions/update-manager', { userId: dragNode.id, managerId: targetNode.id });
         await fetchData();
+        toastSuccess(`"${targetNode.name}" is now the primary manager of "${dragNode.name}".`);
       } catch (err) {
-        alert(err.response?.data?.message || 'Failed to assign manager');
+        toastError(err.response?.data?.message || 'Failed to assign manager');
       }
     } else {
       // Already has manager(s) — add as additional manager via junction table
-      const confirmed = confirm(
-        `Add "${targetNode.name}" as an additional manager for "${dragNode.name}"?\n\n` +
-        `${dragNode.name} will report to both existing manager(s) and ${targetNode.name}.`
-      );
-      if (!confirmed) { setDragNode(null); return; }
+      const ok = await confirm({
+        title: 'Add additional manager?',
+        body: `Add "${targetNode.name}" as an additional manager for "${dragNode.name}". They will report to both existing manager(s) and "${targetNode.name}".`,
+        confirmLabel: 'Add manager',
+      });
+      if (!ok) { setDragNode(null); return; }
       try {
         await api.post('/multi-manager', {
           employeeId: dragNode.id,
@@ -677,8 +807,9 @@ export default function OrgChartPage() {
           isPrimary: false,
         });
         await fetchData();
+        toastSuccess(`Added "${targetNode.name}" as an additional manager.`);
       } catch (err) {
-        alert(err.response?.data?.message || 'Failed to add manager relation');
+        toastError(err.response?.data?.message || 'Failed to add manager relation');
       }
     }
     setDragNode(null);
@@ -687,15 +818,24 @@ export default function OrgChartPage() {
   // Drag-to-change-level: drop a card on a level row
   async function onDropOnLevel(targetLevelName) {
     if (!dragNode || dragNode.hierarchyLevel === targetLevelName) { setDragNode(null); return; }
+    if (resolveTier(dragNode) === TIER_1 || dragNode.isSuperAdmin) {
+      toastInfo('Tier 1 users cannot be reassigned because they are top-level organization users.');
+      setDragNode(null); return;
+    }
     const targetLevel = hierarchyLevels.find(l => l.name === targetLevelName);
-    const confirmed = confirm(`Change "${dragNode.name}" hierarchy level to "${targetLevel?.label || targetLevelName}"?`);
-    if (!confirmed) { setDragNode(null); return; }
+    const ok = await confirm({
+      title: 'Change hierarchy level?',
+      body: `Change "${dragNode.name}" hierarchy level to "${targetLevel?.label || targetLevelName}"?`,
+      confirmLabel: 'Change level',
+    });
+    if (!ok) { setDragNode(null); return; }
     try {
       await api.put(`/users/${dragNode.id}`, { hierarchyLevel: targetLevelName });
       await fetchData();
+      toastSuccess(`Hierarchy level updated for "${dragNode.name}".`);
     } catch (err) {
       console.error('[OrgChart] Level change failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to change level');
+      toastError(err.response?.data?.message || 'Failed to change level');
     }
     setDragNode(null);
   }
@@ -708,8 +848,17 @@ export default function OrgChartPage() {
     const draggedName = dragNode?.name;
     const draggedId = dragNode?.id;
     if (!dragNode || !hasPrimaryManager(dragNode)) { setDragNode(null); return; }
-    const confirmed = confirm(`Remove primary manager from "${draggedName}"?\n\n"${draggedName}" will become a root-level employee. Their own direct reports remain attached to them.`);
-    if (!confirmed) { setDragNode(null); return; }
+    if (resolveTier(dragNode) === TIER_1 || dragNode.isSuperAdmin) {
+      toastInfo('Tier 1 users are already top-level and cannot be reassigned.');
+      setDragNode(null); return;
+    }
+    const ok = await confirm({
+      title: 'Remove primary manager?',
+      body: `"${draggedName}" will become a root-level employee. Their own direct reports remain attached to them.`,
+      confirmLabel: 'Make root',
+      danger: true,
+    });
+    if (!ok) { setDragNode(null); return; }
     try {
       await api.put('/promotions/update-manager', { userId: draggedId, managerId: null });
       await fetchData();
@@ -733,21 +882,29 @@ export default function OrgChartPage() {
       });
       setShowAddManager(null); setAddManagerId(''); setAddManagerType('functional');
       await fetchData();
+      toastSuccess('Manager relation added.');
     } catch (err) {
       console.error('[OrgChart] Add secondary manager failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to add manager relation');
+      toastError(err.response?.data?.message || 'Failed to add manager relation');
     }
   }
 
   // Remove a specific manager relation by relation ID
   async function handleRemoveRelation(relationId) {
-    if (!confirm('Remove this manager relation?')) return;
+    const ok = await confirm({
+      title: 'Remove manager relation?',
+      body: 'This removes the link between the employee and that manager. Other relations remain in place.',
+      confirmLabel: 'Remove relation',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.delete(`/multi-manager/${relationId}`);
       await fetchData();
+      toastSuccess('Manager relation removed.');
     } catch (err) {
       console.error('[OrgChart] Remove relation failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to remove relation');
+      toastError(err.response?.data?.message || 'Failed to remove relation');
     }
   }
 
@@ -772,9 +929,10 @@ export default function OrgChartPage() {
       console.log('[OrgChart] Promote success:', res.data);
       setShowPromote(null); setPromoteForm({ newRole: '', newTitle: '', newHierarchyLevel: '', notes: '' });
       await fetchData();
+      toastSuccess(`Promoted ${res.data?.data?.user?.name || 'user'}.`);
     } catch (err) {
       console.error('[OrgChart] Promote failed:', err.response?.data || err.message);
-      alert(err.response?.data?.message || 'Failed to promote');
+      toastError(err.response?.data?.message || 'Failed to promote');
     }
   }
 
@@ -783,8 +941,17 @@ export default function OrgChartPage() {
       toastError(`"${employee?.name || 'This user'}" does not have a primary manager to remove.`);
       return;
     }
-    const confirmed = confirm(`Remove primary manager from "${employee.name}"?\n\n"${employee.name}" will become a root-level employee. Their own direct reports remain attached to them.`);
-    if (!confirmed) return;
+    if (resolveTier(employee) === TIER_1 || employee.isSuperAdmin) {
+      toastInfo('Tier 1 users are already top-level and cannot be reassigned.');
+      return;
+    }
+    const ok = await confirm({
+      title: 'Remove primary manager?',
+      body: `"${employee.name}" will become a root-level employee. Their own direct reports remain attached to them.`,
+      confirmLabel: 'Make root',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.put('/promotions/update-manager', { userId: employee.id, managerId: null });
       await fetchData();
@@ -814,18 +981,48 @@ export default function OrgChartPage() {
     try { const res = await api.get(`/promotions/${node.id}`); setPromoHistory((res.data?.data || res.data).promotions || []); setShowHistory(node); } catch {}
   }
 
-  function filterTree(nodes, q) {
-    if (!q) return nodes;
-    const query = q.toLowerCase();
-    function matches(n) { return n.name?.toLowerCase().includes(query) || n.email?.toLowerCase().includes(query) || n.designation?.toLowerCase().includes(query) || n.department?.toLowerCase().includes(query) || n.children?.some(c => matches(c)); }
+  // ─── Filtering ───────────────────────────────────────────────────────────
+  //
+  // A single matcher is applied to each user record across all three view
+  // modes (tree / list / department). Match fields:
+  //   - name, email, designation, title, department
+  //   - tier label ("tier 1", "tier 2"…) so users can search by tier
+  //
+  // Tree View additionally retains a node whose own fields don't match if any
+  // descendant's do — that preserves manager-chain context the user expects.
+  function userMatchesFilters(u, q, dept) {
+    const tierStr = tierLabel(resolveTier(u))?.toLowerCase() || '';
+    const queryHit =
+      !q ||
+      u.name?.toLowerCase().includes(q) ||
+      u.email?.toLowerCase().includes(q) ||
+      u.designation?.toLowerCase().includes(q) ||
+      u.title?.toLowerCase().includes(q) ||
+      u.department?.toLowerCase().includes(q) ||
+      tierStr.includes(q);
+    const deptHit = !dept || u.department === dept;
+    return queryHit && deptHit;
+  }
+
+  function filterTree(nodes, q, dept) {
+    if (!q && !dept) return nodes;
+    const query = (q || '').toLowerCase();
+    function matches(n) {
+      // A node matches if it satisfies the filters OR any descendant does
+      // (keeps manager chain visible).
+      return userMatchesFilters(n, query, dept) || (n.children || []).some(c => matches(c));
+    }
     function filterNode(n) { if (!matches(n)) return null; return { ...n, children: (n.children || []).map(filterNode).filter(Boolean) }; }
     return nodes.map(filterNode).filter(Boolean);
   }
 
   function getDepartmentView() {
+    const q = (searchQuery || '').toLowerCase();
     const m = {};
     allUsers.forEach(u => {
-      const dept = u.department || 'Other';
+      // Apply both search and dept-chip filters to the department view too.
+      if (!userMatchesFilters(u, q, deptFilter)) return;
+      const dept = u.department || 'Unassigned';
       if (!m[dept]) m[dept] = [];
       m[dept].push(u);
     });
@@ -847,13 +1044,38 @@ export default function OrgChartPage() {
     });
   }
 
-  const filteredChart = filterTree(orgChart, searchQuery);
+  const filteredChart = filterTree(orgChart, searchQuery, deptFilter);
+  // Apply the same searchQuery + deptFilter to the List View source so it
+  // tracks the Tree View. Without this, switching to List View while a
+  // search/chip is active showed the unfiltered list — that was the
+  // "search not working" symptom in screenshot 1.
+  const filteredUsersByLevel = (() => {
+    const q = (searchQuery || '').toLowerCase();
+    const out = {};
+    Object.entries(usersByLevel).forEach(([levelName, levelData]) => {
+      const filteredUsers = (levelData?.users || []).filter(u => userMatchesFilters(u, q, deptFilter));
+      out[levelName] = { ...levelData, users: filteredUsers };
+    });
+    return out;
+  })();
+  const departmentView = getDepartmentView();
   const stats = {
     total: allUsers.length,
     tier1: allUsers.filter(u => resolveTier(u) === TIER_1).length,
     tier2: allUsers.filter(u => resolveTier(u) === TIER_2).length,
     tier3: allUsers.filter(u => resolveTier(u) === TIER_3).length,
     tier4: allUsers.filter(u => resolveTier(u) === TIER_4).length,
+  };
+  // Distinct active tiers + departments for the meta strip
+  const activeTierCount = [stats.tier1, stats.tier2, stats.tier3, stats.tier4].filter(n => n > 0).length;
+  const distinctDepartments = new Set(allUsers.map(u => u.department).filter(Boolean));
+  // Department-band palette per the redesign brief — used by the tier
+  // distribution bar AND any future visualize-by=Department recolouring.
+  const TIER_BAND_COLORS = {
+    [TIER_1]: '#D4537E',
+    [TIER_2]: '#378ADD',
+    [TIER_3]: '#BA7517',
+    [TIER_4]: '#639922',
   };
 
   // Can drag only if canManage AND editMode is on
@@ -885,21 +1107,19 @@ export default function OrgChartPage() {
         {/* ═══ MAIN CONTENT ═══ */}
         <div className="flex-1 p-5 min-w-0">
           <div className="max-w-full mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-              <div>
+            {/* ─── Header (h1 + subtitle + view toggle + actions) ─── */}
+            <div className="flex items-start justify-between mb-3 gap-3">
+              <div className="min-w-0">
                 <h1 className="text-lg font-bold text-gray-800 flex items-center gap-2"><GitBranch size={16} className="text-indigo-500" /> Organization Chart</h1>
                 <p className="text-[11px] text-gray-400 mt-0.5 ml-6">Hierarchical view of your team structure</p>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="flex bg-gray-100 rounded-lg p-0.5">
-                  <button onClick={() => setViewMode('tree')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'tree' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}>Tree View</button>
-                  <button onClick={() => setViewMode('levels')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'levels' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}>List View</button>
-                  <button onClick={() => setViewMode('department')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'department' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}>Department</button>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex bg-gray-100 rounded-lg p-0.5" role="tablist" aria-label="Org chart view">
+                  <button onClick={() => setViewMode('tree')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'tree' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>Tree View</button>
+                  <button onClick={() => setViewMode('levels')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'levels' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>List View</button>
+                  <button onClick={() => setViewMode('department')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'department' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>Department</button>
                 </div>
                 {canManage && <button onClick={() => setShowManageHierarchy(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"><Settings2 size={12} /> Manage Levels</button>}
-
-                {/* Edit Structure toggle — only for privileged roles */}
                 {canManage && (
                   editMode ? (
                     <button onClick={() => setEditMode(false)}
@@ -916,72 +1136,104 @@ export default function OrgChartPage() {
               </div>
             </div>
 
-            {/* Stats */}
-            <div className="grid grid-cols-4 gap-2.5 mb-4">
-              {[
-                { label: 'Total',  count: stats.total, color: '#6366f1', icon: Users },
-                { label: 'Tier 1', count: stats.tier1, color: '#e2445c', icon: Crown },
-                { label: 'Tier 2', count: stats.tier2, color: '#0073ea', icon: Shield },
-                { label: 'Tier 3', count: stats.tier3, color: '#f59e0b', icon: Shield },
-                { label: 'Tier 4', count: stats.tier4, color: '#00c875', icon: User },
-              ].map((s, i) => (
-                <div key={i} className="bg-white rounded-lg border border-gray-100 shadow-sm px-3 py-2.5 flex items-center gap-3">
-                  <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${s.color}12` }}><s.icon size={13} style={{ color: s.color }} /></div>
-                  <div><p className="text-lg font-bold text-gray-800 leading-none">{s.count}</p><p className="text-[9px] text-gray-400 uppercase tracking-wide mt-0.5">{s.label}</p></div>
+            {/* ─── ChartHop-style META STRIP + TIER DISTRIBUTION BAR ─── */}
+            {/* Replaces the 5 oversized stat cards with one compact line-of-text
+                + a slim 4-segment distribution bar. Far less vertical real
+                estate so the chart canvas dominates the viewport. */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm px-4 py-3 mb-3">
+              <div className="flex items-center gap-1.5 text-[11.5px] text-gray-600 flex-wrap">
+                <span className="font-semibold text-gray-800">{stats.total}</span> people
+                <span className="text-gray-300 mx-1">·</span>
+                <span className="font-semibold text-gray-800">0</span> open
+                <span className="text-gray-300 mx-1">·</span>
+                <span className="font-semibold text-gray-800">{activeTierCount}</span> tiers
+                <span className="text-gray-300 mx-1">·</span>
+                <span className="font-semibold text-gray-800">{distinctDepartments.size || 0}</span> {distinctDepartments.size === 1 ? 'department' : 'departments'}
+                <span className="text-gray-300 mx-1">·</span>
+                <span className="text-gray-400">updated just now</span>
+              </div>
+              {/* Tier distribution bar — proportional widths, brand colours */}
+              {stats.total > 0 && (
+                <div className="mt-2.5 flex h-1.5 rounded-full overflow-hidden bg-gray-100" role="img" aria-label={`Tier distribution: ${stats.tier1} Tier 1, ${stats.tier2} Tier 2, ${stats.tier3} Tier 3, ${stats.tier4} Tier 4`}>
+                  {[
+                    { tier: TIER_1, count: stats.tier1, color: TIER_BAND_COLORS[TIER_1], label: 'Tier 1' },
+                    { tier: TIER_2, count: stats.tier2, color: TIER_BAND_COLORS[TIER_2], label: 'Tier 2' },
+                    { tier: TIER_3, count: stats.tier3, color: TIER_BAND_COLORS[TIER_3], label: 'Tier 3' },
+                    { tier: TIER_4, count: stats.tier4, color: TIER_BAND_COLORS[TIER_4], label: 'Tier 4' },
+                  ].filter(s => s.count > 0).map(s => (
+                    <div
+                      key={s.tier}
+                      title={`${s.label}: ${s.count} ${s.count === 1 ? 'person' : 'people'}`}
+                      className="transition-all hover:brightness-110"
+                      style={{ backgroundColor: s.color, flex: s.count }}
+                    />
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
 
-            {/* Search */}
-            <div className="flex items-center gap-2 mb-3">
-              <div className="flex-1 flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus-within:border-blue-300 shadow-sm">
+            {/* ─── Controls row: visualize-by + filter chips + search ─── */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <div className="flex-1 flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus-within:border-blue-300 shadow-sm min-w-[200px]">
                 <Search size={13} className="text-gray-400" />
                 <input type="text" placeholder="Search name, department..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="bg-transparent border-none outline-none text-[12px] text-gray-700 w-full placeholder:text-gray-300" />
-                {searchQuery && <button onClick={() => setSearchQuery('')}><X size={12} className="text-gray-300" /></button>}
+                {searchQuery && <button onClick={() => setSearchQuery('')} aria-label="Clear search"><X size={12} className="text-gray-300" /></button>}
+              </div>
+              {/* Department filter chips. "All" resets — others narrow allUsers
+                  to a single department. Wired into `deptFilter` state below. */}
+              <div className="flex items-center gap-1 flex-wrap">
+                <button
+                  onClick={() => setDeptFilter('')}
+                  className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${deptFilter === '' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}
+                >All depts</button>
+                {[...distinctDepartments].slice(0, 4).map(d => (
+                  <button
+                    key={d}
+                    onClick={() => setDeptFilter(d === deptFilter ? '' : d)}
+                    className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${deptFilter === d ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}
+                  >{d}</button>
+                ))}
               </div>
             </div>
 
-            {/* Edit mode instruction banner */}
+            {/* Compact edit-mode hint inline with the search row, not a full
+                banner — keeps the canvas tall enough to render the tree
+                without clipping. */}
             {editMode && (
-              <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg">
-                <GripVertical size={14} className="text-emerald-500" />
-                <p className="text-[11px] text-emerald-700 font-medium">
-                  Drag a node near another to reassign · Click a node to select
-                </p>
+              <div className="inline-flex items-center gap-1.5 mb-2 px-2.5 py-1 bg-emerald-50 border border-emerald-200 rounded-full text-[11px] text-emerald-700 font-medium">
+                <GripVertical size={11} className="text-emerald-500" />
+                Drag near another node to reassign
               </div>
             )}
-
-            {/* View-only hint for non-edit */}
-            {!editMode && !canManage && (
-              <p className="text-[10px] text-gray-400 mb-2">Click a card to view employee details · Scroll to zoom</p>
-            )}
-            {!editMode && canManage && (
-              <p className="text-[10px] text-gray-400 mb-2">Click a card to view details · Click "Edit Structure" to drag & reassign</p>
+            {!editMode && (
+              <p className="text-[10px] text-gray-400 mb-2">Click a card for details{canManage ? ' · Click "Edit Structure" to drag & reassign' : ''}</p>
             )}
 
             {/* ═══ TREE VIEW ═══ */}
             {viewMode === 'tree' && (
-              <div className="relative bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden" style={{ height: 'calc(100vh - 340px)', minHeight: 400 }}>
-                {/* Zoom controls */}
-                <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-white/90 backdrop-blur-sm rounded-lg border border-gray-200 shadow-sm px-1 py-1">
-                  <button onClick={() => setZoom(z => Math.min(z + 0.1, 1.5))} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500"><ZoomIn size={14} /></button>
-                  <span className="text-[10px] font-mono text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => setZoom(z => Math.max(z - 0.1, 0.3))} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500"><ZoomOut size={14} /></button>
+              <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden" style={{ height: 'calc(100vh - 290px)', minHeight: 460 }}>
+                {/* Bottom-right pill — zoom controls + reset/fit */}
+                <div className="absolute bottom-3 right-3 z-20 flex items-center gap-0.5 bg-white rounded-full border border-gray-200 shadow-sm px-1 py-0.5">
+                  <button onClick={() => setZoom(z => Math.min(z + 0.1, 1.5))} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-500" title="Zoom in"><ZoomIn size={13} /></button>
+                  <span className="text-[10px] font-medium text-gray-500 w-10 text-center tabular-nums">{Math.round(zoom * 100)}%</span>
+                  <button onClick={() => setZoom(z => Math.max(z - 0.1, 0.3))} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-500" title="Zoom out"><ZoomOut size={13} /></button>
                   <div className="w-px h-4 bg-gray-200 mx-0.5" />
-                  <button onClick={() => { setZoom(0.7); setPanOffset({ x: 0, y: 0 }); }} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500" title="Reset"><RotateCcw size={13} /></button>
-                  <button onClick={() => { setZoom(0.45); setPanOffset({ x: 0, y: 0 }); }} className="p-1.5 hover:bg-gray-100 rounded-md text-gray-500" title="Fit All"><Maximize2 size={13} /></button>
+                  <button onClick={() => { setZoom(0.7); setPanOffset({ x: 0, y: 0 }); }} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-500" title="Reset view"><RotateCcw size={12} /></button>
+                  <button onClick={() => { setZoom(0.45); setPanOffset({ x: 0, y: 0 }); }} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-500" title="Fit all"><Maximize2 size={12} /></button>
                 </div>
 
-                {/* Drop-to-root zone — visible in edit mode when dragging */}
-                {canDrag && (
+                {/* Drop-to-root zone — compact pill at the top-centre of the
+                    canvas when dragging. The previous full-width band ate too
+                    much vertical space and pushed the tree below the fold. */}
+                {canDrag && dragNode && (
                   <div
-                    className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-center gap-2 py-2 text-[11px] font-medium transition-all border-b-2 border-dashed
-                      ${dropRootHover ? 'bg-orange-100 border-orange-400 text-orange-700' : 'bg-orange-50/60 border-orange-200 text-orange-400'}`}
+                    className={`absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium transition-all border border-dashed shadow-sm
+                      ${dropRootHover ? 'bg-orange-100 border-orange-400 text-orange-700' : 'bg-white border-orange-300 text-orange-500'}`}
                     onDragOver={e => { e.preventDefault(); setDropRootHover(true); }}
                     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDropRootHover(false); }}
                     onDrop={e => { e.preventDefault(); setDropRootHover(false); onDropToRoot(); }}
                   >
-                    <ArrowUp size={14} /> Drop here to remove manager (make root)
+                    <ArrowUp size={12} /> Drop to remove manager (make root)
                   </div>
                 )}
 
@@ -993,9 +1245,15 @@ export default function OrgChartPage() {
                   onMouseUp={() => setIsPanning(false)}
                   onMouseLeave={() => setIsPanning(false)}
                 >
-                  <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: 'top center', padding: '30px', display: 'flex', justifyContent: 'center', width: 'max-content', minWidth: '100%' }}>
+                  <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: 'top center', padding: '48px 56px', display: 'flex', justifyContent: 'center', width: 'max-content', minWidth: '100%' }}>
                     {filteredChart.length === 0 ? (
-                      <div className="text-center py-16"><Users size={24} className="text-gray-200 mx-auto mb-2" /><p className="text-sm text-gray-400">{searchQuery ? `No results for "${searchQuery}"` : 'No hierarchy configured'}</p></div>
+                      <div className="text-center py-16">
+                        <Users size={24} className="text-gray-200 mx-auto mb-2" />
+                        <p className="text-sm text-gray-400 mb-2">{(searchQuery || deptFilter) ? 'No one matches that search.' : 'No hierarchy configured'}</p>
+                        {(searchQuery || deptFilter) && (
+                          <button onClick={() => { setSearchQuery(''); setDeptFilter(''); }} className="text-[11px] text-blue-500 hover:text-blue-600 font-medium">Clear search</button>
+                        )}
+                      </div>
                     ) : (
                       <div className="flex justify-center gap-6 items-start">
                         {filteredChart.map(node => <TreeNode key={node.id} node={node} hierarchyLevels={hierarchyLevels} canDrag={canDrag} selectedId={selectedEmployee?.id} depth={0} handlers={cardHandlers} />)}
@@ -1010,9 +1268,9 @@ export default function OrgChartPage() {
             {viewMode === 'levels' && (
               <div className="space-y-0">
                 {hierarchyLevels
-                  .filter(level => usersByLevel[level.name]?.users?.length > 0)
+                  .filter(level => filteredUsersByLevel[level.name]?.users?.length > 0)
                   .map((level, idx, arr) => {
-                    const levelData = usersByLevel[level.name];
+                    const levelData = filteredUsersByLevel[level.name];
                     const levelUsers = levelData?.users || [];
                     return (
                       <React.Fragment key={level.name}>
@@ -1059,10 +1317,13 @@ export default function OrgChartPage() {
                       </React.Fragment>
                     );
                   })}
-                {hierarchyLevels.filter(l => usersByLevel[l.name]?.users?.length > 0).length === 0 && (
+                {hierarchyLevels.filter(l => filteredUsersByLevel[l.name]?.users?.length > 0).length === 0 && (
                   <div className="text-center py-16 bg-white rounded-xl border border-gray-100">
                     <Layers size={24} className="text-gray-200 mx-auto mb-2" />
-                    <p className="text-sm text-gray-400">No hierarchy levels with users</p>
+                    <p className="text-sm text-gray-400 mb-2">{searchQuery || deptFilter ? 'No one matches that search.' : 'No hierarchy levels with users'}</p>
+                    {(searchQuery || deptFilter) && (
+                      <button onClick={() => { setSearchQuery(''); setDeptFilter(''); }} className="text-[11px] text-blue-500 hover:text-blue-600 font-medium">Clear search</button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1071,7 +1332,16 @@ export default function OrgChartPage() {
             {/* ═══ DEPARTMENT VIEW ═══ */}
             {viewMode === 'department' && (
               <div className="space-y-3">
-                {getDepartmentView().map(([dept, users]) => (
+                {departmentView.length === 0 && (
+                  <div className="text-center py-16 bg-white rounded-xl border border-gray-100">
+                    <Building2 size={24} className="text-gray-200 mx-auto mb-2" />
+                    <p className="text-sm text-gray-400 mb-2">No one matches that search.</p>
+                    {(searchQuery || deptFilter) && (
+                      <button onClick={() => { setSearchQuery(''); setDeptFilter(''); }} className="text-[11px] text-blue-500 hover:text-blue-600 font-medium">Clear search</button>
+                    )}
+                  </div>
+                )}
+                {departmentView.map(([dept, users]) => (
                   <div key={dept} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
                     <div className="flex items-center gap-2.5 px-4 py-2.5 bg-gray-50 border-b border-gray-100">
                       <Building2 size={13} className="text-gray-400" />
@@ -1126,7 +1396,7 @@ export default function OrgChartPage() {
 
       {/* ═══ MODALS ═══ */}
       <AnimatePresence>
-        {showEditEmployee && <EditEmployeeModal user={showEditEmployee} hierarchyLevels={hierarchyLevels} onClose={() => setShowEditEmployee(null)} onSaved={fetchData} />}
+        {showEditEmployee && <EditEmployeeModal user={showEditEmployee} hierarchyLevels={hierarchyLevels} onClose={() => setShowEditEmployee(null)} onSaved={fetchData} toastError={toastError} />}
       </AnimatePresence>
 
       <AnimatePresence>

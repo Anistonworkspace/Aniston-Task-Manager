@@ -1345,6 +1345,7 @@ export default function BoardPage() {
         <TaskModal
           task={selectedTask}
           boardId={boardId}
+          board={board}
           members={members}
           boardStatuses={getBoardStatuses(board)}
           onClose={() => setSelectedTask(null)}

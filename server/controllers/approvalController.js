@@ -1386,7 +1386,8 @@ exports.getMyFeedback = async (req, res) => {
 exports.getWorkflowItems = async (req, res) => {
   try {
     const user = req.user;
-    const isMember = user.role === 'member';
+    const { isTier4 } = require('../config/tiers');
+    const isMember = isTier4(user);
 
     const approvalWhere = { approvalStatus: { [Op.ne]: null }, isArchived: false };
     if (isMember) approvalWhere.assignedTo = user.id;

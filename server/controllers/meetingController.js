@@ -5,6 +5,8 @@ const { emitToUser } = require('../services/socketService');
 const realtime = require('../services/realtimeService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
+const { isTier4 } = require('../config/tiers');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 
 const MEETING_INCLUDES = [
   { model: User, as: 'organizer', attributes: ['id', 'name', 'email', 'avatar'] },
@@ -18,7 +20,7 @@ const MEETING_INCLUDES = [
 const createMeeting = async (req, res) => {
   try {
     // Members cannot create meetings; assistant_manager, manager, admin can
-    if (req.user.role === 'member') {
+    if (isTier4(req.user)) {
       return res.status(403).json({ success: false, message: 'Members cannot create meetings.' });
     }
 
@@ -55,18 +57,19 @@ const createMeeting = async (req, res) => {
 
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
 
-    // Notify participants
+    // Notify participants. Idempotent on (meeting, participant) so a retried
+    // create does not double-notify.
     for (const p of (participantList || []).filter(Boolean)) {
       if (p.userId && p.userId !== req.user.id) {
         const typeLabel = type === 'reminder' ? 'reminder' : type === 'follow_up' ? 'follow-up' : 'meeting';
-        const notification = await Notification.create({
+        await createNotification({
+          userId: p.userId,
           type: 'task_updated',
           message: `${req.user.name} invited you to a ${typeLabel}: "${title}" on ${date} at ${startTime}`,
           entityType: 'meeting',
           entityId: meeting.id,
-          userId: p.userId,
+          idempotencyKey: buildIdempotencyKey('meeting-invited', meeting.id, p.userId),
         });
-        emitToUser(p.userId, 'notification:new', { notification });
       }
     }
 
@@ -200,16 +203,18 @@ const respondToMeeting = async (req, res) => {
     participants[idx] = { ...participants[idx], status };
     await meeting.update({ participants });
 
-    // Notify organizer
+    // Notify organizer. Idempotency key includes the status so accept-then-
+    // decline-then-accept produces three rows; same status applied twice
+    // (e.g. duplicate click) produces one.
     if (meeting.createdBy !== req.user.id) {
-      const notification = await Notification.create({
+      await createNotification({
+        userId: meeting.createdBy,
         type: 'task_updated',
         message: `${req.user.name} ${status} your meeting "${meeting.title}"`,
         entityType: 'meeting',
         entityId: meeting.id,
-        userId: meeting.createdBy,
+        idempotencyKey: buildIdempotencyKey('meeting-respond', meeting.id, req.user.id, status),
       });
-      emitToUser(meeting.createdBy, 'notification:new', { notification });
     }
 
     const fullMeeting = await Meeting.findByPk(meeting.id, { include: MEETING_INCLUDES });
@@ -241,17 +246,18 @@ const deleteMeeting = async (req, res) => {
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'meeting', { isOwnResource }))) return;
     }
 
-    // Notify participants of cancellation
+    // Notify participants of cancellation. Idempotent — replayed DELETE
+    // cannot double-notify.
     for (const p of (meeting.participants || []).filter(Boolean)) {
       if (p.userId && p.userId !== req.user.id) {
-        const notification = await Notification.create({
+        await createNotification({
+          userId: p.userId,
           type: 'task_updated',
           message: `${req.user.name} cancelled the meeting "${meeting.title}"`,
           entityType: 'meeting',
           entityId: meeting.id,
-          userId: p.userId,
+          idempotencyKey: buildIdempotencyKey('meeting-cancelled', meeting.id, p.userId),
         });
-        emitToUser(p.userId, 'notification:new', { notification });
       }
     }
 

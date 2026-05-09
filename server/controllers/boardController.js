@@ -2,6 +2,8 @@ const { Board, User, Task, Workspace, TaskOwner, TaskAssignee, sequelize } = req
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { emitToBoard, emitToUser, forceUserLeaveBoard, getIO } = require('../services/socketService');
+const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 
 // Sidebar refresh: broadcast a board mutation to every connected socket so any
 // user whose sidebar/workspace list depends on this board re-fetches via the
@@ -720,11 +722,28 @@ const addMember = async (req, res) => {
 
     await boardMembershipService.explicitAddMember(board.id, userId);
 
-    // Notify the added user
+    // Notify the added user — both via realtime (instant sidebar refresh)
+    // and as a Notification row so the bell catches it for users who
+    // weren't online when this happened. Idempotent on (board, user) so a
+    // retried POST doesn't double-notify.
     emitToUser(userId, 'board:memberAdded', {
       boardId: board.id,
       boardName: board.name,
     });
+    if (userId !== req.user.id) {
+      await createNotification({
+        userId,
+        type: 'board_member_added',
+        message: sanitizeNotificationMessage(
+          `${sanitizeNotificationField(req.user.name)} added you to board "${sanitizeNotificationField(board.name)}"`
+        ),
+        entityType: 'board',
+        entityId: board.id,
+        boardId: board.id,
+        idempotencyKey: buildIdempotencyKey('board-member-added', board.id, userId),
+        sanitize: false,
+      });
+    }
 
     // Reload full board
     const fullBoard = await Board.findByPk(board.id, {
@@ -805,6 +824,20 @@ const removeMember = async (req, res) => {
       boardId: board.id,
       boardName: board.name,
     });
+    if (userId !== req.user.id) {
+      await createNotification({
+        userId,
+        type: 'board_member_removed',
+        message: sanitizeNotificationMessage(
+          `${sanitizeNotificationField(req.user.name)} removed you from board "${sanitizeNotificationField(board.name)}"`
+        ),
+        entityType: 'board',
+        entityId: board.id,
+        boardId: board.id,
+        idempotencyKey: buildIdempotencyKey('board-member-removed', board.id, userId, Math.floor(Date.now() / 60000)),
+        sanitize: false,
+      });
+    }
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [

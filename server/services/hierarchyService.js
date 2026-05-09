@@ -354,21 +354,42 @@ async function canEditHierarchy(actor, employeeId, newManagerId, options = {}) {
   }
 
   const target = await User.findByPk(employeeId, {
-    attributes: ['id', 'role', 'isSuperAdmin', 'isActive'],
+    attributes: ['id', 'role', 'isSuperAdmin', 'isActive', 'tier'],
     transaction: options.transaction,
   });
   if (!target) return { allowed: false, reason: 'Employee not found.' };
 
+  // Tier 1 protection — applies to ALL actors, including other Tier 1 users.
+  // Tier 1 (super admin) users are top-of-org leadership and must remain root
+  // nodes. Reparenting them under anyone (or removing them from any branch)
+  // is not a hierarchy operation we support — promote a successor to Tier 1
+  // first and demote the existing Tier 1 instead.
+  if (target.isSuperAdmin) {
+    return {
+      allowed: false,
+      reason: 'Tier 1 users cannot be reassigned because they are top-level organization users.',
+      code: 'TIER_1_IMMUTABLE',
+    };
+  }
+
   let proposedManager = null;
   if (newManagerId) {
     proposedManager = await User.findByPk(newManagerId, {
-      attributes: ['id', 'role', 'isSuperAdmin', 'isActive'],
+      attributes: ['id', 'role', 'isSuperAdmin', 'isActive', 'tier'],
       transaction: options.transaction,
     });
     if (!proposedManager) return { allowed: false, reason: 'Proposed manager not found.' };
     if (!proposedManager.isActive) {
       return { allowed: false, reason: 'Proposed manager is deactivated.' };
     }
+    // NOTE: Tier 1 IS allowed as a proposed manager — Tier 1 represents
+    // top-of-org leadership and lower tiers should be able to report to it.
+    // The asymmetric rule is enforced above (target.isSuperAdmin → block):
+    //   - target = Tier 1   → blocked (Tier 1 cannot be reassigned)
+    //   - manager = Tier 1  → allowed (Tier 1 can manage other tiers)
+    // The previous version of this branch incorrectly blocked the manager
+    // case too and rejected legitimate "Mayank reports to Nitin (Tier 1)"
+    // assignments with a misleading toast. Removed.
   }
 
   // Super admin → unrestricted (still cycle-checked below).

@@ -31,6 +31,60 @@ const { canAssignTo } = require('../services/hierarchyService');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const logger = require('../utils/logger');
+const socketService = require('../services/socketService');
+
+// F-9 — emit template lifecycle events to all viewers authorized to see this
+// template (assignee, creator, ancestors of each, admins). Mirrors the
+// recipient rules used for task events so a manager who just created a
+// template for a member sees pause/resume changes live without refresh.
+//
+// Returns nothing; fire-and-forget. The catch is intentional — a broken
+// realtime emit must never fail the API request that triggered it.
+async function emitTemplateEvent(action, template, actorId) {
+  try {
+    if (!template || !template.id) return;
+    const userIds = new Set();
+    if (template.assigneeId) userIds.add(String(template.assigneeId));
+    if (template.createdBy) userIds.add(String(template.createdBy));
+    // Ancestors of the assignee (subtree-scoped readers above the assignee).
+    try {
+      const { getPrimaryManagerId } = require('../services/hierarchyService');
+      let cursor = template.assigneeId;
+      const visited = new Set();
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const parent = await getPrimaryManagerId(cursor);
+        if (!parent) break;
+        userIds.add(String(parent));
+        cursor = parent;
+      }
+    } catch (_) { /* hierarchy walk is best-effort */ }
+    // Admins / super admins — unrestricted readers.
+    try {
+      const { User } = require('../models');
+      const { Op: SeqOp } = require('sequelize');
+      const admins = await User.findAll({
+        where: {
+          isActive: true,
+          [SeqOp.or]: [{ role: 'admin' }, { isSuperAdmin: true }],
+        },
+        attributes: ['id'],
+        raw: true,
+      });
+      for (const a of admins) userIds.add(String(a.id));
+    } catch (_) { /* defensive */ }
+    if (actorId) userIds.delete(String(actorId)); // suppress self-echo
+    const recipients = Array.from(userIds);
+    if (recipients.length === 0) return;
+    socketService.emitToUsers(`recurring_template:${action}`, {
+      template: typeof template.toJSON === 'function' ? template.toJSON() : template,
+      actorId: actorId || null,
+      timestamp: Date.now(),
+    }, recipients);
+  } catch (e) {
+    logger.warn(`[recurringTemplateController] emitTemplateEvent(${action}) failed`, { msg: e.message });
+  }
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -147,6 +201,29 @@ function publicTemplate(template) {
   if (json.assignee) out.assignee = json.assignee;
   if (json.creator) out.creator = json.creator;
   return out;
+}
+
+/**
+ * Refetch a template by id with the same includes that `listTemplates` uses
+ * (board / assignee / creator). Mutating endpoints (`update`, `pause`,
+ * `resume`, `archive`) all start from a bare `findByPk(id)` for safety —
+ * Sequelize's lock-then-update flow is simpler without eager loads. After
+ * the write commits, we re-fetch through this helper so the response
+ * carries the same shape `listTemplates` does. This is what lets the
+ * client's `onSaved` callback apply an optimistic local update with the
+ * full row (including `assignee.name`, `board.name`, etc.) instead of just
+ * the bare scalar columns — closes the "title not refreshing on Recurring
+ * Work page after edit" gap reported on 2026-05-09.
+ */
+async function reloadTemplateForResponse(id) {
+  if (!id) return null;
+  return RecurringTaskTemplate.findByPk(id, {
+    include: [
+      { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
+      { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+      { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+    ],
+  });
 }
 
 /**
@@ -438,10 +515,20 @@ const createTemplate = async (req, res) => {
       },
     });
 
+    // Re-fetch with includes so the response carries the full row
+    // (board / assignee / creator) the list endpoint also returns. The
+    // client's RecurringWorkPage uses this to apply an optimistic update
+    // when a template is created from a different surface.
+    const fullTemplate = await reloadTemplateForResponse(template.id) || template;
+
+    // F-9: realtime fan-out so the assignee's RecurringWorkPage / sidebar
+    // updates without a manual refresh.
+    emitTemplateEvent('created', fullTemplate, req.user.id);
+
     return res.status(201).json({
       success: true,
       data: {
-        template: publicTemplate(template),
+        template: publicTemplate(fullTemplate),
         immediateGeneration,
       },
     });
@@ -605,7 +692,44 @@ const updateTemplate = async (req, res) => {
       v.dayOfMonth = resolved.dayOfMonth;
     }
 
+    // Snapshot the OLD assignee BEFORE updating the row, so we can detect a
+    // change and reassign open generated instances accordingly.
+    const oldAssigneeId = template.assigneeId;
+
     await template.update(v);
+
+    // Reassignment propagation — the bug fix.
+    //   When the template's assigneeId changes, every OPEN generated
+    //   instance (status != 'done', isArchived = false) must be moved from
+    //   the old assignee to the new one. tasks.assignedTo, task_assignees,
+    //   and task_owners all need to flip in lock-step or the visibility
+    //   service returns stale results.
+    //
+    //   Historical / completed / archived rows are deliberately untouched
+    //   per spec: they are the audit trail of who actually did the work on
+    //   a given occurrence date.
+    let reassignReport = null;
+    const assigneeChanged = v.assigneeId !== undefined
+      && String(v.assigneeId) !== String(oldAssigneeId);
+    if (assigneeChanged) {
+      try {
+        reassignReport = await recurringTaskService.reassignOpenInstances(
+          template,
+          oldAssigneeId,
+          template.assigneeId,
+          { actorId: req.user.id },
+        );
+      } catch (e) {
+        // reassignOpenInstances is built to never throw — defensive catch.
+        logger.error('[recurringTemplateController.update] reassign threw', {
+          templateId: template.id,
+          oldAssigneeId,
+          newAssigneeId: template.assigneeId,
+          msg: e.message,
+        });
+        reassignReport = { ok: false, reason: e.message, reassigned: 0, errors: [] };
+      }
+    }
 
     const scheduleChanged =
       v.frequency !== undefined ||
@@ -649,10 +773,34 @@ const updateTemplate = async (req, res) => {
       taskId: null,
       boardId: template.boardId,
       userId: req.user.id,
-      meta: { fields: Object.keys(v) },
+      meta: {
+        fields: Object.keys(v),
+        ...(assigneeChanged ? {
+          oldAssigneeId,
+          newAssigneeId: template.assigneeId,
+          reassignedInstances: reassignReport?.reassigned ?? 0,
+        } : {}),
+      },
     });
 
-    return res.json({ success: true, data: { template: publicTemplate(template) } });
+    // Re-fetch with includes so the response payload carries `board`,
+    // `assignee`, and `creator` — same shape `listTemplates` returns. This
+    // lets the client apply a complete optimistic update on save without
+    // waiting for a separate list refresh.
+    const fullTemplate = await reloadTemplateForResponse(template.id) || template;
+
+    // F-9: realtime fan-out so other viewers' RecurringWorkPage refreshes
+    // without manual reload. Use the fully-included row so subscribers
+    // receive the same shape they would from a fresh list fetch.
+    emitTemplateEvent('updated', fullTemplate, req.user.id);
+
+    return res.json({
+      success: true,
+      data: {
+        template: publicTemplate(fullTemplate),
+        ...(reassignReport ? { reassignment: reassignReport } : {}),
+      },
+    });
   } catch (err) {
     logger.error('[recurringTemplateController.update]', err);
     return res.status(500).json({ success: false, message: 'Failed to update recurring template.' });
@@ -708,7 +856,12 @@ async function togglePause(req, res, makeActive) {
       userId: req.user.id,
     });
 
-    return res.json({ success: true, data: { template: publicTemplate(template) } });
+    const fullTemplate = await reloadTemplateForResponse(template.id) || template;
+
+    // F-9: realtime fan-out.
+    emitTemplateEvent(makeActive ? 'resumed' : 'paused', fullTemplate, req.user.id);
+
+    return res.json({ success: true, data: { template: publicTemplate(fullTemplate) } });
   } catch (err) {
     logger.error('[recurringTemplateController.togglePause]', err);
     return res.status(500).json({ success: false, message: 'Failed to update template.' });
@@ -749,7 +902,12 @@ const archiveTemplate = async (req, res) => {
       userId: req.user.id,
     });
 
-    return res.json({ success: true, data: { template: publicTemplate(template) } });
+    const fullTemplate = await reloadTemplateForResponse(template.id) || template;
+
+    // F-9: realtime fan-out.
+    emitTemplateEvent('archived', fullTemplate, req.user.id);
+
+    return res.json({ success: true, data: { template: publicTemplate(fullTemplate) } });
   } catch (err) {
     logger.error('[recurringTemplateController.archive]', err);
     return res.status(500).json({ success: false, message: 'Failed to archive template.' });

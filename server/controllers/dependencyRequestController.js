@@ -297,6 +297,18 @@ const updateStatus = async (req, res) => {
     // Block-state side effects.
     await depService.recomputeParentBlockState(dep.parentTaskId);
 
+    // Phase 13 — make the assignee's board reflect the dep work. On the
+    // first transition out of pending we materialize a shadow Task on
+    // the parent's board owned by the assignee; subsequent transitions
+    // sync that task; reject/cancel archives it. The helper is idempotent
+    // (uses dep.linkedTaskId as the key) and never throws — wrap in
+    // try/catch so a materialization failure can't 500 the status update.
+    try {
+      await depService.syncLinkedTaskFromDependency(dep, req.user);
+    } catch (err) {
+      console.error('[DependencyRequest] syncLinkedTaskFromDependency failed:', err.message);
+    }
+
     // Lifecycle notification.
     const eventName =
       newStatus === 'accepted'      ? 'accepted'  :
@@ -438,6 +450,14 @@ const cancelDependency = async (req, res) => {
     await dep.save();
 
     await depService.recomputeParentBlockState(dep.parentTaskId);
+    // Phase 13 — if a shadow task was materialized on accept/start/done,
+    // archive it now so the assignee's board removes the row. No-op if
+    // the dep was cancelled straight from pending (no shadow ever made).
+    try {
+      await depService.syncLinkedTaskFromDependency(dep, req.user);
+    } catch (err) {
+      console.error('[DependencyRequest] syncLinkedTaskFromDependency (cancel) failed:', err.message);
+    }
     await depService.dispatchDependencyEvent('cancelled', dep, req.user);
 
     logActivity({
