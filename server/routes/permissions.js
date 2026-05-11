@@ -1,4 +1,5 @@
 const express = require('express');
+const { body } = require('express-validator');
 const { authenticate, adminOnly, managerOrAdmin } = require('../middleware/auth');
 const {
   getPermissions,
@@ -24,7 +25,20 @@ router.get('/base-permissions/:role', authenticate, getBasePermissionsForRole);
 router.get('/templates', authenticate, getTemplates);
 
 router.get('/', authenticate, managerOrAdmin, getPermissions);
-router.post('/', authenticate, managerOrAdmin, grantPermission);
+router.post(
+  '/',
+  authenticate,
+  managerOrAdmin,
+  // Validator chain. The permission controller does not currently consume
+  // validationResult, so these checks are defence-in-depth scaffolding.
+  [
+    body('userId').isUUID().withMessage('userId must be a valid UUID'),
+    body('resourceType').isString().notEmpty().withMessage('resourceType is required'),
+    body('action').optional().isString(),
+    body('effect').optional().isIn(['grant', 'deny']).withMessage('effect must be grant|deny'),
+  ],
+  grantPermission
+);
 router.post('/bulk', authenticate, adminOnly, bulkGrantPermissions);
 router.post('/multi', authenticate, managerOrAdmin, multiGrant);
 

@@ -1,4 +1,8 @@
 /* eslint-disable no-console */
+if (process.env.NODE_ENV === 'production') {
+  console.error('Refusing to run RBAC test setup/run in production.');
+  process.exit(1);
+}
 // RBAC regression for boards/groups/tasks creation. Hits the running API
 // (http://localhost:5000) as five test users created by __rbac_test_setup.js.
 // Asserts the expected status code for each operation. Exits non-zero on

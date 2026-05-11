@@ -22,18 +22,26 @@ jest.mock('../../models', () => {
     },
     User: {
       findByPk: jest.fn(),
+      findAll: jest.fn().mockResolvedValue([]),
     },
     Task: {
-      findAll: jest.fn(),
+      findAll: jest.fn().mockResolvedValue([]),
       max: jest.fn(),
       create: jest.fn(),
     },
     Workspace: {},
+    // boardController + middleware now reference these directly; supply
+    // benign stubs so any incidental query path succeeds without a real DB.
+    TaskOwner: { findAll: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
+    TaskAssignee: { findAll: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
+    PermissionGrant: { findAll: jest.fn().mockResolvedValue([]) },
     sequelize: {
       fn: jest.fn(),
       col: jest.fn(),
-      query: jest.fn(),
+      query: jest.fn().mockResolvedValue([[], {}]),
       literal: jest.fn((sql) => ({ val: sql })),
+      // Some board-mutation paths use managed transactions now.
+      transaction: jest.fn(async (cb) => cb({ /* fake tx */ })),
     },
   };
 });
@@ -55,6 +63,57 @@ jest.mock('../../services/activityService', () => ({
 jest.mock('../../utils/sanitize', () => ({
   sanitizeInput: jest.fn((val) => val),
   sanitizeRichText: jest.fn((val) => val),
+  // boardController also imports these from utils/sanitize; provide passthroughs.
+  sanitizeNotificationField: jest.fn((val) => val),
+  sanitizeNotificationMessage: jest.fn((val) => val),
+}));
+
+// boards routes now go through `requirePermission('boards', ...)` for POST/PUT.
+// hasPermission is role-aware so the "member cannot create" assertion still
+// fires from the route gate, while managers / admins pass through to the
+// controller (where each test pins the actual assertion).
+//
+// getEffectiveBasePermission is used by auth middleware's Layer-3 fallback
+// for `requireRole(...)` routes — it MUST also be role-aware, otherwise a
+// `return true` blanket lets members through requireRole('manager','admin').
+jest.mock('../../services/permissionEngine', () => {
+  const isElevated = (user) => {
+    if (!user) return false;
+    if (user.isSuperAdmin) return true;
+    return ['admin', 'manager', 'assistant_manager'].includes(user.role);
+  };
+  return {
+    hasPermission: jest.fn(async (user, _resource, _action) => isElevated(user)),
+    computeEffectivePermissions: jest.fn().mockResolvedValue([]),
+    fetchActiveGrants: jest.fn().mockResolvedValue([]),
+    getEffectiveBasePermission: jest.fn((user) => isElevated(user)),
+  };
+});
+
+// boardController fan-outs realtime + notifications via the central helper.
+jest.mock('../../services/notificationService', () => ({
+  createNotification: jest.fn().mockResolvedValue(null),
+  buildIdempotencyKey: jest.fn(() => 'idempotency-key'),
+}));
+
+jest.mock('../../services/boardMembershipService', () => ({
+  autoAddMember: jest.fn().mockResolvedValue(null),
+  explicitAddMember: jest.fn().mockResolvedValue(null),
+  cleanupMultiple: jest.fn().mockResolvedValue(null),
+  cleanupIfNoTasksRemain: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/taskVisibilityService', () => ({
+  canViewTask: jest.fn().mockResolvedValue(true),
+  buildTaskVisibilityWhere: jest.fn(async () => ({})),
+  isUnrestrictedTaskViewer: jest.fn(() => true),
+}));
+
+jest.mock('../../services/boardVisibilityService', () => ({
+  canUserSeeBoard: jest.fn().mockResolvedValue(true),
+  filterVisibleBoardIds: jest.fn(async (_user, ids) => ids),
+  buildBoardVisibilityWhere: jest.fn(async () => ({})),
+  buildVisibleBoardIds: jest.fn(async (_user, ids) => ids),
 }));
 
 // ─── Build test app ──────────────────────────────────────────────────────────
@@ -211,6 +270,11 @@ describe('GET /api/boards/:id', () => {
       })
     );
 
+    // Visibility gate now delegates to boardVisibilityService.canUserSeeBoard
+    // — return false to simulate the member not being able to see this board.
+    const boardVis = require('../../services/boardVisibilityService');
+    boardVis.canUserSeeBoard.mockResolvedValueOnce(false);
+
     const token = generateToken(MEMBER_ID, 'member');
 
     const res = await request(app)
@@ -358,16 +422,25 @@ describe('PUT /api/boards/:id', () => {
   beforeAll(() => { app = buildApp(); });
   beforeEach(() => jest.clearAllMocks());
 
-  it('returns 403 when a member tries to update a board', async () => {
+  it('returns 403 when a member tries to update an admin-only board field', async () => {
+    // Post-Phase-7 board field-level tiering: members may rename boards they
+    // can see, but admin-only fields (color, groups, archivedGroups,
+    // isArchived, workspaceId, columns) are gated. The test previously
+    // pinned "members cannot update at all"; that assertion was correct
+    // only for the old monolithic role gate. With field-level tiering, we
+    // pin the admin-field gate (this is the actual RBAC the controller
+    // enforces, and it must not regress).
     User.findByPk.mockResolvedValue(makeUserRecord({ role: 'member' }));
+    Board.findByPk.mockResolvedValue(makeBoardRecord());
     const token = generateToken(USER_ID, 'member');
 
     const res = await request(app)
       .put(`/api/boards/${BOARD_ID}`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'New Name' });
+      .send({ color: '#ff0000' }); // admin-only field
 
     expect(res.status).toBe(403);
+    expect(res.body.message).toMatch(/managers or admins/i);
   });
 
   it('returns 404 when the board does not exist', async () => {
@@ -448,12 +521,20 @@ describe('DELETE /api/boards/:id', () => {
       .delete(`/api/boards/${BOARD_ID}`)
       .set('Authorization', `Bearer ${token}`);
 
+    // Tier 2 (manager) now hits the global destructive-action gate FIRST
+    // (decision #4: T2 cannot delete anything). The earlier "creator or an
+    // admin" message stays in the controller but is reached only when the
+    // tier gate is irrelevant (T1). For the audit we just pin a 403; either
+    // gate firing is acceptable.
     expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/creator or an admin/i);
   });
 
-  it('returns 200 when the admin deletes any board', async () => {
-    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'admin' }));
+  it('returns 200 when a super admin (Tier 1) deletes any board', async () => {
+    // Phase 5d global destructive-action gate: only Tier 1 (super admin)
+    // may permanently delete shared resources. The earlier "admin → 200"
+    // assertion was widened too far — admin without super admin is Tier 2
+    // and is blocked. The test now pins the legitimately-allowed actor.
+    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'admin', isSuperAdmin: true }));
     const board = makeBoardRecord({ createdBy: MEMBER_ID });
     Board.findByPk.mockResolvedValue(board);
     const token = generateToken(USER_ID, 'admin');
@@ -467,18 +548,23 @@ describe('DELETE /api/boards/:id', () => {
     expect(board.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 200 when the creator (manager) deletes their own board', async () => {
-    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'manager', id: USER_ID }));
+  it('returns 403 when an admin (Tier 2, not super admin) tries to delete a board', async () => {
+    // Defense for the inverse: Tier 2 is strictly blocked from board
+    // deletion — even on a board they themselves created. They may still
+    // ARCHIVE (PUT /:id with isArchived: true). DELETE returns 403 with
+    // the TIER_2_NO_DELETE code from tierEnforcement.assertCanDelete.
+    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'admin', isSuperAdmin: false }));
     const board = makeBoardRecord({ createdBy: USER_ID });
     Board.findByPk.mockResolvedValue(board);
-    const token = generateToken(USER_ID, 'manager');
+    const token = generateToken(USER_ID, 'admin');
 
     const res = await request(app)
       .delete(`/api/boards/${BOARD_ID}`)
       .set('Authorization', `Bearer ${token}`);
 
-    expect(res.status).toBe(200);
-    expect(board.destroy).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, code: 'TIER_2_NO_DELETE' });
+    expect(board.destroy).not.toHaveBeenCalled();
   });
 });
 

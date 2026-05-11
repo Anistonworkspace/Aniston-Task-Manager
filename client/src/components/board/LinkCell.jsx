@@ -1,6 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ExternalLink } from 'lucide-react';
 
+// LinkCell: single-value 'link' custom column. Stored as a plain string on
+// task.customFields. For the multi-value 'links' column type (backed by the
+// task_links table) use LinksCell instead — keep these two distinct because
+// the storage model and column-type id differ. See TaskRow.jsx case 'link'
+// vs case 'links'.
 export default function LinkCell({ value = '', onChange }) {
   const readOnly = typeof onChange !== 'function';
   const [editing, setEditing] = useState(false);

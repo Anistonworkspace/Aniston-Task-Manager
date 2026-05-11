@@ -1,0 +1,22 @@
+-- Migration 019: default-column backfill (advisory)
+--
+-- This migration is a no-op at the SQL layer because the column backfill
+-- needs application logic (it mutates a JSONB array conditionally on the
+-- type field). The canonical place that runs the backfill is the boot
+-- block in server.js — this file exists so the migration history is
+-- complete and operators reviewing the migrations/ directory can see
+-- that this work was done.
+--
+-- Operational behavior (in server.js after this migration):
+--   • For each board, append default columns of type 'label', 'references',
+--     and 'links' if no column of that type exists.
+--   • Normalize ONLY the literal stale title 'Link' → 'Link/URL' (and
+--     'References' → 'Reference'); any other user-customized title is
+--     preserved.
+--   • Whole pass runs inside a single sequelize.transaction() — partial
+--     failure rolls back so the next boot can retry from a clean state.
+--
+-- This SQL block exists for documentation + sanity. Touching no rows is
+-- intentional.
+
+SELECT 1;

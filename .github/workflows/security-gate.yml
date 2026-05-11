@@ -1,0 +1,107 @@
+name: Security gate
+
+# CI gate that runs the security-focused test suites on every PR + push to
+# main so a regression in the new label / reference / link IDOR + SSRF
+# protections can never be silently merged. Fast: only runs the targeted
+# suites, not the whole test base.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/controllers/labelController.js'
+      - 'server/controllers/taskReferenceController.js'
+      - 'server/controllers/taskLinkController.js'
+      - 'server/routes/labels.js'
+      - 'server/routes/taskReferences.js'
+      - 'server/routes/taskLinks.js'
+      - 'server/server.js'
+      - 'server/__tests__/**'
+      - 'client/src/components/board/LabelCell.jsx'
+      - 'client/src/components/board/ReferenceCell.jsx'
+      - 'client/src/components/board/LinksCell.jsx'
+      - 'client/src/components/board/__tests__/**'
+      - 'client/src/pages/BoardPage.jsx'
+  push:
+    branches: [main]
+
+jobs:
+  backend-security:
+    name: Backend security suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+      - name: Install backend deps
+        working-directory: server
+        run: npm ci
+      - name: Run label / reference / link security tests
+        working-directory: server
+        # Three new suites + the legacy route-security suite. JWT_SECRET
+        # is a throwaway for the test runner — no real auth happens.
+        env:
+          JWT_SECRET: ci-test-secret
+          NODE_ENV: test
+        run: |
+          npx jest --forceExit \
+            __tests__/controllers/labelController.security.test.js \
+            __tests__/controllers/taskReferenceController.security.test.js \
+            __tests__/controllers/taskLinkController.security.test.js \
+            __tests__/security/route-security.test.js
+
+  frontend-cells:
+    name: Frontend cell tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+      - name: Install client deps
+        working-directory: client
+        run: npm ci
+      - name: Run LabelCell / ReferenceCell / LinksCell Vitest suites
+        working-directory: client
+        run: npx vitest run src/components/board/__tests__/
+
+  client-build:
+    name: Production client build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+      - name: Install client deps
+        working-directory: client
+        run: npm ci
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+  artifact-safety:
+    name: Tracked-artifact safety scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Reject tracked secrets and signing keys
+        run: |
+          set -eu
+          # If any of these patterns ever land in tracked files the build fails.
+          MATCHES=$(git ls-files | grep -iE '\.env$|keystore|\.pem$|\.key$|\.aab$|\.apk$|\.ipa$' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Tracked artifacts detected:"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "No tracked secrets / signing keys / native artifacts."

@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 import {
   Settings, Shield, Users, LayoutGrid, Bell, Key, Plus, Trash2, Edit2,
   Check, X, ChevronRight, Search, AlertCircle, Clock, UserPlus, Eye,
@@ -63,21 +66,33 @@ const LEVEL_COLORS = {
 
 export default function AdminSettingsPage() {
   const { user, isSuperAdmin } = useAuth();
+  const t = useT();
   const [activeTab, setActiveTab] = useState('users');
 
   // Filter out super-admin-only tabs for regular admins. The Security tab is
   // intentionally invisible to admins/managers/members — they cannot read or
   // write the system inactivity timeout. Backend enforces the same on PUT.
-  const visibleTabs = TABS.filter(t => !t.tier1Only || resolveTier(user) === TIER_1);
+  const visibleTabs = TABS.filter(tab => !tab.tier1Only || resolveTier(user) === TIER_1);
+
+  // Map tab id → translation key for visible label. Untranslated/unknown ids
+  // fall through to tab.label so the UI never breaks if a new tab is added.
+  const TAB_LABEL_KEYS = {
+    users: 'adminSettings.tabs.users',
+    workspaces: 'adminSettings.tabs.workspaces',
+    permissions: 'adminSettings.tabs.permissions',
+    access_requests: 'adminSettings.tabs.accessRequests',
+    templates: 'adminSettings.tabs.templates',
+    security: 'adminSettings.tabs.security',
+  };
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2 mb-1">
           <Settings size={24} className="text-primary" />
-          Admin Settings
+          {t('adminSettings.title')}
         </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">Manage users, workspaces, permissions, and access control</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{t('adminSettings.subtitle')}</p>
       </motion.div>
 
       {/* Tabs */}
@@ -87,7 +102,7 @@ export default function AdminSettingsPage() {
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition-all ${
               activeTab === tab.id ? 'bg-white dark:bg-zinc-700 text-primary shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}>
-            <tab.icon size={14} /> {tab.label}
+            <tab.icon size={14} /> {TAB_LABEL_KEYS[tab.id] ? t(TAB_LABEL_KEYS[tab.id]) : tab.label}
           </button>
         ))}
       </div>

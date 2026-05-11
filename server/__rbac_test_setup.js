@@ -1,4 +1,8 @@
 /* eslint-disable no-console */
+if (process.env.NODE_ENV === 'production') {
+  console.error('Refusing to run RBAC test setup/run in production.');
+  process.exit(1);
+}
 // Temporary helper for the boards/groups/tasks RBAC regression test.
 // Creates five test users (one per role), two workspaces, and one private
 // board. Idempotent — safe to run multiple times. Delete this file after the

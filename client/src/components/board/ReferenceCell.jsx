@@ -28,6 +28,26 @@ export default function ReferenceCell({ taskId, value = [], onChange, readOnly =
   // optimistic add in the open modal.
   const pendingMutation = useRef(false);
 
+  // P2-5 — mount safety. Modal popover unmount mid-mutation would log
+  // "setState on unmounted component" warnings without this guard.
+  const isMounted = useRef(true);
+  const pendingTimeouts = useRef(new Set());
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+      for (const id of pendingTimeouts.current) clearTimeout(id);
+      pendingTimeouts.current.clear();
+    };
+  }, []);
+  function safeSet(setter, value) { if (isMounted.current) setter(value); }
+  function scheduleLatchRelease() {
+    const id = setTimeout(() => {
+      pendingMutation.current = false;
+      pendingTimeouts.current.delete(id);
+    }, 800);
+    pendingTimeouts.current.add(id);
+  }
+
   // Hydrate on task switch (rendered task changed).
   useEffect(() => {
     setItems(value || []);
@@ -58,13 +78,15 @@ export default function ReferenceCell({ taskId, value = [], onChange, readOnly =
     try {
       const res = await api.post('/task-references', { taskId, text });
       const created = res.data.reference || res.data?.data?.reference;
-      emitChange([...items, created]);
-      setDraft('');
+      if (isMounted.current) {
+        emitChange([...items, created]);
+        setDraft('');
+      }
     } catch (err) {
-      setError(err?.response?.data?.message || 'Failed to add reference');
+      safeSet(setError, err?.response?.data?.message || 'Failed to add reference');
     } finally {
-      setSaving(false);
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      safeSet(setSaving, false);
+      scheduleLatchRelease();
     }
   }
 
@@ -76,10 +98,10 @@ export default function ReferenceCell({ taskId, value = [], onChange, readOnly =
       await api.delete(`/task-references/${id}`);
     } catch (err) {
       // Roll back the optimistic delete if the server rejects (e.g. 403).
-      setItems(prev);
-      setError(err?.response?.data?.message || 'Failed to remove reference');
+      safeSet(setItems, prev);
+      safeSet(setError, err?.response?.data?.message || 'Failed to remove reference');
     } finally {
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      scheduleLatchRelease();
     }
   }
 

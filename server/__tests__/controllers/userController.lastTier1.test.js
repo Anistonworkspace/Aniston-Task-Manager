@@ -28,13 +28,28 @@ jest.mock('../../models', () => ({
     findOne: jest.fn(),
     count:   jest.fn(),
   },
+  // Post-Phase-7: toggleUserStatus now wraps deactivation in a transaction
+  // that also unsticks pending TaskApprovalFlow rows and revokes active
+  // RefreshTokens. We mock those two side-effect models + sequelize.transaction
+  // so the controller can run without a real DB.
+  TaskApprovalFlow: {
+    update: jest.fn().mockResolvedValue([0]),
+  },
+  RefreshToken: {
+    update: jest.fn().mockResolvedValue([0]),
+  },
+  sequelize: {
+    // transaction(cb) invokes the callback with a fake tx and returns its
+    // result, mirroring Sequelize's managed-transaction signature.
+    transaction: jest.fn(async (cb) => cb({ /* fake tx */ })),
+  },
 }));
 
 jest.mock('../../services/activityService', () => ({
   logActivity: jest.fn(),
 }));
 
-const { User, ManagerRelation } = require('../../models');
+const { User, ManagerRelation, TaskApprovalFlow, RefreshToken, sequelize } = require('../../models');
 const userController = require('../../controllers/userController');
 
 function buildRes() {
@@ -88,6 +103,9 @@ beforeEach(() => {
   User.findAll.mockResolvedValue([]);
   User.findOne.mockResolvedValue(null);
   User.count.mockResolvedValue(0); // default: zero OTHER active T1 users
+  TaskApprovalFlow.update.mockResolvedValue([0]);
+  RefreshToken.update.mockResolvedValue([0]);
+  sequelize.transaction.mockImplementation(async (cb) => cb({ /* fake tx */ }));
 });
 
 // ── updateUser — demotion path ──────────────────────────────────────────
@@ -246,7 +264,11 @@ describe('toggleUserStatus — last Tier 1 deactivation guard', () => {
 
     await userController.toggleUserStatus(req, res);
 
-    expect(target.update).toHaveBeenCalledWith(
+    // Post-Phase-7: target.update is now called inside a sequelize.transaction
+    // with `{ transaction: t }` as the second arg. We inspect the first arg
+    // directly so the transaction option doesn't break the assertion.
+    expect(target.update).toHaveBeenCalled();
+    expect(target.update.mock.calls[0][0]).toEqual(
       expect.objectContaining({ isActive: false, localStatusOverride: true })
     );
   });
@@ -262,7 +284,9 @@ describe('toggleUserStatus — last Tier 1 deactivation guard', () => {
 
     // No last-T1 query, update proceeds with isActive=true.
     expect(User.count).not.toHaveBeenCalled();
-    expect(target.update).toHaveBeenCalledWith(
+    // Activation path also runs inside the transaction wrapper now.
+    expect(target.update).toHaveBeenCalled();
+    expect(target.update.mock.calls[0][0]).toEqual(
       expect.objectContaining({ isActive: true })
     );
   });
@@ -276,7 +300,8 @@ describe('toggleUserStatus — last Tier 1 deactivation guard', () => {
 
     await userController.toggleUserStatus(req, res);
 
-    expect(target.update).toHaveBeenCalledWith(
+    expect(target.update).toHaveBeenCalled();
+    expect(target.update.mock.calls[0][0]).toEqual(
       expect.objectContaining({ isActive: false })
     );
     // assertNotLastTier1Change is a no-op for non-T1 targets, so User.count

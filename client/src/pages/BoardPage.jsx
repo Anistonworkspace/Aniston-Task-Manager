@@ -264,13 +264,16 @@ export default function BoardPage() {
     if (!baseCols.find(c => c.id === 'label' || c.type === 'label')) {
       baseCols.push({ id: 'label', title: 'Labels', type: 'label', width: 120 });
     }
-    // Combine base + custom for the dedup check so a user-added column
-    // of the same type takes precedence (we don't append a duplicate).
+    // P2-4 — dedup on TYPE only. The earlier `c.id === 'references' || c.type === 'references'`
+    // version over-matched: a legacy custom column with `id: 'references'`
+    // but a different `type` (e.g. text) would block the new default
+    // references column from rendering. Type is the semantic identity
+    // the renderer keys off, so dedup on type alone is the right rule.
     const combined = [...baseCols, ...boardCustomCols];
-    if (!combined.find(c => c.id === 'references' || c.type === 'references')) {
+    if (!combined.find(c => c.type === 'references')) {
       baseCols.push({ id: 'references', title: 'Reference', type: 'references', width: 180 });
     }
-    if (!combined.find(c => c.id === 'links' || c.type === 'links')) {
+    if (!combined.find(c => c.type === 'links')) {
       baseCols.push({ id: 'links', title: 'Link/URL', type: 'links', width: 180 });
     }
     return [...baseCols, ...boardCustomCols];

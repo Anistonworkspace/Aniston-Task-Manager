@@ -220,8 +220,12 @@ const deleteComment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Comment not found.' });
     }
 
-    // Only the comment author or an admin may delete
-    if (comment.userId !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
+    // Only the comment author or someone at Tier 2 (admin/manager) and above
+    // may delete. Replacing the literal role string check with the tier
+    // helper means a future role rename or the `isSuperAdmin` elevation flag
+    // is honoured automatically (a super admin always satisfies Tier 2+).
+    const { TIER_2, hasTierAtLeast } = require('../config/tiers');
+    if (comment.userId !== req.user.id && !hasTierAtLeast(req.user, TIER_2)) {
       return res.status(403).json({
         success: false,
         message: 'You can only delete your own comments.',

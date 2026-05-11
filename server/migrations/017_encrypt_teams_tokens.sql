@@ -1,0 +1,19 @@
+-- 017_encrypt_teams_tokens.sql
+--
+-- DOCUMENTATION-ONLY MIGRATION. The encryption work is performed by
+-- the JavaScript runner at server/migrations/run_017.js, which:
+--   1. Iterates over every user with a non-NULL teamsAccessToken or teamsRefreshToken.
+--   2. Detects whether each value is already encrypted (skips if so).
+--   3. Encrypts plaintext values using ENCRYPTION_KEY (AES-256-GCM).
+--   4. Writes the encrypted ciphertext back.
+--
+-- No schema changes are required: users.teamsAccessToken and
+-- users.teamsRefreshToken are already TEXT columns, which is wide
+-- enough to hold the AES-256-GCM ciphertext (iv:authTag:ciphertext hex).
+--
+-- This file exists for migration audit-trail consistency only.
+-- See server/migrations/017_README.md for operator instructions.
+--
+-- IMPORTANT: This migration is NOT auto-installed at server boot. It
+-- must be run manually during a maintenance window after the code
+-- changes (encryption-on-write + dual-path-read) have been deployed.

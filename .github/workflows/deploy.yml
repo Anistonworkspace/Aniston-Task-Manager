@@ -1,5 +1,25 @@
 name: Build & Deploy
 
+# Production deploy pipeline.
+#
+# Safety model:
+#   1. Build job runs lint + server tests + client tests + build verification.
+#      Failure here blocks the deploy step.
+#   2. Deploy job is gated by GitHub Environment "production" — required reviewers
+#      must click Approve. Set this up in repo Settings → Environments.
+#   3. Pre-deploy pg_dump snapshot lets ops manually restore if a deploy
+#      corrupts data. Snapshots are kept on the EC2 host (last 30).
+#   4. Health check loop + auto-rollback on failure. DB schema changes are
+#      forward-only — auto-rollback restores code only; manual DB restore
+#      may be needed for breaking schema changes.
+#   5. Slack alert (if SLACK_WEBHOOK_URL set) fires on rollback failure.
+#   6. Seed scripts (seed-users.js, seed-hierarchy.js) are prod-safe by
+#      default — see server/seed-*.js prod-mode guards.
+#   7. The one-time Sunny/Muskan password reset is gated to OFF unless
+#      explicitly enabled via repo variable or workflow_dispatch input.
+#
+# NEVER bypass the production environment approval gate.
+
 on:
   push:
     branches: [main]
@@ -38,10 +58,22 @@ jobs:
           node-version: '20'
 
       - name: Install server dependencies
-        run: cd server && npm install --production=false
+        # TODO: if npm ci fails due to an out-of-sync lockfile, temporarily
+        # swap to `npm install --production=false` for this one step only,
+        # then regenerate package-lock.json and revert.
+        run: cd server && npm ci
+
+      - name: Run server tests
+        run: cd server && npm test
 
       - name: Install client dependencies
-        run: cd client && npm install
+        # TODO: if npm ci fails due to an out-of-sync lockfile, temporarily
+        # swap to `npm install` for this one step only, then regenerate
+        # package-lock.json and revert.
+        run: cd client && npm ci
+
+      - name: Run client tests
+        run: cd client && npm test
 
       - name: Lint check
         run: cd client && npx --yes eslint src/App.jsx src/main.jsx --no-eslintrc --rule '{"no-undef":"error","no-unused-vars":"warn"}' --env browser,es2021 --parser-options ecmaVersion:latest,ecmaFeatures:{jsx:true},sourceType:module 2>/dev/null || echo "Lint check completed"
@@ -77,7 +109,7 @@ jobs:
           # password-reset inputs into the SSH session. Both inputs are
           # FLAGS, not secrets — flipping them on/off does not require
           # rotating any secret.
-          envs: ENV_FILE,RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN,ONETIME_RESET_RERUN_KEY
+          envs: ENV_FILE,RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN,ONETIME_RESET_RERUN_KEY,SLACK_WEBHOOK_URL
           script: |
             set -e
 
@@ -115,6 +147,13 @@ jobs:
             else
               echo "WARNING: ENV_FILE empty — using existing .env"
             fi
+
+            echo "=== [4.5/8] Pre-deploy database snapshot ==="
+            mkdir -p ~/Aniston-Task-Manager-backups || true
+            docker exec aph-postgres sh -c 'pg_dump -U postgres aniston_project_hub | gzip' > ~/Aniston-Task-Manager-backups/pre-deploy-$(date +%Y%m%d_%H%M%S)-${CURRENT_SHA:0:8}.sql.gz 2>/dev/null || echo "WARNING: pre-deploy snapshot failed (postgres may not be running yet on first deploy)"
+            ls -lh ~/Aniston-Task-Manager-backups/ | tail -5
+            # Retain last 30 pre-deploy snapshots
+            ls -t ~/Aniston-Task-Manager-backups/pre-deploy-*.sql.gz 2>/dev/null | tail -n +31 | xargs -r rm -f
 
             echo "=== [5/8] Building new images ==="
             docker compose -f "$COMPOSE_FILE" build
@@ -159,6 +198,11 @@ jobs:
                 echo "Rollback succeeded — previous version is live"
               else
                 echo "CRITICAL: Rollback also failed — manual intervention required"
+                if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+                  curl -s -X POST -H 'Content-type: application/json' \
+                    --data "{\"text\":\":rotating_light: PROD DEPLOY ROLLBACK FAILED on $(hostname). Manual intervention required. Commit: $CURRENT_SHA → tried rollback to $PREVIOUS_SHA.\"}" \
+                    "$SLACK_WEBHOOK_URL" || true
+                fi
               fi
               exit 1
             fi
@@ -224,3 +268,6 @@ jobs:
           # need to be reset a second time after a previous reset
           # already ran (the original marker is already in the DB).
           ONETIME_RESET_RERUN_KEY: ${{ github.event.inputs.onetime_reset_rerun_key || vars.ONETIME_RESET_RERUN_KEY || '' }}
+          # Optional: Slack webhook used to alert on rollback failure only.
+          # If unset, the rollback failure path still exits 1 — no alert sent.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

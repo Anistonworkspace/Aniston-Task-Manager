@@ -6,8 +6,12 @@ import {
 import { formatDistanceToNow, format } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
 import Avatar from '../components/common/Avatar';
 import TaskModal from '../components/task/TaskModal';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
+import Modal from '../components/common/Modal';
 import { useToast } from '../components/common/Toast';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { getBoardStatuses } from '../utils/constants';
@@ -113,8 +117,16 @@ const URGENCY_COLORS = {
 
 export default function TasksPage() {
   const { canManage, isAdmin, isAssistantManager } = useAuth();
+  const t = useT();
   const canViewTeamFeedback = canManage || isAssistantManager;
   const { addToast } = useToast();
+  // Map TABS[].id → translation key. Untranslated ids fall back to tab.label.
+  const TAB_LABEL_KEYS = {
+    approvals: 'tasksPage.tabs.approvals',
+    myFeedback: 'tasksPage.tabs.mySubmissions',
+    extensions: 'tasksPage.tabs.extensions',
+    help: 'tasksPage.tabs.helpRequests',
+  };
   const [activeTab, setActiveTab] = useState('approvals');
   const [data, setData] = useState({ approvals: [], extensions: [], helpRequests: [] });
   const [myFeedback, setMyFeedback] = useState([]);
@@ -126,6 +138,11 @@ export default function TasksPage() {
   const [selectedBoardId, setSelectedBoardId] = useState(null);
   const [boardMembers, setBoardMembers] = useState([]);
   const [boardStatuses, setBoardStatuses] = useState(null);
+  // P2: replace browser prompt() with state-driven Modal. `null` = closed, else
+  // an object `{ kind, taskId, defaultValue, label, title, submitLabel }` that
+  // both renders the dialog and tells the submit handler which action to fire.
+  const [reasonDialog, setReasonDialog] = useState(null);
+  const [reasonValue, setReasonValue] = useState('');
 
   const openTask = useCallback(async (taskId, boardId) => {
     try {
@@ -221,13 +238,22 @@ export default function TasksPage() {
     } finally { setActionLoading(null); }
   }
 
-  async function handleReject(taskId) {
-    const comment = prompt('Reason for rejection (required):');
-    if (comment === null) return;
-    if (!comment.trim()) {
-      addToast('A reason is required to reject.', 'warning');
-      return;
-    }
+  // P2: was a browser prompt(); now opens the inline Modal. The actual API
+  // call moved to performReject() which the modal's submit button invokes
+  // with the typed-in reason — keeping the same downstream behavior.
+  function handleReject(taskId) {
+    setReasonValue('');
+    setReasonDialog({
+      kind: 'reject',
+      taskId,
+      title: 'Reject submission',
+      label: 'Reason for rejection (required):',
+      submitLabel: 'Reject',
+      required: true,
+    });
+  }
+
+  async function performReject(taskId, comment) {
     setActionLoading(taskId);
     try {
       await api.post(`/task-extras/${taskId}/reject`, { comment });
@@ -240,6 +266,7 @@ export default function TasksPage() {
   }
 
   async function handleRequestChanges(taskId) {
+    // TODO: replace prompt() with Modal — see P2 fix template above (handleReject + performReject + reasonDialog state).
     const comment = prompt('Reason for requesting changes (required):');
     if (comment === null) return;
     if (!comment.trim()) {
@@ -267,6 +294,7 @@ export default function TasksPage() {
   }
 
   async function handleRejectExtension(extId) {
+    // TODO: replace prompt() with Modal — see P2 fix template above (handleReject + performReject + reasonDialog state).
     const note = prompt('Reason for rejection:');
     if (note === null) return;
     setActionLoading(extId);
@@ -317,9 +345,9 @@ export default function TasksPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-text-primary flex items-center gap-2">
-          <ClipboardCheck size={24} className="text-primary" /> Approvals & Requests
+          <ClipboardCheck size={24} className="text-primary" /> {t('tasksPage.title')}
         </h1>
-        <p className="text-sm text-text-tertiary mt-0.5">Approvals, your submissions, extensions, and help requests</p>
+        <p className="text-sm text-text-tertiary mt-0.5">{t('tasksPage.subtitle')}</p>
       </div>
 
       {/* Tabs */}
@@ -328,7 +356,7 @@ export default function TasksPage() {
           <button key={tab.id} onClick={() => { setActiveTab(tab.id); setStatusFilter('all'); }}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-primary text-white shadow-sm' : 'text-text-secondary hover:bg-surface'}`}>
             <tab.icon size={15} />
-            {tab.label}
+            {TAB_LABEL_KEYS[tab.id] ? t(TAB_LABEL_KEYS[tab.id]) : tab.label}
             {counts[tab.id] > 0 && (
               <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-danger/10 text-danger'}`}>
                 {counts[tab.id]}
@@ -641,6 +669,7 @@ export default function TasksPage() {
                         <Check size={12} /> Approve
                       </button>
                       <button onClick={() => {
+                        // TODO: replace prompt() with Modal — see P2 fix template above (handleReject + performReject + reasonDialog state).
                         const newDate = prompt('Suggest a different date (YYYY-MM-DD):', ext.proposedDueDate);
                         if (newDate) handleApproveExtension(ext.id, newDate);
                       }} disabled={actionLoading === ext.id}
@@ -732,6 +761,55 @@ export default function TasksPage() {
           }}
         />
       )}
+
+      {/* P2: Reason-prompt modal — replaces window.prompt() for the
+          reject-approval flow. The same shell is reusable for any future
+          conversions (request-changes, extension reject) — just push a new
+          dialog descriptor into `reasonDialog`. */}
+      <Modal
+        isOpen={!!reasonDialog}
+        onClose={() => setReasonDialog(null)}
+        title={reasonDialog?.title || 'Reason'}
+        size="sm"
+        footer={
+          <>
+            <button
+              onClick={() => setReasonDialog(null)}
+              className="px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface rounded-lg border border-border transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                if (!reasonDialog) return;
+                const trimmed = (reasonValue || '').trim();
+                if (reasonDialog.required && !trimmed) {
+                  addToast('A reason is required.', 'warning');
+                  return;
+                }
+                const dlg = reasonDialog;
+                setReasonDialog(null);
+                if (dlg.kind === 'reject') performReject(dlg.taskId, trimmed);
+              }}
+              className="px-3 py-1.5 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+            >
+              {reasonDialog?.submitLabel || 'Submit'}
+            </button>
+          </>
+        }
+      >
+        <label className="block text-xs font-medium text-text-secondary mb-2">
+          {reasonDialog?.label || 'Reason:'}
+        </label>
+        <textarea
+          autoFocus
+          value={reasonValue}
+          onChange={(e) => setReasonValue(e.target.value)}
+          placeholder="Type a clear reason so the submitter understands the decision…"
+          rows={4}
+          className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-y"
+        />
+      </Modal>
     </div>
   );
 }

@@ -272,6 +272,90 @@ const en = {
     large: 'Large',
     largeDescription: 'Easier to read',
   },
+  adminSettings: {
+    title: 'Admin Settings',
+    subtitle: 'Manage users, workspaces, permissions, and access control',
+    tabs: {
+      users: 'Users',
+      workspaces: 'Workspaces',
+      permissions: 'Permissions',
+      accessRequests: 'Access Requests',
+      templates: 'Templates',
+      security: 'Security',
+    },
+  },
+  integrations: {
+    title: 'Integrations',
+    subtitle: 'Connect your tools and sync your team',
+    cards: {
+      microsoftTeams: 'Microsoft Teams',
+      aiProvider: 'AI Provider',
+      externalApi: 'External API',
+    },
+    actions: {
+      connect: 'Connect Microsoft Teams',
+      addProvider: 'Add Provider',
+      testConnection: 'Test Connection',
+    },
+    status: {
+      connected: 'Connected',
+      notConnected: 'Not Connected',
+      notConfigured: 'Not Configured',
+    },
+    moreIntegrations: 'More Integrations',
+    comingSoon: 'Coming Soon',
+  },
+  meetings: {
+    title: 'Meetings',
+    subtitle: 'Schedule and manage meetings, reminders, and follow-ups',
+    scheduleMeeting: 'Schedule Meeting',
+    tabs: {
+      upcoming: 'Upcoming',
+      past: 'Past',
+      all: 'All',
+    },
+    stats: {
+      total: 'Total',
+      upcoming: 'Upcoming',
+      today: 'Today',
+      completed: 'Completed',
+    },
+  },
+  orgChart: {
+    title: 'Organization Chart',
+    subtitle: 'Hierarchical view of your team structure',
+    views: {
+      tree: 'Tree View',
+      list: 'List View',
+      department: 'Department',
+    },
+    actions: {
+      manageLevels: 'Manage Levels',
+      editStructure: 'Edit Structure',
+      exitEdit: 'Exit Edit',
+    },
+  },
+  tasksPage: {
+    title: 'Approvals & Requests',
+    subtitle: 'Approvals, your submissions, extensions, and help requests',
+    tabs: {
+      approvals: 'Approvals',
+      mySubmissions: 'My Submissions',
+      extensions: 'Extensions',
+      helpRequests: 'Help Requests',
+    },
+  },
+  dependenciesPage: {
+    title: 'My Dependencies',
+    subtitle: 'Track dependency work between you and your team',
+    tabs: {
+      assigned: 'Assigned to Me',
+      created: 'Created by Me',
+      completed: 'Completed',
+      rejected: 'Rejected / Cancelled',
+    },
+    searchPlaceholder: 'Search by title, parent task, requester, board...',
+  },
 };
 
 export default en;

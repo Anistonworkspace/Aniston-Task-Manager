@@ -48,6 +48,7 @@ const announcementRoutes = require('./routes/announcements');
 const labelRoutes = require('./routes/labels');
 const taskReferenceRoutes = require('./routes/taskReferences');
 const taskLinkRoutes = require('./routes/taskLinks');
+const metricsRoutes = require('./routes/metrics');
 const extensionRoutes = require('./routes/extensions');
 const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
@@ -435,6 +436,19 @@ const externalLimiter = rateLimit({
   handler: rateLimitHandler('external'),
 });
 
+// P1-7 — Per-route mutation cap for label / reference / link endpoints.
+// Falls under the global 300/min for total traffic but caps any single
+// client at 60 mutations/minute on these specific surfaces. Without this
+// a logged-in user could spam-create thousands of refs/links per minute,
+// bloating the DB and the activity feed.
+const mutationLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: rateLimitHandler('mutation'),
+});
+
 // ─── API routes ──────────────────────────────────────────────
 app.use('/api', generalLimiter); // Apply to all API routes
 
@@ -470,9 +484,13 @@ app.use('/api/permissions', permissionRoutes);
 app.use('/api/access-requests', accessRequestRoutes);
 app.use('/api/task-extras', taskExtrasRoutes);
 app.use('/api/announcements', announcementRoutes);
-app.use('/api/labels', labelRoutes);
-app.use('/api/task-references', taskReferenceRoutes);
-app.use('/api/task-links', taskLinkRoutes);
+// P1-7 — mutationLimiter applied BEFORE the route handlers. Reads still
+// fall under the global limiter; writes get the per-route cap.
+app.use('/api/labels', mutationLimiter, labelRoutes);
+app.use('/api/task-references', mutationLimiter, taskReferenceRoutes);
+app.use('/api/task-links', mutationLimiter, taskLinkRoutes);
+// Observability endpoint — admin-only operational metrics snapshot.
+app.use('/api/metrics', metricsRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
@@ -1095,6 +1113,15 @@ const start = async () => {
     // when columns came back differently shaped). Using the Sequelize
     // model + `board.changed('columns', true)` is the canonical pattern in
     // this codebase for JSONB mutation and surfaces failures clearly.
+    // P1-1 — title normalization is now NON-DESTRUCTIVE: only the literal
+    // old default "Link" is rewritten to "Link/URL". Any other user
+    // customization (e.g. a user renamed the column to "External Links")
+    // is preserved across server restarts. The previous version blindly
+    // overwrote every title back to "Link/URL" on each boot.
+    //
+    // P1-2 — the whole pass runs inside a single sequelize.transaction().
+    // If any save fails mid-loop, the whole transaction rolls back and
+    // the next boot retries from a consistent state.
     try {
       const { Board: BoardModel } = require('./models');
       const DEFAULT_BACKFILL = [
@@ -1102,39 +1129,46 @@ const start = async () => {
         { id: 'references', title: 'Reference', type: 'references', width: 180 },
         { id: 'links',      title: 'Link/URL', type: 'links',      width: 180 },
       ];
-      const boards = await BoardModel.findAll({ attributes: ['id', 'name', 'columns'] });
+
       let backfilledCount = 0;
       let renamedCount = 0;
       const summary = [];
-      for (const b of boards) {
-        const existing = Array.isArray(b.columns) ? b.columns : [];
-        const toAdd = DEFAULT_BACKFILL.filter(c => !existing.some(e => e.type === c.type));
-        // Title normalization: previous backfill seeded type='links' with
-        // title 'Link', which users found ambiguous next to the existing
-        // single-link 'Link/URL' option. Standardize on 'Link/URL' for
-        // the multi-value column so the column header matches what users
-        // expect. References likewise normalizes to title 'Reference'.
-        let changed = toAdd.length > 0;
-        const normalized = existing.map((c) => {
-          if (c.type === 'links' && c.title !== 'Link/URL') { changed = true; return { ...c, title: 'Link/URL' }; }
-          if (c.type === 'references' && c.title !== 'Reference') { changed = true; return { ...c, title: 'Reference' }; }
-          return c;
+
+      await sequelize.transaction(async (t) => {
+        const boards = await BoardModel.findAll({
+          attributes: ['id', 'name', 'columns'],
+          transaction: t,
         });
-        if (!changed) continue;
-        const next = [...normalized, ...toAdd];
-        // Sequelize's JSONB change-detection skips in-place mutations and
-        // can miss reassignments when the array reference is "equal enough"
-        // — `changed()` forces it to write.
-        b.columns = next;
-        b.changed('columns', true);
-        await b.save({ fields: ['columns'] });
-        if (toAdd.length > 0) {
-          backfilledCount++;
-          summary.push(`${b.name || b.id} += [${toAdd.map(c => c.title).join(', ')}]`);
-        } else {
-          renamedCount++;
+        for (const b of boards) {
+          const existing = Array.isArray(b.columns) ? b.columns : [];
+          const toAdd = DEFAULT_BACKFILL.filter(c => !existing.some(e => e.type === c.type));
+
+          // Only normalize the literal stale default. Any other custom title
+          // is preserved.
+          let renamedAny = false;
+          const normalized = existing.map((c) => {
+            if (c.type === 'links' && c.title === 'Link') { renamedAny = true; return { ...c, title: 'Link/URL' }; }
+            if (c.type === 'references' && c.title === 'References') { renamedAny = true; return { ...c, title: 'Reference' }; }
+            return c;
+          });
+
+          const changed = toAdd.length > 0 || renamedAny;
+          if (!changed) continue;
+
+          const next = [...normalized, ...toAdd];
+          b.columns = next;
+          b.changed('columns', true);
+          await b.save({ fields: ['columns'], transaction: t });
+
+          if (toAdd.length > 0) {
+            backfilledCount++;
+            summary.push(`${b.name || b.id} += [${toAdd.map(c => c.title).join(', ')}]`);
+          } else {
+            renamedCount++;
+          }
         }
-      }
+      });
+
       if (backfilledCount > 0) {
         console.log(`[Server] Default-column backfill applied to ${backfilledCount} board(s):`);
         for (const line of summary) console.log(`         · ${line}`);
@@ -1146,10 +1180,9 @@ const start = async () => {
         console.log('[Server] Default-column backfill: all boards already have label/references/links columns with correct titles.');
       }
     } catch (e) {
-      // Surface the FULL error here — silent backfill failures were the
-      // exact reason existing boards still didn't show Reference / Link
-      // after the previous deploy.
-      console.error('[Server] default columns backfill ERROR:', e);
+      // Transaction rolled back — log full stack so the failure is
+      // recoverable on the next boot without leaving the DB half-migrated.
+      console.error('[Server] default columns backfill ERROR (transaction rolled back):', e);
     }
 
     // ── Auto-migration: file_attachments table ──
@@ -1639,16 +1672,38 @@ const start = async () => {
           FROM users u WHERE bm."userId" = u.id AND u.role IN ('admin', 'manager', 'assistant_manager') AND bm."autoAdded" = true
         `);
 
-        // 4. Remove stale auto-added rows where member has no active tasks
-        const [, cleanMeta] = await sequelize.query(`
-          DELETE FROM "BoardMembers" bm
-          WHERE bm."autoAdded" = true
-            AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t."boardId" = bm."boardId" AND t."assignedTo" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
-            AND NOT EXISTS (SELECT 1 FROM task_assignees ta JOIN tasks t ON t.id = ta."taskId" WHERE t."boardId" = bm."boardId" AND ta."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
-            AND NOT EXISTS (SELECT 1 FROM task_owners to2 JOIN tasks t ON t.id = to2."taskId" WHERE t."boardId" = bm."boardId" AND to2."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+        // 4. Remove stale auto-added rows where member has no active tasks.
+        //    Gated behind a system_flags one-shot flag (P1-29): this destructive
+        //    DELETE must run exactly once per deploy. Subsequent boots short-circuit
+        //    via a single SELECT against system_flags.
+        await sequelize.query(`
+          CREATE TABLE IF NOT EXISTS system_flags (
+            flag VARCHAR(100) PRIMARY KEY,
+            completed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            details JSONB DEFAULT '{}'
+          )
         `);
-        const cleaned = cleanMeta?.rowCount ?? 0;
-        if (cleaned > 0) console.log(`[Server] Cleaned ${cleaned} stale auto-added BoardMembers rows.`);
+        const [flagRows] = await sequelize.query(
+          `SELECT flag FROM system_flags WHERE flag = 'boardmembers_cleanup_v1'`
+        );
+        if (flagRows.length === 0) {
+          const [, cleanMeta] = await sequelize.query(`
+            DELETE FROM "BoardMembers" bm
+            WHERE bm."autoAdded" = true
+              AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t."boardId" = bm."boardId" AND t."assignedTo" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+              AND NOT EXISTS (SELECT 1 FROM task_assignees ta JOIN tasks t ON t.id = ta."taskId" WHERE t."boardId" = bm."boardId" AND ta."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+              AND NOT EXISTS (SELECT 1 FROM task_owners to2 JOIN tasks t ON t.id = to2."taskId" WHERE t."boardId" = bm."boardId" AND to2."userId" = bm."userId" AND (t."isArchived" = false OR t."isArchived" IS NULL))
+          `);
+          const cleaned = cleanMeta?.rowCount ?? 0;
+          if (cleaned > 0) console.log(`[Server] Cleaned ${cleaned} stale auto-added BoardMembers rows.`);
+          await sequelize.query(
+            `INSERT INTO system_flags (flag, completed_at, details)
+             VALUES ('boardmembers_cleanup_v1', NOW(), $1)
+             ON CONFLICT (flag) DO NOTHING`,
+            { bind: [JSON.stringify({ cleaned })] }
+          );
+          console.log('[Server] BoardMembers cleanup v1 marked complete in system_flags.');
+        }
       }
     } catch (e) {
       console.warn('[Server] BoardMembers autoAdded migration warning:', e.message?.slice(0, 100));
@@ -1809,8 +1864,16 @@ const start = async () => {
         `);
         // Backfill from legacy fields. Idempotent — re-running re-derives the
         // same value from (isSuperAdmin, role) so concurrent boots are safe.
+        // WHERE-guard ensures re-runs against an already-backfilled table touch
+        // zero rows (no useless writes, no needless WAL/replication traffic).
         await sequelize.query(`
           UPDATE users SET tier = CASE
+            WHEN "isSuperAdmin" = true        THEN 1
+            WHEN role IN ('admin','manager')  THEN 2
+            WHEN role = 'assistant_manager'   THEN 3
+            ELSE                                   4
+          END
+          WHERE tier IS NULL OR tier <> CASE
             WHEN "isSuperAdmin" = true        THEN 1
             WHEN role IN ('admin','manager')  THEN 2
             WHEN role = 'assistant_manager'   THEN 3
@@ -1944,15 +2007,16 @@ const start = async () => {
     }
 
     // ── One-time data cleanup: Director Plan & Time Plan ──
-    // Uses system_flags DB table as a run-once guard.
-    // First deploy: cleans director_plans + time_blocks, marks flag as completed.
-    // All future restarts: single SELECT check (~2ms), silent skip.
-    try {
-      const { runStartupCleanup } = require('./cleanup-plan-data');
-      await runStartupCleanup(sequelize);
-    } catch (cleanupErr) {
-      console.warn('[Server] Plan data cleanup skipped:', cleanupErr.message?.slice(0, 100));
-    }
+    // One-shot cleanup ran historically. Now invoked manually via
+    // `node cleanup-plan-data.js` if needed. See P1-27 in audit.
+    // The module is still on disk (and still exports runStartupCleanup) so
+    // ops can re-import it from a REPL or script if a future cleanup is needed.
+    // try {
+    //   const { runStartupCleanup } = require('./cleanup-plan-data');
+    //   await runStartupCleanup(sequelize);
+    // } catch (cleanupErr) {
+    //   console.warn('[Server] Plan data cleanup skipped:', cleanupErr.message?.slice(0, 100));
+    // }
 
     server.listen(PORT, () => {
       const logger = require('./utils/logger');
@@ -2025,6 +2089,21 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[Server] Uncaught Exception:', err);
 });
+
+// Graceful shutdown on SIGTERM/SIGINT — closes the HTTP server (so in-flight
+// requests can finish) then ends the Sequelize pool. Docker compose sends
+// SIGTERM then escalates to SIGKILL after ~10s, so we hard-exit at 15s to
+// give a small buffer; .unref() so the timer itself can't keep the loop alive.
+const gracefulShutdown = (signal) => {
+  console.log(`[Server] ${signal} received — shutting down gracefully.`);
+  server.close((err) => {
+    if (err) { console.error('[Server] Error during shutdown:', err); process.exit(1); }
+    sequelize.close().finally(() => process.exit(0));
+  });
+  setTimeout(() => { console.error('[Server] Forcing exit after 15s timeout'); process.exit(1); }, 15000).unref();
+};
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 start();
 

@@ -2826,11 +2826,23 @@ const reorderTasks = async (req, res) => {
     // exposes task IDs of unauthorized rows. Compute the union of authorized
     // recipients across the affected tasks and emit only to them. Frontend
     // refetches via /api/tasks (visibility-filtered), so it's enough to nudge.
+    //
+    // P-H — Pull the per-task recipient lookups OUT of the serial loop.
+    // Each call is a few independent queries (admins, hierarchy walk, etc.);
+    // fanning them out concurrently turns an O(N) latency hit into ~O(1) for
+    // a typical drag-drop batch. De-dup task IDs first so a degenerate
+    // payload (same id repeated) doesn't multiply the work.
+    const uniqueIds = Array.from(new Set(
+      items.map((it) => it && it.id).filter(Boolean)
+    ));
     const recipientUnion = new Set();
-    for (const item of items) {
-      if (!item?.id) continue;
-      const userIds = await taskVisibility.getAuthorizedRealtimeRecipients(item.id);
-      for (const uid of userIds) recipientUnion.add(uid);
+    if (uniqueIds.length > 0) {
+      const lists = await Promise.all(
+        uniqueIds.map((id) => taskVisibility.getAuthorizedRealtimeRecipients(id))
+      );
+      for (const list of lists) {
+        for (const uid of list) recipientUnion.add(uid);
+      }
     }
     socketService.emitToUsers('tasks:reordered', { boardId }, Array.from(recipientUnion));
 

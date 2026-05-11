@@ -3,9 +3,14 @@ import { Plus, X, ExternalLink, Link2 } from 'lucide-react';
 import PortalDropdown from '../common/PortalDropdown';
 import api from '../../services/api';
 
-// Multi-value URL column. Matches ReferenceCell's UX (compact preview + portal
-// popover) but every entry is also a clickable anchor — opens in a new tab
-// with rel="noopener noreferrer" so the target page never gets a window.opener
+// Multi-value URL column ('links' column type, backed by the task_links table).
+// For the legacy single-value 'link' column (stored on task.customFields as a
+// plain string) use LinkCell instead. Both are mounted from TaskRow.jsx —
+// keeping them distinct because the storage model and column-type id differ.
+//
+// Matches ReferenceCell's UX (compact preview + portal popover) but every
+// entry is also a clickable anchor — opens in a new tab with
+// rel="noopener noreferrer" so the target page never gets a window.opener
 // handle back into the app. URL validation lives server-side; this component
 // just surfaces any 400 message it returns.
 //
@@ -35,6 +40,26 @@ export default function LinksCell({ taskId, value = [], onChange, readOnly = fal
   // a parent re-render doesn't revert an optimistic add/remove.
   const pendingMutation = useRef(false);
 
+  // P2-5 — mount safety. Closing the popover mid-mutation would otherwise
+  // log "setState on unmounted component" warnings.
+  const isMounted = useRef(true);
+  const pendingTimeouts = useRef(new Set());
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+      for (const id of pendingTimeouts.current) clearTimeout(id);
+      pendingTimeouts.current.clear();
+    };
+  }, []);
+  function safeSet(setter, value) { if (isMounted.current) setter(value); }
+  function scheduleLatchRelease() {
+    const id = setTimeout(() => {
+      pendingMutation.current = false;
+      pendingTimeouts.current.delete(id);
+    }, 800);
+    pendingTimeouts.current.add(id);
+  }
+
   useEffect(() => {
     setItems(value || []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -61,13 +86,15 @@ export default function LinksCell({ taskId, value = [], onChange, readOnly = fal
     try {
       const res = await api.post('/task-links', { taskId, url, title: draftTitle.trim() || undefined });
       const created = res.data.link || res.data?.data?.link;
-      emitChange([...items, created]);
-      setDraftUrl(''); setDraftTitle(''); setShowTitle(false);
+      if (isMounted.current) {
+        emitChange([...items, created]);
+        setDraftUrl(''); setDraftTitle(''); setShowTitle(false);
+      }
     } catch (err) {
-      setError(err?.response?.data?.message || 'Failed to add link');
+      safeSet(setError, err?.response?.data?.message || 'Failed to add link');
     } finally {
-      setSaving(false);
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      safeSet(setSaving, false);
+      scheduleLatchRelease();
     }
   }
 
@@ -78,10 +105,10 @@ export default function LinksCell({ taskId, value = [], onChange, readOnly = fal
     try {
       await api.delete(`/task-links/${id}`);
     } catch (err) {
-      setItems(prev);
-      setError(err?.response?.data?.message || 'Failed to remove link');
+      safeSet(setItems, prev);
+      safeSet(setError, err?.response?.data?.message || 'Failed to remove link');
     } finally {
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      scheduleLatchRelease();
     }
   }
 

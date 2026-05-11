@@ -23,6 +23,7 @@ const { Op } = require('sequelize');
 const { Task } = require('../models');
 const calendarService = require('../services/calendarService');
 const logger = require('../utils/logger');
+const { withCronLock } = require('./cronLock');
 
 const BATCH_SIZE = 20;
 
@@ -59,9 +60,13 @@ async function runRetryPass() {
 
 function startCalendarSyncRetryJob() {
   // Every 15 minutes, offset to :07 so it doesn't collide with recurringTaskJob (:15).
+  // Wrapped in withCronLock — when scaled past one replica, exactly one wins
+  // each tick so we don't double-attempt Graph API syncs and burn quota.
   cron.schedule('7,22,37,52 * * * *', async () => {
     try {
-      await runRetryPass();
+      await withCronLock('calendarSyncRetryJob:15min', async () => {
+        await runRetryPass();
+      });
     } catch (err) {
       logger.error('[CalendarSyncRetry] pass failed', { err: err.message });
     }

@@ -6,11 +6,22 @@ import { render, screen, act, waitFor } from '@testing-library/react';
 // All variables referenced inside vi.mock factories must be created with vi.hoisted()
 // because vi.mock is hoisted before any module-level variable declarations.
 
-const { mockApiGet, mockApiPost, mockConnect, mockDisconnect } = vi.hoisted(() => ({
+const {
+  mockApiGet, mockApiPost, mockApiPut,
+  mockConnect, mockDisconnect, mockDisconnectForLogout,
+  mockSubscribe, mockGetSocketId, mockOnConnect,
+  mockUnsubscribeFromPush,
+} = vi.hoisted(() => ({
   mockApiGet: vi.fn(),
   mockApiPost: vi.fn(),
+  mockApiPut: vi.fn(),
   mockConnect: vi.fn(),
   mockDisconnect: vi.fn(),
+  mockDisconnectForLogout: vi.fn(),
+  mockSubscribe: vi.fn(() => () => {}), // returns unsubscribe fn
+  mockGetSocketId: vi.fn(() => 'fake-socket-id'),
+  mockOnConnect: vi.fn(() => () => {}),
+  mockUnsubscribeFromPush: vi.fn(() => Promise.resolve(null)),
 }));
 
 // Mock the api service — actual HTTP calls must never fire in unit tests
@@ -18,13 +29,26 @@ vi.mock('../../services/api', () => ({
   default: {
     get: mockApiGet,
     post: mockApiPost,
+    put: mockApiPut,
   },
 }));
 
-// Mock the socket service — we don't want real socket connections
+// Mock the socket service — we don't want real socket connections.
+// AuthContext.jsx imports connect, disconnect, disconnectForLogout, subscribe,
+// and getSocketId, so all of those must be exported here or the module fails
+// to evaluate.
 vi.mock('../../services/socket', () => ({
   connect: mockConnect,
   disconnect: mockDisconnect,
+  disconnectForLogout: mockDisconnectForLogout,
+  subscribe: mockSubscribe,
+  getSocketId: mockGetSocketId,
+  onConnect: mockOnConnect,
+}));
+
+// pushNotifications is imported by AuthContext for logout teardown.
+vi.mock('../../services/pushNotifications', () => ({
+  unsubscribeFromPush: mockUnsubscribeFromPush,
 }));
 
 import { AuthProvider, useAuth } from '../AuthContext';
@@ -98,8 +122,13 @@ describe('AuthContext', () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     localStorage.clear();
-    // Default: no existing session
-    mockApiGet.mockResolvedValue({ data: {} });
+    // Default: no existing session — D-1 Phase 2 always hits /auth/me and
+    // treats a 401 as "not logged in". A blanket reject keeps every test's
+    // loadUser path silent and user=null unless the test overrides the mock.
+    mockApiGet.mockRejectedValue({ response: { status: 401 }, message: 'Unauthorized' });
+    // Many logout / login paths post to /auth/logout or /auth/login — keep a
+    // resolved default so background calls never blow up the test.
+    mockApiPost.mockResolvedValue({ data: { success: true, data: {} } });
   });
 
   afterEach(() => {
@@ -145,7 +174,10 @@ describe('AuthContext', () => {
     expect(mockApiGet).toHaveBeenCalledWith('/auth/me');
   });
 
-  it('migrates token from localStorage to sessionStorage', async () => {
+  // D-1 Phase 2 removed legacy localStorage→sessionStorage migration; auth now
+  // rides an httpOnly cookie. We still verify that a cookie session resolves
+  // the user via /auth/me regardless of any stale storage value.
+  it('loads user via /auth/me even when only localStorage has a (legacy) token', async () => {
     localStorage.setItem('token', 'local-token');
     mockApiGet.mockResolvedValue(makeMeResponse({ name: 'Bob', role: 'member' }));
 
@@ -153,15 +185,13 @@ describe('AuthContext', () => {
     await waitFor(() => {
       expect(screen.getByTestId('user').textContent).toBe('Bob');
     });
-    expect(sessionStorage.getItem('token')).toBe('local-token');
-    expect(localStorage.getItem('token')).toBeNull();
+    expect(mockApiGet).toHaveBeenCalledWith('/auth/me');
   });
 
   // ---- login() function ----
 
-  it('sets user and token after successful login', async () => {
-    // No existing token — loadUser resolves immediately
-    mockApiGet.mockResolvedValue({ data: {} });
+  it('sets the user after a successful login (D-1 Phase 2: session lives in cookie)', async () => {
+    // No existing token — loadUser rejects with 401 (default)
     mockApiPost.mockResolvedValue(
       makeLoginResponse({ name: 'Admin User', role: 'admin', hierarchyLevel: null })
     );
@@ -176,13 +206,12 @@ describe('AuthContext', () => {
     await waitFor(() => {
       expect(screen.getByTestId('user').textContent).toBe('Admin User');
     });
-    expect(screen.getByTestId('token').textContent).toBe('fake-jwt-token');
-    expect(sessionStorage.getItem('token')).toBe('fake-jwt-token');
-    expect(sessionStorage.getItem('refreshToken')).toBe('fake-refresh-token');
+    // Phase 2: tokens are NOT written to storage — auth rides an httpOnly cookie.
+    expect(sessionStorage.getItem('token')).toBeNull();
+    expect(sessionStorage.getItem('refreshToken')).toBeNull();
   });
 
   it('calls socket connect after successful login', async () => {
-    mockApiGet.mockResolvedValue({ data: {} });
     mockApiPost.mockResolvedValue(
       makeLoginResponse({ name: 'Manager', role: 'manager', hierarchyLevel: null })
     );
@@ -194,8 +223,10 @@ describe('AuthContext', () => {
       screen.getByTestId('login-btn').click();
     });
 
+    // Phase 2: connect() is called with no argument — the socket reads the
+    // auth cookie via withCredentials on the handshake.
     await waitFor(() => {
-      expect(mockConnect).toHaveBeenCalledWith('fake-jwt-token');
+      expect(mockConnect).toHaveBeenCalled();
     });
   });
 
@@ -217,7 +248,7 @@ describe('AuthContext', () => {
     expect(sessionStorage.getItem('token')).toBeNull();
   });
 
-  it('calls socket disconnect on logout', async () => {
+  it('calls socket disconnectForLogout on logout', async () => {
     sessionStorage.setItem('token', 'stored-token');
     mockApiGet.mockResolvedValue(makeMeResponse({ name: 'Alice', role: 'admin' }));
 
@@ -228,7 +259,9 @@ describe('AuthContext', () => {
       screen.getByTestId('logout-btn').click();
     });
 
-    expect(mockDisconnect).toHaveBeenCalledTimes(1);
+    // logout uses the hard disconnectForLogout() which engages the logoutLatch
+    // so a stale reconnect cannot revive the socket after teardown.
+    expect(mockDisconnectForLogout).toHaveBeenCalled();
   });
 
   it('clears localStorage tokens on logout', async () => {
@@ -248,22 +281,24 @@ describe('AuthContext', () => {
 
   // ---- RBAC role helpers ----
 
-  it('sets isAdmin=true for admin role', async () => {
+  // Phase 6 tier rollout: admin and manager both resolve to Tier 2, so the
+  // legacy `isAdmin` / `isManager` aliases both return true for either role.
+  // The tests verify the tier-derived semantics rather than the pre-tier
+  // mutual exclusivity. See AuthContext.jsx legacy-alias block.
+  it('sets isAdmin=true and canManage=true for admin role', async () => {
     sessionStorage.setItem('token', 'tok');
     mockApiGet.mockResolvedValue(makeMeResponse({ name: 'Admin', role: 'admin', hierarchyLevel: null }));
     renderWithProvider();
     await waitFor(() => expect(screen.getByTestId('isAdmin').textContent).toBe('true'));
-    expect(screen.getByTestId('isManager').textContent).toBe('false');
     expect(screen.getByTestId('isMember').textContent).toBe('false');
     expect(screen.getByTestId('canManage').textContent).toBe('true');
   });
 
-  it('sets isManager=true for manager role', async () => {
+  it('sets isManager=true and canManage=true for manager role', async () => {
     sessionStorage.setItem('token', 'tok');
     mockApiGet.mockResolvedValue(makeMeResponse({ name: 'Mgr', role: 'manager', hierarchyLevel: null }));
     renderWithProvider();
     await waitFor(() => expect(screen.getByTestId('isManager').textContent).toBe('true'));
-    expect(screen.getByTestId('isAdmin').textContent).toBe('false');
     expect(screen.getByTestId('isMember').textContent).toBe('false');
     expect(screen.getByTestId('canManage').textContent).toBe('true');
   });
@@ -278,14 +313,18 @@ describe('AuthContext', () => {
     expect(screen.getByTestId('canManage').textContent).toBe('false');
   });
 
-  it('sets canManage=true for assistant_manager role', async () => {
+  // assistant_manager resolves to Tier 3. canManage is currently scoped to
+  // T1/T2, so it is false here even though the assistant_manager role has
+  // partial-management capabilities elsewhere in the app.
+  it('sets isAssistantManager=true for assistant_manager role', async () => {
     sessionStorage.setItem('token', 'tok');
     mockApiGet.mockResolvedValue(
       makeMeResponse({ name: 'Asst', role: 'assistant_manager', hierarchyLevel: null })
     );
     renderWithProvider();
     await waitFor(() => expect(screen.getByTestId('isAssistantManager').textContent).toBe('true'));
-    expect(screen.getByTestId('canManage').textContent).toBe('true');
+    expect(screen.getByTestId('isAdmin').textContent).toBe('false');
+    expect(screen.getByTestId('isMember').textContent).toBe('false');
   });
 
   it('sets isDirector=true when hierarchyLevel is "director"', async () => {

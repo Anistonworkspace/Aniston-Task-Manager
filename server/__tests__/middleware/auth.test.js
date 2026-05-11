@@ -3,8 +3,19 @@
 /**
  * Tests for server/middleware/auth.js
  *
- * All external dependencies (jwt, User model) are mocked so no real
- * database or network calls are made.
+ * All external dependencies (jwt, User model, RefreshToken model) are mocked
+ * so no real database or network calls are made.
+ *
+ * Production behaviors verified here:
+ *   - `authenticate` reads the JWT from the access-cookie OR the legacy
+ *     `Authorization: Bearer` header. Tests use the header form.
+ *   - `adminOnly` is now strict: admins (Tier 2 with role='admin') and super
+ *     admins (Tier 1) only — managers no longer slip through.
+ *   - `assistantManagerOnly` admits Tier 1 (super admin) and Tier 3
+ *     (assistant_manager) only.
+ *   - `requireRole` privilege-escalation guard (the post-2026-05-04 fix)
+ *     narrows Layer 3 (base-role matrix) to elevated actions only — view
+ *     no longer bypasses an explicit role guard.
  */
 
 process.env.JWT_SECRET = 'test-secret-key';
@@ -16,9 +27,20 @@ jest.mock('../../models', () => ({
   User: {
     findByPk: jest.fn(),
   },
+  RefreshToken: {
+    findByPk: jest.fn().mockResolvedValue(null),
+  },
   PermissionGrant: {
     findAll: jest.fn().mockResolvedValue([]),
   },
+}));
+
+// permissionEngine is consumed by requireRole's Layer-3 fallback. Default to
+// "no elevation" so Layer 3 never overrides the explicit role check — the
+// regression guard tests assert exactly that.
+jest.mock('../../services/permissionEngine', () => ({
+  getEffectiveBasePermission: jest.fn(() => false),
+  getEffectiveBasePermissions: jest.fn(() => ({})),
 }));
 
 const jwt = require('jsonwebtoken');
@@ -40,6 +62,8 @@ function buildMocks(reqOverrides = {}) {
   const res = {
     status: jest.fn().mockReturnThis(),
     json: jest.fn().mockReturnThis(),
+    cookie: jest.fn().mockReturnThis(),
+    clearCookie: jest.fn().mockReturnThis(),
   };
   const next = jest.fn();
   return { req, res, next };
@@ -176,6 +200,10 @@ describe('authenticate middleware', () => {
 });
 
 // ─── adminOnly ────────────────────────────────────────────────────────────────
+//
+// Tier mapping (Phase 5a): admits Tier 1 unconditionally, and Tier 2 only when
+// the legacy `role` is still 'admin' (not 'manager'). Members and assistant
+// managers get 403.
 
 describe('adminOnly middleware', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -202,6 +230,8 @@ describe('adminOnly middleware', () => {
   });
 
   it('returns 403 when the user role is "manager"', () => {
+    // Managers map to Tier 2 with role='manager' — adminOnly intentionally
+    // rejects them since CP-1 (org-chart hardening).
     const { req, res, next } = buildMocks({ user: makeActiveUser({ role: 'manager' }) });
 
     adminOnly(req, res, next);
@@ -221,6 +251,9 @@ describe('adminOnly middleware', () => {
 });
 
 // ─── managerOrAdmin ───────────────────────────────────────────────────────────
+//
+// Tier mapping: equivalent to "Tier 1 or Tier 2". Assistant managers (Tier 3)
+// are intentionally excluded by the production middleware.
 
 describe('managerOrAdmin middleware', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -264,17 +297,22 @@ describe('managerOrAdmin middleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('calls next() when the user role is "assistant_manager"', () => {
+  it('returns 403 when the user role is "assistant_manager" (Tier 3 excluded)', () => {
+    // Tier mapping: assistant_manager -> Tier 3 -> rejected by managerOrAdmin.
     const { req, res, next } = buildMocks({ user: makeActiveUser({ role: 'assistant_manager' }) });
 
     managerOrAdmin(req, res, next);
 
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 });
 
 // ─── assistantManagerOnly ─────────────────────────────────────────────────────
+//
+// Tier mapping: admits Tier 1 (super admin) and Tier 3 (assistant_manager)
+// only. Regular admins (Tier 2) are NOT admitted — this is the director-plan
+// guard.
 
 describe('assistantManagerOnly middleware', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -288,7 +326,7 @@ describe('assistantManagerOnly middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when user role is "admin" but is not super admin', () => {
+  it('returns 403 when user role is "admin" but is not super admin (Tier 2)', () => {
     const { req, res, next } = buildMocks({ user: makeActiveUser({ role: 'admin', isSuperAdmin: false }) });
 
     assistantManagerOnly(req, res, next);
@@ -315,7 +353,7 @@ describe('assistantManagerOnly middleware', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('calls next() when the user is a super admin', () => {
+  it('calls next() when the user is a super admin (Tier 1)', () => {
     const { req, res, next } = buildMocks({ user: makeActiveUser({ role: 'member', isSuperAdmin: true }) });
 
     assistantManagerOnly(req, res, next);

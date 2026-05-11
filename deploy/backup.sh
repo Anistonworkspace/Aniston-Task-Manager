@@ -3,6 +3,15 @@
 # Run: docker exec aph-postgres sh /backup.sh
 # Or schedule via cron on the host:
 #   0 2 * * * docker exec aph-postgres pg_dump -U postgres aniston_project_hub | gzip > ~/backups/db-$(date +\%Y\%m\%d).sql.gz
+#
+# ─── P0-8: off-host backups ──────────────────────────────────────────
+# Local /backups volume protects against accidental DROP/UPDATE but does
+# NOT survive instance termination, EBS volume loss, ransomware, or a
+# compromised host. For real durability, ship each daily dump off-box
+# (S3 with versioning + Object Lock, or another region's RDS snapshot).
+# The optional block at the bottom of this script gives a one-line S3
+# sync once an IAM role / aws CLI are available.
+# ─────────────────────────────────────────────────────────────────────
 
 set -e
 
@@ -29,3 +38,9 @@ if [ "$TOTAL" -gt "$KEEP" ]; then
 fi
 
 echo "[Backup] Done."
+
+# OPTIONAL: off-host backup to S3. Uncomment after configuring IAM role on the EC2 instance.
+# Requires aws CLI installed (apk add --no-cache aws-cli) and an IAM role with s3:PutObject on the target bucket.
+# if [ -n "$BACKUP_S3_BUCKET" ]; then
+#   aws s3 cp /backups/db_$(date +%Y%m%d_%H%M%S).sql.gz "s3://$BACKUP_S3_BUCKET/$(date +%Y/%m)/" --storage-class STANDARD_IA
+# fi

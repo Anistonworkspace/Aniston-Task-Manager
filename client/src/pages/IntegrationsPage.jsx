@@ -8,8 +8,11 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
 import Avatar from '../components/common/Avatar';
 import TranscriptionProviderSection from '../components/integrations/TranscriptionProviderSection';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 
 // Renders a copy-pastable Express receiver wired to the user's webhook secret.
 // Lives outside the component so it doesn't re-allocate per render and so the
@@ -62,7 +65,7 @@ function TeamsNotificationStats() {
 
   if (loading) {
     return (
-      <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-6 p-5">
+      <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-6 p-5">
         <div className="flex items-center justify-center py-4">
           <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary/20 border-t-primary" />
         </div>
@@ -73,8 +76,8 @@ function TeamsNotificationStats() {
   if (!stats) return null;
 
   return (
-    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-6">
-      <div className="flex items-center gap-4 p-5 border-b border-border">
+    <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-6">
+      <div className="flex items-center gap-4 p-5 border-b border-gray-200 dark:border-zinc-700">
         <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
           <Bell size={20} className="text-primary" />
         </div>
@@ -108,6 +111,7 @@ function TeamsNotificationStats() {
 
 export default function IntegrationsPage() {
   const { isAdmin } = useAuth();
+  const t = useT();
   const [teamsStatus, setTeamsStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -630,8 +634,8 @@ export default function IntegrationsPage() {
   return (
     <div className="p-6 max-w-[1000px] mx-auto">
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-text-primary">Integrations</h1>
-        <p className="text-sm text-text-secondary mt-0.5">Connect your tools and sync your team</p>
+        <h1 className="text-xl font-bold text-text-primary">{t('integrations.title')}</h1>
+        <p className="text-sm text-text-secondary mt-0.5">{t('integrations.subtitle')}</p>
       </div>
 
       {error && (
@@ -650,7 +654,7 @@ export default function IntegrationsPage() {
       )}
 
       {/* Microsoft Teams Card */}
-      <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-6">
+      <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-6">
         {/* Header */}
         <div className="flex items-center gap-4 p-5 border-b border-border">
           <div className="w-12 h-12 rounded-xl bg-[#464EB8] flex items-center justify-center shadow-lg">
@@ -659,7 +663,7 @@ export default function IntegrationsPage() {
             </svg>
           </div>
           <div className="flex-1">
-            <h2 className="text-base font-semibold text-text-primary">Microsoft Teams</h2>
+            <h2 className="text-base font-semibold text-text-primary">{t('integrations.cards.microsoftTeams')}</h2>
             <p className="text-xs text-text-tertiary">Calendar sync, user management, SSO authentication</p>
           </div>
           <div className="flex items-center gap-2">
@@ -976,13 +980,13 @@ export default function IntegrationsPage() {
       {isAdmin && (
         <div className="mb-6">
           {/* Section Header */}
-          <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-4">
+          <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-4">
             <div className="flex items-center gap-4 p-5">
               <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg">
                 <Bot size={24} className="text-white" />
               </div>
               <div className="flex-1">
-                <h2 className="text-base font-semibold text-text-primary">AI Provider</h2>
+                <h2 className="text-base font-semibold text-text-primary">{t('integrations.cards.aiProvider')}</h2>
                 <p className="text-xs text-text-tertiary">Configure which AI model powers resume scoring, interview questions, and the AI assistant.</p>
               </div>
               <div className="flex items-center gap-2">
@@ -997,7 +1001,7 @@ export default function IntegrationsPage() {
                 )}
                 <button onClick={() => { setShowAddProvider(true); setAiForm({ provider: 'deepseek', apiKey: '', model: '', baseUrl: '' }); }}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-violet-600 rounded-lg hover:bg-violet-700 transition-colors shadow-sm">
-                  <Plus size={13} /> Add Provider
+                  <Plus size={13} /> {t('integrations.actions.addProvider')}
                 </button>
               </div>
             </div>
@@ -1017,7 +1021,7 @@ export default function IntegrationsPage() {
                   const isTesting = testingProviderId === p.id;
 
                   return (
-                    <div key={p.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden transition-all ${p.isDefault ? 'border-violet-300 ring-1 ring-violet-200' : 'border-border'}`}>
+                    <div key={p.id} className={`bg-white dark:bg-zinc-800 rounded-xl border shadow-sm overflow-hidden transition-all ${p.isDefault ? 'border-violet-300 dark:border-violet-500/40 ring-1 ring-violet-200 dark:ring-violet-500/20' : 'border-gray-200 dark:border-zinc-700'}`}>
                       {isEditing ? (
                         /* Edit Form */
                         <div className="p-5">
@@ -1166,7 +1170,7 @@ export default function IntegrationsPage() {
 
                 {/* Empty State */}
                 {aiProviders.length === 0 && !showAddProvider && (
-                  <div className="bg-white rounded-xl border border-border shadow-sm p-8 text-center">
+                  <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm p-8 text-center">
                     <Bot size={32} className="mx-auto mb-3 text-violet-300" />
                     <p className="text-sm font-medium text-text-primary mb-1">No AI providers configured</p>
                     <p className="text-xs text-text-tertiary mb-4">Add your first AI provider to enable the AI Assistant for all users.</p>
@@ -1180,7 +1184,7 @@ export default function IntegrationsPage() {
 
               {/* Add Provider Form */}
               {showAddProvider && (
-                <div className="bg-white rounded-xl border border-violet-200 shadow-sm overflow-hidden mt-4 animate-fade-in">
+                <div className="bg-white dark:bg-zinc-800 rounded-xl border border-violet-200 dark:border-violet-500/30 shadow-sm overflow-hidden mt-4 animate-fade-in">
                   <div className="p-5">
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
@@ -1314,14 +1318,14 @@ export default function IntegrationsPage() {
 
       {/* External API Access Card */}
       {isAdmin && (
-        <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden mb-6">
+        <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-6">
           {/* Header */}
-          <div className="flex items-center gap-4 p-5 border-b border-border">
+          <div className="flex items-center gap-4 p-5 border-b border-gray-200 dark:border-zinc-700">
             <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-600 to-teal-600 flex items-center justify-center shadow-lg">
               <Database size={24} className="text-white" />
             </div>
             <div className="flex-1">
-              <h2 className="text-base font-semibold text-text-primary">External API</h2>
+              <h2 className="text-base font-semibold text-text-primary">{t('integrations.cards.externalApi')}</h2>
               <p className="text-xs text-text-tertiary">Access employee task data from external applications via API key</p>
             </div>
             <div className="flex items-center gap-2">
@@ -1751,24 +1755,24 @@ curl -H "X-API-Key: your_api_key" \\
       )}
 
       {/* Future Integrations */}
-      <h2 className="text-sm font-semibold text-text-secondary mb-3">More Integrations</h2>
+      <h2 className="text-sm font-semibold text-text-secondary mb-3">{t('integrations.moreIntegrations')}</h2>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {[
           { name: 'Slack', desc: 'Send task notifications to Slack channels', color: '#4A154B', icon: '#' },
           { name: 'Google Workspace', desc: 'Sync with Google Calendar and Drive', color: '#4285F4', icon: 'G' },
           { name: 'Jira', desc: 'Two-way sync with Jira issues', color: '#0052CC', icon: 'J' },
         ].map(int => (
-          <div key={int.name} className="bg-white rounded-xl border border-border p-4 opacity-60">
+          <div key={int.name} className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 p-4 opacity-60">
             <div className="flex items-center gap-3 mb-2">
               <div className="w-9 h-9 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ backgroundColor: int.color }}>
                 {int.icon}
               </div>
               <div>
-                <p className="text-sm font-medium text-text-primary">{int.name}</p>
-                <p className="text-[10px] text-text-tertiary">{int.desc}</p>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">{int.name}</p>
+                <p className="text-[10px] text-gray-500 dark:text-zinc-400">{int.desc}</p>
               </div>
             </div>
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-surface text-text-tertiary border border-border">Coming Soon</span>
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-surface dark:bg-zinc-700 text-gray-500 dark:text-zinc-400 border border-gray-200 dark:border-zinc-600">{t('integrations.comingSoon')}</span>
           </div>
         ))}
       </div>

@@ -635,8 +635,11 @@ const deleteBoard = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    // Only the creator, an admin, or a manager may delete (assistant_manager cannot)
-    const canDelete = ['admin', 'manager'].includes(req.user.role) || board.createdBy === req.user.id;
+    // Only the creator OR someone at Tier 2 (admin/manager) and above may
+    // delete. Using the tier helper honours `isSuperAdmin` automatically and
+    // survives a future role-name rename.
+    const { TIER_2, hasTierAtLeast } = require('../config/tiers');
+    const canDelete = hasTierAtLeast(req.user, TIER_2) || board.createdBy === req.user.id;
     if (!canDelete) {
       return res.status(403).json({
         success: false,

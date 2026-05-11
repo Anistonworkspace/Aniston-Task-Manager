@@ -224,7 +224,10 @@ const TaskRow = React.memo(function TaskRow({
           isOwnTask && !isSuperAdmin && task.approvalStatus !== 'approved';
         return <ProgressCell value={task.progress || 0} status={task.status} approvalRequired={progressApprovalRequired} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
       }
-      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} canEdit={canEditAllFields} />;
+      // P3-4: removed `task.taskLabels` fallback — no endpoint populates
+      // it. `task.labels` (from the canonical Label include) is the only
+      // source of truth.
+      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={canEditAllFields} />;
       case 'references': {
         // Multi-value reference column — backed by the task_references table
         // (NOT customFields). The cell handles its own POST/DELETE against

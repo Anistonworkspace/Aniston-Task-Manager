@@ -4,6 +4,7 @@ const { Task, Notification } = require('../models');
 const { emitToUser } = require('../services/socketService');
 const calendarService = require('../services/calendarService');
 const logger = require('../utils/logger');
+const { withCronLock } = require('./cronLock');
 
 /**
  * Recurring Task Cron Job — LEGACY.
@@ -34,86 +35,90 @@ function startRecurringTaskJob() {
     );
     return;
   }
-  // Run every hour at minute 15
+  // Run every hour at minute 15. Wrapped in withCronLock so only one backend
+  // replica fires per tick (this job is NOT idempotent — duplicate ticks
+  // would produce duplicate recurring task instances).
   cron.schedule('15 * * * *', async () => {
     try {
-      const now = new Date();
+      await withCronLock('recurringTaskJob:hourly', async () => {
+        const now = new Date();
 
-      // Find tasks with recurrence set and nextRun <= now
-      const tasks = await Task.findAll({
-        where: {
-          recurrence: { [Op.ne]: null },
-          isArchived: false,
-        },
+        // Find tasks with recurrence set and nextRun <= now
+        const tasks = await Task.findAll({
+          where: {
+            recurrence: { [Op.ne]: null },
+            isArchived: false,
+          },
+        });
+
+        for (const task of tasks) {
+          const rec = task.recurrence;
+          if (!rec || !rec.nextRun) continue;
+
+          const nextRun = new Date(rec.nextRun);
+          if (nextRun > now) continue;
+
+          // Check end date
+          if (rec.endDate && new Date(rec.endDate) < now) {
+            await task.update({ recurrence: null });
+            continue;
+          }
+
+          // Create new task instance
+          const newTask = await Task.create({
+            title: task.title,
+            description: task.description,
+            status: 'not_started',
+            priority: task.priority,
+            groupId: task.groupId,
+            boardId: task.boardId,
+            assignedTo: task.assignedTo,
+            createdBy: task.createdBy,
+            tags: task.tags,
+            estimatedHours: task.estimatedHours,
+            dueDate: calculateNextDueDate(task.dueDate, rec),
+            startDate: calculateNextDueDate(task.startDate, rec),
+          });
+
+          // Calculate next recurrence
+          let newNextRun;
+          const int = rec.interval || 1;
+          if (rec.type === 'daily') {
+            newNextRun = new Date(nextRun.getTime() + int * 24 * 60 * 60 * 1000);
+          } else if (rec.type === 'weekly') {
+            newNextRun = new Date(nextRun.getTime() + int * 7 * 24 * 60 * 60 * 1000);
+          } else if (rec.type === 'monthly') {
+            newNextRun = new Date(nextRun);
+            newNextRun.setMonth(newNextRun.getMonth() + int);
+          }
+
+          await task.update({
+            recurrence: { ...rec, nextRun: newNextRun.toISOString() },
+            lastRecurrenceAt: now,
+          });
+
+          // Notify assignee
+          if (task.assignedTo) {
+            await Notification.create({
+              type: 'task_assigned',
+              message: `Recurring task "${task.title}" has been created`,
+              entityType: 'task',
+              entityId: newTask.id,
+              userId: task.assignedTo,
+            });
+            emitToUser(task.assignedTo, 'notification:new', {
+              message: `Recurring task "${task.title}" created`,
+            });
+
+            // One-way sync the new instance to the assignee's Teams calendar.
+            calendarService.createTaskEvent(newTask.id, newTask.assignedTo).catch(err =>
+              logger.warn('[RecurringJob] Calendar sync failed', { taskId: newTask.id, err: err.message })
+            );
+          }
+
+          console.log(`[RecurringJob] Created recurring instance of "${task.title}" (${newTask.id})`);
+        }
       });
-
-      for (const task of tasks) {
-        const rec = task.recurrence;
-        if (!rec || !rec.nextRun) continue;
-
-        const nextRun = new Date(rec.nextRun);
-        if (nextRun > now) continue;
-
-        // Check end date
-        if (rec.endDate && new Date(rec.endDate) < now) {
-          await task.update({ recurrence: null });
-          continue;
-        }
-
-        // Create new task instance
-        const newTask = await Task.create({
-          title: task.title,
-          description: task.description,
-          status: 'not_started',
-          priority: task.priority,
-          groupId: task.groupId,
-          boardId: task.boardId,
-          assignedTo: task.assignedTo,
-          createdBy: task.createdBy,
-          tags: task.tags,
-          estimatedHours: task.estimatedHours,
-          dueDate: calculateNextDueDate(task.dueDate, rec),
-          startDate: calculateNextDueDate(task.startDate, rec),
-        });
-
-        // Calculate next recurrence
-        let newNextRun;
-        const int = rec.interval || 1;
-        if (rec.type === 'daily') {
-          newNextRun = new Date(nextRun.getTime() + int * 24 * 60 * 60 * 1000);
-        } else if (rec.type === 'weekly') {
-          newNextRun = new Date(nextRun.getTime() + int * 7 * 24 * 60 * 60 * 1000);
-        } else if (rec.type === 'monthly') {
-          newNextRun = new Date(nextRun);
-          newNextRun.setMonth(newNextRun.getMonth() + int);
-        }
-
-        await task.update({
-          recurrence: { ...rec, nextRun: newNextRun.toISOString() },
-          lastRecurrenceAt: now,
-        });
-
-        // Notify assignee
-        if (task.assignedTo) {
-          await Notification.create({
-            type: 'task_assigned',
-            message: `Recurring task "${task.title}" has been created`,
-            entityType: 'task',
-            entityId: newTask.id,
-            userId: task.assignedTo,
-          });
-          emitToUser(task.assignedTo, 'notification:new', {
-            message: `Recurring task "${task.title}" created`,
-          });
-
-          // One-way sync the new instance to the assignee's Teams calendar.
-          calendarService.createTaskEvent(newTask.id, newTask.assignedTo).catch(err =>
-            logger.warn('[RecurringJob] Calendar sync failed', { taskId: newTask.id, err: err.message })
-          );
-        }
-
-        console.log(`[RecurringJob] Created recurring instance of "${task.title}" (${newTask.id})`);
-      }
     } catch (err) {
       console.error('[RecurringJob] Error:', err.message);
     }

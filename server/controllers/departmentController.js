@@ -1,6 +1,7 @@
-const { Department, User } = require('../models');
+const { Department, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
+const { sanitizeInput } = require('../utils/sanitize');
 
 /**
  * POST /api/departments
@@ -19,8 +20,8 @@ const createDepartment = async (req, res) => {
     }
 
     const dept = await Department.create({
-      name: name.trim(),
-      description: description || null,
+      name: sanitizeInput(name.trim()),
+      description: description ? sanitizeInput(description) : null,
       color: color || '#0073ea',
       head: head || null,
     });
@@ -127,9 +128,9 @@ const updateDepartment = async (req, res) => {
       if (existing) {
         return res.status(409).json({ success: false, message: 'A department with this name already exists.' });
       }
-      updates.name = name.trim();
+      updates.name = sanitizeInput(name.trim());
     }
-    if (description !== undefined) updates.description = description;
+    if (description !== undefined) updates.description = description ? sanitizeInput(description) : description;
     if (color !== undefined) updates.color = color;
     if (head !== undefined) updates.head = head;
     if (isActive !== undefined) updates.isActive = isActive;
@@ -172,10 +173,18 @@ const deleteDepartment = async (req, res) => {
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'department', { isOwnResource: false }))) return;
     }
 
-    // Clear departmentId from all users in this department
-    await User.update({ departmentId: null }, { where: { departmentId: dept.id } });
-
-    await dept.destroy();
+    // P1-5 / L-5 — wrap the user-detach + department-destroy in a single
+    // transaction so a failure on either side does not leave the system
+    // half-mutated (e.g. dept gone but users still pointing at it via FK
+    // CASCADE-less drift, or users detached but dept still alive on a
+    // destroy() failure).
+    await sequelize.transaction(async (t) => {
+      await User.update(
+        { departmentId: null },
+        { where: { departmentId: dept.id }, transaction: t }
+      );
+      await dept.destroy({ transaction: t });
+    });
 
     logActivity({
       action: 'department_deleted',

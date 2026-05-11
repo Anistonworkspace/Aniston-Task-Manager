@@ -53,20 +53,34 @@ jest.mock('../../models', () => {
   };
   const TaskOwner = { bulkCreate: jest.fn().mockResolvedValue([]) };
   const TaskApprovalFlow = { findAll: jest.fn().mockResolvedValue([]) };
-  const TaskDependency = {};
+  const TaskDependency = { findAll: jest.fn().mockResolvedValue([]) };
   const Notification = { create: jest.fn() };
   const Subtask = {};
   const Label = {};
+  // taskController destructures these from `../models`; create benign stubs so
+  // the destructure doesn't yield undefined values that crash later helpers.
+  const TaskReference = { findAll: jest.fn().mockResolvedValue([]) };
+  const TaskLink = { findAll: jest.fn().mockResolvedValue([]) };
+  const DependencyRequest = { findAll: jest.fn().mockResolvedValue([]) };
 
   return {
     Task, Board, User, TaskAssignee, TaskOwner, TaskApprovalFlow,
     TaskDependency, Notification, Subtask, Label,
-    sequelize: { query: jest.fn(), literal: jest.fn((s) => s) },
+    TaskReference, TaskLink, DependencyRequest,
+    sequelize: { query: jest.fn().mockResolvedValue([[]]), literal: jest.fn((s) => s) },
   };
 });
 
 jest.mock('../../config/db', () => ({
-  sequelize: { query: jest.fn().mockResolvedValue([[]]), literal: jest.fn((s) => s) },
+  // createTask now wraps Task.create + TaskAssignee.bulkCreate + TaskOwner.bulkCreate
+  // in a managed transaction (sequelize.transaction(async (t) => { ... })).
+  // The fake transaction just invokes the callback with a stub tx object so the
+  // controller's atomic-create block runs without a real DB.
+  sequelize: {
+    query: jest.fn().mockResolvedValue([[]]),
+    literal: jest.fn((s) => s),
+    transaction: jest.fn(async (cb) => cb({ /* fake tx */ })),
+  },
 }));
 
 jest.mock('../../services/permissionEngine', () => ({
@@ -106,6 +120,13 @@ jest.mock('../../services/reminderService', () => ({
   scheduleReminders: jest.fn().mockResolvedValue(null),
   cancelReminders: jest.fn().mockResolvedValue(null),
   rescheduleReminders: jest.fn().mockResolvedValue(null),
+  // Phase 5 user-reminder spec helpers — createTask now AWAITS applyReminderSpecs
+  // and threads normalizeReminderSpecs output into the response.
+  applyReminderSpecs: jest.fn().mockResolvedValue(null),
+  normalizeReminderSpecs: jest.fn(() => ({ specs: [], errors: [] })),
+  getUserReminderSpecs: jest.fn().mockResolvedValue([]),
+  getReminderSummary: jest.fn().mockResolvedValue(null),
+  getReminderSummaryBulk: jest.fn().mockResolvedValue({}),
 }));
 jest.mock('../../services/assignmentNotificationService', () => ({
   notifyNewAssignments: jest.fn().mockResolvedValue(null),
@@ -120,7 +141,39 @@ jest.mock('../../services/teamsNotificationService', () => ({
 }));
 jest.mock('../../services/boardMembershipService', () => ({
   autoAddMember: jest.fn().mockResolvedValue(null),
+  explicitAddMember: jest.fn().mockResolvedValue(null),
   cleanupMultiple: jest.fn().mockResolvedValue(null),
+  cleanupIfNoTasksRemain: jest.fn().mockResolvedValue(null),
+}));
+// Tier 3/4 actors (members, assistant managers) now go through the board
+// visibility gate before they can plant a task — mock it as "always allowed"
+// so the test can focus on the assignment / due-date semantics.
+jest.mock('../../services/boardVisibilityService', () => ({
+  canUserSeeBoard: jest.fn().mockResolvedValue(true),
+  buildBoardVisibilityWhere: jest.fn(async () => ({})),
+  filterVisibleBoardIds: jest.fn(async (_user, ids) => ids),
+  buildVisibleBoardIds: jest.fn(async (_user, ids) => ids),
+}));
+// createTask now fans out a realtime task:created event after persistence.
+// We swallow it so the test doesn't require a Socket.io stub.
+jest.mock('../../services/realtimeService', () => ({
+  emitTaskCreated: jest.fn(),
+  emitTaskUpdated: jest.fn(),
+  emitTaskDeleted: jest.fn(),
+  emitTaskArchived: jest.fn(),
+}));
+jest.mock('../../services/notificationService', () => ({
+  createNotification: jest.fn().mockResolvedValue(null),
+  buildIdempotencyKey: jest.fn(() => 'idempotency-key'),
+}));
+jest.mock('../../utils/taskOwnership', () => ({
+  isSelfOwnedTask: jest.fn(() => true),
+  isSelfOwnedCreate: jest.fn(() => true),
+}));
+// taskController also imports recurringTaskService as a module ref; we don't
+// invoke its members in createTask but the require() must succeed.
+jest.mock('../../services/recurringTaskService', () => ({
+  spawnDueInstances: jest.fn().mockResolvedValue(null),
 }));
 jest.mock('../../middleware/taskPermissions', () => ({
   buildTaskVisibilityFilter: jest.fn(() => ({})),
@@ -142,6 +195,7 @@ jest.mock('../../utils/logger', () => ({
 
 const { Task, Board, TaskAssignee } = require('../../models');
 const permissionEngine = require('../../services/permissionEngine');
+const taskOwnership = require('../../utils/taskOwnership');
 const taskController = require('../../controllers/taskController');
 
 const BOARD_ID = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
@@ -212,7 +266,9 @@ describe('createTask — assignment due-date gate (no self-exemption)', () => {
     // is suppressed when there's no due date. The task row is created with
     // assignedTo: null so the user can set a due date and self-assign as a
     // follow-up edit.
-    expect(Task.create).toHaveBeenCalledWith(
+    // Task.create is now invoked with `(values, { transaction: t })` inside
+    // the atomic-create block, so we match only the first arg.
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ assignedTo: null, dueDate: null }),
     );
     expect(TaskAssignee.bulkCreate).not.toHaveBeenCalled();
@@ -230,7 +286,7 @@ describe('createTask — assignment due-date gate (no self-exemption)', () => {
     await taskController.createTask(req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(Task.create).toHaveBeenCalledWith(
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ assignedTo: MEMBER_ID, dueDate: '2026-12-31' }),
     );
   });
@@ -302,7 +358,7 @@ describe('createTask — assignment due-date gate (no self-exemption)', () => {
     await taskController.createTask(req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(Task.create).toHaveBeenCalledWith(
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ assignedTo: OTHER_ID }),
     );
   });
@@ -351,6 +407,11 @@ describe('createTask — set_priority permission gate', () => {
       if (resource === 'tasks' && action === 'set_priority') return false;
       return false;
     });
+    // Override the file-level `isSelfOwnedCreate: () => true` so the
+    // self-owned exemption inside the priority gate doesn't short-circuit
+    // this assertion. The product rule: a non-self-owned create with a
+    // non-default priority must 403 when set_priority=false.
+    taskOwnership.isSelfOwnedCreate.mockReturnValueOnce(false);
     Board.findByPk.mockResolvedValue({ id: BOARD_ID, name: 'Test Board', groups: [], columns: [] });
 
     const req = makeMemberReq({ priority: 'high', dueDate: '2026-12-31' });
@@ -390,7 +451,7 @@ describe('createTask — set_priority permission gate', () => {
     expect(res.status).toHaveBeenCalledWith(201);
     // No assignee set: dueDate omitted → auto-self-assign suppressed (per
     // earlier rule), task is created unassigned with the default priority.
-    expect(Task.create).toHaveBeenCalledWith(
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ priority: 'medium', assignedTo: null }),
     );
   });
@@ -412,7 +473,7 @@ describe('createTask — set_priority permission gate', () => {
     await taskController.createTask(req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(Task.create).toHaveBeenCalledWith(
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ priority: 'medium' }),
     );
   });
@@ -434,7 +495,7 @@ describe('createTask — set_priority permission gate', () => {
     await taskController.createTask(req, res);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(Task.create).toHaveBeenCalledWith(
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ priority: 'critical' }),
     );
   });

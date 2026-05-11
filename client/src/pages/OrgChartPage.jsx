@@ -8,6 +8,9 @@ import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import AccessDenied from '../components/common/AccessDenied';
 import { isExplicitlyDenied } from '../utils/permissions';
 import { TIER_1, TIER_2, TIER_3, TIER_4, resolveTier, tierLabel, tiersGrantableBy } from '../utils/tiers';
+import { useT } from '../context/LanguageContext';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 import {
   Users, ChevronDown, ArrowUp, User, Edit2, X, History, Shield, Search,
   GitBranch, Crown, Settings2, Layers, Building2, GripVertical,
@@ -625,6 +628,7 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
 // ═══ MAIN PAGE ═══
 export default function OrgChartPage() {
   const { canManage, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
+  const t = useT();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
   const confirm = useConfirm();
 
@@ -1110,26 +1114,26 @@ export default function OrgChartPage() {
             {/* ─── Header (h1 + subtitle + view toggle + actions) ─── */}
             <div className="flex items-start justify-between mb-3 gap-3">
               <div className="min-w-0">
-                <h1 className="text-lg font-bold text-gray-800 flex items-center gap-2"><GitBranch size={16} className="text-indigo-500" /> Organization Chart</h1>
-                <p className="text-[11px] text-gray-400 mt-0.5 ml-6">Hierarchical view of your team structure</p>
+                <h1 className="text-lg font-bold text-gray-800 flex items-center gap-2"><GitBranch size={16} className="text-indigo-500" /> {t('orgChart.title')}</h1>
+                <p className="text-[11px] text-gray-400 mt-0.5 ml-6">{t('orgChart.subtitle')}</p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <div className="flex bg-gray-100 rounded-lg p-0.5" role="tablist" aria-label="Org chart view">
-                  <button onClick={() => setViewMode('tree')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'tree' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>Tree View</button>
-                  <button onClick={() => setViewMode('levels')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'levels' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>List View</button>
-                  <button onClick={() => setViewMode('department')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'department' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>Department</button>
+                  <button onClick={() => setViewMode('tree')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'tree' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>{t('orgChart.views.tree')}</button>
+                  <button onClick={() => setViewMode('levels')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'levels' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>{t('orgChart.views.list')}</button>
+                  <button onClick={() => setViewMode('department')} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${viewMode === 'department' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>{t('orgChart.views.department')}</button>
                 </div>
-                {canManage && <button onClick={() => setShowManageHierarchy(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"><Settings2 size={12} /> Manage Levels</button>}
+                {canManage && <button onClick={() => setShowManageHierarchy(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"><Settings2 size={12} /> {t('orgChart.actions.manageLevels')}</button>}
                 {canManage && (
                   editMode ? (
                     <button onClick={() => setEditMode(false)}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors border border-red-200">
-                      <X size={12} /> Exit Edit
+                      <X size={12} /> {t('orgChart.actions.exitEdit')}
                     </button>
                   ) : (
                     <button onClick={() => setEditMode(true)}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200">
-                      <Edit2 size={12} /> Edit Structure
+                      <Edit2 size={12} /> {t('orgChart.actions.editStructure')}
                     </button>
                   )
                 )}

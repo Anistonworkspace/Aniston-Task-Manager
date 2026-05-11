@@ -57,6 +57,20 @@ async function authenticateForStatic(req, res, next) {
     }
     // Attach minimal user record so downstream loggers (if any) can audit.
     req.user = user;
+    // ── P0-4: force download for non-image static content ─────────────
+    // /uploads/* is same-origin; if a hostile or mistakenly-allowed file
+    // (HTML/SVG/etc.) is served inline, it would run JS in the platform's
+    // origin. We force `Content-Disposition: attachment` here BEFORE
+    // express.static responds — Express's static handler honours headers
+    // set upstream and will not overwrite this. We exempt avatar paths so
+    // the UI can still render <img src="/uploads/avatars/..."> inline.
+    // Anything else (task attachments, plan attachments, etc.) is forced
+    // to download.
+    const reqPath = (req.path || req.url || '').toString();
+    const isAvatar = /^\/?avatars\//i.test(reqPath);
+    if (!isAvatar) {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
     next();
   } catch (err) {
     return send401(res, 'Invalid or expired token.');

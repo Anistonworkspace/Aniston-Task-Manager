@@ -21,3 +21,16 @@ server/uploads/*
 /*.webp
 screenshots/
 debug-screenshots/
+
+# Environment files - never commit
+# Belt-and-braces beyond the top-level `.env` rule: explicit per-directory
+# entries protect against an editor's "save as .env in subfolder" autocomplete
+# accident, and the *.local variants catch developer-only overrides.
+.env
+.env.local
+.env.*.local
+server/.env
+deploy/.env
+*.pem
+*.p12
+*.key

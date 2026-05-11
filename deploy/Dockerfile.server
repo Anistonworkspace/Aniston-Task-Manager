@@ -12,6 +12,12 @@ COPY server/ .
 # Create uploads directory
 RUN mkdir -p uploads
 
+# P1-23: drop root. The node:20-alpine image ships with a pre-created
+# unprivileged `node` user (uid 1000). Chown /app so the runtime user can
+# write to uploads/, logs, etc., then switch to it for the CMD.
+RUN chown -R node:node /app
+USER node
+
 # Expose port
 EXPOSE 5000
 

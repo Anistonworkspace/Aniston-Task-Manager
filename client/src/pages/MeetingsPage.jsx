@@ -7,7 +7,10 @@ import {
 import { format, parseISO, isToday, isPast, isFuture, addDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
 import { hasTierAtLeast, TIER_2 } from '../utils/tiers';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 import Avatar from '../components/common/Avatar';
 import MeetingModal from '../components/meeting/MeetingModal';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
@@ -27,6 +30,7 @@ const STATUS_CONFIG = {
 
 export default function MeetingsPage() {
   const { user, canManage } = useAuth();
+  const t = useT();
   const { error: toastError, success: toastSuccess } = useToast();
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -110,13 +114,13 @@ export default function MeetingsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-bold text-text-primary">Meetings</h1>
-          <p className="text-sm text-text-secondary mt-0.5">Schedule and manage meetings, reminders, and follow-ups</p>
+          <h1 className="text-xl font-bold text-text-primary">{t('meetings.title')}</h1>
+          <p className="text-sm text-text-secondary mt-0.5">{t('meetings.subtitle')}</p>
         </div>
         {canManage && (
           <button onClick={() => { setEditMeeting(null); setShowModal(true); }}
             className="flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary-hover transition-colors shadow-sm">
-            <CalendarPlus size={16} /> Schedule Meeting
+            <CalendarPlus size={16} /> {t('meetings.scheduleMeeting')}
           </button>
         )}
       </div>
@@ -124,10 +128,10 @@ export default function MeetingsPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         {[
-          { label: 'Total', value: meetings.length, color: '#0073ea' },
-          { label: 'Upcoming', value: meetings.filter(m => m.date >= today && m.status === 'scheduled').length, color: '#fdab3d' },
-          { label: 'Today', value: meetings.filter(m => m.date === today).length, color: '#00c875' },
-          { label: 'Completed', value: meetings.filter(m => m.status === 'completed').length, color: '#a25ddc' },
+          { label: t('meetings.stats.total'), value: meetings.length, color: '#0073ea' },
+          { label: t('meetings.stats.upcoming'), value: meetings.filter(m => m.date >= today && m.status === 'scheduled').length, color: '#fdab3d' },
+          { label: t('meetings.stats.today'), value: meetings.filter(m => m.date === today).length, color: '#00c875' },
+          { label: t('meetings.stats.completed'), value: meetings.filter(m => m.status === 'completed').length, color: '#a25ddc' },
         ].map(s => (
           <div key={s.label} className="widget-card">
             <p className="text-xs text-text-secondary font-medium mb-1">{s.label}</p>
@@ -138,10 +142,10 @@ export default function MeetingsPage() {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-5 border-b border-border">
-        {['upcoming', 'past', 'all'].map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px capitalize transition-colors ${tab === t ? 'border-primary text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'}`}>
-            {t}
+        {['upcoming', 'past', 'all'].map(tabKey => (
+          <button key={tabKey} onClick={() => setTab(tabKey)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px capitalize transition-colors ${tab === tabKey ? 'border-primary text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'}`}>
+            {t(`meetings.tabs.${tabKey}`)}
           </button>
         ))}
       </div>

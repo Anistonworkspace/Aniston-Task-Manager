@@ -14,6 +14,7 @@ const {
   clearPendingLoginCookie,
   getPendingLoginTokenFromRequest,
 } = require('../utils/authCookies');
+const { encryptTeamsToken } = require('../utils/teamsTokenStorage');
 
 // Single-active-session feature.
 //
@@ -1422,10 +1423,11 @@ const microsoftCallback = async (req, res) => {
       // Update teams tokens. Only set teamsUserId when not already set, and only when
       // we have an OID — never blindly overwrite an existing link.
       const updates = {
-        teamsAccessToken: access_token,
+        // P0-5: At-rest encryption for Teams OAuth tokens.
+        teamsAccessToken: encryptTeamsToken(access_token),
         teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
       };
-      if (refresh_token) updates.teamsRefreshToken = refresh_token;
+      if (refresh_token) updates.teamsRefreshToken = encryptTeamsToken(refresh_token);
       if (oid && !user.teamsUserId) updates.teamsUserId = oid;
       // Only change authProvider if user has no local password set
       if (user.authProvider === 'local' && !user.password) updates.authProvider = 'microsoft';
@@ -1451,8 +1453,9 @@ const microsoftCallback = async (req, res) => {
         authProvider: 'microsoft',
         role: 'member',
         teamsUserId: oid,
-        teamsAccessToken: access_token,
-        teamsRefreshToken: refresh_token,
+        // P0-5: At-rest encryption for Teams OAuth tokens.
+        teamsAccessToken: encryptTeamsToken(access_token),
+        teamsRefreshToken: encryptTeamsToken(refresh_token),
         teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
         isActive: true,
         accountStatus: 'approved',

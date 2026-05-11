@@ -1,3 +1,12 @@
+// TODO P1-19: WatcherSection.jsx exists but no TaskModal slot; decide wire vs remove.
+//
+// As of this cleanup pass the component is fully functional (refetches via
+// realtime, watch/unwatch, watcher avatars) but has zero importers anywhere
+// in client/src. Either mount it inside TaskModal (near ApprovalSection,
+// pass `taskId={task.id}`) or delete this file. Server endpoints
+// /task-extras/:id/watchers, /watching, /watch are live, so wiring is a
+// one-line render — left disconnected to avoid an invasive edit in a
+// 2,500-line modal during a separate fix pass.
 import React, { useState, useEffect, useCallback } from 'react';
 import { Eye, EyeOff, Users } from 'lucide-react';
 import api from '../../services/api';

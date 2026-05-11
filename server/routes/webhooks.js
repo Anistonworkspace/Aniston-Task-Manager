@@ -67,7 +67,7 @@ router.post('/n8n/task-created', async (req, res) => {
     try {
       const io = getIO();
       io.to(`board:${boardId}`).emit('task:created', task);
-    } catch (e) {}
+    } catch (e) { console.error('[Webhook] handler error:', e?.message); }
 
     // Send Teams notification
     try {
@@ -75,7 +75,7 @@ router.post('/n8n/task-created', async (req, res) => {
         type: 'task_created',
         task: { ...task.toJSON(), board: { name: board.name } },
       });
-    } catch (e) {}
+    } catch (e) { console.error('[Webhook] handler error:', e?.message); }
 
     res.status(201).json({ success: true, task });
   } catch (err) {
@@ -109,7 +109,7 @@ router.post('/n8n/task-updated', async (req, res) => {
     try {
       const io = getIO();
       io.to(`board:${task.boardId}`).emit('task:updated', task);
-    } catch (e) {}
+    } catch (e) { console.error('[Webhook] handler error:', e?.message); }
 
     res.json({ success: true, task });
   } catch (err) {

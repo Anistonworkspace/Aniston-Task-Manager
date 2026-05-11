@@ -7,10 +7,16 @@ import { MemoryRouter } from 'react-router-dom';
 // vi.mock factories are hoisted before imports, so variables must be created
 // with vi.hoisted() to be accessible inside the factory.
 
-const { mockNavigate, mockLogin, mockLoginWithToken, mockApiGet, mockApiPost } = vi.hoisted(() => ({
+const {
+  mockNavigate, mockLogin, mockForceLogin, mockForceLoginSSO,
+  mockLoginWithToken, mockLogout, mockApiGet, mockApiPost,
+} = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockLogin: vi.fn(),
+  mockForceLogin: vi.fn(),
+  mockForceLoginSSO: vi.fn(),
   mockLoginWithToken: vi.fn(),
+  mockLogout: vi.fn(),
   mockApiGet: vi.fn(),
   mockApiPost: vi.fn(),
 }));
@@ -26,7 +32,10 @@ vi.mock('react-router-dom', async (importOriginal) => {
 vi.mock('../../../context/AuthContext', () => ({
   useAuth: () => ({
     login: mockLogin,
+    forceLogin: mockForceLogin,
+    forceLoginSSO: mockForceLoginSSO,
     loginWithToken: mockLoginWithToken,
+    logout: mockLogout,
   }),
 }));
 
@@ -38,7 +47,10 @@ vi.mock('../../../services/api', () => ({
   },
 }));
 
-// lucide-react icons are ESM — stub them so jsdom doesn't choke on SVG
+// lucide-react icons are ESM — stub them so jsdom doesn't choke on SVG.
+// Login.jsx pulls FolderKanban, Mail, Lock, ArrowRight, Eye, EyeOff,
+// ShieldAlert, and Monitor — every imported icon must be stubbed or the
+// module evaluation fails with "X is not a valid React component".
 vi.mock('lucide-react', () => ({
   FolderKanban: () => null,
   Mail: () => null,
@@ -46,6 +58,8 @@ vi.mock('lucide-react', () => ({
   ArrowRight: () => null,
   Eye: () => null,
   EyeOff: () => null,
+  ShieldAlert: () => null,
+  Monitor: () => null,
 }));
 
 import Login from '../Login';
@@ -113,10 +127,11 @@ describe('Login component', () => {
     await screen.findByText(/sign in with microsoft/i);
   });
 
-  it('renders forgot password and sign up links', async () => {
+  it('renders forgot password link', async () => {
+    // Sign-up link was removed when public self-registration was disabled
+    // in production (security hardening — admins now create accounts).
     renderLogin();
     expect(await screen.findByText(/forgot password/i)).toBeInTheDocument();
-    expect(screen.getByText(/sign up/i)).toBeInTheDocument();
   });
 
   // ---- Validation ----
@@ -250,7 +265,7 @@ describe('Login component', () => {
 
   // ---- SSO callback handling ----
 
-  it('calls loginWithToken and navigates when ?sso=success&token=xxx is present', async () => {
+  it('calls loginWithToken and navigates when ?sso=success is present', async () => {
     Object.defineProperty(window, 'location', {
       writable: true,
       value: {
@@ -261,8 +276,11 @@ describe('Login component', () => {
     });
     mockLoginWithToken.mockResolvedValue({});
     renderLogin();
+    // D-1 Phase 2: SSO tokens are delivered via httpOnly cookies set by the
+    // OAuth callback, so loginWithToken is invoked without arguments. The URL
+    // params are kept for backward compat but ignored by the call.
     await waitFor(() => {
-      expect(mockLoginWithToken).toHaveBeenCalledWith('abc123', 'ref456');
+      expect(mockLoginWithToken).toHaveBeenCalled();
     });
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/');

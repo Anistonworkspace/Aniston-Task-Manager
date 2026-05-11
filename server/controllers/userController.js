@@ -1,4 +1,4 @@
-const { User } = require('../models');
+const { User, TaskApprovalFlow, RefreshToken, sequelize } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
@@ -455,7 +455,53 @@ const toggleUserStatus = async (req, res) => {
     }
 
     // Persist the override flag so Microsoft sync respects this manual choice.
-    await user.update({ isActive: newStatus, localStatusOverride: true });
+    // P0-12 — On deactivation we additionally unstick the approval chain and
+    // revoke active refresh tokens. The whole sequence runs in one
+    // transaction so a partial failure (e.g. RefreshToken update raises) does
+    // not leave the user disabled with stranded pending approvals.
+    let skippedApprovals = 0;
+    let revokedTokens = 0;
+    await sequelize.transaction(async (t) => {
+      await user.update(
+        { isActive: newStatus, localStatusOverride: true },
+        { transaction: t }
+      );
+
+      if (newStatus === false) {
+        // (a) Unstick the approval chain — any pending row pointed at this
+        // user becomes 'skipped' so downstream "next approver" resolution
+        // can advance past the deactivated approver.
+        try {
+          const [count] = await TaskApprovalFlow.update(
+            {
+              status: 'skipped',
+              actionAt: new Date(),
+              comment: 'Auto-skipped: approver deactivated',
+            },
+            {
+              where: { userId: user.id, status: 'pending' },
+              transaction: t,
+            }
+          );
+          skippedApprovals = count || 0;
+        } catch (e) {
+          // Re-throw so the transaction rolls back.
+          throw e;
+        }
+
+        // (b) Revoke every active refresh token for the user so the
+        // deactivated account cannot continue an existing session.
+        try {
+          const [count] = await RefreshToken.update(
+            { revokedAt: new Date() },
+            { where: { userId: user.id, revokedAt: null }, transaction: t }
+          );
+          revokedTokens = count || 0;
+        } catch (e) {
+          throw e;
+        }
+      }
+    });
 
     logActivity({
       action: newStatus ? 'user_activated' : 'user_deactivated',
@@ -463,6 +509,9 @@ const toggleUserStatus = async (req, res) => {
       entityType: 'user',
       entityId: user.id,
       userId: req.user.id,
+      meta: newStatus === false
+        ? { skippedApprovals, revokedTokens }
+        : undefined,
     });
 
     res.json({

@@ -114,15 +114,34 @@ const MASTER_FILE_TYPES = {
 // Each category defines the extensions allowed for a specific upload
 // purpose, plus an optional per-category size limit override.
 
+// ── P0-3 hardening ──────────────────────────────────────────────────
+// Same-origin XSS prevention: the /uploads/ path is served from the same
+// origin as the API/SPA. If a user uploads a file that the browser will
+// render as active content (HTML, JS, CSS, SVG with <script>, XML/XHTML)
+// any subsequent victim navigating to that URL executes attacker code in
+// the platform's origin — full session/cookie theft.
+//
+// Mitigations layered:
+//   1. Drop these extensions from every category below (this file).
+//   2. Force Content-Disposition: attachment on /uploads/* downloads in
+//      staticAuth.js (so even if a hostile file slips in, browsers won't
+//      render it inline).
+//   3. BLOCKED_EXTENSIONS at the bottom is the belt-and-braces deny list.
+//
+// Removed everywhere: html, htm, xhtml, js, mjs, cjs, css, xml.
+// SVG is removed from every category (it can carry inline <script>).
+// If a future "icon" category exists for trusted admin uploads only, SVG
+// may be re-added there with extra sanitization.
+
 const UPLOAD_CATEGORIES = {
   // Default for task attachments — broad but controlled
   task_attachment: {
     label: 'Task Attachment',
     extensions: [
-      'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif',
+      'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'tif',
       'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'odt', 'ods', 'odp',
-      'txt', 'csv', 'md', 'json', 'xml', 'yaml', 'yml',
-      'html', 'css', 'js', 'py', 'java', 'sql',
+      'txt', 'csv', 'md', 'json', 'yaml', 'yml',
+      'py', 'java', 'sql',
       'zip', 'rar', 'gz', 'tar', '7z',
       'mp4', 'mov', 'avi', 'mkv', 'webm',
       'mp3', 'wav', 'ogg',
@@ -143,7 +162,8 @@ const UPLOAD_CATEGORIES = {
   plan_attachment: {
     label: 'Plan Attachment',
     extensions: [
-      'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
+      // svg dropped: same-origin XSS via inline <script> in SVG.
+      'jpg', 'jpeg', 'png', 'gif', 'webp',
       'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
       'txt', 'csv', 'md', 'json',
       'zip',
@@ -182,28 +202,33 @@ const UPLOAD_CATEGORIES = {
   // Marketing
   marketing: {
     label: 'Marketing Asset',
-    extensions: ['psd', 'ai', 'indd', 'jpg', 'jpeg', 'png', 'pdf', 'svg', 'webp', 'mp4'],
+    // svg dropped (XSS in inline <script>)
+    extensions: ['psd', 'ai', 'indd', 'jpg', 'jpeg', 'png', 'pdf', 'webp', 'mp4'],
     maxSizeMB: 50,
   },
 
   // Graphic Design
   design: {
     label: 'Design File',
-    extensions: ['psd', 'ai', 'fig', 'xd', 'sketch', 'png', 'jpg', 'jpeg', 'svg', 'pdf', 'webp'],
+    // svg dropped (XSS in inline <script>)
+    extensions: ['psd', 'ai', 'fig', 'xd', 'sketch', 'png', 'jpg', 'jpeg', 'pdf', 'webp'],
     maxSizeMB: 50,
   },
 
   // Web / UI-UX
   uiux: {
     label: 'UI/UX File',
-    extensions: ['fig', 'xd', 'sketch', 'svg', 'png', 'webp', 'pdf'],
+    // svg dropped (XSS in inline <script>)
+    extensions: ['fig', 'xd', 'sketch', 'png', 'webp', 'pdf'],
     maxSizeMB: 50,
   },
 
   // IT / Software Dev
   code: {
     label: 'Code File',
-    extensions: ['html', 'css', 'js', 'py', 'java', 'xml', 'json', 'sql', 'txt', 'md', 'yaml', 'yml'],
+    // html/css/js/xml dropped — same-origin XSS risk on /uploads.
+    // Code snippets should be shared as .txt or zipped.
+    extensions: ['py', 'java', 'json', 'sql', 'txt', 'md', 'yaml', 'yml'],
     maxSizeMB: 10,
   },
 
@@ -246,9 +271,10 @@ const UPLOAD_CATEGORIES = {
   general: {
     label: 'General Upload',
     extensions: [
-      'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
+      // svg/xml dropped: same-origin XSS risk on /uploads.
+      'jpg', 'jpeg', 'png', 'gif', 'webp',
       'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-      'txt', 'csv', 'md', 'json', 'xml',
+      'txt', 'csv', 'md', 'json',
       'zip', 'rar', 'gz',
       'mp4', 'mp3',
     ],
@@ -257,11 +283,16 @@ const UPLOAD_CATEGORIES = {
 };
 
 // ── Dangerous extensions that should NEVER be allowed ───────────────
+// Includes (P0-3): web-content extensions that the browser would render
+// inline and execute in the same origin as the API/SPA — full XSS.
 const BLOCKED_EXTENSIONS = [
+  // Native executables / installers / scripts
   'exe', 'bat', 'cmd', 'com', 'msi', 'scr', 'pif', 'vbs', 'vbe',
   'wsf', 'wsh', 'ps1', 'ps2', 'psc1', 'psc2', 'reg', 'inf', 'lnk',
   'dll', 'sys', 'drv', 'cpl', 'ocx', 'jar', 'jnlp', 'hta', 'msp',
   'mst', 'appx', 'appxbundle',
+  // Browser-active web content (same-origin XSS on /uploads/)
+  'html', 'htm', 'xhtml', 'js', 'mjs', 'cjs', 'css', 'xml', 'svg',
 ];
 
 // ── Helper functions ────────────────────────────────────────────────

@@ -43,6 +43,30 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
   // exact "labels disappear from the modal" bug the user reported.
   const pendingMutation = useRef(false);
 
+  // P2-5 — mount-safety. If the user closes the modal (unmounts this
+  // cell) while a label mutation is in flight, the in-flight promise's
+  // setState calls would log "Can't perform a React state update on an
+  // unmounted component" warnings. We track mount state in a ref and
+  // gate every post-await setState through it. Also tracks pending
+  // setTimeouts so they can be cleared at unmount.
+  const isMounted = useRef(true);
+  const pendingTimeouts = useRef(new Set());
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+      for (const id of pendingTimeouts.current) clearTimeout(id);
+      pendingTimeouts.current.clear();
+    };
+  }, []);
+  function safeSet(setter, value) { if (isMounted.current) setter(value); }
+  function scheduleLatchRelease() {
+    const id = setTimeout(() => {
+      pendingMutation.current = false;
+      pendingTimeouts.current.delete(id);
+    }, 800);
+    pendingTimeouts.current.add(id);
+  }
+
   // ⚠ Sync rules:
   //  • Always re-hydrate when the rendered task changes (taskId switch).
   //  • Otherwise, sync from prop only when (a) the id-list genuinely
@@ -90,16 +114,11 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
       }
       if (typeof onLabelsChange === 'function') onLabelsChange(next);
     } catch (err) {
-      setLabels(prev);
-      setError(err?.response?.data?.message || 'Failed to update label');
+      safeSet(setLabels, prev);
+      safeSet(setError, err?.response?.data?.message || 'Failed to update label');
     } finally {
-      setBusy(false);
-      // Hold the latch briefly so the socket-driven refetch round-trip
-      // can land and the prop sync pass that follows sees pending=false
-      // with a fresh prop that already matches local. 800ms is enough
-      // for localhost; in production the round-trip is typically <250ms
-      // so any value here that's well above network jitter works.
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      safeSet(setBusy, false);
+      scheduleLatchRelease();
     }
   }
 
@@ -109,21 +128,31 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
     setBusy(true); setError('');
     pendingMutation.current = true;
     try {
-      const res = await api.post('/labels', { name: newName.trim(), color: newColor, boardId });
+      // P2-2 — server-side atomic create + assign. If the assign fails,
+      // the label create is rolled back inside a single transaction, so
+      // we no longer accumulate orphan labels in the DB when the second
+      // POST fails. Replaces the prior two-call client flow.
+      const res = await api.post('/labels', {
+        name: newName.trim(),
+        color: newColor,
+        boardId,
+        assignToTaskId: taskId,
+      });
       const label = res.data.label || res.data?.data?.label;
       if (!label) throw new Error('Bad response');
-      setAllLabels(prev => [...prev, label]);
-      await api.post('/labels/assign', { taskId, labelId: label.id });
-      const next = [...labels, label];
-      setLabels(next);
-      if (typeof onLabelsChange === 'function') onLabelsChange(next);
-      setNewName('');
-      setShowCreate(false);
+      if (isMounted.current) {
+        setAllLabels(prev => [...prev, label]);
+        const next = [...labels, label];
+        setLabels(next);
+        if (typeof onLabelsChange === 'function') onLabelsChange(next);
+        setNewName('');
+        setShowCreate(false);
+      }
     } catch (err) {
-      setError(err?.response?.data?.message || 'Failed to create label');
+      safeSet(setError, err?.response?.data?.message || 'Failed to create label');
     } finally {
-      setBusy(false);
-      setTimeout(() => { pendingMutation.current = false; }, 800);
+      safeSet(setBusy, false);
+      scheduleLatchRelease();
     }
   }
 

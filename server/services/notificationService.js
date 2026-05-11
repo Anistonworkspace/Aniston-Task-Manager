@@ -53,7 +53,7 @@
  */
 
 const { Op } = require('sequelize');
-const { Notification } = require('../models');
+const { Notification, User } = require('../models');
 const { emitToUser } = require('./socketService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const logger = require('../utils/logger');
@@ -169,6 +169,20 @@ async function createNotification(args = {}) {
     // 0. Sanitize the message body. Keeping this inside the service means
     //    every call site is XSS-safe regardless of caller diligence.
     const safeMessage = sanitize ? sanitizeNotificationMessage(message) : String(message);
+
+    // P2-8 — Skip writes addressed to deactivated users. A deactivated
+    // account has no session and no UI surface, so writing the row would
+    // just accumulate orphan rows and waste socket/email work. The lookup
+    // is a single PK fetch on a hot table (kept tight on purpose).
+    try {
+      const recipient = await User.findByPk(userId, { attributes: ['isActive'] });
+      if (recipient && recipient.isActive === false) {
+        return { success: false, reason: 'user_inactive' };
+      }
+    } catch (_) {
+      // If the lookup throws (e.g. transient DB blip), fall through to the
+      // existing write path so we never silently swallow a notification.
+    }
 
     // 1. Idempotency check FIRST. If this exact event was already created,
     //    skip the insert entirely — no duplicate row, no duplicate emit,

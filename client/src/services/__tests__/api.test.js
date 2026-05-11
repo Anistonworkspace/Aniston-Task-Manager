@@ -39,9 +39,16 @@ describe('api service', () => {
     expect(api.defaults.baseURL).toBe('/api');
   });
 
-  it('has default Content-Type header of application/json', async () => {
+  it('Content-Type defaults to application/json via request interceptor (non-FormData)', async () => {
+    // Content-Type is no longer set on `api.defaults.headers`. Instead, the
+    // request interceptor sets it per-request unless the body is FormData
+    // (which needs the browser to set multipart boundary). Verify the
+    // interceptor behavior directly.
     const { default: api } = await import('../api.js');
-    expect(api.defaults.headers['Content-Type']).toBe('application/json');
+    const config = { headers: {}, data: { foo: 'bar' } };
+    const handler = api.interceptors.request.handlers[0].fulfilled;
+    const out = handler(config);
+    expect(out.headers['Content-Type']).toBe('application/json');
   });
 
   it('has a 30-second timeout', async () => {
@@ -51,12 +58,15 @@ describe('api service', () => {
 
   // ---- Request interceptor ----
 
+  // api.js registers TWO request interceptors, in this order:
+  //   handlers[0] — Content-Type normaliser (delete on FormData, default JSON)
+  //   handlers[1] — Authorization header (legacy storage-token fallback)
+  // Auth assertions therefore target handlers[1].
   it('request interceptor adds Authorization header when a token is in sessionStorage', async () => {
     sessionStorage.setItem('token', 'session-jwt');
     const { default: api } = await import('../api.js');
 
-    // Extract the first request interceptor handler
-    const fulfilled = api.interceptors.request.handlers[0]?.fulfilled;
+    const fulfilled = api.interceptors.request.handlers[1]?.fulfilled;
     expect(fulfilled).toBeDefined();
 
     const config = { headers: {} };
@@ -68,7 +78,7 @@ describe('api service', () => {
     localStorage.setItem('token', 'local-jwt');
     const { default: api } = await import('../api.js');
 
-    const fulfilled = api.interceptors.request.handlers[0]?.fulfilled;
+    const fulfilled = api.interceptors.request.handlers[1]?.fulfilled;
     const config = { headers: {} };
     const result = fulfilled(config);
     expect(result.headers.Authorization).toBe('Bearer local-jwt');
@@ -77,7 +87,7 @@ describe('api service', () => {
   it('request interceptor does NOT add Authorization header when no token is stored', async () => {
     const { default: api } = await import('../api.js');
 
-    const fulfilled = api.interceptors.request.handlers[0]?.fulfilled;
+    const fulfilled = api.interceptors.request.handlers[1]?.fulfilled;
     const config = { headers: {} };
     const result = fulfilled(config);
     expect(result.headers.Authorization).toBeUndefined();
@@ -87,7 +97,7 @@ describe('api service', () => {
     sessionStorage.setItem('token', 'tok');
     const { default: api } = await import('../api.js');
 
-    const fulfilled = api.interceptors.request.handlers[0]?.fulfilled;
+    const fulfilled = api.interceptors.request.handlers[1]?.fulfilled;
     const config = { headers: {}, url: '/tasks' };
     const result = fulfilled(config);
     expect(result).toBe(config);

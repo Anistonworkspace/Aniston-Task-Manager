@@ -3,6 +3,9 @@ const { TaskReference, Task, TaskAssignee } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
 const { emitToBoard } = require('../services/socketService');
+const taskVisibility = require('../services/taskVisibilityService');
+const metrics = require('../services/metricsService');
+const logger = require('../utils/logger');
 
 // Whether the caller is allowed to mutate references on this task. Matches
 // the frontend's `canEditCustomFields` gate: Tier 1/2 can always edit, lower
@@ -24,14 +27,22 @@ async function canEditTaskRefs(user, task) {
 
 // GET /api/task-references/task/:taskId — list all references on a task,
 // ordered by stored position so the UI can render the same sequence the
-// user dragged them into. View access mirrors task view: if you can read
-// the task at all (gated upstream by the canViewTask middleware on /tasks),
-// you can list its references.
+// user dragged them into.
+//
+// P0-4 fix: previously this only checked task existence — any authenticated
+// user could enumerate references on any task ID. Now gated through the
+// canonical taskVisibilityService.
 exports.listReferences = async (req, res) => {
+  metrics.increment('references.list.requests');
   try {
     const { taskId } = req.params;
-    const task = await Task.findByPk(taskId);
-    if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
+    const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId'] });
+    if (!task) { metrics.increment('references.list.not_found'); return res.status(404).json({ success: false, message: 'Task not found.' }); }
+    if (!(await taskVisibility.canViewTask(req.user, task))) {
+      metrics.increment('references.list.forbidden');
+      logger.warn('[references.list] view-access denied', { userId: req.user.id, taskId });
+      return res.status(403).json({ success: false, message: 'Forbidden.' });
+    }
     const references = await TaskReference.findAll({
       where: { taskId },
       order: [['position', 'ASC'], ['createdAt', 'ASC']],
@@ -72,9 +83,12 @@ exports.createReference = async (req, res) => {
       taskId, text, position, createdBy: req.user.id,
     });
 
+    // P2-7 — don't log reference content into the activity feed. The
+    // entityId/taskId give traceability without leaking content into
+    // every downstream log aggregator.
     logActivity({
       action: 'reference_added',
-      description: `Added reference: ${text.slice(0, 80)}`,
+      description: 'Added a reference',
       entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id,
     });
 
@@ -125,12 +139,12 @@ exports.deleteReference = async (req, res) => {
     if (!(await canEditTaskRefs(req.user, task))) {
       return res.status(403).json({ success: false, message: 'You do not have permission to edit references on this task.' });
     }
-    const text = reference.text;
     await reference.destroy();
 
+    // P2-7 — don't echo content into the activity description.
     logActivity({
       action: 'reference_removed',
-      description: `Removed reference: ${(text || '').slice(0, 80)}`,
+      description: 'Removed a reference',
       entityType: 'task', entityId: task.id, taskId: task.id, boardId: task.boardId, userId: req.user.id,
     });
 

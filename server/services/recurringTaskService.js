@@ -464,6 +464,13 @@ async function generateInstance(template, occurrenceDate, options = {}) {
   // Pre-flight validation outside the tx — keeps the abort surface tight.
   const pre = await validateTemplateForGeneration(template);
   if (!pre.ok) {
+    // P1-8 — surface deactivated-assignee skips as a structured warn so log
+    // pipelines can alert on it (the cron loop continues with the next template).
+    if (pre.reason === 'assignee-inactive' || pre.reason === 'assignee-missing') {
+      console.warn(
+        `[RecurringTask] Skipping template ${template.id} — assignee ${template.assigneeId} inactive`
+      );
+    }
     emitGenLog('warn', 'skipped', template, { occurrenceDate, reason: pre.reason, source });
     return { ok: false, reason: pre.reason };
   }

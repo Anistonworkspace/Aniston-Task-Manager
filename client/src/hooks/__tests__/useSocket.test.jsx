@@ -22,8 +22,12 @@ const mockSocket = {
   },
 };
 
+// useSocket.js imports BOTH getSocket and onConnect. onConnect returns an
+// unsubscribe fn; the hook calls it from a useEffect cleanup so the mock
+// must provide a callable.
 vi.mock('../../services/socket', () => ({
   getSocket: () => mockSocket,
+  onConnect: () => () => {},
 }));
 
 import useSocket from '../useSocket';

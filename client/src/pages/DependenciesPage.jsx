@@ -8,7 +8,10 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
 import { useToast } from '../components/common/Toast';
+
+// TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 import Avatar from '../components/common/Avatar';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import RejectDependencyDialog from '../components/dependencies/RejectDependencyDialog';
@@ -40,8 +43,16 @@ const ACTIVE_STATUSES = ['pending', 'accepted', 'working_on_it'];
 
 export default function DependenciesPage() {
   const { user } = useAuth();
+  const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
+  // Map TABS[].key → translation key. Untranslated keys fall back to t.label.
+  const DEP_TAB_LABEL_KEYS = {
+    assigned: 'dependenciesPage.tabs.assigned',
+    created: 'dependenciesPage.tabs.created',
+    completed: 'dependenciesPage.tabs.completed',
+    rejected: 'dependenciesPage.tabs.rejected',
+  };
 
   const [assigned, setAssigned] = useState([]);
   const [created, setCreated] = useState([]);
@@ -259,22 +270,22 @@ export default function DependenciesPage() {
         {/* Header */}
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
-            <Link2 size={18} className="text-purple-500" /> My Dependencies
+            <Link2 size={18} className="text-purple-500" /> {t('dependenciesPage.title')}
           </h1>
           <p className="text-[12px] text-gray-400 mb-5">
-            Track dependency work between you and your team
+            {t('dependenciesPage.subtitle')}
           </p>
         </motion.div>
 
         {/* Tabs */}
         <div className="flex items-center gap-1 mb-4 border-b border-gray-100 overflow-x-auto">
-          {TABS.map(t => {
-            const Icon = t.icon;
-            const active = tab === t.key;
+          {TABS.map(tabItem => {
+            const Icon = tabItem.icon;
+            const active = tab === tabItem.key;
             return (
               <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
+                key={tabItem.key}
+                onClick={() => setTab(tabItem.key)}
                 className={`flex items-center gap-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
                   active
                     ? 'border-purple-500 text-purple-600'
@@ -282,11 +293,11 @@ export default function DependenciesPage() {
                 }`}
               >
                 <Icon size={13} />
-                {t.label}
+                {DEP_TAB_LABEL_KEYS[tabItem.key] ? t(DEP_TAB_LABEL_KEYS[tabItem.key]) : tabItem.label}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                   active ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-500'
                 }`}>
-                  {counts[t.key]}
+                  {counts[tabItem.key]}
                 </span>
               </button>
             );
@@ -300,7 +311,7 @@ export default function DependenciesPage() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by title, parent task, requester, board..."
+            placeholder={t('dependenciesPage.searchPlaceholder')}
             className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-gray-400"
           />
           {search && (

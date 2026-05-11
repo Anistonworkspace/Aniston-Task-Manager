@@ -25,6 +25,7 @@ const { User, Task, Board } = require('../models');
 const { getTeamsConfig } = require('../config/teams');
 const { getAppToken } = require('./teamsUserSync');
 const logger = require('../utils/logger');
+const { encryptTeamsToken, decryptTeamsTokenSafe } = require('../utils/teamsTokenStorage');
 
 // Note: we do NOT write to the Activity table for calendar sync outcomes —
 // Activity.userId is NOT NULL and sync events are system-driven, not user-driven.
@@ -300,22 +301,36 @@ async function getAccessToken(userId) {
   const user = await User.findByPk(userId);
   if (!user || !user.teamsAccessToken) return null;
 
+  // P0-5: Tokens are stored encrypted at rest (AES-256-GCM). The "safe"
+  // decryptor also handles legacy plaintext rows transparently — see
+  // server/utils/teamsTokenStorage.js. Returns null if a stored
+  // ciphertext fails to decrypt (treat as "no usable token").
+  const decryptedAccessToken = decryptTeamsTokenSafe(user.teamsAccessToken);
+  const decryptedRefreshToken = decryptTeamsTokenSafe(user.teamsRefreshToken);
+
+  if (!decryptedAccessToken) return null;
+
   if (user.teamsTokenExpiry && new Date(user.teamsTokenExpiry) < new Date(Date.now() + 5 * 60 * 1000)) {
-    if (!user.teamsRefreshToken) return null;
+    if (!decryptedRefreshToken) return null;
     try {
       const teamsConfig = await getTeamsConfig();
       const res = await axios.post(`${teamsConfig.authUrl}/token`, new URLSearchParams({
         client_id: teamsConfig.clientId,
         client_secret: teamsConfig.clientSecret,
         grant_type: 'refresh_token',
-        refresh_token: user.teamsRefreshToken,
+        refresh_token: decryptedRefreshToken,
       }).toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
 
+      // Re-encrypt before persisting. If Graph rotated the refresh token,
+      // encrypt the new one; otherwise keep the existing stored ciphertext
+      // (already encrypted under the current key) untouched.
       await user.update({
-        teamsAccessToken: res.data.access_token,
-        teamsRefreshToken: res.data.refresh_token || user.teamsRefreshToken,
+        teamsAccessToken: encryptTeamsToken(res.data.access_token),
+        teamsRefreshToken: res.data.refresh_token
+          ? encryptTeamsToken(res.data.refresh_token)
+          : user.teamsRefreshToken,
         teamsTokenExpiry: new Date(Date.now() + res.data.expires_in * 1000),
       });
 
@@ -326,7 +341,7 @@ async function getAccessToken(userId) {
     }
   }
 
-  return user.teamsAccessToken;
+  return decryptedAccessToken;
 }
 
 /**

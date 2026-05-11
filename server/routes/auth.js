@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, param } = require('express-validator');
 const { authenticate, managerOrAdmin } = require('../middleware/auth');
 const {
   login,
@@ -268,10 +268,31 @@ router.post('/logout', authenticate, async (req, res) => {
 });
 
 // ─── POST /api/auth/forgot-password ──────────────────────────
-router.post('/forgot-password', forgotPassword);
+router.post(
+  '/forgot-password',
+  [
+    body('email').isEmail().withMessage('Valid email is required'),
+  ],
+  forgotPassword
+);
 
 // ─── POST /api/auth/reset-password ───────────────────────────
-router.post('/reset-password', resetPassword);
+// Note: validators run but authController.resetPassword does not currently
+// call validationResult; the controller still performs its own checks
+// (validatePassword helper) so these are defence-in-depth groundwork for
+// when a global handler is added.
+router.post(
+  '/reset-password',
+  [
+    body('token')
+      .isString().withMessage('token must be a string')
+      .isLength({ min: 32, max: 200 }).withMessage('token malformed'),
+    body('newPassword')
+      .isStrongPassword({ minLength: 8, minLowercase: 1, minUppercase: 1, minNumbers: 1, minSymbols: 1 })
+      .withMessage('Password must be at least 8 characters and contain uppercase, lowercase, number, and special character'),
+  ],
+  resetPassword
+);
 
 // ─── POST /api/auth/create-password (authenticated) ──────────
 router.post(
@@ -328,7 +349,19 @@ router.get('/sso-status', getSsoStatus);
 
 // ─── Account Approval (admin/manager only) ───────────────────
 router.get('/pending-accounts', authenticate, managerOrAdmin, getPendingAccounts);
-router.put('/approve/:userId', authenticate, managerOrAdmin, approveAccount);
-router.put('/reject/:userId', authenticate, managerOrAdmin, rejectAccount);
+router.put(
+  '/approve/:userId',
+  authenticate,
+  managerOrAdmin,
+  [ param('userId').isUUID().withMessage('userId must be a valid UUID') ],
+  approveAccount
+);
+router.put(
+  '/reject/:userId',
+  authenticate,
+  managerOrAdmin,
+  [ param('userId').isUUID().withMessage('userId must be a valid UUID') ],
+  rejectAccount
+);
 
 module.exports = router;

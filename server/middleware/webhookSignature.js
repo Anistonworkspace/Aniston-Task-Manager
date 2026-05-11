@@ -57,9 +57,15 @@ const SIGNATURE_HEADER = 'x-aniston-signature';
 
 // Read the toggle once per process boot. Restart required to flip modes —
 // acceptable for an environment-controlled setting that should be deliberate.
+//
+// P1-9 — Default to `strict` in production so an operator forgetting to set
+// WEBHOOK_REQUIRE_SIGNATURE on a prod deploy doesn't silently accept
+// unsigned traffic. Dev/test/CI keep the `off` default so the n8n local
+// fixture (which can't sign requests) keeps working.
 function readMode() {
-  const v = String(process.env.WEBHOOK_REQUIRE_SIGNATURE || 'off').toLowerCase();
-  return ['off', 'warn', 'strict'].includes(v) ? v : 'off';
+  const envDefault = process.env.NODE_ENV === 'production' ? 'strict' : 'off';
+  const v = String(process.env.WEBHOOK_REQUIRE_SIGNATURE || envDefault).toLowerCase();
+  return ['off', 'warn', 'strict'].includes(v) ? v : envDefault;
 }
 
 function readSecret() {

@@ -14,22 +14,51 @@ process.env.NODE_ENV = 'test';
 
 jest.mock('../../models', () => {
   const mockTask = {
-    findAll: jest.fn(),
+    findAll: jest.fn().mockResolvedValue([]),
     findByPk: jest.fn(),
     create: jest.fn(),
     max: jest.fn(),
+    update: jest.fn(),
   };
   return {
     Task: mockTask,
     Board: { findByPk: jest.fn() },
-    User: { findByPk: jest.fn() },
+    User: { findByPk: jest.fn(), findAll: jest.fn().mockResolvedValue([]) },
     Subtask: {},
     Notification: { create: jest.fn() },
     TaskOwner: { destroy: jest.fn(), bulkCreate: jest.fn(), findAll: jest.fn().mockResolvedValue([]), findOne: jest.fn().mockResolvedValue(null), findOrCreate: jest.fn().mockResolvedValue([{}, true]) },
+    // taskController + middleware/taskPermissions destructure these from
+    // models directly. Provide just enough surface to satisfy require() and
+    // any incidental query the controller path might trigger when the
+    // mocked Task / Board short-circuit before serious DB work.
+    TaskAssignee: { bulkCreate: jest.fn().mockResolvedValue([]), destroy: jest.fn().mockResolvedValue(0), findOrCreate: jest.fn().mockResolvedValue([{}, true]), findAll: jest.fn().mockResolvedValue([]), findOne: jest.fn().mockResolvedValue(null), count: jest.fn().mockResolvedValue(0) },
+    TaskApprovalFlow: { findAll: jest.fn().mockResolvedValue([]), update: jest.fn().mockResolvedValue([0]) },
+    TaskDependency: { findAll: jest.fn().mockResolvedValue([]) },
+    DependencyRequest: { findAll: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) },
+    TaskReference: { findAll: jest.fn().mockResolvedValue([]) },
+    TaskLink: { findAll: jest.fn().mockResolvedValue([]) },
+    PermissionGrant: { findAll: jest.fn().mockResolvedValue([]) },
     Label: {},
-    sequelize: { query: jest.fn(), literal: jest.fn((sql) => ({ val: sql })) },
+    sequelize: {
+      query: jest.fn().mockResolvedValue([[], {}]),
+      literal: jest.fn((sql) => ({ val: sql })),
+      // createTask now wraps the atomic Task.create + TaskAssignee.bulkCreate
+      // sequence in sequelize.transaction(async (t) => { ... }). The fake
+      // transaction just calls the callback with a stub tx so all the
+      // mocked models still record their calls correctly.
+      transaction: jest.fn(async (cb) => cb({ /* fake tx */ })),
+    },
   };
 });
+// taskController imports sequelize from '../config/db' directly (NOT from
+// models). The createTask path calls sequelize.transaction() on it.
+jest.mock('../../config/db', () => ({
+  sequelize: {
+    query: jest.fn().mockResolvedValue([[], {}]),
+    literal: jest.fn((sql) => sql),
+    transaction: jest.fn(async (cb) => cb({ /* fake tx */ })),
+  },
+}));
 
 jest.mock('../../services/socketService', () => ({
   emitToBoard: jest.fn(),
@@ -75,6 +104,139 @@ jest.mock('../../utils/logger', () => ({
 
 jest.mock('../../utils/archiveHelpers', () => ({
   canPermanentlyDelete: jest.fn(() => ({ allowed: true, daysRemaining: 0 })),
+}));
+
+// The route stack now goes through `requirePermission('tasks', ...)` which
+// delegates to permissionEngine.hasPermission. For 'delete' specifically the
+// test pins that members get blocked at the route gate, so we model the
+// production tier-based matrix: 'delete' is allowed only for admin/manager,
+// 'create' / 'edit' for everyone elevated. Members can self-edit/self-assign
+// (the controller still enforces ownership for tasks they don't own).
+//
+// getEffectiveBasePermission must also be action-aware: auth.js's Layer-3
+// fallback in requireRole(...) consults it for elevated actions. A blanket
+// `() => true` would silently let members through every requireRole-gated
+// route.
+jest.mock('../../services/permissionEngine', () => {
+  const isElevated = (user) => {
+    if (!user) return false;
+    if (user.isSuperAdmin) return true;
+    return ['admin', 'manager', 'assistant_manager'].includes(user.role);
+  };
+  return {
+    hasPermission: jest.fn(async (user, _resource, action) => {
+      if (!user) return false;
+      if (user.isSuperAdmin) return true;
+      // Privileged actions
+      if (action === 'delete' || action === 'assign_others') return isElevated(user);
+      // create / edit / view / assign open to all authenticated users.
+      return true;
+    }),
+    computeEffectivePermissions: jest.fn().mockResolvedValue([]),
+    fetchActiveGrants: jest.fn().mockResolvedValue([]),
+    getEffectiveBasePermission: jest.fn((user) => isElevated(user)),
+  };
+});
+
+// Tier 3/4 board-visibility gate inside createTask. Members would otherwise
+// hit canUserSeeBoard which queries DB.
+jest.mock('../../services/boardVisibilityService', () => ({
+  canUserSeeBoard: jest.fn().mockResolvedValue(true),
+  buildBoardVisibilityWhere: jest.fn(async () => ({})),
+  filterVisibleBoardIds: jest.fn(async (_user, ids) => ids),
+  buildVisibleBoardIds: jest.fn(async (_user, ids) => ids),
+}));
+
+// Centralized realtime fan-out for task events — swallow in tests.
+jest.mock('../../services/realtimeService', () => ({
+  emitTaskCreated: jest.fn(),
+  emitTaskUpdated: jest.fn(),
+  emitTaskDeleted: jest.fn(),
+  emitTaskArchived: jest.fn(),
+}));
+
+// In-app notification builder used by createTask + updateTask paths.
+jest.mock('../../services/notificationService', () => ({
+  createNotification: jest.fn().mockResolvedValue(null),
+  buildIdempotencyKey: jest.fn(() => 'idempotency-key'),
+}));
+
+// Phase 5 user-reminder spec helpers — createTask now awaits applyReminderSpecs.
+jest.mock('../../services/reminderService', () => ({
+  scheduleReminders: jest.fn().mockResolvedValue(null),
+  cancelReminders: jest.fn().mockResolvedValue(null),
+  rescheduleReminders: jest.fn().mockResolvedValue(null),
+  applyReminderSpecs: jest.fn().mockResolvedValue(null),
+  normalizeReminderSpecs: jest.fn(() => ({ specs: [], errors: [] })),
+  getUserReminderSpecs: jest.fn().mockResolvedValue([]),
+  getReminderSummary: jest.fn().mockResolvedValue(null),
+  // getReminderSummaryBulk is expected to return a Map<id, summary>; an empty
+  // Map is what we want in tests (no active reminders for any task).
+  getReminderSummaryBulk: jest.fn().mockResolvedValue(new Map()),
+}));
+
+jest.mock('../../services/assignmentNotificationService', () => ({
+  notifyNewAssignments: jest.fn().mockResolvedValue(null),
+  diffAndNotify: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/teamsNotificationService', () => ({
+  notifyTaskAssigned: jest.fn().mockResolvedValue(null),
+  notifyMemberRemoved: jest.fn().mockResolvedValue(null),
+  notifyTaskArchived: jest.fn().mockResolvedValue(null),
+  notifyTaskDeleted: jest.fn().mockResolvedValue(null),
+  notifyStatusChanged: jest.fn().mockResolvedValue(null),
+  notifyDueDateChanged: jest.fn().mockResolvedValue(null),
+  notifyPriorityChanged: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/boardMembershipService', () => ({
+  autoAddMember: jest.fn().mockResolvedValue(null),
+  explicitAddMember: jest.fn().mockResolvedValue(null),
+  cleanupMultiple: jest.fn().mockResolvedValue(null),
+  cleanupIfNoTasksRemain: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/conflictDetectionService', () => ({
+  checkConflicts: jest.fn().mockResolvedValue({ hasConflicts: false, conflicts: [] }),
+  autoReschedule: jest.fn(),
+  getScheduleSummary: jest.fn(),
+}));
+
+jest.mock('../../services/taskReceiptService', () => ({
+  buildSummary: jest.fn(() => null),
+  recordReceipt: jest.fn().mockResolvedValue(null),
+  markDelivered: jest.fn().mockResolvedValue([]),
+  fetchSummary: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/hierarchyService', () => ({
+  canAssignTo: jest.fn().mockResolvedValue(true),
+  canManageUser: jest.fn().mockResolvedValue({ allowed: true, scope: 'full' }),
+  removePrimaryManager: jest.fn(),
+  setPrimaryManager: jest.fn(),
+}));
+
+jest.mock('../../services/recurringTaskService', () => ({
+  spawnDueInstances: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock('../../services/taskVisibilityService', () => ({
+  canViewTask: jest.fn().mockResolvedValue(true),
+  buildTaskVisibilityWhere: jest.fn(async () => ({})),
+  isUnrestrictedTaskViewer: jest.fn(() => true),
+}));
+
+jest.mock('../../utils/sanitize', () => ({
+  sanitizeInput: (s) => s,
+  sanitizeRichText: (s) => s,
+  sanitizeNotificationField: (s) => s,
+  sanitizeNotificationMessage: (s) => s,
+}));
+
+jest.mock('../../utils/taskOwnership', () => ({
+  isSelfOwnedTask: jest.fn(() => true),
+  isSelfOwnedCreate: jest.fn(() => true),
 }));
 
 // ─── Build test app ──────────────────────────────────────────────────────────
@@ -414,8 +576,10 @@ describe('POST /api/tasks', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ title: 'My Task', boardId: BOARD_ID, dueDate: '2026-12-31' });
 
-    // The controller must override assignedTo with the current user's id
-    expect(Task.create).toHaveBeenCalledWith(
+    // The controller must override assignedTo with the current user's id.
+    // Task.create now runs inside a sequelize.transaction with `{ transaction: t }`
+    // as the second arg, so match just the first arg directly.
+    expect(Task.create.mock.calls[0][0]).toEqual(
       expect.objectContaining({ assignedTo: USER_ID })
     );
   });
@@ -435,15 +599,26 @@ describe('POST /api/tasks', () => {
       toJSON: jest.fn().mockReturnValue({ id: TASK_ID }),
     });
 
+    // Notifications now fan out through the dedicated
+    // `assignmentNotificationService.notifyNewAssignments` helper rather than
+    // an inline `Notification.create`. Grab the mocked module so we can assert
+    // it was called for the foreign assignee.
+    const assignNotif = require('../../services/assignmentNotificationService');
+
     const token = generateToken(USER_ID, 'manager');
 
+    // Assignment without a due date now 400s, so we supply one to drive the
+    // success path that triggers the notification.
     await request(app)
       .post('/api/tasks')
       .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'New Task', boardId: BOARD_ID, assignedTo: OTHER_ID });
+      .send({ title: 'New Task', boardId: BOARD_ID, assignedTo: OTHER_ID, dueDate: '2026-12-31' });
 
-    expect(Notification.create).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'task_assigned', userId: OTHER_ID })
+    expect(assignNotif.notifyNewAssignments).toHaveBeenCalledWith(
+      expect.anything(),                  // task id
+      expect.arrayContaining([OTHER_ID]), // recipients minus creator
+      'assignee',
+      USER_ID,
     );
   });
 });
@@ -473,7 +648,13 @@ describe('PUT /api/tasks/:id', () => {
 
   it('returns 403 when a member tries to update a task assigned to someone else', async () => {
     User.findByPk.mockResolvedValue(makeUserRecord({ role: 'member', id: USER_ID }));
-    Task.findByPk.mockResolvedValue(makeTaskRecord({ assignedTo: OTHER_ID }));
+    // Foreign task: not assigned to USER, not created by USER, no taskAssignees
+    // touching USER → checkTaskAction('edit') and ('edit_status') both fail.
+    Task.findByPk.mockResolvedValue(makeTaskRecord({
+      assignedTo: OTHER_ID,
+      createdBy: OTHER_ID,
+      taskAssignees: [],
+    }));
 
     const token = generateToken(USER_ID, 'member');
 
@@ -483,7 +664,10 @@ describe('PUT /api/tasks/:id', () => {
       .send({ status: 'done' });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/assigned to you/i);
+    // Post-Tier-refactor: the controller now returns a unified
+    // "You do not have permission to update this task." message rather than
+    // the older "this task is not assigned to you" wording.
+    expect(res.body.message).toMatch(/permission to update this task/i);
   });
 
   it('returns 200 when a member updates the status on their own task', async () => {
@@ -491,7 +675,9 @@ describe('PUT /api/tasks/:id', () => {
     // authenticate -> member user (User.findByPk call #1)
     User.findByPk.mockResolvedValueOnce(memberUser);
 
-    const existingTask = makeTaskRecord({ assignedTo: USER_ID, createdBy: USER_ID });
+    // approvalStatus must be 'approved' so the completion-approval gate
+    // (post-Phase-7) doesn't 403 a member transition into 'done'.
+    const existingTask = makeTaskRecord({ assignedTo: USER_ID, createdBy: USER_ID, approvalStatus: 'approved' });
     const updatedTaskJson = { id: TASK_ID, status: 'done' };
 
     // For member path: no creator lookup (no User.findByPk call from controller).
@@ -601,13 +787,22 @@ describe('PUT /api/tasks/:id', () => {
     // rename. The frontend `canEditTaskTitle` helper hides the editor
     // affordance; this test pins the backend gate so a forged PUT still
     // 403s.
+    //
+    // NOTE: previous tests in this describe block leave dangling
+    // `mockResolvedValueOnce` entries on `User.findByPk` (e.g. the manager
+    // test queues a creator lookup that the controller skips for Tier 2,
+    // because the Tier 1/2 branch returns early). `clearAllMocks` does not
+    // drain those queued values, so they pollute the auth call here and the
+    // request 403s as "Account deactivated" before ever reaching the
+    // title-lock gate. Use the non-`Once` `mockResolvedValue` so we override
+    // whatever leaked through and reliably authenticate as a member.
     const memberUser = makeUserRecord({ role: 'member', id: USER_ID });
-    User.findByPk
-      .mockResolvedValueOnce(memberUser)                       // authenticate
-      .mockResolvedValueOnce({ id: USER_ID, role: 'member' }); // creator lookup
+    User.findByPk.mockReset();
+    User.findByPk.mockResolvedValue(memberUser);
 
     const existingTask = makeTaskRecord({ assignedTo: USER_ID, createdBy: USER_ID });
-    Task.findByPk.mockResolvedValueOnce(existingTask);
+    Task.findByPk.mockReset();
+    Task.findByPk.mockResolvedValue(existingTask);
 
     const token = generateToken(USER_ID, 'member');
 
@@ -655,11 +850,15 @@ describe('DELETE /api/tasks/:id', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 200 when a manager deletes an existing task', async () => {
-    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'manager' }));
+  it('returns 200 when a super admin deletes an existing task', async () => {
+    // Phase 5d destructive-action gate: Tier 2 (admin / manager) is now
+    // BLOCKED from permanently deleting tasks — only Tier 1 (super admin)
+    // may. The test was previously pinned on manager → 200; that assertion
+    // has been moved up the tier ladder to reflect the new product rule.
+    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'admin', isSuperAdmin: true }));
     const task = makeTaskRecord();
     Task.findByPk.mockResolvedValue(task);
-    const token = generateToken(USER_ID, 'manager');
+    const token = generateToken(USER_ID, 'admin');
 
     const res = await request(app)
       .delete(`/api/tasks/${TASK_ID}`)
@@ -667,5 +866,22 @@ describe('DELETE /api/tasks/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  it('returns 403 when a manager (Tier 2) tries to permanently delete a task', async () => {
+    // Defense for the inverse: Tier 2 is now strictly blocked from
+    // destructive task deletion (decision #4). They may still archive
+    // (PUT /:id with isArchived: true), but DELETE returns 403 with the
+    // TIER_2_NO_DELETE code.
+    User.findByPk.mockResolvedValue(makeUserRecord({ role: 'manager' }));
+    Task.findByPk.mockResolvedValue(makeTaskRecord());
+    const token = generateToken(USER_ID, 'manager');
+
+    const res = await request(app)
+      .delete(`/api/tasks/${TASK_ID}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, code: 'TIER_2_NO_DELETE' });
   });
 });

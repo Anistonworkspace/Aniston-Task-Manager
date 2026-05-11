@@ -158,20 +158,19 @@ describe('Task model', () => {
     });
   });
 
-  // ── Status and priority ENUMs ──────────────────────────────────────────────
+  // ── Status (VARCHAR(50) per migration 004) and priority ENUM ──────────────
 
-  describe('status ENUM values', () => {
-    it('includes all expected status values', () => {
+  describe('status field', () => {
+    // Migration 004 converted tasks.status from a fixed Postgres ENUM to a
+    // VARCHAR(50). Allowed statuses are now validated dynamically against
+    // task-level then board-level status config (see Task.js comment), so the
+    // model no longer carries a hardcoded value list. We assert the new
+    // STRING type instead of the retired ENUM membership.
+    it('is a STRING type (not ENUM) per migration 004', () => {
       const statusAttr = Task.rawAttributes.status;
-      // ENUM values are stored on the type object, not the attribute directly
-      const values = statusAttr.type.values;
-      const expectedStatuses = [
-        'not_started', 'ready_to_start', 'working_on_it', 'in_progress',
-        'waiting_for_review', 'pending_deploy', 'stuck', 'done', 'review',
-      ];
-      expectedStatuses.forEach(s => {
-        expect(values).toContain(s);
-      });
+      expect(statusAttr.type.key).toBe('STRING');
+      // ENUM no longer exists on this column — values introspection is undefined.
+      expect(statusAttr.type.values).toBeUndefined();
     });
 
     it('status is not nullable', () => {

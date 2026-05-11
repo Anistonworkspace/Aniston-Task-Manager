@@ -109,6 +109,13 @@ async function runCleanup(seq, opts = {}) {
   const prefix = mode === 'startup' ? '[Cleanup/Startup]' : '[Cleanup]';
   const NODE_ENV = process.env.NODE_ENV || 'production';
 
+  // Refuse destructive cleanup in production unless explicitly opted in.
+  // Without this guard, a fresh prod DB restore would wipe time_blocks on first boot.
+  if (execute && process.env.NODE_ENV === 'production' && process.env.ALLOW_PROD_PLAN_CLEANUP !== 'true') {
+    console.log('[cleanup-plan-data] Skipping in production. Set ALLOW_PROD_PLAN_CLEANUP=true to run intentionally.');
+    return { skipped: true, reason: 'production guard (set ALLOW_PROD_PLAN_CLEANUP=true to override)' };
+  }
+
   divider();
   console.log('  DIRECTOR PLAN & TIME PLAN DATA CLEANUP');
   divider();

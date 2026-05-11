@@ -269,6 +269,90 @@ const hi = {
     large: 'बड़ी',
     largeDescription: 'पढ़ने में आसान',
   },
+  adminSettings: {
+    title: 'एडमिन सेटिंग',
+    subtitle: 'यूज़र, वर्कस्पेस, परमिशन और एक्सेस कंट्रोल मैनेज करें',
+    tabs: {
+      users: 'यूज़र',
+      workspaces: 'वर्कस्पेस',
+      permissions: 'परमिशन',
+      accessRequests: 'एक्सेस रिक्वेस्ट',
+      templates: 'टेम्पलेट',
+      security: 'सुरक्षा',
+    },
+  },
+  integrations: {
+    title: 'इंटीग्रेशन',
+    subtitle: 'अपने टूल जोड़ें और टीम को सिंक करें',
+    cards: {
+      microsoftTeams: 'Microsoft Teams',
+      aiProvider: 'AI प्रोवाइडर',
+      externalApi: 'एक्सटर्नल API',
+    },
+    actions: {
+      connect: 'Microsoft Teams से जुड़ें',
+      addProvider: 'प्रोवाइडर जोड़ें',
+      testConnection: 'कनेक्शन टेस्ट करें',
+    },
+    status: {
+      connected: 'जुड़ा हुआ',
+      notConnected: 'जुड़ा नहीं',
+      notConfigured: 'सेट नहीं किया',
+    },
+    moreIntegrations: 'और इंटीग्रेशन',
+    comingSoon: 'जल्द आ रहा है',
+  },
+  meetings: {
+    title: 'मीटिंग',
+    subtitle: 'मीटिंग, रिमाइंडर और फॉलो-अप शेड्यूल और मैनेज करें',
+    scheduleMeeting: 'मीटिंग शेड्यूल करें',
+    tabs: {
+      upcoming: 'आने वाली',
+      past: 'पिछली',
+      all: 'सभी',
+    },
+    stats: {
+      total: 'कुल',
+      upcoming: 'आने वाली',
+      today: 'आज',
+      completed: 'पूरी हुई',
+    },
+  },
+  orgChart: {
+    title: 'संगठन चार्ट',
+    subtitle: 'अपनी टीम की संरचना का चित्र',
+    views: {
+      tree: 'ट्री व्यू',
+      list: 'लिस्ट व्यू',
+      department: 'डिपार्टमेंट',
+    },
+    actions: {
+      manageLevels: 'लेवल मैनेज करें',
+      editStructure: 'संरचना एडिट करें',
+      exitEdit: 'एडिट से बाहर',
+    },
+  },
+  tasksPage: {
+    title: 'मंज़ूरी और रिक्वेस्ट',
+    subtitle: 'मंज़ूरी, आपकी सबमिशन, समय बढ़ाने और मदद की रिक्वेस्ट',
+    tabs: {
+      approvals: 'मंज़ूरी',
+      mySubmissions: 'मेरी सबमिशन',
+      extensions: 'समय बढ़ाना',
+      helpRequests: 'मदद की रिक्वेस्ट',
+    },
+  },
+  dependenciesPage: {
+    title: 'मेरी डिपेंडेंसी',
+    subtitle: 'अपने और टीम के बीच डिपेंडेंसी का काम ट्रैक करें',
+    tabs: {
+      assigned: 'मुझे दी गई',
+      created: 'मेरी बनाई हुई',
+      completed: 'पूरी हुई',
+      rejected: 'अस्वीकार / रद्द',
+    },
+    searchPlaceholder: 'शीर्षक, मूल काम, अनुरोधकर्ता, बोर्ड से खोजें...',
+  },
 };
 
 export default hi;

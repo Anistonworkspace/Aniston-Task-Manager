@@ -1,9 +1,10 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, managerOrAdmin } = require('../middleware/auth');
 const { User } = require('../models');
 const { getTeamsConfig } = require('../config/teams');
+const { encryptTeamsToken } = require('../utils/teamsTokenStorage');
 
 const router = express.Router();
 
@@ -110,10 +111,10 @@ router.get('/callback', async (req, res) => {
       teamsUserId = profileRes.data.id;
     } catch {}
 
-    // Save tokens to user
+    // Save tokens to user (P0-5: encrypted at rest with AES-256-GCM).
     await User.update({
-      teamsAccessToken: access_token,
-      teamsRefreshToken: refresh_token,
+      teamsAccessToken: encryptTeamsToken(access_token),
+      teamsRefreshToken: encryptTeamsToken(refresh_token),
       teamsTokenExpiry: new Date(Date.now() + expires_in * 1000),
       teamsUserId,
     }, { where: { id: userId } });
@@ -208,11 +209,7 @@ router.post('/sync-task/:taskId', authenticate, async (req, res) => {
  * POST /api/teams/sync-users
  * Sync all M365 tenant users into local database (admin only).
  */
-router.post('/sync-users', authenticate, async (req, res) => {
-  if (!['admin', 'manager'].includes(req.user.role)) {
-    return res.status(403).json({ success: false, message: 'Admin access required.' });
-  }
-
+router.post('/sync-users', authenticate, managerOrAdmin, async (req, res) => {
   try {
     const { syncUsersFromM365 } = require('../services/teamsUserSync');
     const results = await syncUsersFromM365();
@@ -232,11 +229,7 @@ router.post('/sync-users', authenticate, async (req, res) => {
  * GET /api/teams/preview-users
  * Preview M365 users without creating them (admin only).
  */
-router.get('/preview-users', authenticate, async (req, res) => {
-  if (!['admin', 'manager'].includes(req.user.role)) {
-    return res.status(403).json({ success: false, message: 'Admin access required.' });
-  }
-
+router.get('/preview-users', authenticate, managerOrAdmin, async (req, res) => {
   try {
     const { fetchM365Users } = require('../services/teamsUserSync');
     const users = await fetchM365Users();
@@ -264,11 +257,7 @@ router.get('/preview-users', authenticate, async (req, res) => {
  * POST /api/teams/sync-status
  * Sync active/disabled status from M365 for all Microsoft-linked users (admin only).
  */
-router.post('/sync-status', authenticate, async (req, res) => {
-  if (!['admin', 'manager'].includes(req.user.role)) {
-    return res.status(403).json({ success: false, message: 'Admin access required.' });
-  }
-
+router.post('/sync-status', authenticate, managerOrAdmin, async (req, res) => {
   try {
     const { syncUserActiveStatus } = require('../services/teamsUserSync');
     const results = await syncUserActiveStatus();
@@ -288,11 +277,7 @@ router.post('/sync-status', authenticate, async (req, res) => {
  * GET /api/teams/notification-stats
  * Get Teams notification delivery stats for admin dashboard.
  */
-router.get('/notification-stats', authenticate, async (req, res) => {
-  if (!['admin', 'manager'].includes(req.user.role)) {
-    return res.status(403).json({ success: false, message: 'Admin access required.' });
-  }
-
+router.get('/notification-stats', authenticate, managerOrAdmin, async (req, res) => {
   try {
     const { getNotificationStats } = require('../services/teamsNotificationService');
     const stats = await getNotificationStats();

@@ -157,11 +157,45 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Emit global error event for toast notifications (skip 401 auth errors, 404 not-found, and silent requests)
+    // Emit global error event for toast notifications (skip 401 auth errors
+    // and silent requests). 404 handling is nuanced: blanket suppression
+    // (previous behavior) swallowed real mutation-failure 404s, hiding stale
+    // task / board references from the user. We now ONLY suppress 404 for
+    // GET requests against a small allowlist of endpoints that are expected
+    // to legitimately 404 when no resource is present (e.g. the user has
+    // no permission row yet, no unread notifications, etc.). Every other
+    // 404 — especially POST/PUT/PATCH/DELETE — surfaces a toast so the user
+    // knows the action targeted something that no longer exists.
     const isSilent = originalRequest?._silent;
-    if (!isSilent && error.response && error.response.status !== 401 && error.response.status !== 404 && !axios.isCancel(error)) {
-      const message = error.response?.data?.message || error.message || 'Something went wrong';
-      window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: error.response?.status } }));
+    const status = error.response?.status;
+    const method = (originalRequest?.method || 'get').toLowerCase();
+    const url = originalRequest?.url || '';
+
+    // Endpoints that may legitimately 404 on GET as part of normal app
+    // operation. Keep this list conservative and explicit — adding an
+    // endpoint here silences a real error indicator for the user.
+    const SILENT_404_GET_PATTERNS = [
+      /\/notifications\/unread-count\b/,
+      /\/users\/me\/permissions\b/,
+      /\/auth\/me\b/,
+      /\/teams\/status\b/,
+      /\/integrations\/config\/[^/]+$/, // not-yet-configured providers
+      /\/ai\/config\b/,
+      /\/push\/subscription\b/,
+    ];
+
+    const isAllowlisted404 =
+      status === 404 &&
+      method === 'get' &&
+      SILENT_404_GET_PATTERNS.some((re) => re.test(url));
+
+    if (!isSilent && error.response && status !== 401 && !isAllowlisted404 && !axios.isCancel(error)) {
+      // Provide a friendlier default for un-allowlisted 404s — server messages
+      // are sometimes stack-y for missing resources, and the generic
+      // "Something went wrong" buries the cause.
+      const fallbackMessage = status === 404 ? 'Resource not found.' : 'Something went wrong';
+      const message = error.response?.data?.message || error.message || fallbackMessage;
+      window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status } }));
     } else if (!isSilent && !error.response && error.message && !axios.isCancel(error)) {
       window.dispatchEvent(new CustomEvent('api-error', { detail: { message: 'Network error. Please check your connection.', status: 0 } }));
     }

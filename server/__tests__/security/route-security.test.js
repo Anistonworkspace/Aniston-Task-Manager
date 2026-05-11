@@ -17,7 +17,7 @@
 process.env.JWT_SECRET = 'test-secret-key';
 process.env.NODE_ENV = 'test';
 
-// ─── Common mocks ──────��────────────────────────────────────────────────────
+// ─── Common mocks ────────────────────────────────────────────────────────────
 
 const mockModels = {
   Board: { findByPk: jest.fn(), findAll: jest.fn(), findAndCountAll: jest.fn(), create: jest.fn() },
@@ -25,7 +25,8 @@ const mockModels = {
   Task: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn(), max: jest.fn() },
   Notification: { create: jest.fn() },
   HelpRequest: { findByPk: jest.fn(), findAll: jest.fn(), create: jest.fn() },
-  Label: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn() },
+  Label: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn(), destroy: jest.fn() },
+  TaskLabel: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn() },
   Workspace: {},
   TaskOwner: { findOne: jest.fn() },
   TaskAssignee: { findOne: jest.fn(), count: jest.fn() },
@@ -34,10 +35,12 @@ const mockModels = {
   HierarchyLevel: { findAll: jest.fn() },
   ManagerRelation: { findAll: jest.fn() },
   PermissionGrant: { findAll: jest.fn().mockResolvedValue([]) },
+  RefreshToken: { findByPk: jest.fn().mockResolvedValue(null), findOne: jest.fn(), create: jest.fn() },
+  PendingLoginToken: { findOne: jest.fn().mockResolvedValue(null), create: jest.fn(), update: jest.fn() },
   sequelize: {
     fn: jest.fn(),
     col: jest.fn(),
-    query: jest.fn(),
+    query: jest.fn().mockResolvedValue([[], {}]),
     literal: jest.fn(sql => ({ val: sql })),
   },
 };
@@ -47,14 +50,52 @@ jest.mock('../../models', () => mockModels);
 jest.mock('../../services/socketService', () => ({
   emitToBoard: jest.fn(),
   emitToUser: jest.fn(),
+  broadcastAll: jest.fn(),
+  forceUserLeaveBoard: jest.fn(),
+  disconnectUser: jest.fn().mockResolvedValue(0),
   getIO: jest.fn(() => ({ emit: jest.fn(), to: jest.fn(() => ({ emit: jest.fn() })) })),
 }));
 
 jest.mock('../../services/activityService', () => ({ logActivity: jest.fn() }));
 
+jest.mock('../../services/notificationService', () => ({
+  createNotification: jest.fn().mockResolvedValue(null),
+  buildIdempotencyKey: jest.fn(() => 'idem-key'),
+}));
+
+jest.mock('../../services/hierarchyService', () => ({
+  getDescendantIds: jest.fn().mockResolvedValue([]),
+  getAncestorIds: jest.fn().mockResolvedValue([]),
+}));
+
+// boardVisibilityService — board export and listing path.
+// canUserSeeBoard returns false by default so unauthorized members are
+// rejected; tests that want a manager to be allowed override it inline.
+jest.mock('../../services/boardVisibilityService', () => ({
+  canUserSeeBoard: jest.fn().mockResolvedValue(false),
+  getVisibleBoardIdsForUser: jest.fn().mockResolvedValue([]),
+  buildBoardVisibilityWhere: jest.fn().mockResolvedValue({}),
+  filterVisibleBoardIds: jest.fn(async (_user, ids) => ids || []),
+  buildVisibleBoardIds: jest.fn(async (_user, ids) => ids || []),
+}));
+
+jest.mock('../../services/boardMembershipService', () => ({
+  syncBoardMembersFromTaskAssignments: jest.fn(),
+}));
+
+jest.mock('../../services/taskVisibilityService', () => ({
+  canUserSeeTask: jest.fn().mockResolvedValue(false),
+  canViewTask: jest.fn().mockResolvedValue(false),
+  buildTaskVisibilityWhere: jest.fn(async () => ({})),
+  isUnrestrictedTaskViewer: jest.fn(() => false),
+  getVisibleTaskIdsForUser: jest.fn().mockResolvedValue([]),
+}));
+
 jest.mock('../../utils/sanitize', () => ({
   sanitizeInput: jest.fn(v => v),
   sanitizeRichText: jest.fn(v => v),
+  sanitizeNotificationField: jest.fn(v => v),
+  sanitizeNotificationMessage: jest.fn(v => v),
 }));
 
 jest.mock('../../services/teamsWebhook', () => ({ sendTeamsNotification: jest.fn() }));
@@ -85,6 +126,26 @@ jest.mock('../../config/teams', () => ({
   }),
 }));
 
+// teamsTokenStorage — encrypts OAuth tokens at rest. Stub so routes/teams.js
+// can be required without an encryption key configured.
+jest.mock('../../utils/teamsTokenStorage', () => ({
+  encryptTeamsToken: jest.fn(v => v),
+  decryptTeamsTokenSafe: jest.fn(v => v),
+}));
+
+// permissionEngine — used by middleware/permissions (requirePermission) and
+// requireRole's Layer-3 fallback. Default deny so role-based negatives don't
+// accidentally pass.
+jest.mock('../../services/permissionEngine', () => ({
+  computeEffectivePermissions: jest.fn().mockResolvedValue({
+    permissions: {}, basePermissions: {}, overrides: [], denials: [],
+    grants: [], role: 'member', isSuperAdmin: false,
+  }),
+  hasPermission: jest.fn().mockResolvedValue(false),
+  getEffectiveBasePermission: jest.fn(() => false),
+  getEffectiveBasePermissions: jest.fn(() => ({})),
+}));
+
 jest.mock('../../controllers/managerRelationController', () => ({
   getRelationsForEmployee: jest.fn((req, res) => res.json({ success: true })),
   addRelation: jest.fn((req, res) => res.json({ success: true })),
@@ -95,16 +156,16 @@ jest.mock('../../controllers/managerRelationController', () => ({
 
 jest.mock('../../services/pushService', () => ({
   saveSubscription: jest.fn(),
+  deactivateSubscription: jest.fn().mockResolvedValue(0),
+  deactivateAllForUser: jest.fn().mockResolvedValue(0),
   removeSubscription: jest.fn(),
+  deleteByEndpoint: jest.fn(),
+  sendPushToUser: jest.fn(),
   vapidPublicKey: 'test-vapid-public-key',
   pushConfigured: false,
 }));
 
-jest.mock('../../services/hierarchyService', () => ({
-  getDescendantIds: jest.fn().mockResolvedValue([]),
-}));
-
-// ─── App setup ──────────────────────────────────────────────────────────────
+// ─── App setup ───────────────────────────────────────────────────────────────
 
 const express = require('express');
 const request = require('supertest');
@@ -128,7 +189,7 @@ function makeUser(overrides = {}) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. WEBHOOK SECURITY
-// ═════════════════════════════════════════════════════════════���═════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('Webhook security (webhooks.js)', () => {
   let app;
@@ -187,9 +248,9 @@ describe('Webhook security (webhooks.js)', () => {
   });
 });
 
-// ═══════════���═════════════════════════════════════════════════════════���═════
+// ═══════════════════════════════════════════════════════════════════════════
 // 2. BOARD EXPORT AUTHORIZATION
-// ══════════════════════════════════════════════════���════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('Board export authorization (boards.js)', () => {
   let app;
@@ -216,6 +277,10 @@ describe('Board export authorization (boards.js)', () => {
       toJSON: () => ({ id: BOARD_ID }),
     });
     mockModels.TaskAssignee.count.mockResolvedValue(0);
+    // boardVisibilityService.canUserSeeBoard returns false by default — that
+    // is what the controller checks now.
+    const boardVis = require('../../services/boardVisibilityService');
+    boardVis.canUserSeeBoard.mockResolvedValue(false);
 
     const token = generateToken(USER_ID, 'member');
     const res = await request(app)
@@ -235,6 +300,9 @@ describe('Board export authorization (boards.js)', () => {
       toJSON: () => ({ id: BOARD_ID }),
     });
     mockModels.Task.findAll.mockResolvedValue([]);
+    // Manager passes the visibility check.
+    const boardVis = require('../../services/boardVisibilityService');
+    boardVis.canUserSeeBoard.mockResolvedValue(true);
 
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
@@ -244,9 +312,15 @@ describe('Board export authorization (boards.js)', () => {
   });
 });
 
-// ══════════��═══════════���════════════════════════════════���═══════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // 5. ORG CHART ROLE RESTRICTION
-// ════════════════════════════��═════════════════════════���════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Note: the production /org-chart route is now gated by both `managerOrAdmin`
+// (legacy fast-path) AND `requirePermission('org_chart', 'view')` (granular
+// engine). The legacy guard catches the unauthorised member case first, so
+// we still assert 403 for members. For the positive path we just verify the
+// route is reachable (not 403).
 
 describe('Org chart role restriction (promotions.js)', () => {
   let app;
@@ -269,20 +343,22 @@ describe('Org chart role restriction (promotions.js)', () => {
 
   it('allows manager to access /org-chart', async () => {
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
-    // Mock the getOrgChart controller data
     mockModels.User.findAll.mockResolvedValue([]);
+    // requirePermission('org_chart','view') will consult hasPermission;
+    // make it allow for this test.
+    const pe = require('../../services/permissionEngine');
+    pe.hasPermission.mockResolvedValue(true);
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
       .get('/api/promotions/org-chart')
       .set('Authorization', `Bearer ${token}`);
-    // Should not be 403
     expect(res.status).not.toBe(403);
   });
 });
 
-// ��═══════���══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // 6. LABEL CRUD ROLE RESTRICTION
-// ═══════════════��═══════════════════════════════════��═══════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('Label CRUD role restriction (labels.js)', () => {
   let app;
@@ -294,15 +370,30 @@ describe('Label CRUD role restriction (labels.js)', () => {
     app.use('/api/labels', require('../../routes/labels'));
   });
 
-  it('allows member to read labels', async () => {
+  it('allows member to read labels on a board they can see', async () => {
+    // P0-6: getLabels now requires canUserSeeBoard for board-scoped queries.
+    // A member who is a board member is allowed to read its labels.
+    const boardVisibility = require('../../services/boardVisibilityService');
+    boardVisibility.canUserSeeBoard.mockResolvedValue(true);
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
-    mockModels.Label = { findAll: jest.fn().mockResolvedValue([]) };
+    mockModels.Label.findAll = jest.fn().mockResolvedValue([]);
     const token = generateToken(USER_ID, 'member');
     const res = await request(app)
       .get('/api/labels?boardId=' + BOARD_ID)
       .set('Authorization', `Bearer ${token}`);
-    // Should not be 403
     expect(res.status).not.toBe(403);
+  });
+
+  it('rejects member from reading labels on a board they cannot see', async () => {
+    // P0-6 enforcement: when the visibility gate denies, return 403.
+    const boardVisibility = require('../../services/boardVisibilityService');
+    boardVisibility.canUserSeeBoard.mockResolvedValue(false);
+    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
+    const token = generateToken(USER_ID, 'member');
+    const res = await request(app)
+      .get('/api/labels?boardId=' + BOARD_ID)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(403);
   });
 
   it('rejects member from creating labels', async () => {
@@ -324,21 +415,39 @@ describe('Label CRUD role restriction (labels.js)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('allows manager to create labels', async () => {
+  it('allows manager to create labels on a board they own', async () => {
+    // S-H6 — managers can manage labels only on boards they created
+    // (or globally as admin). This test now supplies the board with
+    // createdBy === USER_ID so the canManageBoard gate passes.
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
+    mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: USER_ID });
+    mockModels.Label.create = jest.fn().mockResolvedValue({ id: 'lbl-1', name: 'Bug' });
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
       .post('/api/labels')
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'Bug', color: '#ff0000', boardId: BOARD_ID });
-    // Should not be 403
     expect(res.status).not.toBe(403);
+  });
+
+  it('rejects manager from creating labels on a board they do not own', async () => {
+    // S-H6 — the second line of defence: a manager passes the
+    // managerOrAdmin route gate but the controller-level canManageBoard
+    // check denies because they aren't the board creator.
+    mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
+    mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: 'someone-else' });
+    const token = generateToken(USER_ID, 'manager');
+    const res = await request(app)
+      .post('/api/labels')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Bug', color: '#ff0000', boardId: BOARD_ID });
+    expect(res.status).toBe(403);
   });
 });
 
-// ══════��════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // 7. TEAMS OAUTH STATE VALIDATION
-// ══════════════��════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('Teams OAuth state validation (teams.js)', () => {
   let app;
@@ -353,7 +462,6 @@ describe('Teams OAuth state validation (teams.js)', () => {
   it('rejects callback with missing state', async () => {
     const res = await request(app)
       .get('/api/teams/callback?code=test-code');
-    // Should redirect with error
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('teams=error');
     expect(res.headers.location).toContain('missing_params');
@@ -377,9 +485,9 @@ describe('Teams OAuth state validation (teams.js)', () => {
   });
 });
 
-// ════��══════════════���═════════════════════════════════��═════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // 8. SQL SAFETY UTILITY
-// ════���═══════════════════════��════════════════════════════��═════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('SQL safety utility (safeSql.js)', () => {
   const { assertUUID, safeUUID, safeUUIDList } = require('../../utils/safeSql');
@@ -420,9 +528,9 @@ describe('SQL safety utility (safeSql.js)', () => {
   });
 });
 
-// ════════════════════���════════════════════════════════���═════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // 9. INTENTIONALLY PUBLIC ENDPOINTS
-// ══════════════════��════════════════════════��═══════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 describe('Intentionally public endpoints', () => {
   let app;
