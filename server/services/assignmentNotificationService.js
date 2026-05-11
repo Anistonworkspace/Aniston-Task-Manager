@@ -10,8 +10,24 @@
  */
 
 const { Task, Board, User } = require('../models');
-const { sendNotification } = require('./notificationService');
+const { createNotification, buildIdempotencyKey } = require('./notificationService');
 const logger = require('../utils/logger');
+
+// Idempotency-key day suffix. Same shape as the reminderJob / overdue
+// paths: retries within the same calendar day collapse to one notification
+// via the partial unique index on (userId, idempotencyKey), but a deliberate
+// next-day re-add of the same user still fires a fresh notification.
+//
+// We DO NOT key on the assigner id — the controller-level diff in
+// `diffAndNotify` already prevents the most common retry pattern (the same
+// HTTP request being replayed sees the user already assigned and skips
+// `notifyNewAssignments` entirely). This service-level dedup is the second
+// line of defence: a direct caller (taskController) that calls
+// `notifyNewAssignments(taskId, [u], 'assignee', ...)` twice in the same
+// day for the same (task, user) pair gets exactly one notification.
+function dayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /**
  * Fetch task context needed for notification messages.
@@ -79,6 +95,7 @@ async function notifyNewAssignments(taskId, userIds, role, assignedByUserId) {
 
     const assignerName = await getUserName(assignedByUserId);
     const deadline = formatDeadline(ctx.dueDate);
+    const today = dayKey();
 
     for (const uid of userIds) {
       const userEmail = await getUserEmail(uid);
@@ -87,16 +104,30 @@ async function notifyNewAssignments(taskId, userIds, role, assignedByUserId) {
       if (role === 'supervisor') {
         const title = `You're supervising: ${ctx.title}`;
         const message = `Hi ${userName}, you have been added as a supervisor on the task "${ctx.title}" on board "${ctx.boardName}". Deadline: ${deadline}. Added by: ${assignerName}.`;
-        await sendNotification(uid, title, message, 'task_supervisor_added', taskId, {
+        await createNotification({
+          userId: uid,
+          type: 'task_supervisor_added',
+          title,
+          message,
+          entityType: 'task',
+          entityId: taskId,
           email: userEmail,
           userName,
+          idempotencyKey: buildIdempotencyKey('task-supervisor-added', taskId, uid, today),
         });
       } else {
         const title = `New Task Assigned: ${ctx.title}`;
         const message = `Hi ${userName}, you have been assigned to the task "${ctx.title}" on board "${ctx.boardName}". Deadline: ${deadline}. Assigned by: ${assignerName}.`;
-        await sendNotification(uid, title, message, 'task_assigned', taskId, {
+        await createNotification({
+          userId: uid,
+          type: 'task_assigned',
+          title,
+          message,
+          entityType: 'task',
+          entityId: taskId,
           email: userEmail,
           userName,
+          idempotencyKey: buildIdempotencyKey('task-assigned', taskId, uid, today),
         });
       }
     }
@@ -118,15 +149,23 @@ async function notifyRemovals(taskId, userIds) {
     const ctx = await getTaskContext(taskId);
     if (!ctx) return;
 
+    const today = dayKey();
     for (const uid of userIds) {
       const userEmail = await getUserEmail(uid);
       const userName = await getUserName(uid);
 
       const title = `Removed from Task: ${ctx.title}`;
       const message = `Hi ${userName}, you have been removed from the task "${ctx.title}" on board "${ctx.boardName}". If you believe this is an error, please contact your manager.`;
-      await sendNotification(uid, title, message, 'task_removed', taskId, {
+      await createNotification({
+        userId: uid,
+        type: 'task_removed',
+        title,
+        message,
+        entityType: 'task',
+        entityId: taskId,
         email: userEmail,
         userName,
+        idempotencyKey: buildIdempotencyKey('task-removed', taskId, uid, today),
       });
     }
   } catch (err) {
@@ -154,9 +193,19 @@ async function notifyRoleChange(taskId, userId, oldRole, newRole) {
 
     const title = `Role Updated: ${ctx.title}`;
     const message = `Hi ${userName}, your role on the task "${ctx.title}" has been changed from ${oldRole} to ${newRole}. Board: ${ctx.boardName}.`;
-    await sendNotification(userId, title, message, 'task_role_changed', taskId, {
+    // Include `newRole` in the key so a flip A→B and later B→A both fire
+    // (different newRole values → different keys). Same-day retry of the
+    // identical A→B transition still dedupes.
+    await createNotification({
+      userId,
+      type: 'task_role_changed',
+      title,
+      message,
+      entityType: 'task',
+      entityId: taskId,
       email: userEmail,
       userName,
+      idempotencyKey: buildIdempotencyKey('task-role-changed', taskId, userId, newRole, dayKey()),
     });
   } catch (err) {
     logger.error('[AssignmentNotification] notifyRoleChange error:', err);

@@ -2,8 +2,10 @@ import React, { useState, useMemo } from 'react';
 import { addDays, subDays, format, differenceInDays, parseISO, startOfWeek, eachDayOfInterval, isWeekend, isToday } from 'date-fns';
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
 import { STATUS_CONFIG } from '../../utils/constants';
+import { useT } from '../../context/LanguageContext';
 
 export default function TimelineView({ tasks = [], members = [], onTaskClick }) {
+  const t = useT();
   const [startDate, setStartDate] = useState(startOfWeek(new Date()));
   const [daysToShow, setDaysToShow] = useState(14);
 
@@ -33,7 +35,7 @@ export default function TimelineView({ tasks = [], members = [], onTaskClick }) 
         </span>
         <div className="flex items-center gap-1 ml-auto">
           <button onClick={() => setStartDate(subDays(startDate, 7))} className="btn-ghost p-1.5"><ChevronLeft size={15} /></button>
-          <button onClick={() => setStartDate(startOfWeek(new Date()))} className="btn-ghost text-xs px-3 py-1">Today</button>
+          <button onClick={() => setStartDate(startOfWeek(new Date()))} className="btn-ghost text-xs px-3 py-1">{t('task.today')}</button>
           <button onClick={() => setStartDate(addDays(startDate, 7))} className="btn-ghost p-1.5"><ChevronRight size={15} /></button>
           <div className="h-4 w-px bg-border mx-1" />
           <button onClick={() => setDaysToShow(Math.min(daysToShow + 7, 28))} className="btn-ghost p-1.5" title="Zoom out"><ZoomOut size={15} /></button>
@@ -47,7 +49,7 @@ export default function TimelineView({ tasks = [], members = [], onTaskClick }) 
           {/* Day Headers */}
           <div className="flex sticky top-0 z-10 bg-white border-b border-border">
             <div className="w-[200px] flex-shrink-0 px-4 py-2.5 text-[11px] font-medium text-text-tertiary uppercase tracking-wider border-r border-border bg-white sticky left-0 z-20">
-              Task
+              {t('board.columns.task')}
             </div>
             <div className="flex">
               {days.map((day, i) => (

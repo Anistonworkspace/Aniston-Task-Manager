@@ -3,6 +3,8 @@ import { ChevronLeft, ChevronRight, Download, FileText, FileSpreadsheet, CheckCi
 import { format, addDays, subDays, parseISO, startOfWeek, endOfWeek } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
+import { translatePriority, translateStatus } from '../utils/i18nLabels';
 import Avatar from '../components/common/Avatar';
 import { resolveTier, tierLabel } from '../utils/tiers';
 
@@ -22,6 +24,7 @@ const PRIORITY_LABELS = {
 };
 
 export default function ReviewPage() {
+  const t = useT();
   const { user, canManage } = useAuth();
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [data, setData] = useState(null);
@@ -233,12 +236,12 @@ export default function ReviewPage() {
                           </td>
                           <td className="py-2 px-2 text-center">
                             <span className="inline-block text-[10px] font-semibold text-white px-2 py-0.5 rounded-sm" style={{ backgroundColor: statusCfg.color }}>
-                              {statusCfg.label}
+                              {translateStatus(task.status, statusCfg.label, t)}
                             </span>
                           </td>
                           <td className="py-2 px-2 text-center">
                             <span className="inline-block text-[10px] font-semibold text-white px-2 py-0.5 rounded-sm" style={{ backgroundColor: priorityCfg.color }}>
-                              {priorityCfg.label}
+                              {translatePriority(task.priority, t, priorityCfg.label)}
                             </span>
                           </td>
                           <td className="py-2 px-2 text-center">

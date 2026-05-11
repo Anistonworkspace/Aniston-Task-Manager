@@ -21,6 +21,8 @@ const TaskWatcher = require('./TaskWatcher');
 const Announcement = require('./Announcement');
 const Label = require('./Label');
 const TaskLabel = require('./TaskLabel');
+const TaskReference = require('./TaskReference');
+const TaskLink = require('./TaskLink');
 const DueDateExtension = require('./DueDateExtension');
 const HelpRequest = require('./HelpRequest');
 const PromotionHistory = require('./PromotionHistory');
@@ -48,6 +50,7 @@ const UserWorkspaceOrder = require('./UserWorkspaceOrder');
 const PushSubscription = require('./PushSubscription');
 const SystemSetting = require('./SystemSetting');
 const RefreshToken = require('./RefreshToken');
+const PendingLoginToken = require('./PendingLoginToken');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -398,6 +401,8 @@ module.exports = {
   Announcement,
   Label,
   TaskLabel,
+  TaskReference,
+  TaskLink,
   DueDateExtension,
   HelpRequest,
   PromotionHistory,
@@ -425,6 +430,7 @@ module.exports = {
   PushSubscription,
   SystemSetting,
   RefreshToken,
+  PendingLoginToken,
 };
 
 // ─── RefreshToken <-> User ───────────────────────────────────────────
@@ -432,6 +438,13 @@ module.exports = {
 // so a deactivated account cannot be re-activated by replaying old tokens.
 RefreshToken.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
 User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens' });
+
+// ─── PendingLoginToken <-> User ──────────────────────────────────────
+// Short-lived one-shot confirmation tokens for the "another session is
+// active, force logout?" flow. CASCADE on delete so account deletion
+// wipes any in-flight pending tokens.
+PendingLoginToken.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
+User.hasMany(PendingLoginToken, { foreignKey: 'userId', as: 'pendingLoginTokens' });
 
 // ─── PushSubscription <-> User ───────────────────────────────
 PushSubscription.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
@@ -493,6 +506,22 @@ Board.hasMany(Label, { foreignKey: 'boardId', as: 'labels' });
 // ─── Task <-> Label (many-to-many via TaskLabel) ─────────────
 Task.belongsToMany(Label, { through: TaskLabel, foreignKey: 'taskId', otherKey: 'labelId', as: 'labels' });
 Label.belongsToMany(Task, { through: TaskLabel, foreignKey: 'labelId', otherKey: 'taskId', as: 'tasks' });
+
+// ─── Task <-> TaskReference (1-to-many) ──────────────────────
+// Each task may carry multiple free-form reference entries (ticket IDs,
+// invoice numbers, doc IDs). CASCADE on delete so archiving a task wipes
+// its references; the assoc alias `references` matches the API field name.
+Task.hasMany(TaskReference, { foreignKey: 'taskId', as: 'references', onDelete: 'CASCADE' });
+TaskReference.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
+TaskReference.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+
+// ─── Task <-> TaskLink (1-to-many) ───────────────────────────
+// Multiple external URLs per task (Drive files, ticket links, websites).
+// Aliased `taskLinks` on the Task side to avoid collision with any other
+// `links` field reserved for ad-hoc client metadata in the future.
+Task.hasMany(TaskLink, { foreignKey: 'taskId', as: 'taskLinks', onDelete: 'CASCADE' });
+TaskLink.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
+TaskLink.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 
 // ─── DueDateExtension <-> Task/User ─────────────────────────
 DueDateExtension.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });

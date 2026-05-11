@@ -4,6 +4,8 @@ import { MessageSquare, ListChecks, Clock, Plus, ChevronDown, ChevronRight, Aler
 import { format, parseISO, isPast } from 'date-fns';
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES } from '../../utils/constants';
 import { sortTasksByPendingPriority } from '../../utils/taskPrioritization';
+import { useT } from '../../context/LanguageContext';
+import { translatePriority, translateStatus } from '../../utils/i18nLabels';
 import Avatar from '../common/Avatar';
 
 const FALLBACK_KANBAN_COLUMNS = [
@@ -17,6 +19,7 @@ const PRIORITY_BORDER = { critical: '#e2445c', high: '#ff642e', medium: '#fdab3d
 
 export default function KanbanView({ tasks = [], members = [], onTaskClick, onTaskUpdate, onAddTask, groups, boardStatuses }) {
   const INITIAL_CARD_LIMIT = 50;
+  const t = useT();
   const baseColumns = boardStatuses && boardStatuses.length > 0
     ? boardStatuses.map(s => ({ id: s.key, label: s.label, color: s.color, emoji: '' }))
     : FALLBACK_KANBAN_COLUMNS;
@@ -130,7 +133,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                   {!isCollapsed && (
                     <>
                       <div className="w-3 h-3 rounded-full" style={{ backgroundColor: col.color }} />
-                      <h3 className="text-sm font-bold" style={{ color: col.color }}>{col.label}</h3>
+                      <h3 className="text-sm font-bold" style={{ color: col.color }}>{translateStatus(col.id, col.label, t)}</h3>
                       <span className="text-xs font-bold ml-auto px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: col.color }}>
                         {colTasks.length}
                       </span>
@@ -139,7 +142,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                   {isCollapsed && (
                     <div className="flex flex-col items-center gap-1">
                       <div className="w-3 h-3 rounded-full" style={{ backgroundColor: col.color }} />
-                      <span className="text-[9px] font-bold" style={{ color: col.color, writingMode: 'vertical-lr' }}>{col.label}</span>
+                      <span className="text-[9px] font-bold" style={{ color: col.color, writingMode: 'vertical-lr' }}>{translateStatus(col.id, col.label, t)}</span>
                       <span className="text-[10px] font-bold mt-1 px-1.5 py-0.5 rounded-full text-white" style={{ backgroundColor: col.color }}>{colTasks.length}</span>
                     </div>
                   )}
@@ -194,7 +197,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                                     {/* Overdue warning */}
                                     {isOverdue && (
                                       <div className="flex items-center gap-1 text-[10px] text-danger font-semibold mb-2 bg-danger/5 px-2 py-1 rounded">
-                                        <AlertTriangle size={10} /> Overdue — {format(parseISO(task.dueDate), 'MMM d')}
+                                        <AlertTriangle size={10} /> {t('task.overdue')} — {format(parseISO(task.dueDate), 'MMM d')}
                                       </div>
                                     )}
 
@@ -202,7 +205,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                                     <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
                                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
                                         style={{ backgroundColor: `${priorityCfg.color || '#c4c4c4'}12`, color: priorityCfg.color || '#999', border: `1px solid ${priorityCfg.color || '#c4c4c4'}25` }}>
-                                        {priorityCfg.label || task.priority}
+                                        {translatePriority(task.priority, t, priorityCfg.label || task.priority)}
                                       </span>
 
                                       {task.dueDate && !isOverdue && (
@@ -226,7 +229,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                                           <span className="text-[10px] text-text-secondary font-medium">{assigneeName.split(' ')[0]}</span>
                                         </div>
                                       ) : (
-                                        <span className="text-[10px] text-text-tertiary italic">Unassigned</span>
+                                        <span className="text-[10px] text-text-tertiary italic">{t('task.noOwner')}</span>
                                       )}
                                       <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <MessageSquare size={11} className="text-text-tertiary" />
@@ -266,7 +269,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                             <div className="w-10 h-10 rounded-full bg-surface flex items-center justify-center mb-2">
                               <div className="w-4 h-4 rounded-full border-2 border-dashed" style={{ borderColor: col.color }} />
                             </div>
-                            <p className="text-xs">No tasks</p>
+                            <p className="text-xs">{t('common.empty')}</p>
                             <p className="text-[10px] mt-0.5">Drag here or add below</p>
                           </div>
                         )}
@@ -281,14 +284,14 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
                               onKeyDown={e => { if (e.key === 'Enter') handleAddTaskSubmit(col.id); if (e.key === 'Escape') { setNewTaskCol(null); setNewTaskTitle(''); } }}
                               onBlur={() => handleAddTaskSubmit(col.id)}
                               autoFocus
-                              placeholder="Task name..."
+                              placeholder={t('board.taskNamePlaceholder')}
                               className="w-full px-3 py-2 text-sm border border-primary/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 bg-white"
                             />
                           </div>
                         ) : (
                           <button onClick={() => { setNewTaskCol(col.id); setNewTaskTitle(''); }}
                             className="flex items-center gap-1.5 w-full px-3 py-2 mt-1 text-xs text-text-tertiary hover:text-primary hover:bg-white rounded-lg transition-colors">
-                            <Plus size={13} /> Add task
+                            <Plus size={13} /> {t('board.addTask')}
                           </button>
                         )}
                       </div>

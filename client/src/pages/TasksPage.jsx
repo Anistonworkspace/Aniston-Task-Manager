@@ -317,7 +317,7 @@ export default function TasksPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-text-primary flex items-center gap-2">
-          <ClipboardCheck size={24} className="text-primary" /> Tasks & Workflows
+          <ClipboardCheck size={24} className="text-primary" /> Approvals & Requests
         </h1>
         <p className="text-sm text-text-tertiary mt-0.5">Approvals, your submissions, extensions, and help requests</p>
       </div>

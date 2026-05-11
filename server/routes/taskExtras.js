@@ -11,6 +11,7 @@ const {
   getApprovalChain,
   getApprovalPreview,
   getMyFeedback,
+  getActionablePendingCounts,
 } = require('../controllers/approvalController');
 const { setRecurrence, getRecurrence } = require('../controllers/recurringTaskController');
 
@@ -23,6 +24,9 @@ const router = express.Router();
 // configurations) sees their own queue and nobody else's.
 router.get('/pending-approvals', authenticate, getPendingApprovals);
 router.get('/workflow-items', authenticate, getWorkflowItems);
+// Lightweight aggregate count for the global sidebar badge — see controller
+// header for the count semantics. Counts only items the caller can act on.
+router.get('/pending-counts', authenticate, getActionablePendingCounts);
 // Submitter-side visibility: feedback I sent and what's been done with it.
 // Authorization is enforced by data filter (caller's userId), not middleware.
 router.get('/my-feedback', authenticate, getMyFeedback);

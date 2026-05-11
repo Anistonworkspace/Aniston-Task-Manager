@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useFontSize, DEFAULT_FONT_SIZE } from '../context/FontSizeContext';
+import { useLanguage } from '../context/LanguageContext';
+import { Languages } from 'lucide-react';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import SOPViewer from '../components/common/SOPViewer';
@@ -22,13 +24,15 @@ const TIER_STYLES = {
 };
 
 // Section nav for the Task-Modal-style panel. Drives scrollspy + tab clicks.
+// Labels are resolved at render time via t() so the tab row re-translates
+// when the user switches languages without a refresh.
 const SECTIONS = [
-  { id: 'profile',       label: 'Profile',       icon: UserIcon },
-  { id: 'security',      label: 'Security',      icon: ShieldCheck },
-  { id: 'preferences',   label: 'Preferences',   icon: SettingsIcon },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'integrations',  label: 'Integrations',  icon: Plug },
-  { id: 'guide',         label: 'Guide',         icon: BookOpen },
+  { id: 'profile',       labelKey: 'profile.sections.profile',       icon: UserIcon },
+  { id: 'security',      labelKey: 'profile.sections.security',      icon: ShieldCheck },
+  { id: 'preferences',   labelKey: 'profile.sections.preferences',   icon: SettingsIcon },
+  { id: 'notifications', labelKey: 'profile.sections.notifications', icon: Bell },
+  { id: 'integrations',  labelKey: 'profile.sections.integrations',  icon: Plug },
+  { id: 'guide',         labelKey: 'profile.sections.guide',         icon: BookOpen },
 ];
 
 /**
@@ -49,6 +53,7 @@ const SECTIONS = [
 export default function ProfilePage({ variant = 'page', onClose }) {
   const { user, updateProfile } = useAuth();
   const { fontSize, setFontSize, reset: resetFontSize, options: fontSizeOptions } = useFontSize();
+  const { language, setLanguage, options: languageOptions, t } = useLanguage();
   const sopRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -66,6 +71,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
   const [savingPassword, setSavingPassword] = useState(false);
   const [creatingPassword, setCreatingPassword] = useState(false);
   const [savingFontSize, setSavingFontSize] = useState(false);
+  const [savingLanguage, setSavingLanguage] = useState(false);
   const [flash, setFlash] = useState(null);
   const [passwordFlash, setPasswordFlash] = useState(null);
   const [teamsNotifEnabled, setTeamsNotifEnabled] = useState(user?.teamsNotificationsEnabled !== false);
@@ -130,6 +136,22 @@ export default function ProfilePage({ variant = 'page', onClose }) {
     if (window.history.length > 1) navigate(-1);
     else navigate('/');
   }, [navigate, onClose]);
+
+  async function handleLanguageChange(value) {
+    if (value === language) return;
+    setSavingLanguage(true);
+    try {
+      await setLanguage(value);
+      // After the await the language has already switched — t() now resolves
+      // to the new locale, so the flash reads in whichever language the user
+      // just selected (matches what FontSize does for its own toasts).
+      showFlash(value === 'hi' ? 'भाषा बदल गई।' : 'Language updated.');
+    } catch (err) {
+      showFlash(err.response?.data?.message || 'Failed to save language preference.', 'error');
+    } finally {
+      setSavingLanguage(false);
+    }
+  }
 
   async function handleFontSizeChange(value) {
     if (value === fontSize) return;
@@ -283,11 +305,11 @@ export default function ProfilePage({ variant = 'page', onClose }) {
   // "Saving... / Saved / Save failed" cluster so both surfaces share the same
   // visual language for in-flight + completion feedback.
   const headerStatus = (() => {
-    if (saving || savingPassword || creatingPassword || savingFontSize || togglingTeamsNotif) {
-      return <span className="text-[10px] text-blue-500 font-medium animate-pulse">Saving…</span>;
+    if (saving || savingPassword || creatingPassword || savingFontSize || savingLanguage || togglingTeamsNotif) {
+      return <span className="text-[10px] text-blue-500 font-medium animate-pulse">{t('common.saving')}</span>;
     }
-    if (flash?.type === 'success') return <span className="text-[10px] text-green-500 font-medium">Saved</span>;
-    if (flash?.type === 'error') return <span className="text-[10px] text-red-500 font-medium">Save failed</span>;
+    if (flash?.type === 'success') return <span className="text-[10px] text-green-500 font-medium">{t('common.saved')}</span>;
+    if (flash?.type === 'error') return <span className="text-[10px] text-red-500 font-medium">{t('common.saveFailed')}</span>;
     return null;
   })();
 
@@ -296,13 +318,13 @@ export default function ProfilePage({ variant = 'page', onClose }) {
       {/* Header — same primitives as TaskModal's panel header */}
       <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-border flex-shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs text-text-secondary">Profile</span>
+          <span className="text-xs text-text-secondary">{t('profile.title')}</span>
           {headerStatus}
         </div>
         <button
           type="button"
           onClick={handleClose}
-          aria-label="Close profile"
+          aria-label={t('common.close')}
           className="p-1.5 rounded-md hover:bg-surface text-text-secondary"
         >
           <X size={18} />
@@ -344,7 +366,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
               </div>
               <span
                 className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-success rounded-full border-[3px] border-white dark:border-[#1E1F23]"
-                title="Active"
+                title={t('profile.active')}
               />
             </div>
 
@@ -371,7 +393,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                 )}
                 {memberSince && (
                   <span className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full bg-surface-50 border border-border text-text-tertiary">
-                    <Calendar size={11} />Member since {memberSince}
+                    <Calendar size={11} />{t('profile.memberSince', { date: memberSince })}
                   </span>
                 )}
               </div>
@@ -386,7 +408,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
             modal modes; both work because `top-0` is relative to whichever
             ancestor scrolls). */}
         <div className="sticky top-0 z-10 px-4 sm:px-6 bg-white dark:bg-[#1E1F23] border-b border-border">
-          <div className="tabs-compact !border-b-0" role="tablist" aria-label="Profile sections">
+          <div className="tabs-compact !border-b-0" role="tablist" aria-label={t('profile.title')}>
             {SECTIONS.map(s => {
               const Icon = s.icon;
               const active = activeSection === s.id;
@@ -400,7 +422,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                   className="tab-trigger-compact"
                 >
                   <Icon size={13} />
-                  {s.label}
+                  {t(s.labelKey)}
                 </button>
               );
             })}
@@ -410,19 +432,19 @@ export default function ProfilePage({ variant = 'page', onClose }) {
         {/* Body — single-column flow; cards fill the panel width. */}
         <div className="px-4 sm:px-6 py-5 space-y-5">
           {/* Personal Information */}
-          <Card id="profile" className="scroll-mt-16" icon={UserIcon} iconColor="text-primary" title="Personal Information">
+          <Card id="profile" className="scroll-mt-16" icon={UserIcon} iconColor="text-primary" title={t('profile.personalInformation')}>
             <form onSubmit={handleSaveProfile} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Field label="Full Name">
+                <Field label={t('profile.fullName')}>
                   <input
                     type="text"
                     value={form.name}
                     onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))}
                     className={inputCls}
-                    placeholder="Your full name"
+                    placeholder={t('profile.fullNamePlaceholder')}
                   />
                 </Field>
-                <Field label="Email Address">
+                <Field label={t('profile.emailAddress')}>
                   <input
                     type="email"
                     value={user?.email || ''}
@@ -430,24 +452,24 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                     className={readOnlyInputCls}
                   />
                 </Field>
-                <Field label="Department">
+                <Field label={t('profile.department')}>
                   <DepartmentSelect
                     value={form.department}
                     onChange={dept => setForm(f => ({ ...f, department: dept }))}
                   />
                 </Field>
-                <Field label="Designation">
+                <Field label={t('profile.designation')}>
                   <input
                     type="text"
                     value={form.designation}
                     onChange={(e) => setForm(f => ({ ...f, designation: e.target.value }))}
                     className={inputCls}
-                    placeholder="e.g., Senior Developer"
+                    placeholder={t('profile.designationPlaceholder')}
                   />
                 </Field>
               </div>
 
-              <Field label="Tier" hint="Contact a Tier 1 administrator to change">
+              <Field label={t('profile.tier')} hint={t('profile.tierHint')}>
                 <input
                   type="text"
                   value={tierLabelText}
@@ -463,7 +485,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                   className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors shadow-sm"
                 >
                   {saving ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Save size={15} />}
-                  {saving ? 'Saving...' : 'Save Changes'}
+                  {saving ? t('profile.saving') : t('profile.saveChanges')}
                 </button>
               </div>
             </form>
@@ -475,7 +497,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
             className="scroll-mt-16"
             icon={Lock}
             iconColor="text-warning"
-            title={isMicrosoftSSO ? 'Create Password' : 'Change Password'}
+            title={isMicrosoftSSO ? t('profile.createPassword') : t('profile.changePassword')}
           >
             {passwordFlash && (
               <div
@@ -502,32 +524,32 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                       <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
                     </svg>
                     <p className="text-xs text-blue-700 dark:text-blue-300">
-                      You're signed in with Microsoft. Create a local password to also log in with your email and password.
+                      {t('profile.msSsoNotice')}
                     </p>
                   </div>
                 </div>
                 <form onSubmit={handleCreatePassword} className="space-y-4">
-                  <Field label="New Password">
+                  <Field label={t('profile.newPassword')}>
                     <PasswordInput
                       value={createPass.password}
                       onChange={(v) => setCreatePass(p => ({ ...p, password: v }))}
                       show={showPasswords.create}
                       onToggleShow={() => setShowPasswords(s => ({ ...s, create: !s.create }))}
-                      placeholder="Min 8 characters"
+                      placeholder={t('profile.newPasswordPlaceholder')}
                     />
                     {createPass.password && <PasswordStrength getStrength={getPasswordStrength} value={createPass.password} />}
                   </Field>
-                  <Field label="Confirm Password">
+                  <Field label={t('profile.confirmPassword')}>
                     <PasswordInput
                       value={createPass.confirm}
                       onChange={(v) => setCreatePass(p => ({ ...p, confirm: v }))}
                       show={showPasswords.createConfirm}
                       onToggleShow={() => setShowPasswords(s => ({ ...s, createConfirm: !s.createConfirm }))}
-                      placeholder="Re-enter password"
+                      placeholder={t('profile.reenterPasswordPlaceholder')}
                       error={createPass.confirm && createPass.password !== createPass.confirm}
                     />
                     {createPass.confirm && createPass.password !== createPass.confirm && (
-                      <p className="text-[11px] text-danger mt-1">Passwords do not match</p>
+                      <p className="text-[11px] text-danger mt-1">{t('profile.passwordsDoNotMatch')}</p>
                     )}
                   </Field>
                   <div className="flex justify-end pt-1">
@@ -537,44 +559,44 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                       className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors shadow-sm"
                     >
                       {creatingPassword ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Lock size={15} />}
-                      {creatingPassword ? 'Creating...' : 'Create Password'}
+                      {creatingPassword ? t('profile.creating') : t('profile.createPassword')}
                     </button>
                   </div>
                 </form>
               </>
             ) : (
               <form onSubmit={handleChangePassword} className="space-y-4">
-                <Field label="Current Password">
+                <Field label={t('profile.currentPassword')}>
                   <PasswordInput
                     value={passwords.current}
                     onChange={(v) => setPasswords(p => ({ ...p, current: v }))}
                     show={showPasswords.current}
                     onToggleShow={() => setShowPasswords(s => ({ ...s, current: !s.current }))}
-                    placeholder="Enter current password"
+                    placeholder={t('profile.currentPasswordPlaceholder')}
                   />
                 </Field>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Field label="New Password">
+                  <Field label={t('profile.newPassword')}>
                     <PasswordInput
                       value={passwords.newPass}
                       onChange={(v) => setPasswords(p => ({ ...p, newPass: v }))}
                       show={showPasswords.newPass}
                       onToggleShow={() => setShowPasswords(s => ({ ...s, newPass: !s.newPass }))}
-                      placeholder="Min 8 characters"
+                      placeholder={t('profile.newPasswordPlaceholder')}
                     />
                     {passwords.newPass && <PasswordStrength getStrength={getPasswordStrength} value={passwords.newPass} />}
                   </Field>
-                  <Field label="Confirm New Password">
+                  <Field label={t('profile.confirmNewPassword')}>
                     <PasswordInput
                       value={passwords.confirm}
                       onChange={(v) => setPasswords(p => ({ ...p, confirm: v }))}
                       show={showPasswords.confirm}
                       onToggleShow={() => setShowPasswords(s => ({ ...s, confirm: !s.confirm }))}
-                      placeholder="Re-enter new password"
+                      placeholder={t('profile.reenterNewPasswordPlaceholder')}
                       error={passwords.confirm && passwords.newPass !== passwords.confirm}
                     />
                     {passwords.confirm && passwords.newPass !== passwords.confirm && (
-                      <p className="text-[11px] text-danger mt-1">Passwords do not match</p>
+                      <p className="text-[11px] text-danger mt-1">{t('profile.passwordsDoNotMatch')}</p>
                     )}
                   </Field>
                 </div>
@@ -585,7 +607,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                     className="inline-flex items-center gap-2 px-4 py-2 bg-warning text-white text-sm font-medium rounded-lg hover:bg-warning-dark disabled:opacity-50 transition-colors shadow-sm"
                   >
                     {savingPassword ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Lock size={15} />}
-                    {savingPassword ? 'Changing...' : 'Change Password'}
+                    {savingPassword ? t('profile.changing') : t('profile.changePassword')}
                   </button>
                 </div>
               </form>
@@ -598,27 +620,32 @@ export default function ProfilePage({ variant = 'page', onClose }) {
             className="scroll-mt-16"
             icon={Type}
             iconColor="text-primary"
-            title="Display preferences"
+            title={t('profile.displayPreferences')}
             action={
               <button
                 type="button"
                 onClick={handleFontSizeReset}
                 disabled={savingFontSize || fontSize === DEFAULT_FONT_SIZE}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-text-secondary rounded-md border border-border hover:bg-surface-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                aria-label="Reset font size to default"
+                aria-label={t('profile.resetFontSize')}
               >
-                <RotateCcw size={12} />Reset
+                <RotateCcw size={12} />{t('common.reset')}
               </button>
             }
           >
             <p className="text-xs text-text-secondary mb-3">
-              Choose how dense the interface feels. Saved to your account, so it follows you across devices.{' '}
-              Currently:{' '}
+              {t('profile.displayPrefHint')}{' '}
+              {t('profile.currently')}{' '}
               <span className="font-semibold text-text-primary">
-                {fontSizeOptions.find(o => o.value === fontSize)?.label || 'Default'}
+                {(() => {
+                  const opt = fontSizeOptions.find(o => o.value === fontSize);
+                  // FontSizeContext owns its option labels (in English). We
+                  // translate them by mapping the value to a fontSize.* key.
+                  return opt ? t(`fontSize.${opt.value}`) : t('fontSize.default');
+                })()}
               </span>
             </p>
-            <div role="radiogroup" aria-label="Font size" className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div role="radiogroup" aria-label={t('profile.fontSize')} className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {fontSizeOptions.map(opt => {
                 const active = opt.value === fontSize;
                 return (
@@ -636,10 +663,60 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     <span className="flex items-center gap-1.5 text-sm font-semibold">
-                      {opt.label}
+                      {t(`fontSize.${opt.value}`)}
                       {active && <Check size={13} className="text-primary" />}
                     </span>
-                    <span className="text-[11px] text-text-tertiary leading-tight">{opt.description}</span>
+                    <span className="text-[11px] text-text-tertiary leading-tight">{t(`fontSize.${opt.value}Description`)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Language selector — sits inside the same preferences anchor as
+              Display preferences. Renders the picker for every tier; backend
+              accepts the update for all authenticated users so there is no
+              role-based gating here. Long Hindi labels are absorbed by the
+              flex layout (segmented buttons stretch + wrap). */}
+          <Card
+            icon={Languages}
+            iconColor="text-primary"
+            title={t('profile.language')}
+          >
+            <p className="text-xs text-text-secondary mb-3">
+              {t('profile.languageHint')}
+            </p>
+            <div
+              role="radiogroup"
+              aria-label={t('profile.language')}
+              className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+            >
+              {languageOptions.map(opt => {
+                const active = opt.value === language;
+                // Show the English name AND the native script side-by-side
+                // so users who don't yet read the target script can still
+                // make the choice confidently.
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => handleLanguageChange(opt.value)}
+                    disabled={savingLanguage}
+                    className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                      active
+                        ? 'border-primary bg-primary/5 text-text-primary'
+                        : 'border-border bg-[var(--bg-elevated)] text-text-secondary hover:border-border-dark hover:bg-surface-50'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    <span className="flex flex-col min-w-0">
+                      <span className="text-sm font-semibold truncate">{opt.nativeLabel}</span>
+                      {opt.nativeLabel !== opt.label && (
+                        <span className="text-[11px] text-text-tertiary leading-tight truncate">{opt.label}</span>
+                      )}
+                    </span>
+                    {active && <Check size={14} className="text-primary flex-shrink-0" />}
                   </button>
                 );
               })}
@@ -647,12 +724,12 @@ export default function ProfilePage({ variant = 'page', onClose }) {
           </Card>
 
           {/* Notifications */}
-          <Card id="notifications" className="scroll-mt-16" icon={Bell} iconColor="text-primary" title="Teams Notifications">
+          <Card id="notifications" className="scroll-mt-16" icon={Bell} iconColor="text-primary" title={t('profile.teamsNotifications')}>
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-sm text-text-primary font-medium">Receive task notifications in Microsoft Teams</p>
+                <p className="text-sm text-text-primary font-medium">{t('profile.teamsNotifBody')}</p>
                 <p className="text-xs text-text-tertiary mt-1">
-                  Task assignments, deadline changes, and removal notices will be sent to your Teams chat.
+                  {t('profile.teamsNotifHint')}
                 </p>
               </div>
               <button
@@ -661,7 +738,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                 className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 ${teamsNotifEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-zinc-600'}`}
                 role="switch"
                 aria-checked={teamsNotifEnabled}
-                aria-label="Toggle Teams notifications"
+                aria-label={t('profile.teamsNotifications')}
               >
                 <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${teamsNotifEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
@@ -680,9 +757,9 @@ export default function ProfilePage({ variant = 'page', onClose }) {
 
           {/* Account ID footer */}
           <div className="text-center text-xs text-text-tertiary pt-1 pb-1">
-            Account ID: <span className="font-mono">{user?.id?.slice(0, 8)}</span>
+            {t('profile.accountId')}: <span className="font-mono">{user?.id?.slice(0, 8)}</span>
             {user?.updatedAt && (
-              <> &middot; Last updated: {new Date(user.updatedAt).toLocaleDateString()}</>
+              <> &middot; {t('profile.lastUpdated')}: {new Date(user.updatedAt).toLocaleDateString()}</>
             )}
           </div>
         </div>

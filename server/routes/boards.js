@@ -126,8 +126,15 @@ router.patch(
   renameGroup
 );
 
-// ─── PUT /api/boards/:id/groups/reorder (manager/admin only) ─
-router.put('/:id/groups/reorder', boardMutate, reorderGroups);
+// ─── PUT /api/boards/:id/groups/reorder ─────────────────────
+//   Reorder the existing groups on a board. Permitted for any user the
+//   boardVisibilityService.canUserSeeBoard rule lets through — group order
+//   is a board-global property (every viewer sees the same order), so all
+//   tiers from member upward may rearrange. The controller validates that
+//   incoming IDs are a permutation of the board's existing groups so this
+//   endpoint cannot be used to add/remove groups (those live on POST
+//   /:id/groups and the archive flow). Companion to addGroup/renameGroup.
+router.put('/:id/groups/reorder', reorderGroups);
 
 // ─── POST /api/boards/:id/members (manager/admin only) ──────
 router.post(

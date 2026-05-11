@@ -1,4 +1,4 @@
-const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency, TaskApprovalFlow, DependencyRequest } = require('../models');
+const { Task, Board, User, Notification, Subtask, Label, TaskOwner, TaskAssignee, TaskDependency, TaskApprovalFlow, DependencyRequest, TaskReference, TaskLink } = require('../models');
 const { sequelize } = require('../config/db');
 const { validationResult } = require('express-validator');
 const logger = require('../utils/logger');
@@ -207,6 +207,8 @@ const hasTaskAssigneesTable = () => tableExists('task_assignees');
 const hasTaskOwnersTable = () => tableExists('task_owners');
 const hasTaskLabelsTable = () => tableExists('task_labels');
 const hasTaskApprovalFlowsTable = () => tableExists('task_approval_flows');
+const hasTaskReferencesTable = () => tableExists('task_references');
+const hasTaskLinksTable = () => tableExists('task_links');
 
 // Reusable include block — built dynamically to handle missing tables gracefully.
 const TASK_INCLUDES_CORE = [
@@ -242,17 +244,106 @@ async function getTaskIncludes() {
       }],
     });
   }
+  // Labels (many-to-many via task_labels) — included here, in the SHARED
+  // helper, so EVERY endpoint that uses getTaskIncludes() returns the same
+  // task.labels array. Previously this was only added inline in getTasks
+  // (the list endpoint), which meant the single-task endpoint at GET
+  // /api/tasks/:id returned labels=undefined. The task modal auto-refetches
+  // on open via that endpoint and used the response to replace selectedTask,
+  // which wiped labels from the modal even though they were correctly on
+  // the board row — the exact "labels added from row don't show in modal"
+  // bug the user reported. Sharing the include here makes label hydration
+  // consistent across getTasks, getTask, createTask, updateTask, and every
+  // other path through this helper.
+  if (await hasTaskLabelsTable()) {
+    includes.push({
+      model: Label,
+      as: 'labels',
+      through: { attributes: [] },
+      attributes: ['id', 'name', 'color'],
+    });
+  }
+  // Multi-value Reference + Link columns. `separate: true` issues one extra
+  // grouped query per association rather than N joined rows per task — this
+  // keeps the main task query lean while still hydrating both fields on
+  // every list/detail fetch. Sorted by stored position so the board row and
+  // modal show the same ordering the user dragged things into.
+  if (await hasTaskReferencesTable()) {
+    includes.push({
+      model: TaskReference,
+      as: 'references',
+      separate: true,
+      order: [['position', 'ASC'], ['createdAt', 'ASC']],
+      attributes: ['id', 'taskId', 'text', 'position', 'createdBy', 'createdAt'],
+    });
+  }
+  if (await hasTaskLinksTable()) {
+    includes.push({
+      model: TaskLink,
+      as: 'taskLinks',
+      separate: true,
+      order: [['position', 'ASC'], ['createdAt', 'ASC']],
+      attributes: ['id', 'taskId', 'url', 'title', 'position', 'createdBy', 'createdAt'],
+    });
+  }
   return includes;
 }
 
 /**
  * POST /api/tasks
  */
+// Build a non-sensitive snapshot of a task-create request for logging.
+// NEVER include req.headers, cookies, or raw token strings. We deliberately
+// keep the title/description as length only — the title text itself is
+// already covered by the activity log on the success path.
+function safeTaskCreateContext(req) {
+  const b = req.body || {};
+  const titleStr = typeof b.title === 'string' ? b.title : null;
+  const descStr = typeof b.description === 'string' ? b.description : null;
+  return {
+    userId: req.user?.id || null,
+    role: req.user?.role || null,
+    tier: req.user?.tier || null,
+    boardId: typeof b.boardId === 'string' ? b.boardId : null,
+    groupId: typeof b.groupId === 'string' ? b.groupId : (b.groupId == null ? null : typeof b.groupId),
+    titlePresent: titleStr != null && titleStr.length > 0,
+    titleLength: titleStr != null ? titleStr.length : null,
+    descriptionPresent: descStr != null && descStr.length > 0,
+    descriptionLength: descStr != null ? descStr.length : null,
+    status: typeof b.status === 'string' ? b.status : (b.status == null ? null : typeof b.status),
+    priority: typeof b.priority === 'string' ? b.priority : (b.priority == null ? null : typeof b.priority),
+    hasDueDate: b.dueDate != null && b.dueDate !== '',
+    hasStartDate: b.startDate != null && b.startDate !== '',
+    assigneeCount: Array.isArray(b.assignedTo) ? b.assignedTo.length : (b.assignedTo ? 1 : 0),
+    supervisorCount: Array.isArray(b.supervisors) ? b.supervisors.length : 0,
+    ownerCount: Array.isArray(b.ownerIds) ? b.ownerIds.length : 0,
+    reminderCount: Array.isArray(b.reminders) ? b.reminders.length : 0,
+    hasStatusConfig: Array.isArray(b.statusConfig) && b.statusConfig.length > 0,
+  };
+}
+
 const createTask = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, errors: errors.array() });
+      const arr = errors.array();
+      // Express-validator's array() is the canonical list. We additionally
+      // surface the FIRST message at the top level so the frontend toast can
+      // show something specific instead of falling back to axios's generic
+      // "Request failed with status code 400". This was the root reason
+      // every intermittent validation failure looked like the same opaque
+      // toast in production.
+      const firstMsg = (arr[0] && (arr[0].msg || arr[0].message)) || 'Invalid task data.';
+      logger.warn('[Task] Create validation failed', {
+        ...safeTaskCreateContext(req),
+        errors: arr.map((e) => ({ field: e.path || e.param, msg: e.msg })),
+      });
+      return res.status(400).json({
+        success: false,
+        message: firstMsg,
+        errors: arr,
+        code: 'validation_failed',
+      });
     }
 
     const {
@@ -268,7 +359,12 @@ const createTask = async (req, res) => {
     // Verify board exists
     const board = await Board.findByPk(boardId);
     if (!board) {
-      return res.status(404).json({ success: false, message: 'Board not found.' });
+      logger.warn('[Task] Create rejected — board not found', safeTaskCreateContext(req));
+      return res.status(404).json({
+        success: false,
+        message: 'Board not found. The board may have been deleted or you may have followed an outdated link.',
+        code: 'board_not_found',
+      });
     }
 
     // Phase 7 — Board visibility gate. Tier 1/2 retain unrestricted access;
@@ -290,11 +386,24 @@ const createTask = async (req, res) => {
       }
     }
 
-    // Validate status against task-level config (if provided), then board config
-    if (status) {
+    // Validate status against task-level config (if provided), then board config.
+    // We tolerate an empty/whitespace-only status string — older clients (and
+    // some Excel-import paths) serialize the field as '' when the user didn't
+    // pick anything; that should fall through to the model default rather
+    // than 400ing on a "missing default status" error. Only a NON-EMPTY status
+    // that fails the lookup actually gates the create.
+    if (typeof status === 'string' && status.trim() !== '') {
       const tempTask = statusConfig ? { statusConfig } : {};
       if (!isValidStatusForTask(status, tempTask, board)) {
-        return res.status(400).json({ success: false, message: `Invalid status "${status}" for this task.` });
+        logger.warn('[Task] Create rejected — invalid status', {
+          ...safeTaskCreateContext(req),
+          status,
+        });
+        return res.status(400).json({
+          success: false,
+          message: `Task could not be created: "${status}" is not a valid status for this board.`,
+          code: 'invalid_status',
+        });
       }
     }
 
@@ -341,9 +450,14 @@ const createTask = async (req, res) => {
       const allCandidateIds = [...assigneeIds, ...supervisorIds, ...(Array.isArray(ownerIds) ? ownerIds : [])];
       const bad = allCandidateIds.find((id) => typeof id !== 'string' || !UUID_RE.test(id));
       if (bad !== undefined) {
+        logger.warn('[Task] Create rejected — non-UUID user reference', {
+          ...safeTaskCreateContext(req),
+          badType: typeof bad,
+          badLength: typeof bad === 'string' ? bad.length : null,
+        });
         return res.status(400).json({
           success: false,
-          message: 'assignedTo / supervisors / ownerIds must contain valid user UUIDs.',
+          message: 'Task could not be created: one of the selected owners/assignees has an invalid id. Please reselect them.',
           code: 'invalid_user_id',
         });
       }
@@ -382,9 +496,15 @@ const createTask = async (req, res) => {
     // actor creating an undated quick task simply gets an unassigned row
     // instead of a 400.
     if (needsDueDateForAssignment(req.user.id, assigneeIds, supervisorIds, dueDate)) {
+      logger.warn('[Task] Create rejected — assignment without due date', {
+        ...safeTaskCreateContext(req),
+        resolvedAssigneeCount: assigneeIds.length,
+        resolvedSupervisorCount: supervisorIds.length,
+      });
       return res.status(400).json({
         success: false,
         message: dueDateRequiredMessage(req.user.id, assigneeIds, supervisorIds),
+        code: 'due_date_required',
       });
     }
 
@@ -759,9 +879,9 @@ const getTasks = async (req, res) => {
       { model: Subtask, as: 'subtasks', attributes: ['id', 'status'] },
       { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
     ];
-    if (await hasTaskLabelsTable()) {
-      extraIncludes.push({ model: Label, as: 'labels', through: { attributes: [] }, attributes: ['id', 'name', 'color'] });
-    }
+    // Labels are now provided by getTaskIncludes() above (so single-task
+    // fetches return them too). Adding them again here would cause a
+    // "Label included more than once" Sequelize error.
     const queryOpts = {
       where,
       include: [...taskIncludes, ...extraIncludes],
@@ -963,8 +1083,20 @@ const updateTask = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      logger.warn('[Task] UpdateTask validation errors:', JSON.stringify(errors.array()));
-      return res.status(400).json({ success: false, errors: errors.array() });
+      const arr = errors.array();
+      const firstMsg = (arr[0] && (arr[0].msg || arr[0].message)) || 'Invalid task update.';
+      logger.warn('[Task] UpdateTask validation errors:', {
+        taskId: req.params?.id || null,
+        userId: req.user?.id || null,
+        role: req.user?.role || null,
+        errors: arr.map((e) => ({ field: e.path || e.param, msg: e.msg })),
+      });
+      return res.status(400).json({
+        success: false,
+        message: firstMsg,
+        errors: arr,
+        code: 'validation_failed',
+      });
     }
 
     const task = await Task.findByPk(req.params.id, {
@@ -985,21 +1117,25 @@ const updateTask = async (req, res) => {
     const taskAssignees = task.taskAssignees || [];
     const editPermission = await checkTaskAction('edit', req.user, task, taskAssignees, req);
 
-    // Title set-once lock. Once a task exists, only Tier 1 / Super Admin may
-    // rename it. Tier 2/3/4 — including the task's creator and assignees —
-    // can no longer change the title via PUT. A no-op resend (incoming ===
-    // existing) is allowed for everyone so optimistic clients that include
-    // `title` in PATCH-style payloads don't 403. Title creation happens in
-    // POST /tasks (createTask), which is unaffected by this gate.
+    // Title set-once lock. Once a task exists, Tier 3 / Tier 4 may not
+    // rename it via PUT — including the task's creator and assignees.
+    // Tier 1 (Super Admin) and Tier 2 (Admin / Manager) MAY rename, since
+    // Tier 2 is meant to mirror Tier 1's task-edit surface (the asymmetric
+    // "Tier 1 only" rule was the headline blocker for managers who created
+    // a task and needed to fix a typo afterward). No-op resends (incoming
+    // === existing) are allowed for everyone so optimistic clients that
+    // include `title` in PATCH-style payloads don't 403 on harmless
+    // replays. Title creation happens in POST /tasks (createTask), which
+    // is unaffected by this gate.
     if (req.body.title !== undefined) {
       const incomingTitle = typeof req.body.title === 'string' ? req.body.title : '';
       const sameAsExisting = incomingTitle === task.title;
       if (!sameAsExisting) {
-        const { resolveTier, TIER_1 } = require('../config/tiers');
-        if (resolveTier(req.user) !== TIER_1) {
+        const { hasTierAtLeast: hasTierAtLeastTitleFn, TIER_2 } = require('../config/tiers');
+        if (!hasTierAtLeastTitleFn(req.user, TIER_2)) {
           return res.status(403).json({
             success: false,
-            message: 'Task title can only be edited by Super Admin (Tier 1) after creation.',
+            message: 'Task title can only be edited by Tier 1 or Tier 2 users after creation.',
             code: 'title_locked',
           });
         }
@@ -1028,7 +1164,14 @@ const updateTask = async (req, res) => {
       const userTier = resolveTier(req.user);
       const canArchive = hasTierAtLeastFn(req.user, TIER_2)
         || (await enginePermission(req.user, 'tasks', 'delete'));
-      const isAdminLike = req.user.isSuperAdmin || req.user.role === 'admin';
+      // Tier 1 + Tier 2 are "unrestricted scope" for archive — they can
+      // archive any task they can see, regardless of subtree. The earlier
+      // role-string check (`req.user.role === 'admin'`) excluded Tier 2
+      // managers and forced them through the subtree/assignee fallback,
+      // which 403'd them on cross-team tasks. Using the tier helper here
+      // keeps admin (Tier 2) and manager (Tier 2) behaviorally identical
+      // for archive, matching the rest of the Tier 2 "full edit" surface.
+      const isAdminLike = req.user.isSuperAdmin || hasTierAtLeastFn(req.user, TIER_2);
       const archiveInScope = isAdminLike
         || req._taskInSubtree === true
         || task.assignedTo === req.user.id

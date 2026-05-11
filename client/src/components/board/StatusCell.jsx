@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { Check, Lock, Edit2, Plus, X, Pencil } from 'lucide-react';
 import { STATUS_CONFIG, DEFAULT_STATUSES, buildStatusLookup, STATUS_PRESET_COLORS } from '../../utils/constants';
+import { useT } from '../../context/LanguageContext';
+import { translateStatus } from '../../utils/i18nLabels';
 import PortalDropdown from '../common/PortalDropdown';
 
 /**
@@ -29,6 +31,7 @@ export default function StatusCell({
   const [editingKey, setEditingKey] = useState(null);
   const [editLabel, setEditLabel] = useState('');
   const btnRef = useRef(null);
+  const t = useT();
 
   // Resolve: task-level → board-level → defaults
   const hasTaskConfig = taskStatuses && Array.isArray(taskStatuses) && taskStatuses.length > 0;
@@ -105,7 +108,7 @@ export default function StatusCell({
         title={isBlocked ? 'Blocked by dependency — complete the blocking task first' : ''}>
         <span className="flex items-center justify-center gap-1">
           {isBlocked && <Lock size={10} className="flex-shrink-0" />}
-          {config.label}
+          {translateStatus(value, config.label, t)}
         </span>
       </button>
 
@@ -134,7 +137,7 @@ export default function StatusCell({
                 <div key={s.key} className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 group/item ${value === s.key ? 'bg-surface-100 dark:bg-[#222327]' : 'hover:bg-surface-50 dark:hover:bg-[#252629]'}`}>
                   <button className="flex items-center gap-2 flex-1 min-w-0" onClick={(e) => { e.stopPropagation(); if (onChange) onChange(s.key); setOpen(false); setEditMode(false); }}>
                     <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cfg.bgColor || cfg.color }} />
-                    <span className="text-text-primary dark:text-white font-medium flex-1 text-left truncate">{cfg.label}</span>
+                    <span className="text-text-primary dark:text-white font-medium flex-1 text-left truncate">{translateStatus(s.key, cfg.label, t)}</span>
                     {value === s.key && <Check size={12} className="text-primary-500" />}
                   </button>
                   {editMode && canConfigureStatuses && (
@@ -164,7 +167,7 @@ export default function StatusCell({
                           <button key={s.key} onClick={() => handleAddFromPalette(s)}
                             className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors">
                             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
-                            {s.label}
+                            {translateStatus(s.key, s.label, t)}
                           </button>
                         ))}
                       </div>

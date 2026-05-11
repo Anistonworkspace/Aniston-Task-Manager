@@ -3,13 +3,14 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
-  FolderKanban, Star, StarOff, BarChart3, Users, FileText, CalendarDays,
+  FolderKanban, Star, StarOff, BarChart3, FileText, CalendarDays,
   Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck,
   RefreshCw, Pin, PinOff
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useT } from '../../context/LanguageContext';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
@@ -17,6 +18,7 @@ import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
 import { canUser } from '../../utils/permissions';
 import { resolveTier, tierLabel } from '../../utils/tiers';
+import { useApprovalsBadgeCount, formatBadgeCount } from '../../hooks/useNavBadgeCounts';
 
 // Per-user workspace usage memory (client-side only — survives reload, does
 // not sync across devices/browsers). Drives the "top 3 workspaces" sort in
@@ -45,6 +47,7 @@ function workspaceScore(entry) {
 // Portal-based dropdown that renders outside sidebar overflow
 function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, onRearrangeWorkspaces, canCreateWorkspace, canManage, hasMultipleWorkspaces }) {
   const menuRef = useRef(null);
+  const t = useT();
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
   useEffect(() => {
@@ -71,7 +74,7 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, o
       {canCreateWorkspace && (
         <button onClick={() => { onClose(); onAddWorkspace(); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-          <Plus size={14} strokeWidth={1.8} /> Add new workspace
+          <Plus size={14} strokeWidth={1.8} /> {t('sidebar.addNewWorkspace')}
         </button>
       )}
       {/* Rearrange Workspaces — visible to every user since the saved order
@@ -80,23 +83,23 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, o
       {hasMultipleWorkspaces && (
         <button onClick={() => { onClose(); onRearrangeWorkspaces?.(); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-          <ArrowUpDown size={14} strokeWidth={1.8} /> Rearrange Workspaces
+          <ArrowUpDown size={14} strokeWidth={1.8} /> {t('sidebar.rearrangeWorkspaces')}
         </button>
       )}
       <button onClick={() => { onClose(); onNavigate('/boards'); }}
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-        <LayoutGrid size={14} strokeWidth={1.8} /> Browse all boards
+        <LayoutGrid size={14} strokeWidth={1.8} /> {t('sidebar.browseAllBoards')}
       </button>
       {canManage && (
         <button onClick={() => { onClose(); onNavigate('/admin-settings'); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-          <Puzzle size={14} strokeWidth={1.8} /> Browse all workspaces
+          <Puzzle size={14} strokeWidth={1.8} /> {t('sidebar.browseAllWorkspaces')}
         </button>
       )}
       {canManage && (
         <button onClick={() => { onClose(); onNavigate('/archive'); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-          <Archive size={14} strokeWidth={1.8} /> View archive
+          <Archive size={14} strokeWidth={1.8} /> {t('sidebar.viewArchive')}
         </button>
       )}
     </div>,
@@ -106,6 +109,13 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, o
 
 export default function Sidebar({ collapsed, onToggle }) {
   const { user, canManage, isAdmin, isStrictAdmin, isManager, isAssistantManager, isDirector, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
+  const t = useT();
+  // Global "Approvals & Requests" badge — total of approval items the caller
+  // can act on, plus pending extensions (managers+ only) and unresolved help
+  // requests where the caller is the helper. See useApprovalsBadgeCount /
+  // server `getActionablePendingCounts` for the exact semantics.
+  const approvalsBadgeCount = useApprovalsBadgeCount();
+  const approvalsBadge = formatBadgeCount(approvalsBadgeCount);
   const navigate = useNavigate();
   const location = useLocation();
   const [boards, setBoards] = useState([]);
@@ -367,12 +377,25 @@ export default function Sidebar({ collapsed, onToggle }) {
     ? unassignedBoards.filter(b => b.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : unassignedBoards;
 
-  const NavItem = ({ icon: Icon, label, path, tourId }) => (
+  // Optional `badge` is a string already formatted by formatBadgeCount() —
+  // null/undefined hides the dot completely. Lives on the right of the row,
+  // matches the bell-badge styling so the visual language is consistent.
+  const NavItem = ({ icon: Icon, label, path, tourId, badge }) => (
     <button onClick={() => navigate(path)}
       data-tour={tourId || undefined}
+      aria-label={badge ? `${label} (${badge} pending)` : label}
       className={`sidebar-item w-full ${isActive(path) ? 'sidebar-item-active' : ''}`}>
       <Icon size={16} strokeWidth={1.8} />
       <span className="flex-1 text-left truncate">{label}</span>
+      {badge && (
+        <span
+          className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[16px] px-1.5 rounded-full bg-danger text-white text-[9px] font-bold leading-none"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {badge}
+        </span>
+      )}
     </button>
   );
 
@@ -440,9 +463,9 @@ export default function Sidebar({ collapsed, onToggle }) {
       </button>
       <div className="w-5 border-t border-sidebar-border my-1" />
       {[
-        { icon: Home, path: '/', label: 'Home' },
-        { icon: User, path: '/my-work', label: 'My Work' },
-        { icon: CalendarDays, path: '/meetings', label: 'Meetings' },
+        { icon: Home, path: '/', label: t('sidebar.home') },
+        { icon: User, path: '/my-work', label: t('sidebar.myWork') },
+        { icon: CalendarDays, path: '/meetings', label: t('sidebar.meetings') },
       ].map(item => (
         <button key={item.path} onClick={() => navigate(item.path)}
           className={`p-2 rounded-md transition-all duration-150 ${isActive(item.path) ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
@@ -455,7 +478,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           <div className="w-5 border-t border-sidebar-border my-1" />
           <button onClick={() => navigate('/dashboard')}
             className={`p-2 rounded-md transition-all duration-150 ${isActive('/dashboard') ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
-            title="Dashboard">
+            title={t('sidebar.teamDashboard')}>
             <BarChart3 size={18} strokeWidth={1.8} />
           </button>
         </>
@@ -463,7 +486,7 @@ export default function Sidebar({ collapsed, onToggle }) {
       <div className="mt-auto">
         <button onClick={openProfileModal}
           className="w-7 h-7 rounded-full bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center text-white text-[10px] font-semibold"
-          title="Profile">
+          title={t('profile.title')}>
           {user?.name?.charAt(0)?.toUpperCase() || 'U'}
         </button>
       </div>
@@ -501,14 +524,14 @@ export default function Sidebar({ collapsed, onToggle }) {
 
           {/* Main Nav */}
           <nav className="py-2 flex flex-col gap-0.5">
-            <NavItem icon={Home} label="Home" path="/" tourId="nav-home" />
-            {!isSuperAdmin && <NavItem icon={User} label="My Work" path="/my-work" tourId="nav-mywork" />}
-            <NavItem icon={LayoutDashboard} label="My Dashboard" path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
+            <NavItem icon={Home} label={t('sidebar.home')} path="/" tourId="nav-home" />
+            {!isSuperAdmin && <NavItem icon={User} label={t('sidebar.myWork')} path="/my-work" tourId="nav-mywork" />}
+            <NavItem icon={LayoutDashboard} label={t('sidebar.myDashboard')} path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
             {/* Org Chart and Time Plan moved to header icons (see Header.jsx). */}
-            <NavItem icon={CalendarDays} label="Meetings" path="/meetings" tourId="nav-meetings" />
-            <NavItem icon={FileText} label="Reviews" path="/reviews" tourId="nav-reviews" />
-            <NavItem icon={ClipboardCheck} label="Tasks & Workflows" path="/tasks" tourId="nav-tasks" />
-            <NavItem icon={RefreshCw} label="Recurring Work" path="/recurring-work" tourId="nav-recurring-work" />
+            <NavItem icon={CalendarDays} label={t('sidebar.meetings')} path="/meetings" tourId="nav-meetings" />
+            <NavItem icon={FileText} label={t('sidebar.reviews')} path="/reviews" tourId="nav-reviews" />
+            <NavItem icon={ClipboardCheck} label={t('sidebar.approvalsAndRequests')} path="/tasks" tourId="nav-tasks" badge={approvalsBadge} />
+            <NavItem icon={RefreshCw} label={t('sidebar.recurringWork')} path="/recurring-work" tourId="nav-recurring-work" />
           </nav>
 
           {(canManage || !!granularPermissions['dashboard.view']) && (
@@ -516,10 +539,7 @@ export default function Sidebar({ collapsed, onToggle }) {
               <div className="border-t border-sidebar-border mx-3 my-1" />
               <nav className="py-1 flex flex-col gap-0.5">
                 {(canManage || !!granularPermissions['dashboard.view']) && (
-                  <NavItem icon={BarChart3} label="Dashboard" path="/dashboard" tourId="nav-dashboard" />
-                )}
-                {(canManage) && (
-                  <NavItem icon={Users} label="Team" path="/users" />
+                  <NavItem icon={BarChart3} label={t('sidebar.teamDashboard')} path="/dashboard" tourId="nav-dashboard" />
                 )}
               </nav>
             </>
@@ -538,7 +558,7 @@ export default function Sidebar({ collapsed, onToggle }) {
               <button onClick={() => setFavoritesOpen(!favoritesOpen)}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] uppercase tracking-wide text-sidebar-text/60 font-semibold w-full hover:text-sidebar-text transition-colors">
                 <ChevronRight size={10} className={`transition-transform duration-150 ${favoritesOpen ? 'rotate-90' : ''}`} />
-                Favorites
+                {t('sidebar.favorites')}
               </button>
               {favoritesOpen && (
                 <div className="animate-fade-in">
@@ -557,7 +577,7 @@ export default function Sidebar({ collapsed, onToggle }) {
 
           {/* Workspace Header */}
           <div data-tour="workspaces" className="flex items-center justify-between px-5 py-1.5 mt-1">
-            <span className="text-[11px] uppercase tracking-wide text-sidebar-text/60 font-semibold">Workspaces</span>
+            <span className="text-[11px] uppercase tracking-wide text-sidebar-text/60 font-semibold">{t('sidebar.workspaces')}</span>
             <div className="flex items-center gap-0.5">
               <button ref={wsMenuBtnRef} onClick={() => setWsMenuOpen(!wsMenuOpen)}
                 className="p-1 rounded-md text-sidebar-text/40 hover:text-sidebar-text hover:bg-sidebar-hover transition-all duration-150" title="Workspace options">
@@ -570,7 +590,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           <div className="px-3 pb-1">
             <div className="flex items-center gap-2 bg-sidebar-hover rounded-md px-2.5 py-[6px] border border-transparent focus-within:border-sidebar-accent/30 transition-all duration-150">
               <Search size={12} className="text-sidebar-text/50 flex-shrink-0" />
-              <input type="text" placeholder="Search boards..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+              <input type="text" placeholder={t('sidebar.searchBoards')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
                 className="bg-transparent border-none outline-none text-sidebar-text-active text-xs w-full placeholder:text-sidebar-text/40 shadow-none ring-0 focus:ring-0" />
             </div>
           </div>
@@ -628,9 +648,12 @@ export default function Sidebar({ collapsed, onToggle }) {
                   onDragLeave={() => setDragOverWsId(null)}
                   onDrop={(e) => { e.preventDefault(); if (dragBoardId) { handleBoardDrop(dragBoardId, ws.id); setDragBoardId(null); setDragOverWsId(null); } }}
                   className={`group/ws relative transition-all ${dragOverWsId === ws.id ? 'bg-sidebar-hover ring-1 ring-sidebar-accent rounded-md' : ''}`}>
-                  <button
-                    onClick={() => setOpenWorkspaces(prev => ({ ...prev, [ws.id]: !isOpen }))}
-                    className="flex items-center gap-2 pl-3 pr-7 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors">
+                  {/* Workspace row. Per UX requirement, only the chevron
+                      toggles the board list — clicking the title/name does
+                      nothing. The row is a div (not a button) so accidental
+                      title clicks don't collapse the workspace. */}
+                  <div
+                    className="flex items-center gap-2 pl-3 pr-7 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors cursor-default">
                     <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 text-white text-[10px] font-bold"
                       style={{ backgroundColor: ws.color || '#0073ea' }}>
                       {ws.name.charAt(0).toUpperCase()}
@@ -662,8 +685,16 @@ export default function Sidebar({ collapsed, onToggle }) {
                     {ws.workspaceMembers?.length > 0 && (
                       <span className="text-[10px] text-sidebar-text/40 mr-1">{ws.workspaceMembers.length}</span>
                     )}
-                    <ChevronDown size={13} className={`text-sidebar-text/40 transition-transform duration-150 flex-shrink-0 ${isOpen ? '' : '-rotate-90'}`} />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setOpenWorkspaces(prev => ({ ...prev, [ws.id]: !isOpen })); }}
+                      aria-expanded={isOpen}
+                      aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${ws.name} workspace`}
+                      title={isOpen ? 'Collapse workspace' : 'Expand workspace'}
+                      className="flex items-center justify-center p-0.5 -mr-0.5 rounded text-sidebar-text/40 hover:text-sidebar-text-active hover:bg-sidebar-hover/70 transition-colors flex-shrink-0 cursor-pointer">
+                      <ChevronDown size={13} className={`transition-transform duration-150 ${isOpen ? '' : '-rotate-90'}`} />
+                    </button>
+                  </div>
                   {/* Workspace hover menu — always rendered (every user can
                       personally pin/unpin), but each item inside is gated by
                       its own permission. Assistant managers with the
@@ -684,14 +715,14 @@ export default function Sidebar({ collapsed, onToggle }) {
                           <button onClick={() => { toggleWorkspacePin(ws.id); setWsActionMenu(null); }}
                             className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
                             {wsUsage[ws.id]?.pinned
-                              ? <><PinOff size={12} /> Unpin from top</>
-                              : <><Pin size={12} /> Pin to top</>
+                              ? <><PinOff size={12} /> {t('sidebar.unpinFromTop')}</>
+                              : <><Pin size={12} /> {t('sidebar.pinToTop')}</>
                             }
                           </button>
                           {canCreateBoardPerm && (
                             <button onClick={() => { setWsActionMenu(null); openCreateBoardForWorkspace(ws); }}
                               className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                              <Plus size={12} /> Create Board
+                              <Plus size={12} /> {t('sidebar.createBoard')}
                             </button>
                           )}
                           {/* "Rearrange Boards" is available to every tier
@@ -705,18 +736,18 @@ export default function Sidebar({ collapsed, onToggle }) {
                               still control Rename / Archive Workspace below. */}
                           <button onClick={() => { setWsActionMenu(null); openRearrangeForWorkspace(ws); }}
                             className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                            <ArrowUpDown size={12} /> Rearrange Boards
+                            <ArrowUpDown size={12} /> {t('sidebar.rearrangeBoards')}
                           </button>
                           {canEditWsPerm && (
                             <button onClick={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); setWsActionMenu(null); }}
                               className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100">
-                              <Edit3 size={12} /> Rename
+                              <Edit3 size={12} /> {t('common.rename')}
                             </button>
                           )}
                           {canEditWsPerm && (
                             <button onClick={() => { if (confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) { api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData()); } setWsActionMenu(null); }}
                               className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-500/10">
-                              <Archive size={12} /> Archive Workspace
+                              <Archive size={12} /> {t('sidebar.archiveWorkspace')}
                             </button>
                           )}
                         </div>
@@ -752,10 +783,10 @@ export default function Sidebar({ collapsed, onToggle }) {
                           </button>
                         )}
                         {wsBoards.length === 0 && searchQuery && (
-                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards match</p>
+                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsMatch')}</p>
                         )}
                         {wsBoards.length === 0 && !searchQuery && (
-                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">No boards yet</p>
+                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsYet')}</p>
                         )}
                       </div>
                     );
@@ -773,7 +804,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                 className={`transition-all ${dragOverWsId === 'unassigned' ? 'bg-sidebar-hover ring-1 ring-sidebar-accent rounded-md' : ''}`}>
                 {workspaces.length > 0 && (
                   <div className="px-3 py-1 mt-1">
-                    <span className="text-[10px] uppercase tracking-wide text-sidebar-text/40">Other Boards</span>
+                    <span className="text-[10px] uppercase tracking-wide text-sidebar-text/40">{t('sidebar.otherBoards')}</span>
                   </div>
                 )}
                 <div className="ml-4 border-l border-sidebar-border pl-1">
@@ -783,7 +814,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             )}
 
             {boards.length === 0 && workspaces.length === 0 && (
-              <p className="text-sidebar-text/40 text-[11px] px-3 py-2">No boards yet</p>
+              <p className="text-sidebar-text/40 text-[11px] px-3 py-2">{t('sidebar.noBoardsYet')}</p>
             )}
 
             {/* Workspace-level Show More toggle. Only renders when more than
@@ -806,7 +837,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             <div className="px-2 pb-1">
               <button onClick={() => setShowCreateWorkspace(true)}
                 className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
-                <Plus size={14} /> Add new workspace
+                <Plus size={14} /> {t('sidebar.addNewWorkspace')}
               </button>
             </div>
           )}
@@ -824,7 +855,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                   setShowCreateBoard(true);
                 }}
                 className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
-                <FolderKanban size={14} /> Create new board
+                <FolderKanban size={14} /> {t('sidebar.createNewBoard')}
               </button>
             </div>
           )}
@@ -835,7 +866,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           <button
             onClick={openProfileModal}
             className="flex items-center gap-2.5 w-full rounded-md px-1.5 py-1 hover:bg-sidebar-hover transition-all duration-150"
-            title="Account Settings"
+            title={t('sidebar.accountSettings')}
           >
             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#0073ea] to-[#00a0f5] flex items-center justify-center text-white text-[10px] font-semibold flex-shrink-0">
               {user?.name?.charAt(0)?.toUpperCase() || 'U'}

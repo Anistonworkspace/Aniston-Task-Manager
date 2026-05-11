@@ -93,6 +93,17 @@ export function connect(token) {
     try { socket.disconnect(); } catch { /* ignore */ }
   });
 
+  // Single-active-session: server emits this on the OLD socket(s) when a
+  // new device confirms the takeover via /auth/login/force or
+  // /auth/login/force-sso. AuthContext's listener handles the user-
+  // visible cleanup (state reset + redirect to /login with a banner);
+  // we just latch out so reconnect doesn't fire against a now-revoked
+  // session.
+  socket.on('auth:force_logout', () => {
+    logoutLatch = true;
+    try { socket.disconnect(); } catch { /* ignore */ }
+  });
+
   return socket;
 }
 

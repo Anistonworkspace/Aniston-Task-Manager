@@ -65,16 +65,43 @@ export default function RecurringTemplateModal({
     setForm(buildInitialForm(template, { user, presetBoardId, browserTz }));
     // Fetch options each time the modal opens — cheap, and ensures fresh data
     // (e.g. a board the user just created shows up immediately).
+    //
+    // GET /boards paginates with default limit=20, max=100. For a picker UX
+    // we need the ENTIRE visible-to-viewer set, not just the first page —
+    // otherwise deployments with >20 boards silently lose the long tail
+    // (controller orders by createdAt DESC, so older / often-used boards
+    // disappear from the dropdown in production). We fetch page 1 at the
+    // max page size, then fan out the remaining pages in parallel. Backend
+    // visibility filtering (boardVisibilityService) still applies on every
+    // page, so this never widens what the viewer can see — it only stops
+    // the page-1 truncation from hiding boards the server already cleared.
     let cancelled = false;
     (async () => {
       setOptionsLoading(true);
       try {
-        const [boardsRes, usersRes] = await Promise.all([
-          api.get('/boards'),
+        const PAGE_SIZE = 100;
+        const [firstBoardsRes, usersRes] = await Promise.all([
+          api.get(`/boards?limit=${PAGE_SIZE}&page=1`),
           api.get('/auth/assignable-users'),
         ]);
         if (cancelled) return;
-        const allBoards = boardsRes.data.boards || boardsRes.data || [];
+        let allBoards = firstBoardsRes.data.boards || firstBoardsRes.data || [];
+        const pagination = firstBoardsRes.data.pagination;
+        const totalPages = pagination && Number.isInteger(pagination.totalPages)
+          ? pagination.totalPages
+          : 1;
+        if (totalPages > 1) {
+          const morePageRequests = [];
+          for (let p = 2; p <= totalPages; p += 1) {
+            morePageRequests.push(api.get(`/boards?limit=${PAGE_SIZE}&page=${p}`));
+          }
+          const restResponses = await Promise.all(morePageRequests);
+          if (cancelled) return;
+          for (const r of restResponses) {
+            const rows = r.data.boards || r.data || [];
+            allBoards = allBoards.concat(rows);
+          }
+        }
         const allUsers = usersRes.data.users || usersRes.data || [];
         setBoards(allBoards.filter(b => !b.isArchived));
         setUsers(allUsers);

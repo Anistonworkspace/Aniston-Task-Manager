@@ -1383,6 +1383,96 @@ exports.getMyFeedback = async (req, res) => {
 // Aggregates approvals/extensions/delegations/help requests into one feed.
 // Behavior preserved from the previous controller — augmented to include the
 // new approvalFlows rows so the UI can render the new timeline if it wants.
+// ─── GET /api/task-extras/pending-counts ────────────────────────────────────
+//
+// Lightweight aggregate that powers the global "Approvals & Requests" badge in
+// the sidebar. Only counts items where the *calling* user is the one who
+// needs to act — submitter-side rows ("My Submissions") are deliberately
+// excluded because the badge is meant to surface work the user owes to
+// someone else, not work they're waiting on.
+//
+// Response shape: { approvals, extensions, help, total }
+//
+// Counts:
+//   - approvals  : tasks where the caller is the CURRENT pending approver
+//                  (mirrors getPendingApprovals: caller has a pending row in
+//                  task_approval_flows AND no other row at a lower stage is
+//                  still pending). This excludes the submitter's level-0 row.
+//   - extensions : DueDateExtension rows with status='pending', counted only
+//                  for users who can actually approve them (Tier 1/2 +
+//                  super admins). Hierarchy-manager scoped extensions are
+//                  not included in the badge to keep the query O(1) — the
+//                  page itself shows them when opened. Non-managers see 0.
+//   - help       : HelpRequest rows where the caller is the helper
+//                  (requestedTo) and the request hasn't been resolved.
+//                  Help requests the caller themselves filed are NOT counted
+//                  (those are "my submissions" semantically).
+exports.getActionablePendingCounts = async (req, res) => {
+  try {
+    const user = req.user;
+
+    // 1) Approvals — caller is the current pending approver
+    const myPending = await TaskApprovalFlow.findAll({
+      where: { userId: user.id, status: 'pending' },
+      attributes: ['taskId', 'level', 'stage'],
+      raw: true,
+    });
+
+    const actionableTaskIds = [];
+    for (const row of myPending) {
+      const myStage = row.stage != null ? row.stage : row.level;
+      const lower = await TaskApprovalFlow.count({
+        where: {
+          taskId: row.taskId,
+          status: 'pending',
+          [Op.and]: [
+            sequelize.where(sequelize.literal('COALESCE(stage, level)'), { [Op.lt]: myStage }),
+          ],
+        },
+      });
+      if (lower === 0) actionableTaskIds.push(row.taskId);
+    }
+
+    let approvalsCount = 0;
+    if (actionableTaskIds.length > 0) {
+      approvalsCount = await Task.count({
+        where: {
+          id: { [Op.in]: actionableTaskIds },
+          isArchived: false,
+          approvalStatus: 'pending_approval',
+        },
+      });
+    }
+
+    // 2) Extensions — only privileged users can act on them. Non-managers
+    //    see 0 here even if they're a hierarchy manager for some task; the
+    //    page still surfaces those when opened. Trade-off documented above.
+    const isPrivileged =
+      user.role === 'admin' || user.role === 'manager' || user.isSuperAdmin === true;
+    const extensionsCount = isPrivileged
+      ? await DueDateExtension.count({ where: { status: 'pending' } })
+      : 0;
+
+    // 3) Help requests — caller is the helper and the ticket is still open
+    const helpCount = await HelpRequest.count({
+      where: {
+        requestedTo: user.id,
+        status: { [Op.ne]: 'resolved' },
+      },
+    });
+
+    const total = approvalsCount + extensionsCount + helpCount;
+
+    res.json({
+      success: true,
+      data: { approvals: approvalsCount, extensions: extensionsCount, help: helpCount, total },
+    });
+  } catch (err) {
+    console.error('[Approval] getActionablePendingCounts error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch pending counts.' });
+  }
+};
+
 exports.getWorkflowItems = async (req, res) => {
   try {
     const user = req.user;

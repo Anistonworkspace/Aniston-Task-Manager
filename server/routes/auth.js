@@ -3,6 +3,9 @@ const { body } = require('express-validator');
 const { authenticate, managerOrAdmin } = require('../middleware/auth');
 const {
   login,
+  forceLogin,
+  forceLoginSSO,
+  getPendingSsoInfo,
   getProfile,
   updateProfile,
   getAllUsers,
@@ -46,6 +49,39 @@ router.post(
   ],
   login
 );
+
+// ─── POST /api/auth/login/force ──────────────────────────────
+// Confirm-and-take-over for the single-active-session flow. Consumes
+// the pending-login token returned by /api/auth/login when
+// SESSION_ALREADY_ACTIVE, revokes every existing session for the
+// user, force-disconnects their sockets (auth:force_logout), and
+// establishes a fresh session.
+//
+// The endpoint sits behind the existing authLimiter applied at
+// /api/auth/login (50/15m per IP) — the global generalLimiter still
+// protects this path even though authLimiter is only mounted at the
+// /login URL.
+router.post(
+  '/login/force',
+  [
+    body('pendingLoginToken')
+      .isString().withMessage('pendingLoginToken is required')
+      .isLength({ min: 32, max: 128 }).withMessage('pendingLoginToken malformed'),
+  ],
+  forceLogin
+);
+
+// ─── POST /api/auth/login/force-sso ──────────────────────────
+// SSO equivalent of /login/force. Reads the pending-SSO token from
+// the httpOnly cookie set by the Microsoft callback when it detected
+// a session conflict; no request body.
+router.post('/login/force-sso', forceLoginSSO);
+
+// ─── GET /api/auth/login/pending-sso ─────────────────────────
+// Read-only inspect endpoint the conflict page calls to surface
+// "Continue as <name>?" without consuming the pending-SSO token.
+// Always returns 401 if the cookie is missing/expired/invalid.
+router.get('/login/pending-sso', getPendingSsoInfo);
 
 // ─── GET /api/auth/profile ───────────────────────────────────
 router.get('/profile', authenticate, getProfile);
@@ -135,6 +171,10 @@ router.put(
       .optional({ nullable: true })
       .isIn(['compact', 'default', 'comfortable', 'large'])
       .withMessage('fontSizePreference must be one of: compact, default, comfortable, large'),
+    body('language')
+      .optional({ nullable: true })
+      .isIn(['en', 'hi'])
+      .withMessage('language must be one of: en, hi'),
   ],
   updateProfile
 );

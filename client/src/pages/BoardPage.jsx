@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Search, Filter, SortAsc, BarChart3, Plus, Columns3, Calendar, Settings,
+  Search, Filter, SortAsc, Plus, Columns3, Calendar, Settings,
   LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal,
   AlertCircle
 } from 'lucide-react';
-import { DragDropContext } from '@hello-pangea/dnd';
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
 import { useUndo } from '../context/UndoContext';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
@@ -159,6 +160,7 @@ function CreateGroupDialog({ open, onClose, onCreate }) {
 // Monday.com-style dropdown for "New task" split button
 function NewTaskDropdown({ onNewGroup, onImport, canCreateGroup, canImport, onClose }) {
   const ref = React.useRef(null);
+  const t = useT();
   React.useEffect(() => {
     function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) onClose(); }
     document.addEventListener('mousedown', handleClick);
@@ -171,14 +173,14 @@ function NewTaskDropdown({ onNewGroup, onImport, canCreateGroup, canImport, onCl
         <button onClick={onNewGroup}
           className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="7" width="12" height="2" rx="0.5" fill="#676879"/><rect x="2" y="11" width="12" height="2" rx="0.5" fill="#676879"/></svg>
-          New group of tasks
+          {t('board.toolbar.newGroupOfTasks')}
         </button>
       )}
       {canImport && (
         <button onClick={onImport}
           className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
           <Download size={15} className="text-[#676879]" />
-          Import tasks
+          {t('board.toolbar.importTasks')}
         </button>
       )}
     </div>
@@ -190,6 +192,7 @@ export default function BoardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, canManage, isSuperAdmin, permissionGrants, effectivePermissions, granularPermissions } = useAuth();
+  const t = useT();
   const canCreateTask = canUserFn(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
   const canEditBoard = canUserFn(user?.role, 'edit_board', isSuperAdmin, permissionGrants, effectivePermissions);
   // create_group is now base-allowed for every role. The user must already be
@@ -239,16 +242,36 @@ export default function BoardPage() {
   });
   const [showHideColumns, setShowHideColumns] = useState(false);
 
-  // Board columns — merge default + custom
+  // Board columns — merge default + custom.
+  //
+  // Architecture note: the previous deploy stored references + links in
+  // `board.columns` (the JSONB column on the Board model) via a server-side
+  // backfill, but the FRONTEND never reads `board.columns` — it only reads
+  // `DEFAULT_COLUMNS` (hardcoded) and `board.customColumns` (user-added).
+  // That's why those columns were missing from the UI even though the DB
+  // had them. The fix is to auto-append the new default columns here,
+  // mirroring the existing pattern for `progress` and `label`. We dedup
+  // on BOTH id and type so an existing custom column of the same kind
+  // (e.g. a user manually added a 'references' column) doesn't render
+  // twice. The hidden-columns localStorage filter still applies — if a
+  // user explicitly hid the column via the Hide menu, that intent wins.
   const allColumns = useMemo(() => {
     const boardCustomCols = board?.customColumns || [];
     const baseCols = [...DEFAULT_COLUMNS];
-    // Add progress & label columns by default
-    if (!baseCols.find(c => c.id === 'progress')) {
+    if (!baseCols.find(c => c.id === 'progress' || c.type === 'progress')) {
       baseCols.push({ id: 'progress', title: 'Progress', type: 'progress', width: 130 });
     }
-    if (!baseCols.find(c => c.id === 'label')) {
+    if (!baseCols.find(c => c.id === 'label' || c.type === 'label')) {
       baseCols.push({ id: 'label', title: 'Labels', type: 'label', width: 120 });
+    }
+    // Combine base + custom for the dedup check so a user-added column
+    // of the same type takes precedence (we don't append a duplicate).
+    const combined = [...baseCols, ...boardCustomCols];
+    if (!combined.find(c => c.id === 'references' || c.type === 'references')) {
+      baseCols.push({ id: 'references', title: 'Reference', type: 'references', width: 180 });
+    }
+    if (!combined.find(c => c.id === 'links' || c.type === 'links')) {
+      baseCols.push({ id: 'links', title: 'Link/URL', type: 'links', width: 180 });
     }
     return [...baseCols, ...boardCustomCols];
   }, [board?.customColumns]);
@@ -487,6 +510,48 @@ export default function BoardPage() {
     setTasks(prev => prev.map(t => t.id === data.taskId ? { ...t, _receipt: data.summary } : t));
   });
 
+  // References / Links — multi-value columns saved by ReferenceCell &
+  // LinksCell directly against /api/task-references and /api/task-links.
+  // The emitting tab already patched its own state; this listener handles
+  // OTHER tabs / other users with the same board open. We refetch the
+  // single task's collections rather than the whole board to keep it cheap.
+  useRealtimeEvent('task:references_updated', async (data) => {
+    const tId = data?.taskId;
+    if (!tId) return;
+    try {
+      const res = await api.get(`/task-references/task/${tId}`);
+      const references = res.data?.references || res.data?.data?.references || [];
+      setTasks(prev => prev.map(t => t.id === tId ? { ...t, references } : t));
+      setSelectedTask(prev => (prev && prev.id === tId ? { ...prev, references } : prev));
+    } catch { /* non-fatal — next full refetch will heal */ }
+  });
+  useRealtimeEvent('task:links_updated', async (data) => {
+    const tId = data?.taskId;
+    if (!tId) return;
+    try {
+      const res = await api.get(`/task-links/task/${tId}`);
+      const taskLinks = res.data?.links || res.data?.data?.links || [];
+      setTasks(prev => prev.map(t => t.id === tId ? { ...t, taskLinks } : t));
+      setSelectedTask(prev => (prev && prev.id === tId ? { ...prev, taskLinks } : prev));
+    } catch { /* non-fatal */ }
+  });
+
+  // Labels — emitted by /api/labels/assign and /api/labels/unassign. We
+  // refetch the task's labels via the dedicated /labels/task/:id endpoint
+  // (cheap, returns just [{id, name, color}]) and patch both the row and
+  // the open modal so the Labels column + the modal's Labels tile stay
+  // identical without a full board reload.
+  useRealtimeEvent('task:labels_updated', async (data) => {
+    const tId = data?.taskId;
+    if (!tId) return;
+    try {
+      const res = await api.get(`/labels/task/${tId}`);
+      const labels = res.data?.labels || res.data?.data?.labels || [];
+      setTasks(prev => prev.map(t => t.id === tId ? { ...t, labels } : t));
+      setSelectedTask(prev => (prev && prev.id === tId ? { ...prev, labels } : prev));
+    } catch { /* non-fatal */ }
+  });
+
   async function handleAddTask(groupId, title, description) {
     // Quick-create payload: send ONLY the fields the user actually picked.
     // Reasons:
@@ -502,20 +567,64 @@ export default function BoardPage() {
     // Position is the only derived value we still compute client-side
     // because the backend's append-to-end heuristic uses Task.max(), which
     // can lag behind the freshly-rendered list during rapid quick-adds.
+
+    // ── Defensive client-side normalization ────────────────────────────
+    // The production 400 audit showed every intermittent failure came from
+    // an empty / over-long title or an accidentally-stringified groupId.
+    // Normalize at the boundary so the only requests that leave the page
+    // are ones the backend will accept; surface a specific, actionable
+    // toast for anything we can catch locally.
+    const cleanTitle = typeof title === 'string' ? title.trim() : '';
+    if (!cleanTitle) {
+      toastError('Task title is required.');
+      const err = new Error('Task title is required.');
+      err.code = 'client_validation';
+      throw err;
+    }
+    if (cleanTitle.length > 300) {
+      toastError('Task title is too long (max 300 characters). Please shorten it and try again.');
+      const err = new Error('Task title is too long.');
+      err.code = 'client_validation';
+      throw err;
+    }
+
+    const cleanGroupId = typeof groupId === 'string' && groupId.trim() !== ''
+      ? groupId.trim() : undefined;
+    if (!boardId) {
+      // boardId is set from useParams — if it's somehow missing the page is in
+      // a broken state. Fail fast with a clear message rather than 400ing on
+      // the server.
+      toastError('Cannot add task: this board is no longer loaded. Please refresh the page.');
+      const err = new Error('Missing boardId.');
+      err.code = 'client_validation';
+      throw err;
+    }
+
     const payload = {
-      title, boardId, groupId,
-      position: tasks.filter(t => t.groupId === groupId).length,
+      title: cleanTitle,
+      boardId,
+      // Compute position client-side against the freshest tasks snapshot so
+      // back-to-back quick-adds don't all land on the same position. The
+      // backend re-derives position via Task.max(); this is purely a
+      // tie-breaker so the optimistic row appears at the end of the group.
+      position: tasks.filter(t => t.groupId === cleanGroupId).length,
     };
+    if (cleanGroupId) payload.groupId = cleanGroupId;
     const trimmedDescription = typeof description === 'string' ? description.trim() : '';
     if (trimmedDescription) {
       payload.description = trimmedDescription;
     }
     try {
-      const res = await api.post('/tasks', payload);
+      // `_silent: true` keeps the global api-error toast from firing on top
+      // of the local toast below — otherwise a 4xx surfaces TWO toasts
+      // ("Request failed with status code 400" from the axios fallback +
+      // "Failed to add task..." here), which is the exact double-toast
+      // reported in production.
+      const res = await api.post('/tasks', payload, { _silent: true });
       const newTask = res.data.task || res.data;
       setTasks(prev => [...prev, newTask]);
       pushAction({
-        description: `Added task "${title}"`,
+        description: `Added task "${cleanTitle}"`,
         undo: async () => {
           await api.put(`/tasks/${newTask.id}`, { isArchived: true });
           setTasks(prev => prev.filter(t => t.id !== newTask.id));
@@ -528,7 +637,14 @@ export default function BoardPage() {
       return newTask;
     } catch (err) {
       console.error('[BoardPage] handleAddTask error:', err);
-      const apiMsg = err?.response?.data?.message;
+      // Prefer the server-supplied message (we now ALWAYS return a `message`
+      // field — see taskController.createTask). Fall through to the
+      // validator-error array if a legacy/older deploy is still returning
+      // `errors` without a `message`. Last resort is the generic toast.
+      const data = err?.response?.data || {};
+      const apiMsg = data.message
+        || (Array.isArray(data.errors) && data.errors[0] && (data.errors[0].msg || data.errors[0].message))
+        || null;
       toastError(apiMsg || 'Failed to add task. Please try again.');
       // Re-throw so inline callers (e.g. TaskGroup) can keep the typed input
       // and avoid clearing the row on failure.
@@ -973,6 +1089,39 @@ export default function BoardPage() {
     if (!destination) return;
     if (source.droppableId === destination.droppableId && source.index === destination.index) return;
 
+    if (type === 'GROUP') {
+      // Group reorder is board-global: every viewer sees the same order, so
+      // we PUT the full new ordering to the server and let the socket
+      // 'board:updated' broadcast push the change to other open sessions.
+      // Local optimistic update keeps the drag feeling instant; on failure
+      // we re-fetch the board to roll back to the server's truth.
+      const currentGroups = Array.isArray(board?.groups) ? board.groups : [];
+      if (currentGroups.length === 0) return;
+      const reordered = [...currentGroups];
+      const [moved] = reordered.splice(source.index, 1);
+      if (!moved) return;
+      reordered.splice(destination.index, 0, moved);
+      const normalized = reordered.map((g, i) => ({ ...g, position: i }));
+
+      const prevGroups = currentGroups;
+      setBoard(prev => prev ? { ...prev, groups: normalized } : prev);
+
+      try {
+        await api.put(`/boards/${boardId}/groups/reorder`, {
+          groups: normalized.map(g => ({ id: g.id })),
+        });
+      } catch (err) {
+        // Roll back optimistic UI and surface the error so the user knows
+        // their drag didn't persist. loadBoard() would also work but a
+        // direct state revert is cheaper and matches the optimistic pattern
+        // used elsewhere in this file.
+        setBoard(prev => prev ? { ...prev, groups: prevGroups } : prev);
+        const msg = err?.response?.data?.message || 'Failed to save group order. Please try again.';
+        toastError(msg);
+      }
+      return;
+    }
+
     if (type === 'TASK') {
       const sourceGroupId = source.droppableId;
       const destGroupId = destination.droppableId;
@@ -1070,12 +1219,12 @@ export default function BoardPage() {
       <div className="px-6 pt-4 pb-1">
         {/* Board Title */}
         <div className="flex items-center gap-2 mb-3">
-          <h1 className="text-[22px] font-bold text-[#323338]">{board?.name || 'Board'}</h1>
+          <h1 className="text-[22px] font-bold text-[#323338]">{board?.name || t('header.pages.board')}</h1>
           {board?.workspace?.name && (
             <span className="text-sm font-medium text-text-tertiary bg-surface px-2.5 py-0.5 rounded-full">{board.workspace.name}</span>
           )}
           {canManage && (
-            <button onClick={() => setShowSettings(true)} className="p-1 rounded hover:bg-[#dcdfec] text-[#c4c4c4] hover:text-[#676879] transition-colors" title="Board Settings">
+            <button onClick={() => setShowSettings(true)} className="p-1 rounded hover:bg-[#dcdfec] text-[#c4c4c4] hover:text-[#676879] transition-colors" title={t('board.toolbar.boardSettings')}>
               <Settings size={16} />
             </button>
           )}
@@ -1084,10 +1233,10 @@ export default function BoardPage() {
         {/* View Tabs — Monday.com style: Main table ... Gantt Calendar Kanban + */}
         <div className="flex items-center gap-0 mb-3 border-b border-[#e6e9ef]">
           {[
-            { id: 'table', label: 'Main table' },
-            { id: 'gantt', label: 'Gantt' },
-            { id: 'calendar', label: 'Calendar' },
-            { id: 'kanban', label: 'Kanban' },
+            { id: 'table', label: t('board.tabs.mainTable') },
+            { id: 'gantt', label: t('board.tabs.gantt') },
+            { id: 'calendar', label: t('board.tabs.calendar') },
+            { id: 'kanban', label: t('board.tabs.kanban') },
           ].map(tab => (
             <button key={tab.id} onClick={() => setViewTab(tab.id)}
               className={`px-3 py-2 text-[14px] border-b-[3px] -mb-px transition-all duration-100 ${
@@ -1116,7 +1265,7 @@ export default function BoardPage() {
               {canCreateGroup && (
                 <button onClick={handleOpenCreateGroup}
                   className={`flex items-center gap-1.5 h-[34px] px-4 bg-[#0073ea] hover:bg-[#0060c2] text-white text-[13px] font-medium transition-colors ${canEditBoard ? 'rounded-l-md' : 'rounded-md'}`}>
-                  <Plus size={14} strokeWidth={2.5} /> New group
+                  <Plus size={14} strokeWidth={2.5} /> {t('board.toolbar.newGroup')}
                 </button>
               )}
               {canEditBoard && (
@@ -1145,9 +1294,9 @@ export default function BoardPage() {
               const inp = document.querySelector('[data-search-input]');
               if (inp) { inp.style.width = '160px'; inp.focus(); }
             }} className={`flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] rounded-[4px] transition-colors ${searchQuery ? 'bg-[#cce5ff] text-[#0073ea]' : 'text-[#676879] hover:bg-[#dcdfec]'}`}>
-              <Search size={14} /> Search
+              <Search size={14} /> {t('board.toolbar.search')}
             </button>
-            <input data-search-input type="text" placeholder="Search tasks..." value={searchQuery}
+            <input data-search-input type="text" placeholder={t('board.toolbar.searchTasks')} value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onBlur={(e) => { if (!e.target.value) e.target.style.width = '0'; }}
               className={`bg-transparent border-none outline-none text-[14px] text-[#323338] transition-all duration-300 ${searchQuery ? 'w-[160px] border-b border-[#0073ea] ml-1' : 'w-0'}`} />
@@ -1157,7 +1306,7 @@ export default function BoardPage() {
               className={`flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] rounded-[4px] transition-colors ${
                 showFilters || activeFilterCount > 0 ? 'bg-[#cce5ff] text-[#0073ea]' : 'text-[#676879] hover:bg-[#dcdfec]'
               }`}>
-              <Filter size={14} /> Filter
+              <Filter size={14} /> {t('board.toolbar.filter')}
               {activeFilterCount > 0 && <span className="text-[11px] font-bold">/ {activeFilterCount}</span>}
             </button>
 
@@ -1170,12 +1319,12 @@ export default function BoardPage() {
                 className={`flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] rounded-[4px] transition-colors ${
                   hiddenColumns.length > 0 ? 'bg-[#cce5ff] text-[#0073ea]' : 'text-[#676879] hover:bg-[#dcdfec]'
                 }`}>
-                <Eye size={14} /> Hide
+                <Eye size={14} /> {t('board.toolbar.hide')}
                 {hiddenColumns.length > 0 && <span className="text-[11px] font-bold">/ {hiddenColumns.length}</span>}
               </button>
               {showHideColumns && (
                 <div className="absolute top-full left-0 mt-1 w-52 bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] z-50 dropdown-enter p-2">
-                  <p className="text-[11px] font-medium text-[#676879] px-2 pb-1.5">Toggle Columns</p>
+                  <p className="text-[11px] font-medium text-[#676879] px-2 pb-1.5">{t('board.toolbar.toggleColumns')}</p>
                   {allColumns.map(col => (
                     <label key={col.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#f5f6f8] cursor-pointer transition-colors">
                       <input type="checkbox" checked={!hiddenColumns.includes(col.id)} onChange={() => toggleHideColumn(col.id)}
@@ -1193,21 +1342,16 @@ export default function BoardPage() {
           <div className="ml-auto flex items-center gap-1">
             {canEditBoard && (
               <button onClick={() => setShowCSVImport(true)} className="flex items-center gap-1 px-2 py-[6px] text-[13px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
-                <Upload size={13} /> Import
+                <Upload size={13} /> {t('board.toolbar.import')}
               </button>
             )}
             <button onClick={handleExportCSV} className="flex items-center gap-1 px-2 py-[6px] text-[13px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
-              <Download size={13} /> Export
+              <Download size={13} /> {t('board.toolbar.export')}
             </button>
             {canManage && (
-              <>
-                <button onClick={() => setShowAutomations(true)} className="flex items-center gap-1 px-2 py-[6px] text-[13px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
-                  <Zap size={13} /> Automate
-                </button>
-                <button onClick={() => navigate(`/boards/${boardId}/dashboard`)} className="flex items-center gap-1 px-2 py-[6px] text-[13px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
-                  <BarChart3 size={13} />
-                </button>
-              </>
+              <button onClick={() => setShowAutomations(true)} className="flex items-center gap-1 px-2 py-[6px] text-[13px] text-[#676879] hover:bg-[#dcdfec] rounded-[4px] transition-colors">
+                <Zap size={13} /> {t('board.toolbar.automate')}
+              </button>
             )}
           </div>
         </div>
@@ -1267,13 +1411,13 @@ export default function BoardPage() {
                 <div className="w-16 h-16 rounded-full bg-danger/10 flex items-center justify-center mb-4">
                   <AlertCircle size={28} className="text-danger" />
                 </div>
-                <h3 className="text-lg font-semibold text-[#323338] mb-1">We couldn't load this board</h3>
-                <p className="text-sm text-[#676879] max-w-sm mb-4">Something went wrong on our side. Please refresh the page or try again in a moment.</p>
+                <h3 className="text-lg font-semibold text-[#323338] mb-1">{t('board.loadFailedTitle')}</h3>
+                <p className="text-sm text-[#676879] max-w-sm mb-4">{t('board.loadFailedSubtitle')}</p>
                 <button
                   onClick={() => { setLoading(true); setLoadError(null); loadBoard(); loadTasks(); }}
                   className="px-4 py-2 text-sm rounded-md bg-[#0073ea] text-white hover:bg-[#0060c2] transition-colors font-medium"
                 >
-                  Retry
+                  {t('common.retry')}
                 </button>
               </div>
             )}
@@ -1285,56 +1429,81 @@ export default function BoardPage() {
                 <div className="w-16 h-16 rounded-full bg-surface-100 flex items-center justify-center mb-4">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c4c4c4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="2"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>
                 </div>
-                <h3 className="text-lg font-semibold text-[#323338] mb-1">No tasks assigned to you</h3>
-                <p className="text-sm text-[#676879] max-w-sm">You don't have any tasks on this board yet. Tasks will appear here once a manager assigns them to you.</p>
+                <h3 className="text-lg font-semibold text-[#323338] mb-1">{t('board.noTasksTitle')}</h3>
+                <p className="text-sm text-[#676879] max-w-sm">{t('board.noTasksSubtitle')}</p>
               </div>
             )}
-            {groups.map((group, idx) => {
-              const validGroupIds = groups.map(g => g.id);
-              const groupTasks = sortedTasks
-                .filter(t => t.groupId === group.id || ((!t.groupId || !validGroupIds.includes(t.groupId)) && group.id === groups[0]?.id));
-              return (
-                <TaskGroup
-                  key={group.id}
-                  group={group}
-                  tasks={groupTasks}
-                  members={members}
-                  columns={visibleColumns}
-                  boardId={boardId}
-                  boardStatuses={getBoardStatuses(board)}
-                  color={group.color}
-                  index={idx}
-                  onTaskClick={setSelectedTask}
-                  onTaskUpdate={handleTaskUpdate}
-                  onAddTask={handleAddTask}
-                  onArchiveTask={handleArchiveTask}
-                  onRequestExtension={setExtensionTask}
-                  onEditColumn={handleEditColumn}
-                  onAddColumn={handleAddColumn}
-                  onRemoveColumn={handleRemoveColumn}
-                  onHideColumn={toggleHideColumn}
-                  onResizeColumn={handleResizeColumn}
-                  onSort={setSortConfig}
-                  isDragEnabled={true}
-                  selectedTaskIds={selectedTaskIds}
-                  onSelectTask={handleSelectTask}
-                  onArchiveGroup={handleArchiveGroup}
-                  onRenameGroup={handleRenameGroup}
-                  onGroupBy={(col) => {
-                    const key = col.id === 'status' ? 'status' : col.id === 'date' ? 'dueDate' : col.id === 'priority' ? 'priority' : col.id;
-                    setSortConfig({ key, direction: 'asc' });
-                  }}
-                  onDuplicateColumn={handleDuplicateColumn}
-                  onChangeColumnType={handleChangeColumnType}
-                  onSetColumnRequired={handleSetColumnRequired}
-                  onSetColumnDescription={handleSetColumnDescription}
-                  onReorderColumns={handleReorderColumns}
-                  expandedTaskIds={expandedTaskIds}
-                  onToggleSubtasks={toggleSubtasksFor}
-                  onSubtaskCountsChange={handleSubtaskCountsChange}
-                />
-              );
-            })}
+            {/* Group-level drag layer. `type="GROUP"` is type-scoped so it
+                does not collide with the task-level Droppables (type="TASK")
+                that TaskGroup renders internally — @hello-pangea/dnd only
+                routes draggables to droppables of the matching type. Group
+                order is a board-global property persisted via PUT
+                /api/boards/:id/groups/reorder; the socket 'board:updated'
+                broadcast carries the new order to other open viewers. */}
+            <Droppable droppableId="board-groups" type="GROUP">
+              {(dropProvided) => (
+                <div ref={dropProvided.innerRef} {...dropProvided.droppableProps}>
+                  {groups.map((group, idx) => {
+                    const validGroupIds = groups.map(g => g.id);
+                    const groupTasks = sortedTasks
+                      .filter(t => t.groupId === group.id || ((!t.groupId || !validGroupIds.includes(t.groupId)) && group.id === groups[0]?.id));
+                    return (
+                      <Draggable key={group.id} draggableId={`group:${group.id}`} index={idx}>
+                        {(dragProvided, dragSnapshot) => (
+                          <div
+                            ref={dragProvided.innerRef}
+                            {...dragProvided.draggableProps}
+                            className={dragSnapshot.isDragging ? 'shadow-xl rounded-lg ring-1 ring-[#0073ea]/30' : ''}
+                          >
+                            <TaskGroup
+                              group={group}
+                              tasks={groupTasks}
+                              members={members}
+                              columns={visibleColumns}
+                              boardId={boardId}
+                              boardStatuses={getBoardStatuses(board)}
+                              color={group.color}
+                              index={idx}
+                              onTaskClick={setSelectedTask}
+                              onTaskUpdate={handleTaskUpdate}
+                              onAddTask={handleAddTask}
+                              onArchiveTask={handleArchiveTask}
+                              onRequestExtension={setExtensionTask}
+                              onEditColumn={handleEditColumn}
+                              onAddColumn={handleAddColumn}
+                              onRemoveColumn={handleRemoveColumn}
+                              onHideColumn={toggleHideColumn}
+                              onResizeColumn={handleResizeColumn}
+                              onSort={setSortConfig}
+                              isDragEnabled={true}
+                              selectedTaskIds={selectedTaskIds}
+                              onSelectTask={handleSelectTask}
+                              onArchiveGroup={handleArchiveGroup}
+                              onRenameGroup={handleRenameGroup}
+                              onGroupBy={(col) => {
+                                const key = col.id === 'status' ? 'status' : col.id === 'date' ? 'dueDate' : col.id === 'priority' ? 'priority' : col.id;
+                                setSortConfig({ key, direction: 'asc' });
+                              }}
+                              onDuplicateColumn={handleDuplicateColumn}
+                              onChangeColumnType={handleChangeColumnType}
+                              onSetColumnRequired={handleSetColumnRequired}
+                              onSetColumnDescription={handleSetColumnDescription}
+                              onReorderColumns={handleReorderColumns}
+                              expandedTaskIds={expandedTaskIds}
+                              onToggleSubtasks={toggleSubtasksFor}
+                              onSubtaskCountsChange={handleSubtaskCountsChange}
+                              groupDragHandleProps={dragProvided.dragHandleProps}
+                              isGroupDragging={dragSnapshot.isDragging}
+                            />
+                          </div>
+                        )}
+                      </Draggable>
+                    );
+                  })}
+                  {dropProvided.placeholder}
+                </div>
+              )}
+            </Droppable>
             </div>
           </div>
         </DragDropContext>

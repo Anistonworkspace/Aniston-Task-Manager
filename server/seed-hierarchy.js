@@ -1,5 +1,20 @@
 const { sequelize } = require('./config/db');
 
+// ── Production safety guard ─────────────────────────────────────────────────
+// This script issues raw INSERT/UPDATE statements against `hierarchy_levels`
+// and `users`, including a re-derivation of `users.hierarchyLevel` from
+// `role`. The deploy workflow invokes it unconditionally after a successful
+// health check, which means it would silently overwrite hand-tuned
+// hierarchyLevel values in production on every push to main.
+//
+// Default behavior in production is now SKIP. Set ALLOW_PROD_HIERARCHY_SEED=true
+// to run it intentionally (e.g. for a one-off bootstrap of a fresh prod DB).
+// Local/dev/test environments are unaffected.
+if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PROD_HIERARCHY_SEED !== 'true') {
+  console.log('Skipping hierarchy seed in production. Set ALLOW_PROD_HIERARCHY_SEED=true to run intentionally.');
+  process.exit(0);
+}
+
 const DEFAULT_LEVELS = [
   { name: 'intern', label: 'Intern', order: 0, color: '#94a3b8', icon: 'GraduationCap' },
   { name: 'member', label: 'Team Member', order: 1, color: '#00c875', icon: 'User' },

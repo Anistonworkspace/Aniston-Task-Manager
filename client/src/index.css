@@ -942,9 +942,171 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   .v3-pulse-dot,
   .v3-urgent-pulse,
   .v3-stagger > *,
-  .v3-lift {
+  .v3-lift,
+  .bento-tile,
+  .bento-grid {
     animation: none !important;
     transition: none !important;
   }
-  .v3-lift:hover { transform: none; }
+  .v3-lift:hover,
+  .bento-tile:hover { transform: none; }
+}
+
+/* ===== Asymmetric bento grid for Task Detail Modal ===== */
+.bento-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 76px;
+  gap: 10px;
+  grid-auto-flow: dense;
+  width: 100%;
+}
+.bento-tile {
+  position: relative;
+  background: #FFFFFF;
+  border: 1px solid #EFEFF1;
+  border-radius: 14px;
+  padding: 10px 12px;
+  /* overflow MUST be visible — dropdowns positioned absolutely inside
+     tiles get clipped otherwise. Visual clipping for backgrounds is
+     handled by the rounded border + background-clip:padding-box. */
+  overflow: visible;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  /* Only animate non-layout props — no transform on hover (avoids the
+     1px lift that fights with cursor entry/exit at tile boundaries and
+     causes the flicker users were reporting). */
+  transition: border-color 0.15s ease-out, background-color 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+.dark .bento-tile {
+  background: #1f2025;
+  border-color: #27272a;
+}
+.bento-tile:hover {
+  border-color: #E4E4E7;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
+}
+.dark .bento-tile:hover {
+  border-color: #3f3f46;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.bento-tile-tall { grid-row: span 2; }
+.bento-tile-wide { grid-column: span 2; }
+
+/* Tiles meant to be entirely clickable (e.g. the Approval summary —
+   clicking opens the Approval tab). Only these get pointer cursor;
+   everything else uses default. */
+.bento-tile-clickable { cursor: pointer; }
+.bento-tile-clickable:hover { background-color: rgba(0, 0, 0, 0.015); }
+.dark .bento-tile-clickable:hover { background-color: rgba(255, 255, 255, 0.02); }
+
+/* Tile typography — slightly compacted per spec */
+.tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #A1A1AA;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 6px;
+  font-feature-settings: 'tnum';
+}
+.tile-label .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.tile-headline {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  color: #18181B;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.dark .tile-headline { color: #FAFAFA; }
+.tile-headline-sm {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: #18181B;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.dark .tile-headline-sm { color: #FAFAFA; }
+.tile-sub {
+  font-size: 11px;
+  color: #52525B;
+  margin-top: 4px;
+}
+.dark .tile-sub { color: #A1A1AA; }
+.tile-micro {
+  font-size: 10px;
+  color: #A1A1AA;
+  margin-top: auto;
+  padding-top: 4px;
+  font-feature-settings: 'tnum';
+}
+.dark .tile-micro { color: #71717A; }
+
+/* Pastel tinted tile variants — premium color polish without neon */
+.bento-tile-approval-pending  { background: linear-gradient(135deg, #FFFBEB 0%, #FFFFFF 60%); border-color: rgba(217, 119, 6, 0.16); }
+.bento-tile-approval-approved { background: linear-gradient(135deg, #ECFDF5 0%, #FFFFFF 60%); border-color: rgba(16, 185, 129, 0.16); }
+.bento-tile-approval-rejected { background: linear-gradient(135deg, #FEF2F2 0%, #FFFFFF 60%); border-color: rgba(225, 29, 72, 0.18); }
+.bento-tile-approval-changes  { background: linear-gradient(135deg, #FFF7ED 0%, #FFFFFF 60%); border-color: rgba(234, 88, 12, 0.18); }
+.bento-tile-approval-none     { background: linear-gradient(135deg, #F4F4F5 0%, #FFFFFF 60%); border-color: rgba(161, 161, 170, 0.20); }
+.dark .bento-tile-approval-pending  { background: linear-gradient(135deg, rgba(217, 119, 6, 0.10) 0%, #1f2025 60%); border-color: rgba(217, 119, 6, 0.30); }
+.dark .bento-tile-approval-approved { background: linear-gradient(135deg, rgba(16, 185, 129, 0.10) 0%, #1f2025 60%); border-color: rgba(16, 185, 129, 0.30); }
+.dark .bento-tile-approval-rejected { background: linear-gradient(135deg, rgba(225, 29, 72, 0.10) 0%, #1f2025 60%); border-color: rgba(225, 29, 72, 0.30); }
+.dark .bento-tile-approval-changes  { background: linear-gradient(135deg, rgba(234, 88, 12, 0.10) 0%, #1f2025 60%); border-color: rgba(234, 88, 12, 0.30); }
+.dark .bento-tile-approval-none     { background: linear-gradient(135deg, rgba(161, 161, 170, 0.08) 0%, #1f2025 60%); border-color: rgba(161, 161, 170, 0.22); }
+
+.bento-tile-due       { background: linear-gradient(135deg, #FFFBEB 0%, #FFFFFF 80%); }
+.bento-tile-due-overdue { background: linear-gradient(135deg, #FEF2F2 0%, #FFFFFF 80%); border-color: rgba(225, 29, 72, 0.16); }
+.bento-tile-reminders { background: linear-gradient(135deg, #F0FDFA 0%, #FFFFFF 80%); }
+.bento-tile-people    { background: linear-gradient(135deg, #FAF5FF 0%, #FFFFFF 80%); }
+.dark .bento-tile-due         { background: linear-gradient(135deg, rgba(217, 119, 6, 0.07) 0%, #1f2025 80%); }
+.dark .bento-tile-due-overdue { background: linear-gradient(135deg, rgba(225, 29, 72, 0.10) 0%, #1f2025 80%); border-color: rgba(225, 29, 72, 0.28); }
+.dark .bento-tile-reminders   { background: linear-gradient(135deg, rgba(13, 148, 136, 0.08) 0%, #1f2025 80%); }
+.dark .bento-tile-people      { background: linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, #1f2025 80%); }
+
+/* Recurrence tile — soft purple gradient */
+.bento-tile-recurrence {
+  background: linear-gradient(135deg, #F5F3FF 0%, #FAFAFA 100%);
+  border-color: rgba(124, 58, 237, 0.12);
+}
+.dark .bento-tile-recurrence {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.10) 0%, #1f2025 100%);
+  border-color: rgba(124, 58, 237, 0.22);
+}
+
+/* Dashed inner divider for the People tile two-up split */
+.tile-divider-v {
+  border-left: 1px dashed #E4E4E7;
+}
+.dark .tile-divider-v { border-left-color: #27272a; }
+
+/* Subtask checkbox pop animation */
+.v3-check-pop {
+  animation: v3CheckPop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes v3CheckPop {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (max-width: 900px) {
+  /* Narrow viewport — collapse 3-col asymmetric bento to single-column stack */
+  .bento-grid {
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+  }
+  .bento-tile-tall { grid-row: span 1; }
+  .bento-tile-wide { grid-column: span 1; }
 }

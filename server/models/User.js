@@ -177,6 +177,21 @@ const User = sequelize.define(
         },
       },
     },
+    language: {
+      // ISO 639-1 code of the user's UI language. Only 'en' and 'hi' are
+      // currently supported; adding a new locale means appending it to the
+      // isIn validator below AND shipping a matching translation file under
+      // client/src/i18n/locales/. NULL means "use the app default" (English).
+      type: DataTypes.STRING(8),
+      allowNull: true,
+      defaultValue: null,
+      validate: {
+        isIn: {
+          args: [['en', 'hi']],
+          msg: 'language must be one of: en, hi',
+        },
+      },
+    },
   },
   {
     tableName: 'users',

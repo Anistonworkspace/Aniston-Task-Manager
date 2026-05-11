@@ -10,6 +10,8 @@ import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { useT } from '../../context/LanguageContext';
+import { translatePriority, translateStatus } from '../../utils/i18nLabels';
 import { openTaskFromAnywhere } from '../../utils/taskNavigation';
 import Avatar from '../common/Avatar';
 
@@ -32,6 +34,7 @@ const SMART_VIEWS_ALL = [
  * @param {boolean} showUnassigned - Whether to show the Unassigned smart view
  */
 export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle = '', showPersonFilter = true, showUnassigned = true }) {
+  const t = useT();
   const { user: currentUser } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -396,12 +399,12 @@ export default function RoleDashboard({ scope, title = 'My Dashboard', subtitle 
                       </td>
                       <td className="py-2.5 px-4 text-center">
                         <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold" style={{ backgroundColor: statusCfg.bgColor || '#c4c4c4', color: statusCfg.textColor || '#fff' }}>
-                          {statusCfg.label || task.status}
+                          {translateStatus(task.status, statusCfg.label || task.status, t)}
                         </span>
                       </td>
                       <td className="py-2.5 px-4 text-center">
                         <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold" style={{ backgroundColor: priorityCfg.bgColor || '#94a3b8', color: priorityCfg.textColor || '#fff' }}>
-                          {priorityCfg.label || task.priority}
+                          {translatePriority(task.priority, t, priorityCfg.label || task.priority)}
                         </span>
                       </td>
                       <td className="py-2.5 px-4">

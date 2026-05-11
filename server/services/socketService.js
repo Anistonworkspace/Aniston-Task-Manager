@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const { User, RefreshToken } = require('../models');
 const boardVisibility = require('./boardVisibilityService');
 
 // TODO(scaling): horizontal scaling requires a Socket.io adapter so that
@@ -81,6 +81,33 @@ const initializeSocket = (server) => {
 
       if (!user || !user.isActive) {
         return next(new Error('Invalid or inactive user'));
+      }
+
+      // Single-active-session check on the realtime channel. Mirrors
+      // the HTTP authenticate middleware: if the access token's `sid`
+      // points to a hard-revoked session, refuse the handshake. The
+      // browser receives the connect_error and falls through to the
+      // existing reconnect / login flow.
+      //
+      // Tokens without `sid` are legacy (pre-feature) and continue to
+      // be accepted until natural expiry — same compatibility window
+      // as the HTTP path.
+      if (decoded.sid) {
+        const session = await RefreshToken.findByPk(decoded.sid);
+        if (!session || (session.revokedAt && !session.replacedByJti)) {
+          return next(new Error('Session revoked'));
+        }
+        socket.data.sid = decoded.sid;
+      }
+
+      // passwordChangedAt check — closes audit F-07. A stolen access
+      // token can no longer ride the socket channel past a forced
+      // password reset.
+      if (user.passwordChangedAt && decoded.iat) {
+        const pwSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
+        if (decoded.iat + 1 < pwSec) {
+          return next(new Error('Session expired'));
+        }
       }
 
       socket.user = user.toJSON();
@@ -354,17 +381,28 @@ const forceUserLeaveBoard = async (userId, boardId) => {
 };
 
 /**
- * Force-disconnect every active socket for a given user. Called by the logout
- * endpoint so the just-logged-out browser stops receiving live events even if
- * the JWT it presents is technically still valid (1h TTL).
+ * Force-disconnect every active socket for a given user. Called by:
+ *   - the /api/auth/logout endpoint (event: 'auth:logout', reason:
+ *     'user_logged_out') — the just-logged-out browser stops receiving
+ *     live events even if its JWT is technically still valid.
+ *   - the single-active-session force-login flow (event:
+ *     'auth:force_logout', reason: 'forced_other_device') — the OTHER
+ *     device's tab receives the event and renders a clean "you were
+ *     signed out because…" banner before its socket closes.
  *
  * If `socketId` is provided, only the specific socket disconnects — used for
  * single-tab logout when the client reports its own socket id.
  *
+ * `options.event` and `options.payload` let callers pick the wire event
+ * and payload shape. Defaults preserve the pre-feature contract so
+ * existing callers (logout endpoint) keep working unchanged.
+ *
  * Returns the count of sockets disconnected.
  */
-const disconnectUser = async (userId, socketId = null) => {
+const disconnectUser = async (userId, socketId = null, options = {}) => {
   if (!ioInstance || !userId) return 0;
+  const event = options.event || 'auth:logout';
+  const payload = options.payload || { reason: 'user_logged_out' };
   let count = 0;
   try {
     const sockets = await ioInstance.in(`user:${userId}`).fetchSockets();
@@ -374,7 +412,7 @@ const disconnectUser = async (userId, socketId = null) => {
       if (socketId && s.id !== socketId) continue;
       try {
         // Tell the client first so it can disable auto-reconnect, then close.
-        s.emit('auth:logout', { reason: 'user_logged_out' });
+        s.emit(event, payload);
         s.disconnect(true);
         count += 1;
       } catch (err) {

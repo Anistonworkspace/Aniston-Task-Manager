@@ -75,6 +75,10 @@ export function routeEvent(event, payload = {}) {
       pushIf(out, !!taskId, `approvals.task.${taskId}`);
       pushIf(out, !!taskId, `tasks.id.${taskId}`);
       pushIf(out, !!boardId, `tasks.board.${boardId}`);
+      // Sidebar "Approvals & Requests" badge tracks the caller's actionable
+      // queue — a chain advance / approve / reject / changes_requested all
+      // shift who's the current pending approver, which can change the count.
+      out.push('approvals.pendingCounts');
       break;
     }
 
@@ -120,6 +124,40 @@ export function routeEvent(event, payload = {}) {
     case 'notification:read': {
       out.push('notifications.list');
       out.push('notifications.unreadCount');
+      // Notifications are the canonical fan-out point for approval / extension
+      // / help / dependency events — invalidating the badge counts here
+      // catches every cross-cutting case (e.g. a manager approves a task
+      // elsewhere → the submitter's badge is unaffected, but the next-stage
+      // approver gets a notification, and their pendingCounts must refresh).
+      out.push('approvals.pendingCounts');
+      out.push('dependencies.assignedActiveCount');
+      break;
+    }
+
+    // Dependency request lifecycle — these are emitted as raw events the
+    // /cross-team page already listens to; map them into the router so the
+    // global header badge refreshes too.
+    case 'dependency:requested':
+    case 'dependency:accepted':
+    case 'dependency:started':
+    case 'dependency:done':
+    case 'dependency:rejected':
+    case 'dependency:cancelled':
+    case 'dependency:reassigned': {
+      out.push('dependencies.assignedActiveCount');
+      break;
+    }
+
+    // Extension / help-request lifecycle — these don't currently emit
+    // dedicated socket events for every state change, but when they do
+    // (or via notification:new fan-out above), the badge needs to refresh.
+    case 'extension:requested':
+    case 'extension:approved':
+    case 'extension:rejected':
+    case 'help:requested':
+    case 'help:resolved':
+    case 'help:status-updated': {
+      out.push('approvals.pendingCounts');
       break;
     }
 

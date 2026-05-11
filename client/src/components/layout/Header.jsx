@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Link2, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useT } from '../../context/LanguageContext';
 import { isExplicitlyDenied } from '../../utils/permissions';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
@@ -13,6 +14,7 @@ import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import { useToast } from '../common/Toast';
 import { useTheme } from '../../context/ThemeContext';
 import { requestPushPermission, isPushSupported, subscribeToPush, showLocalNotification } from '../../services/pushNotifications';
+import { useDependenciesBadgeCount, formatBadgeCount } from '../../hooks/useNavBadgeCounts';
 
 // Module-scope state for the push pipeline. Survives Header re-mounts (route
 // change, theme toggle, HMR) so we don't re-prompt or re-subscribe on every
@@ -32,6 +34,7 @@ let pushSubscribeOk = false;
 export default function Header({ onToggleSidebar }) {
   const { user, authReady, logout, isAdmin, isStrictAdmin, isSuperAdmin, granularPermissions,
     isTier1, isTier2, isTier3, isTier4, tierLabel } = useAuth();
+  const t = useT();
   // Mirror the exact gates the sidebar used for these items so visibility
   // stays identical after the move. Each menu row in the profile dropdown is
   // gated on the same boolean its sidebar counterpart was — no role can
@@ -206,6 +209,11 @@ export default function Header({ onToggleSidebar }) {
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  // Global header badge — count of active dependency requests assigned to
+  // the caller (pending / accepted / working_on_it). Mirrors the
+  // "Assigned to Me" tab count on /cross-team. See useDependenciesBadgeCount.
+  const dependenciesBadgeCount = useDependenciesBadgeCount();
+  const dependenciesBadge = formatBadgeCount(dependenciesBadgeCount);
   const menuRef = useRef(null);
 
   // Load unread count once auth has finished bootstrapping. Without the
@@ -258,27 +266,28 @@ export default function Header({ onToggleSidebar }) {
     }
   }
 
-  // Page title from route
+  // Page title from route — resolved through i18n so the breadcrumb
+  // re-renders in the user's selected language without a refresh.
   const getPageTitle = () => {
     const path = location.pathname;
-    if (path === '/') return 'Home';
-    if (path === '/my-work') return 'My Work';
-    if (path === '/dashboard') return 'Dashboard';
-    if (path === '/time-plan') return 'Time Plan';
-    if (path === '/meetings') return 'Meetings';
-    if (path === '/reviews') return 'Reviews';
-    if (path === '/users') return 'Team';
-    if (path === '/profile') return 'Profile';
-    if (path === '/org-chart') return 'Org Chart';
-    if (path === '/cross-team') return 'Dependencies';
-    if (path === '/admin-settings') return 'Admin Settings';
-    if (path === '/admin-dashboard') return 'My Dashboard';
-    if (path === '/manager-dashboard') return 'My Dashboard';
-    if (path === '/member-dashboard') return 'My Dashboard';
-    if (path === '/tasks') return 'Tasks & Workflows';
-    if (path === '/integrations') return 'Integrations';
-    if (path === '/archive') return 'Archive';
-    if (path.startsWith('/boards/')) return 'Board';
+    if (path === '/') return t('header.pages.home');
+    if (path === '/my-work') return t('header.pages.myWork');
+    if (path === '/dashboard') return t('header.pages.teamDashboard');
+    if (path === '/time-plan') return t('header.pages.timePlan');
+    if (path === '/meetings') return t('header.pages.meetings');
+    if (path === '/reviews') return t('header.pages.reviews');
+    if (path === '/users') return t('header.pages.team');
+    if (path === '/profile') return t('header.pages.profile');
+    if (path === '/org-chart') return t('header.pages.orgChart');
+    if (path === '/cross-team') return t('header.pages.dependencies');
+    if (path === '/admin-settings') return t('header.pages.adminSettings');
+    if (path === '/admin-dashboard') return t('header.pages.myDashboard');
+    if (path === '/manager-dashboard') return t('header.pages.myDashboard');
+    if (path === '/member-dashboard') return t('header.pages.myDashboard');
+    if (path === '/tasks') return t('header.pages.approvalsAndRequests');
+    if (path === '/integrations') return t('header.pages.integrations');
+    if (path === '/archive') return t('header.pages.archive');
+    if (path.startsWith('/boards/')) return t('header.pages.board');
     return '';
   };
 
@@ -295,7 +304,7 @@ export default function Header({ onToggleSidebar }) {
           )}
           {/* Page context */}
           <div className="hidden md:flex items-center gap-1.5 text-sm">
-            <span className="text-text-tertiary">Monday Aniston</span>
+            <span className="text-text-tertiary">{t('header.appName')}</span>
             <span className="text-text-muted">/</span>
             <span className="text-text-primary font-medium">{getPageTitle()}</span>
           </div>
@@ -304,7 +313,7 @@ export default function Header({ onToggleSidebar }) {
           <button data-tour="search-bar" onClick={() => setShowGlobalSearch(true)}
             className="flex items-center gap-2 text-text-tertiary hover:text-text-secondary px-3 py-1.5 rounded-lg border border-border hover:border-border-dark bg-surface-50 transition-all duration-150 group">
             <Search size={14} />
-            <span className="text-xs hidden sm:inline">Search...</span>
+            <span className="text-xs hidden sm:inline">{t('header.searchHint')}</span>
             <kbd className="hidden lg:inline-flex items-center text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded border border-border font-mono ml-3 group-hover:border-border-dark">
               ⌘K
             </kbd>
@@ -313,20 +322,32 @@ export default function Header({ onToggleSidebar }) {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-1">
-          {/* Dependencies — moved from sidebar */}
+          {/* Dependencies — moved from sidebar. Badge shows active dependency
+              requests assigned to the caller (matches the page's "Assigned to
+              Me" tab count). Badge styling matches the bell icon for visual
+              consistency. */}
           <button data-tour="nav-dependencies-header" onClick={() => navigate('/cross-team')}
-            title="Dependencies"
-            aria-label="Dependencies"
-            className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/cross-team' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
-            <Link2 size={17} strokeWidth={1.8} />
+            title={dependenciesBadge ? `${t('header.dependencies')} (${dependenciesBadge})` : t('header.dependencies')}
+            aria-label={dependenciesBadge ? `${t('header.dependencies')} (${dependenciesBadge})` : t('header.dependencies')}
+            className={`relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/cross-team' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
+            <Waypoints size={17} strokeWidth={1.8} aria-hidden="true" />
+            {dependenciesBadge && (
+              <span
+                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {dependenciesBadge}
+              </span>
+            )}
           </button>
 
           {/* Org Chart — moved from sidebar. Opt-out gate matches the
               sidebar's previous isExplicitlyDenied check exactly. */}
           {canSeeOrgChart && (
             <button data-tour="nav-orgchart-header" onClick={() => navigate('/org-chart')}
-              title="Org Chart"
-              aria-label="Org Chart"
+              title={t('header.orgChart')}
+              aria-label={t('header.orgChart')}
               className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/org-chart' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
               <Network size={17} strokeWidth={1.8} aria-hidden="true" />
             </button>
@@ -335,16 +356,16 @@ export default function Header({ onToggleSidebar }) {
           {/* Time Plan — moved from sidebar. No gate (sidebar version was
               also unconditional). */}
           <button data-tour="nav-timeplan-header" onClick={() => navigate('/time-plan')}
-            title="Time Plan"
-            aria-label="Time Plan"
+            title={t('header.timePlan')}
+            aria-label={t('header.timePlan')}
             className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/time-plan' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
             <Clock size={17} strokeWidth={1.8} />
           </button>
 
           {/* Notes — moved from sidebar */}
           <button data-tour="nav-notes-header" onClick={() => navigate('/notes')}
-            title="Notes"
-            aria-label="Notes"
+            title={t('header.notes')}
+            aria-label={t('header.notes')}
             className={`p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 ${location.pathname === '/notes' ? 'text-primary-500 bg-surface-100' : 'text-text-tertiary hover:text-text-primary'}`}>
             <Mic size={17} strokeWidth={1.8} />
           </button>
@@ -355,8 +376,8 @@ export default function Header({ onToggleSidebar }) {
               the current location as `state.background` (App.jsx mounts the
               modal route on top of the existing page). */}
           <button data-tour="nav-helpsop-header" onClick={() => navigate('/profile#guide', { state: { background: location } })}
-            title="Help & SOP"
-            aria-label="Help & SOP"
+            title={t('header.helpAndSop')}
+            aria-label={t('header.helpAndSop')}
             className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary">
             <BookOpen size={17} strokeWidth={1.8} />
           </button>
@@ -374,8 +395,8 @@ export default function Header({ onToggleSidebar }) {
             data-tour="notifications"
             onClick={() => setShowNotifications(!showNotifications)}
             aria-label={unreadCount > 0
-              ? `Notifications, ${unreadCount} unread`
-              : 'Notifications'}
+              ? `${t('header.notifications')} (${unreadCount})`
+              : t('header.notifications')}
             aria-expanded={showNotifications}
             aria-haspopup="dialog"
             className="relative p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary"
@@ -395,7 +416,7 @@ export default function Header({ onToggleSidebar }) {
           {/* Theme Toggle */}
           <button data-tour="theme-toggle" onClick={toggleDarkMode}
             className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary"
-            title={darkMode ? 'Light mode' : 'Dark mode'}>
+            title={darkMode ? t('header.lightMode') : t('header.darkMode')}>
             {darkMode ? <Sun size={17} strokeWidth={1.8} /> : <Moon size={17} strokeWidth={1.8} />}
           </button>
 

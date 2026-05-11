@@ -66,6 +66,8 @@ router.put('/tasks/:taskId/dependencies/:dependencyId/archive', archiveDependenc
 // auth guard — the controller scopes the query by user id.
 router.get('/dependencies/assigned-to-me', dependencyRequestController.listAssignedToMe);
 router.get('/dependencies/created-by-me',  dependencyRequestController.listCreatedByMe);
+// Lightweight count for the global header badge — see controller header.
+router.get('/dependencies/assigned-active-count', dependencyRequestController.countActiveAssignedToMe);
 
 // Per-row endpoints — load the row first, then check the appropriate guard.
 router.get(

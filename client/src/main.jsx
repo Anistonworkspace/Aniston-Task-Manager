@@ -8,6 +8,7 @@ import { ToastProvider } from './components/common/Toast';
 import { ConfirmProvider } from './components/common/ConfirmDialog';
 import { ThemeProvider } from './context/ThemeContext';
 import { FontSizeProvider } from './context/FontSizeContext';
+import { LanguageProvider } from './context/LanguageContext';
 import { UndoProvider } from './context/UndoContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import UpdatePrompt from './components/common/UpdatePrompt';
@@ -91,6 +92,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ThemeProvider>
         <AuthProvider>
+          <LanguageProvider>
           <FontSizeProvider>
             <RealtimeProvider>
               <UndoProvider>
@@ -104,6 +106,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
               </UndoProvider>
             </RealtimeProvider>
           </FontSizeProvider>
+          </LanguageProvider>
         </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>

@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { X, CheckCircle2, Clock, AlertTriangle, ListChecks, MessageSquare } from 'lucide-react';
 import api from '../../services/api';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../../utils/constants';
+import { useT } from '../../context/LanguageContext';
+import { translatePriority, translateStatus } from '../../utils/i18nLabels';
 import Avatar from '../common/Avatar';
 import DetailModalShell from '../common/DetailModalShell';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function MemberDrillDown({ userId, boardId, onClose }) {
+  const t = useT();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -210,7 +213,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
                               className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium text-white cursor-pointer"
                               style={{ backgroundColor: statusCfg.bgColor }}
                             >
-                              {statusCfg.label}
+                              {translateStatus(task.status, statusCfg.label, t)}
                             </span>
                             <div className="hidden group-hover/status:block absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-border p-1 z-50 min-w-[120px]">
                               {Object.entries(STATUS_CONFIG).map(([k, c]) => (
@@ -227,7 +230,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
                               className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium text-white"
                               style={{ backgroundColor: priorityCfg.bgColor }}
                             >
-                              {priorityCfg.label}
+                              {translatePriority(task.priority, t, priorityCfg.label)}
                             </span>
                           )}
 

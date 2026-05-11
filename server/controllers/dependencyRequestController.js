@@ -212,6 +212,32 @@ const listAssignedToMe = async (req, res) => {
 };
 
 /**
+ * GET /api/dependencies/assigned-active-count
+ *
+ * Lightweight count for the global header badge — number of dependency
+ * requests assigned TO the caller that are still in an active state
+ * (pending, accepted, working_on_it). Excludes done/rejected/cancelled and
+ * archived rows. Mirrors the "Assigned to Me" tab count on /cross-team so
+ * the header badge always matches what the user sees once they open the
+ * page. SQL count, not findAll — safe to call on every navigation.
+ */
+const countActiveAssignedToMe = async (req, res) => {
+  try {
+    const count = await DependencyRequest.count({
+      where: {
+        assignedToUserId: req.user.id,
+        status: { [Op.in]: DependencyRequest.ACTIVE_STATUSES },
+        archivedAt: null,
+      },
+    });
+    res.json({ success: true, data: { count } });
+  } catch (err) {
+    console.error('[DependencyRequest] countActiveAssignedToMe error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
  * GET /api/dependencies/created-by-me
  */
 const listCreatedByMe = async (req, res) => {
@@ -514,6 +540,7 @@ module.exports = {
   listForTask,
   listAssignedToMe,
   listCreatedByMe,
+  countActiveAssignedToMe,
   getOne,
   updateStatus,
   updateDetails,

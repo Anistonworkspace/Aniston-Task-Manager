@@ -59,43 +59,57 @@ router.put(
 // ─── POST /api/tasks (anyone with tasks.create — including members for self) ──
 //   Members get tasks.create=true by default; the controller enforces that
 //   they can only assign themselves unless tasks.assign_others is granted.
+//
+// Validation philosophy: be FORGIVING about fields the user did not actively
+// pick on the quick-create path (description='', status='', priority=null,
+// dueDate='', dates as null). The inline "+ Add task" row is the most common
+// flow and serializes empty strings for optional inputs in some clients;
+// production 400 reports almost always traced back to express-validator
+// rejecting an empty string where the controller would have happily defaulted
+// it. `optional({ nullable: true, checkFalsy: true })` skips the chain when
+// the value is undefined, null, '', 0, or false — exactly the "user didn't
+// pick this" set. Required fields (title, boardId) still get strict checks.
 router.post(
   '/',
   requirePermission('tasks', 'create'),
   [
     body('title')
       .trim()
-      .notEmpty().withMessage('Task title is required')
-      .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters'),
+      .notEmpty().withMessage('Task title is required.')
+      .isLength({ min: 1, max: 300 }).withMessage('Task title must be between 1 and 300 characters.'),
     body('description')
-      .optional({ nullable: true })
-      .isString().withMessage('description must be a string')
-      .isLength({ max: 10000 }).withMessage('description must be 10,000 characters or fewer'),
+      .optional({ nullable: true, checkFalsy: true })
+      .isString().withMessage('Description must be text.')
+      .isLength({ max: 10000 }).withMessage('Description must be 10,000 characters or fewer.'),
     body('boardId')
-      .notEmpty().withMessage('boardId is required')
-      .isUUID().withMessage('boardId must be a valid UUID'),
+      .notEmpty().withMessage('Task could not be created: board is missing from the request.')
+      .isUUID().withMessage('Task could not be created: board reference is not a valid id.'),
+    body('groupId')
+      .optional({ nullable: true, checkFalsy: true })
+      .isString().withMessage('Task could not be created: group reference must be text.')
+      .isLength({ max: 100 }).withMessage('Task could not be created: group reference is too long.'),
     body('status')
-      .optional()
-      .isString().withMessage('status must be a string')
+      .optional({ nullable: true, checkFalsy: true })
+      .isString().withMessage('status must be a string.')
       .trim()
-      .isLength({ min: 1, max: 50 }).withMessage('status must be between 1 and 50 characters'),
+      .isLength({ min: 1, max: 50 }).withMessage('status must be between 1 and 50 characters.'),
     body('priority')
-      .optional()
-      .isIn(['low', 'medium', 'high', 'critical']).withMessage('Invalid priority value'),
+      .optional({ nullable: true, checkFalsy: true })
+      .isIn(['low', 'medium', 'high', 'critical']).withMessage('priority must be low, medium, high, or critical.'),
     body('assignedTo')
       .optional({ nullable: true }),
     body('supervisors')
       .optional()
-      .isArray().withMessage('supervisors must be an array'),
+      .isArray().withMessage('supervisors must be an array.'),
     body('dueDate')
-      .optional({ nullable: true })
-      .isISO8601().withMessage('dueDate must be a valid date'),
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601().withMessage('dueDate must be a valid date.'),
     body('startDate')
-      .optional({ nullable: true })
-      .isISO8601().withMessage('startDate must be a valid date'),
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601().withMessage('startDate must be a valid date.'),
     body('statusConfig')
       .optional({ nullable: true })
-      .isArray().withMessage('statusConfig must be an array'),
+      .isArray().withMessage('statusConfig must be an array.'),
   ],
   createTask
 );

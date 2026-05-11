@@ -10,6 +10,8 @@ import {
   isSameDay, parseISO, isToday, isPast, startOfWeek, endOfWeek, addDays,
 } from 'date-fns';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
+import { translatePriority, translateStatus } from '../utils/i18nLabels';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import api from '../services/api';
 import Avatar from '../components/common/Avatar';
@@ -32,6 +34,9 @@ const FILTER_META = {
 
 export default function MyWorkPage() {
   const { user } = useAuth();
+  // `tr` (not `t`) — the page already uses `t` as a task variable in
+  // nested callbacks, so we alias the translator to avoid shadowing.
+  const tr = useT();
   const navigate = useNavigate();
   const { error: toastError } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -271,7 +276,7 @@ export default function MyWorkPage() {
                             </div>
                             {/* Status */}
                             <div className="px-1 py-1.5 flex items-center justify-center">
-                              <span className="status-pill text-[10px] px-2 py-0.5 min-w-0" style={{ backgroundColor: statusCfg.bgColor }}>{statusCfg.label}</span>
+                              <span className="status-pill text-[10px] px-2 py-0.5 min-w-0" style={{ backgroundColor: statusCfg.bgColor }}>{translateStatus(task.status, statusCfg.label, tr)}</span>
                             </div>
                             {/* Board */}
                             <div className="px-2 py-2.5 flex items-center justify-center" onClick={() => task.boardId && navigate(`/boards/${task.boardId}`)}>
@@ -284,7 +289,7 @@ export default function MyWorkPage() {
                             {/* Priority */}
                             <div className="px-1 py-1.5 flex items-center justify-center">
                               <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ backgroundColor: `${priorityCfg.color || '#c4c4c4'}20`, color: priorityCfg.color || '#666' }}>
-                                {priorityCfg.label || task.priority}
+                                {translatePriority(task.priority, tr, priorityCfg.label || task.priority)}
                               </span>
                             </div>
                             {/* Due */}

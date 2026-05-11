@@ -876,10 +876,11 @@ const removeMember = async (req, res) => {
  * Body: { title, color }
  *
  * Append a single group to the board's groups JSONB. Distinct from
- * `reorderGroups` (which replaces the whole array, manager/admin only) and
- * from `updateBoard` (which can rewrite the groups array, management roles
- * only) so that members and assistant managers can ADD a group to a board
- * they have access to without being able to rename / delete / reorder.
+ * `reorderGroups` (which rotates the order of existing groups, also open to
+ * every tier with board access) and from `updateBoard` (which can rewrite
+ * the groups array as a whole, management roles only). This split lets
+ * members and assistant managers ADD or REORDER groups on boards they can
+ * access without granting them archival / structural rewrites.
  *
  * Permission model:
  *   - super_admin / admin / manager → always allowed.
@@ -1064,7 +1065,29 @@ const renameGroup = async (req, res) => {
 
 /**
  * PUT /api/boards/:id/groups/reorder
- * Body: { groups: [{ id, title, color, position }] }
+ * Body: { groups: [{ id }, ...] }   // order matters; only the id is read
+ *
+ * Reorder groups on a board GLOBALLY (every viewer sees the same order).
+ *
+ * Permission model:
+ *   - Any user that boardVisibilityService.canUserSeeBoard accepts may reorder.
+ *     Group order is a board-level property, not a per-user view preference,
+ *     so all tiers from member upward can rearrange — matching addGroup /
+ *     renameGroup. Workspace/board personal-order preferences live elsewhere
+ *     and are unaffected.
+ *
+ * Input contract:
+ *   - `groups` must be a non-empty array.
+ *   - Each entry must carry an `id` matching an existing group on this board.
+ *   - The submitted ids must be a *permutation* of the board's current group
+ *     ids — no additions, no removals, no duplicates, no foreign ids. The
+ *     dedicated add/archive endpoints handle structural changes; this one
+ *     only rotates order. Anything else is rejected with 400.
+ *
+ * Preserves server-side fields (title, color, mappedStatus, …) by mapping
+ * each id back to the existing group object — the client is not trusted to
+ * round-trip those values. Only `position` is rewritten so it always matches
+ * the new array index.
  */
 const reorderGroups = async (req, res) => {
   try {
@@ -1073,16 +1096,88 @@ const reorderGroups = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Board not found.' });
     }
 
-    const { groups } = req.body;
-    if (!Array.isArray(groups)) {
+    const reachable = await boardVisibility.canUserSeeBoard(req.user, board.id);
+    if (!reachable) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have access to this board.',
+      });
+    }
+
+    const incoming = req.body && req.body.groups;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
       return res.status(400).json({ success: false, message: 'groups array is required.' });
     }
 
-    await board.update({ groups });
+    const existing = Array.isArray(board.groups) ? board.groups : [];
+    const existingById = new Map(existing.map(g => [g.id, g]));
 
-    emitToBoard(board.id, 'board:updated', { board });
+    const incomingIds = [];
+    const seen = new Set();
+    for (const entry of incoming) {
+      const id = entry && entry.id;
+      if (!id || typeof id !== 'string') {
+        return res.status(400).json({ success: false, message: 'Each group entry must include a string id.' });
+      }
+      if (seen.has(id)) {
+        return res.status(400).json({ success: false, message: 'Duplicate group id in payload.' });
+      }
+      if (!existingById.has(id)) {
+        return res.status(400).json({ success: false, message: `Group "${id}" does not belong to this board.` });
+      }
+      seen.add(id);
+      incomingIds.push(id);
+    }
+    if (incomingIds.length !== existing.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payload must include every existing group exactly once. Use the add/archive endpoints to add or remove groups.',
+      });
+    }
 
-    res.json({ success: true, message: 'Groups reordered successfully.', data: { groups } });
+    // No-op short-circuit: if the order is unchanged, skip the write + emit so
+    // accidental double-fires (drag that lands in the same slot, etc.) don't
+    // generate noise on the audit log or socket bus.
+    const orderUnchanged = existing.every((g, i) => g.id === incomingIds[i]);
+    if (orderUnchanged) {
+      return res.json({
+        success: true,
+        message: 'Group order unchanged.',
+        data: { groups: existing },
+      });
+    }
+
+    const reorderedGroups = incomingIds.map((id, index) => ({
+      ...existingById.get(id),
+      position: index,
+    }));
+
+    await board.update({ groups: reorderedGroups });
+
+    const fullBoard = await Board.findByPk(board.id, {
+      include: [
+        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+      ],
+    });
+
+    emitToBoard(board.id, 'board:updated', { board: fullBoard });
+
+    logActivity({
+      action: 'board_groups_reordered',
+      description: `Reordered groups on board "${board.name}"`,
+      entityType: 'board',
+      entityId: board.id,
+      boardId: board.id,
+      userId: req.user.id,
+      meta: { order: incomingIds },
+    });
+
+    res.json({
+      success: true,
+      message: 'Groups reordered successfully.',
+      data: { groups: reorderedGroups },
+    });
   } catch (error) {
     console.error('[Board] ReorderGroups error:', error);
     res.status(500).json({ success: false, message: 'Server error reordering groups.' });

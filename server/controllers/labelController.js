@@ -1,4 +1,19 @@
 const { Label, TaskLabel, Task, User } = require('../models');
+const { emitToBoard } = require('../services/socketService');
+
+// Helper: look up the boardId for a task and emit task:labels_updated to
+// the board room. The frontend BoardPage listener picks this up and
+// refetches just that task's labels, keeping every open tab / open modal
+// in sync without a full board reload. Wrapped in try/catch so a socket
+// dispatch failure can't break the underlying CRUD response.
+async function emitLabelsUpdated(taskId) {
+  try {
+    const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId'] });
+    if (task && task.boardId) {
+      emitToBoard(task.boardId, 'task:labels_updated', { taskId });
+    }
+  } catch { /* non-fatal */ }
+}
 
 // GET /api/labels?boardId=...
 exports.getLabels = async (req, res) => {
@@ -58,6 +73,9 @@ exports.assignLabel = async (req, res) => {
   try {
     const { taskId, labelId } = req.body;
     const [tl, created] = await TaskLabel.findOrCreate({ where: { taskId, labelId } });
+    // Fire-and-forget realtime nudge to every tab on this board so the
+    // Labels column + open task modal both refresh without manual reload.
+    emitLabelsUpdated(taskId);
     res.json({ success: true, data: { taskLabel: tl, created } });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to assign label.' });
@@ -69,6 +87,7 @@ exports.unassignLabel = async (req, res) => {
   try {
     const { taskId, labelId } = req.body;
     await TaskLabel.destroy({ where: { taskId, labelId } });
+    emitLabelsUpdated(taskId);
     res.json({ success: true, message: 'Label removed from task.' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to remove label.' });

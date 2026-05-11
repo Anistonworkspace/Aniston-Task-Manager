@@ -7,6 +7,8 @@ import {
   Flame, Info,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
+import { translatePriority } from '../utils/i18nLabels';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import api from '../services/api';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
@@ -51,6 +53,7 @@ function TileIconChip({ icon: Icon, color }) {
 // ── Page ───────────────────────────────────────────────────────────────
 export default function HomePage() {
   const { user, canManage } = useAuth();
+  const t = useT();
   const navigate = useNavigate();
   const { error: toastError } = useToast();
   const [boards, setBoards] = useState([]);
@@ -605,7 +608,7 @@ export default function HomePage() {
                           color: priorityConf.color || '#666',
                         }}
                       >
-                        {priorityConf.label || task.priority}
+                        {translatePriority(task.priority, t, priorityConf.label || task.priority)}
                       </span>
                       {task.dueDate && (
                         <span

@@ -325,6 +325,28 @@ export function AuthProvider({ children }) {
     return () => { if (unsubscribe) unsubscribe(); };
   }, [user, loadPermissions]);
 
+  // Single-active-session: the server emits 'auth:force_logout' on the
+  // OLD device's socket when a new device confirms takeover via
+  // /auth/login/force or /auth/login/force-sso. We tear down local
+  // state and redirect to /login with a reason banner so the displaced
+  // user understands why they were signed out.
+  //
+  // The reason flag is read by Login.jsx once on mount and then
+  // cleared. sessionStorage is acceptable here — it's a non-secret UX
+  // hint, not a credential.
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribe = subscribe('auth:force_logout', (payload) => {
+      const reason = payload?.reason || 'forced_other_device';
+      try { sessionStorage.setItem('aniston:force_logout_reason', reason); } catch { /* ignore */ }
+      localCleanup();
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    });
+    return () => { if (unsubscribe) unsubscribe(); };
+  }, [user, localCleanup]);
+
   // Inactivity tracker — logout after the configured period of no activity.
   // The interval reads inactivityMinutesRef on each tick, so changes made by a
   // Super Admin take effect immediately in the current session without
@@ -386,7 +408,27 @@ export function AuthProvider({ children }) {
     // record. The session lives in the cookie — no JS-readable token to
     // store, no XSS exfiltration vector. The socket connect() picks the
     // cookie up via withCredentials on the handshake (see socket.js).
+    //
+    // Single-active-session: the backend can return a structured 200
+    // response with `success:false, code:'SESSION_ALREADY_ACTIVE'` when
+    // another live session exists. We pass that through unchanged to
+    // the caller (Login.jsx) which renders the "another session is
+    // active — continue here?" UI. The body carries a 5-minute single-
+    // use pendingLoginToken that the caller hands to forceLogin() to
+    // take over.
     const res = await api.post('/auth/login', { email, password });
+    if (res.data && res.data.success === false && res.data.code === 'SESSION_ALREADY_ACTIVE') {
+      // Surface the structured payload to the caller. Token lives only
+      // in React state at the call site — never in storage.
+      return {
+        sessionAlreadyActive: true,
+        pendingLoginToken: res.data.data?.pendingLoginToken
+          || res.data.pendingLoginToken,
+        expiresIn: res.data.data?.expiresIn || res.data.expiresIn || 300,
+        otherDevice: res.data.data?.otherDevice || res.data.otherDevice || null,
+        message: res.data.message,
+      };
+    }
     const d = res.data?.data || res.data;
     const newUser = d.user;
     setUser(newUser);
@@ -394,6 +436,43 @@ export function AuthProvider({ children }) {
     connect();
     broadcastAuthStateToSW('authenticated');
     // Load permission grants after login (await so UI has grants before navigating)
+    await loadPermissions();
+    return newUser;
+  };
+
+  /**
+   * Confirm-and-take-over for the single-active-session flow. Called
+   * by Login.jsx when the user clicks "Continue here and sign out the
+   * other session." Posts the pending-login token to /auth/login/force,
+   * which revokes the old session, force-disconnects its sockets, and
+   * sets new cookies before returning the user record.
+   */
+  const forceLogin = async (pendingLoginToken) => {
+    const res = await api.post('/auth/login/force', { pendingLoginToken });
+    const d = res.data?.data || res.data;
+    const newUser = d.user;
+    setUser(newUser);
+    lastActivityRef.current = Date.now();
+    connect();
+    broadcastAuthStateToSW('authenticated');
+    await loadPermissions();
+    return newUser;
+  };
+
+  /**
+   * SSO equivalent of forceLogin. No request body — the pending-SSO
+   * token is delivered via httpOnly cookie set by the Microsoft
+   * callback. Same effect: revokes the prior session, kills its
+   * sockets, mints a new session.
+   */
+  const forceLoginSSO = async () => {
+    const res = await api.post('/auth/login/force-sso', {});
+    const d = res.data?.data || res.data;
+    const newUser = d.user;
+    setUser(newUser);
+    lastActivityRef.current = Date.now();
+    connect();
+    broadcastAuthStateToSW('authenticated');
     await loadPermissions();
     return newUser;
   };
@@ -463,7 +542,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, authReady, login, loginWithToken, logout, updateProfile,
+      user, token, loading, authReady, login, forceLogin, forceLoginSSO, loginWithToken, logout, updateProfile,
       // Tier API (canonical)
       tier, isTier1, isTier2, isTier3, isTier4, hasTierAtLeast, tierLabel,
       // Legacy aliases (deprecated)

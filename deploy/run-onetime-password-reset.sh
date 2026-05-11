@@ -67,7 +67,7 @@ EXECUTED_BY="${ONETIME_RESET_EXECUTED_BY:-github-actions}"
 # After Sunny + Muskan have redeemed their reset URLs and set new
 # passwords, you can leave this block on (idempotent skip) or flip
 # the flag to "false" / delete the block entirely. Both are safe.
-FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="true"
+FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="false"
 FORCE_AUTO_RUN_MAINTENANCE_KEY="password-reset-sunny-muskan-auto-2026-05-05"
 
 log() { printf '[onetime-pw-reset] %s\n' "$*"; }

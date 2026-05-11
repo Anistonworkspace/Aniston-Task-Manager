@@ -25,6 +25,9 @@ function models() {
 }
 
 const { sendNotification } = require('./notificationService');
+const {
+  isTaskEligibleForOverdueNotification,
+} = require('../utils/taskOverdueEligibility');
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -591,8 +594,29 @@ async function processReminders() {
         include: [{ model: Board, as: 'board', attributes: ['id', 'name'] }],
       });
 
-      // Task deleted or already done — cancel this reminder
-      if (!task || task.status === 'done' || task.isArchived) {
+      // Task deleted entirely → cancel this reminder
+      if (!task) {
+        await reminder.update({ cancelled: true });
+        continue;
+      }
+
+      // Task is no longer actionable by the assignee — done/completed,
+      // archived, submitted for review, or awaiting approval. Cancel the
+      // reminder so we never re-pick it on a later tick (eligibility is a
+      // monotonic transition for these states — once a task is done or
+      // approved, it stays that way; `changes_requested` is the only path
+      // back to actionable, and that creates a fresh reminder row via the
+      // taskController, not this one).
+      const eligibility = isTaskEligibleForOverdueNotification(task);
+      if (!eligibility.eligible) {
+        logger.info('[DeadlineReminder] skip + cancel reminder', {
+          reminderId: reminder.id,
+          taskId: task.id,
+          reminderType: reminder.reminderType,
+          status: task.status,
+          approvalStatus: task.approvalStatus,
+          reason: eligibility.reason,
+        });
         await reminder.update({ cancelled: true });
         continue;
       }

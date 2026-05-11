@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 // role='admin' resolve identically (both are full-edit). Subtree scoping
 // for Tier 3 management actions still uses taskVisibilityService — that's
 // orthogonal to tier identity.
-const { resolveTier, TIER_1, TIER_2, TIER_3, TIER_4 } = require('../config/tiers');
+const { resolveTier, hasTierAtLeast, TIER_1, TIER_2, TIER_3, TIER_4 } = require('../config/tiers');
 
 // ── Table existence cache (shared across all middleware calls) ───────────
 const _tableCache = {};
@@ -61,14 +61,21 @@ function attachTaskPermissions(req, res, next) {
   const role = user.role;
   const isSuperAdmin = !!user.isSuperAdmin;
   const isManagementRole = isSuperAdmin || ['admin', 'manager', 'assistant_manager'].includes(role);
+  // Tier-aware "is this user effectively Tier 2 or above?" — used for the
+  // hasFullAccess flag so a Tier 2 manager (role='manager') gets the same
+  // treatment as a Tier 2 admin (role='admin'). The earlier role-string
+  // check left the two halves of Tier 2 asymmetric, which downstream code
+  // could read as "manager isn't full access".
+  const hasTier2OrHigher = hasTierAtLeast(user, TIER_2);
 
   const permissions = {
     role,
     isSuperAdmin,
-    // hasFullAccess now means "may bypass per-task visibility checks". Only
-    // admins / super admins do; managers and assistant managers are scoped to
-    // their org subtree.
-    hasFullAccess: isSuperAdmin || role === 'admin',
+    // hasFullAccess means "may bypass per-task visibility/scope checks for
+    // task edits". Tier 1 + Tier 2 qualify — both halves of Tier 2 (admin
+    // AND manager) are included via the tier resolver, fixing the prior
+    // asymmetric role-string gate.
+    hasFullAccess: hasTier2OrHigher,
     hasBoardAccess: role === 'manager' || role === 'assistant_manager',
     isHierarchyManager: false,
     hasPartialAccess: false,

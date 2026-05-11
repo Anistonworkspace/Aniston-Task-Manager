@@ -115,9 +115,13 @@ const PERMISSIONS = {
   // via assign_members / tasks.assign_others below.
   create_task:         ['member', 'assistant_manager', 'manager', 'admin'],
   // All roles can add a group to boards they can access. The backend route
-  // (POST /boards/:id/groups) enforces board-access via boardVisibilityService;
-  // RENAMING / DELETING / REORDERING groups remains manager+/assistant_manager+
-  // (gated by edit_board on PUT /boards/:id and PUT /boards/:id/groups/reorder).
+  // (POST /boards/:id/groups) enforces board-access via boardVisibilityService.
+  // RENAMING and REORDERING groups are also open to every tier that can see
+  // the board (PATCH /boards/:id/groups/:groupId, PUT /boards/:id/groups/reorder
+  // — both gated by boardVisibilityService at the controller). Group order is
+  // a board-global property: every viewer sees the same arrangement, so
+  // there is no per-user preference to protect. ARCHIVING / structural
+  // groups-array rewrites via PUT /boards/:id remain edit_board.
   create_group:        ['member', 'assistant_manager', 'manager', 'admin'],
   assign_members:      ['assistant_manager', 'manager', 'admin'],
   edit_others_tasks:   ['manager', 'admin'],
@@ -361,17 +365,21 @@ export function canEditTask(user, task, granularPermissions = {}) {
 /**
  * Can this user edit a task's TITLE specifically?
  *
- * Title is a set-once field. Once a task has been created, only Tier 1
- * (Super Admin) may rename it — Tier 2/3/4 cannot, even if they are the
- * task's creator or assignee. Title creation happens via POST /tasks
- * (createTask), which is unaffected — pass `task = null` (or a task with
- * no `id`) to indicate the new-task path and this helper returns true for
- * anyone who could otherwise edit the task at all.
+ * Title is a set-once field for lower tiers. Tier 1 (Super Admin) AND
+ * Tier 2 (Admin / Manager) may rename a task at any time after creation.
+ * Tier 3 / Tier 4 cannot, even if they are the task's creator or
+ * assignee. Title creation happens via POST /tasks (createTask), which
+ * is unaffected — pass `task = null` (or a task with no `id`) to indicate
+ * the new-task path and this helper returns true for anyone who could
+ * otherwise edit the task at all.
  *
- * Mirrors the backend gate in `server/controllers/taskController.js`
- * (`updateTask` title-lock branch) and the `assignee_restricted`
- * allowedFields whitelist in `server/middleware/taskPermissions.js`,
- * which intentionally omits 'title' for non-Tier-1 actors.
+ * Tier 2 was tightened to mirror Tier 1's task-edit surface — including
+ * title — because the previous "Tier 1 only" rule blocked a manager from
+ * fixing a typo on a task they personally created. Mirrors the backend
+ * gate in `server/controllers/taskController.js` (`updateTask` title-lock
+ * branch) and the `assignee_restricted` allowedFields whitelist in
+ * `server/middleware/taskPermissions.js`, which intentionally omits
+ * 'title' for the Tier 3/4 assignee path.
  */
 export function canEditTaskTitle(user, task, granularPermissions = {}) {
   if (!user) return false;
@@ -380,8 +388,9 @@ export function canEditTaskTitle(user, task, granularPermissions = {}) {
   // and the TaskModal create-mode (no task.id) hits the same branch.
   const isNewTask = !task || !task.id;
   if (isNewTask) return canEditTask(user, task, granularPermissions);
-  // Existing task: Tier 1 only.
-  return resolveTier(user) === TIER_1;
+  // Existing task: Tier 1 or Tier 2 only.
+  const tier = resolveTier(user);
+  return tier === TIER_1 || tier === TIER_2;
 }
 
 /**

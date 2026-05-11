@@ -3,6 +3,8 @@ import { Archive, RotateCcw, Trash2, Search, FolderKanban, ListTodo, AlertTriang
 import { formatDistanceToNow, parseISO, differenceInDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useT } from '../context/LanguageContext';
+import { translatePriority, translateStatus } from '../utils/i18nLabels';
 import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import { useToast } from '../components/common/Toast';
 
@@ -66,6 +68,7 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
 }
 
 export default function ArchivedPage() {
+  const t = useT();
   const { canManage, isAdmin, user } = useAuth();
   const { success: toastSuccess, error: toastError } = useToast();
   const [boards, setBoards] = useState([]);
@@ -340,8 +343,8 @@ export default function ArchivedPage() {
                           <div className="flex-1 min-w-0">
                             <p className="text-[13px] font-medium text-gray-800 truncate">{task.title}</p>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${statusCfg.color || '#94a3b8'}15`, color: statusCfg.color }}>{statusCfg.label || task.status}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${priorityCfg.color || '#94a3b8'}15`, color: priorityCfg.color }}>{priorityCfg.label || task.priority}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${statusCfg.color || '#94a3b8'}15`, color: statusCfg.color }}>{translateStatus(task.status, statusCfg.label || task.status, t)}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${priorityCfg.color || '#94a3b8'}15`, color: priorityCfg.color }}>{translatePriority(task.priority, t, priorityCfg.label || task.priority)}</span>
                               <ProtectionBadge archivedAt={task.archivedAt} />
                             </div>
                           </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Calendar, Clock, X, Check, AlertCircle, Send } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -54,8 +55,14 @@ export default function DueDateExtensionModal({ task, onClose, onUpdated }) {
 
   const STATUS_BADGE = { pending: 'bg-yellow-100 text-yellow-700', approved: 'bg-green-100 text-green-700', rejected: 'bg-red-100 text-red-700' };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+  // Portal to document.body + z-[200] so this dialog renders ABOVE the
+  // parent TaskModal (which is at z-[100] via DetailModalShell). Without
+  // the portal the dialog mounts wherever TaskModal is in the React tree
+  // (typically inside BoardPage), so any ancestor with `transform`,
+  // `filter`, or `isolation` creates a stacking context that traps it
+  // under the task modal portal. createPortal escapes that entirely.
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 dark:border-zinc-700">
           <h2 className="text-sm font-bold text-gray-800 dark:text-gray-200 flex items-center gap-2"><Calendar size={15} className="text-primary" /> Due Date Extension</h2>
@@ -121,6 +128,7 @@ export default function DueDateExtensionModal({ task, onClose, onUpdated }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

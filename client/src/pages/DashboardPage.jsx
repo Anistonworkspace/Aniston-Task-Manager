@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, useMotionValue, useTransform, animate as fmAnimate } from 'framer-motion';
 import {
@@ -16,6 +17,160 @@ import MemberDrillDown from '../components/dashboard/MemberDrillDown';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { SkeletonDashboard } from '../components/common/Skeleton';
 import { useAuth } from '../context/AuthContext';
+
+const DR_POPOVER_WIDTH = 280;
+const DR_GAP = 8;
+
+// Member row with a portal-rendered Direct Reports hover popover. The popover
+// renders to document.body so it isn't clipped by the table's overflow-x-auto
+// wrapper, and defaults to opening ABOVE the row — falling back to below only
+// when there isn't enough room above. Position is recomputed on scroll/resize.
+function TeamMemberRow({ member, onSelect }) {
+  const rowRef = useRef(null);
+  const popoverRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0, ready: false });
+  const showTimer = useRef(null);
+  const hideTimer = useRef(null);
+
+  const pct = member.total > 0 ? Math.round((member.done / member.total) * 100) : 0;
+  const children = Array.isArray(member.children) ? member.children : [];
+  const secondary = member.designation || member.role || ' ';
+
+  function updatePosition() {
+    if (!rowRef.current) return;
+    const rect = rowRef.current.getBoundingClientRect();
+    const popH = popoverRef.current?.offsetHeight || 120;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Default: place above the row.
+    let top = rect.top - popH - DR_GAP;
+    // Fallback: not enough space above → place below. If below also overflows,
+    // clamp to viewport so it stays visible.
+    if (top < DR_GAP) {
+      const belowTop = rect.bottom + DR_GAP;
+      top = belowTop + popH <= vh - DR_GAP
+        ? belowTop
+        : Math.max(DR_GAP, vh - popH - DR_GAP);
+    }
+
+    let left = rect.left + 12;
+    if (left + DR_POPOVER_WIDTH > vw - DR_GAP) left = vw - DR_POPOVER_WIDTH - DR_GAP;
+    if (left < DR_GAP) left = DR_GAP;
+
+    setPos({ top, left, ready: true });
+  }
+
+  function handleEnter() {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+    if (open) return;
+    showTimer.current = setTimeout(() => setOpen(true), 60);
+  }
+
+  function handleLeave() {
+    if (showTimer.current) { clearTimeout(showTimer.current); showTimer.current = null; }
+    hideTimer.current = setTimeout(() => setOpen(false), 150);
+  }
+
+  // Measure and position synchronously after the popover mounts so the first
+  // paint is correct (no flash at 0,0).
+  useLayoutEffect(() => {
+    if (!open) { setPos(p => ({ ...p, ready: false })); return; }
+    updatePosition();
+  }, [open, children.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = () => updatePosition();
+    const onResize = () => updatePosition();
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [open]);
+
+  useEffect(() => () => {
+    if (showTimer.current) clearTimeout(showTimer.current);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+
+  return (
+    <tr
+      ref={rowRef}
+      onClick={() => onSelect(member.id)}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      className="border-b border-border/30 last:border-b-0 hover:bg-primary/5 cursor-pointer transition-colors group/row"
+    >
+      <td className="py-2.5 px-4 align-middle">
+        <div className="flex items-center gap-3 min-h-[40px]">
+          <Avatar name={member.name} size="sm" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium text-text-primary group-hover/row:text-primary truncate leading-snug">{member.name}</p>
+            <p className="text-[11px] text-text-tertiary truncate leading-snug mt-0.5">{secondary}</p>
+          </div>
+          <ChevronRight size={14} className="text-text-tertiary opacity-0 group-hover/row:opacity-100 transition-opacity flex-shrink-0" />
+        </div>
+      </td>
+      <td className="text-center py-2.5 px-2 align-middle text-[13px] font-semibold tabular-nums">{member.total}</td>
+      <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-success font-semibold text-[13px]">{member.done}</span></td>
+      <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-warning font-semibold text-[13px]">{member.working}</span></td>
+      <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.stuck}</span></td>
+      <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.overdue}</span></td>
+      <td className="py-2.5 px-4 align-middle">
+        <div className="flex items-center gap-2.5">
+          <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#00c875' : '#0073ea' }} />
+          </div>
+          <span className="text-[11px] font-semibold text-text-secondary w-9 text-right tabular-nums">{pct}%</span>
+        </div>
+      </td>
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          onClick={e => e.stopPropagation()}
+          onMouseEnter={handleEnter}
+          onMouseLeave={handleLeave}
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            top: pos.top,
+            left: pos.left,
+            width: DR_POPOVER_WIDTH,
+            zIndex: 9999,
+            visibility: pos.ready ? 'visible' : 'hidden',
+          }}
+          className="rounded-lg border border-border bg-white dark:bg-[#1E1F23] shadow-xl p-2 cursor-default"
+        >
+          <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider px-1 mb-1.5">
+            Direct reports {children.length > 0 && <span className="ml-1 text-text-secondary">({children.length})</span>}
+          </p>
+          {children.length > 0 ? (
+            <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+              {children.map(c => (
+                <div key={c.id} className="flex items-center gap-2 px-1.5 py-1 rounded">
+                  <Avatar name={c.name} size="xs" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-text-primary truncate">{c.name}</p>
+                    <p className="text-[10px] text-text-tertiary truncate">
+                      {c.designation || tierLabel(resolveTier(c))}{c.department ? ` · ${c.department}` : ''}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-text-tertiary text-center py-2">No child members</p>
+          )}
+        </div>,
+        document.body
+      )}
+    </tr>
+  );
+}
 
 export default function DashboardPage() {
   const { id: boardId } = useParams();
@@ -151,7 +306,7 @@ export default function DashboardPage() {
           <button onClick={() => navigate(`/boards/${boardId}`)} className="p-1.5 rounded-md hover:bg-surface text-text-secondary"><ArrowLeft size={18} /></button>
         )}
         <div className="flex-1">
-          <h1 className="text-xl font-bold text-text-primary">Dashboard & Reports</h1>
+          <h1 className="text-xl font-bold text-text-primary">Team Dashboard</h1>
           {board ? (
             <p className="text-sm text-text-secondary">{board.name}</p>
           ) : (
@@ -545,74 +700,9 @@ export default function DashboardPage() {
                           </div>
                         </td>
                       </tr>
-                      {byDept[dept].map(member => {
-                        const pct = member.total > 0 ? Math.round((member.done / member.total) * 100) : 0;
-                        const children = Array.isArray(member.children) ? member.children : [];
-                        // Always render two lines (name + secondary) so rows
-                        // with no designation match the height of rows that
-                        // have one. Falls back to role, then a non-breaking
-                        // space placeholder.
-                        const secondary = member.designation || member.role || ' ';
-                        return (
-                          <tr key={member.id} onClick={() => setSelectedMember(member.id)} className="border-b border-border/30 last:border-b-0 hover:bg-primary/5 cursor-pointer transition-colors group/row">
-                            <td className="py-2.5 px-4 align-middle relative">
-                              <div className="flex items-center gap-3 min-h-[40px]">
-                                <Avatar name={member.name} size="sm" />
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-[13px] font-medium text-text-primary group-hover/row:text-primary truncate leading-snug">{member.name}</p>
-                                  <p className="text-[11px] text-text-tertiary truncate leading-snug mt-0.5">{secondary}</p>
-                                </div>
-                                <ChevronRight size={14} className="text-text-tertiary opacity-0 group-hover/row:opacity-100 transition-opacity flex-shrink-0" />
-                              </div>
-
-                              {/* Hover popover — child members from org hierarchy.
-                                  DOM child of the row so :hover propagates and
-                                  the popover doesn't flicker when the cursor
-                                  moves onto it. position: absolute keeps the
-                                  table layout stable. */}
-                              <div
-                                className="hidden group-hover/row:block absolute left-3 top-full z-30 w-[280px] rounded-lg border border-border bg-white dark:bg-[#1E1F23] shadow-xl p-2 cursor-default"
-                                onClick={e => e.stopPropagation()}
-                                role="tooltip"
-                              >
-                                <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider px-1 mb-1.5">
-                                  Direct reports {children.length > 0 && <span className="ml-1 text-text-secondary">({children.length})</span>}
-                                </p>
-                                {children.length > 0 ? (
-                                  <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
-                                    {children.map(c => (
-                                      <div key={c.id} className="flex items-center gap-2 px-1.5 py-1 rounded">
-                                        <Avatar name={c.name} size="xs" />
-                                        <div className="min-w-0 flex-1">
-                                          <p className="text-xs font-medium text-text-primary truncate">{c.name}</p>
-                                          <p className="text-[10px] text-text-tertiary truncate">
-                                            {c.designation || tierLabel(resolveTier(c))}{c.department ? ` · ${c.department}` : ''}
-                                          </p>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <p className="text-xs text-text-tertiary text-center py-2">No child members</p>
-                                )}
-                              </div>
-                            </td>
-                            <td className="text-center py-2.5 px-2 align-middle text-[13px] font-semibold tabular-nums">{member.total}</td>
-                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-success font-semibold text-[13px]">{member.done}</span></td>
-                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className="text-warning font-semibold text-[13px]">{member.working}</span></td>
-                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.stuck > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.stuck}</span></td>
-                            <td className="text-center py-2.5 px-2 align-middle tabular-nums"><span className={`text-[13px] ${member.overdue > 0 ? 'text-danger font-semibold' : 'text-text-tertiary'}`}>{member.overdue}</span></td>
-                            <td className="py-2.5 px-4 align-middle">
-                              <div className="flex items-center gap-2.5">
-                                <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
-                                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#00c875' : '#0073ea' }} />
-                                </div>
-                                <span className="text-[11px] font-semibold text-text-secondary w-9 text-right tabular-nums">{pct}%</span>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {byDept[dept].map(member => (
+                        <TeamMemberRow key={member.id} member={member} onSelect={setSelectedMember} />
+                      ))}
                     </React.Fragment>
                   ))}
                 </tbody>

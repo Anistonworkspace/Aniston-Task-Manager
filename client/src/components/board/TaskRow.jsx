@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown, BellRing } from 'lucide-react';
+import { GripVertical, MessageSquare, Archive, RefreshCw, ChevronRight, ChevronDown, BellRing, Link2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { canArchiveTask, canSetPriorityForTask, canEditDueDate } from '../../utils/permissions';
 import StatusCell from './StatusCell';
@@ -15,6 +15,8 @@ import TextCell from './TextCell';
 import NumberCell from './NumberCell';
 import CheckboxCell from './CheckboxCell';
 import LinkCell from './LinkCell';
+import ReferenceCell from './ReferenceCell';
+import LinksCell from './LinksCell';
 import SubtaskCountBadge from './SubtaskCountBadge';
 import TaskReceiptIcon from '../common/TaskReceiptIcon';
 
@@ -222,7 +224,33 @@ const TaskRow = React.memo(function TaskRow({
           isOwnTask && !isSuperAdmin && task.approvalStatus !== 'approved';
         return <ProgressCell value={task.progress || 0} status={task.status} approvalRequired={progressApprovalRequired} onChange={!isApproved ? (val => onUpdate({ progress: val })) : undefined} />;
       }
-      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} />;
+      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || task.taskLabels || []} canEdit={canEditAllFields} />;
+      case 'references': {
+        // Multi-value reference column — backed by the task_references table
+        // (NOT customFields). The cell handles its own POST/DELETE against
+        // /api/task-references and emits a `task:references_updated` socket
+        // event, which BoardPage listens to for cross-tab refresh. Edit
+        // gate matches custom fields: Tier 1/2 plus assignee/creator on
+        // lower tiers (mirrors the backend canEditTaskRefs gate).
+        return (
+          <ReferenceCell
+            taskId={task.id}
+            value={task.references || []}
+            readOnly={!canEditCustomFields}
+          />
+        );
+      }
+      case 'links': {
+        // Multi-value link column — backed by the task_links table. Same
+        // self-saving pattern as ReferenceCell.
+        return (
+          <LinksCell
+            taskId={task.id}
+            value={task.taskLinks || []}
+            readOnly={!canEditCustomFields}
+          />
+        );
+      }
       case 'text': return <TextCell value={customVal || ''} onChange={customOnChange} />;
       case 'number': return <NumberCell value={customVal} onChange={customOnChange} />;
       case 'checkbox': return <CheckboxCell value={customVal || false} onChange={customOnChange} />;
@@ -312,6 +340,27 @@ const TaskRow = React.memo(function TaskRow({
                 aria-label={reminderTooltip(task)}
               >
                 <BellRing size={11} />
+              </span>
+            )}
+            {/* Dependency indicator — renders when the task is gated by a
+                dependency (`customFields.blockedByDependency`, set by
+                dependencyService whenever an active dependency request or
+                blocker exists). The chain-link icon is the canonical
+                "linked task / dependency" glyph used throughout the
+                dependency system (DependencyBadge, TaskModal "Add
+                dependency" button). Click bubbles to the row's onClick so
+                opening the icon opens the TaskModal, whose Dependencies
+                section shows the full chain. The icon is decorative only
+                — accessible labelling lives on the wrapping span so screen
+                readers don't double-announce, and color is paired with a
+                glyph so the signal is not color-only. */}
+            {isBlockedByDependency && (
+              <span
+                className="flex items-center text-rose-600 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/20 px-1.5 py-0.5 rounded transition-colors hover:bg-rose-100 dark:hover:bg-rose-900/30"
+                title="This task has dependencies — open to view"
+                aria-label="This task has dependencies. Open the task to view dependency details."
+              >
+                <Link2 size={10} aria-hidden="true" />
               </span>
             )}
             {/* Daily Work / Recurring instance marker — small icon with tooltip; full badge text

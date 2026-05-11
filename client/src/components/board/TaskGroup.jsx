@@ -1,6 +1,8 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { ChevronDown, ChevronRight, Plus, MoreHorizontal, Edit3, Check, X, Archive, Pencil, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, MoreHorizontal, Edit3, Check, X, Archive, Pencil, Trash2, GripVertical } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage, useT } from '../../context/LanguageContext';
+import { translateSystemGroupName, formatItemsCount } from '../../utils/i18nLabels';
 import { canUser } from '../../utils/permissions';
 import { Droppable, Draggable } from '@hello-pangea/dnd';
 import TaskRow from './TaskRow';
@@ -9,6 +11,31 @@ import ColumnHeaderMenu from './ColumnHeaderMenu';
 import ColumnInfoTooltip from './ColumnInfoTooltip';
 import BoardSubtaskSection from './BoardSubtaskSection';
 import { STATUS_CONFIG, buildStatusLookup } from '../../utils/constants';
+
+// Map the default column id/type to a translation key. The board's
+// `customColumns` carry user-typed titles (which we must NOT translate —
+// they are user data); only the four default columns ship with English
+// labels in DEFAULT_COLUMNS, and those are the ones we localise. We match
+// on (id, type) so a custom column titled "Owner" on a Hindi board still
+// shows the user's chosen string verbatim.
+const DEFAULT_COLUMN_KEYS = {
+  status: 'board.columns.status',
+  person: 'board.columns.owner',
+  date: 'board.columns.dueDate',
+  priority: 'board.columns.priority',
+};
+function translateDefaultColumnTitle(col, t) {
+  if (!col) return '';
+  const key = DEFAULT_COLUMN_KEYS[col.id];
+  // Only translate when the id matches AND the title is the untranslated
+  // English default the column shipped with. If the user renamed the
+  // column, the new title is treated as user data and shown as-is.
+  if (key) {
+    const englishDefault = { status: 'Status', person: 'Owner', date: 'Due Date', priority: 'Priority' }[col.id];
+    if (col.title === englishDefault) return t(key);
+  }
+  return col.title;
+}
 
 export default function TaskGroup({
   group, tasks = [], members = [], columns = [], boardId, boardStatuses,
@@ -21,9 +48,16 @@ export default function TaskGroup({
   // Inline-subtask expand state — owned by the parent group so it survives
   // task list re-renders (socket updates, optimistic patches, etc.).
   expandedTaskIds = [], onToggleSubtasks, onSubtaskCountsChange,
+  // Group-level drag handle props supplied by the parent's @hello-pangea/dnd
+  // Draggable. When present, the group header renders a grip handle that
+  // initiates a group reorder; when absent (e.g. mounted outside a
+  // Draggable), the handle is hidden so the header layout stays clean.
+  groupDragHandleProps = null, isGroupDragging = false,
 }) {
   const TASK_DISPLAY_LIMIT = 100;
   const { canManage, user, isSuperAdmin, permissionGrants, effectivePermissions } = useAuth();
+  const t = useT();
+  const { language } = useLanguage();
   const canCreateTask = canUser(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
   const [collapsed, setCollapsed] = useState(false);
   const [showAllTasks, setShowAllTasks] = useState(false);
@@ -259,11 +293,25 @@ export default function TaskGroup({
     <div className="mb-8 group/group min-w-fit">
       {/* Group Header — Monday.com large colored text — sticky so it doesn't scroll */}
       <div className="flex items-center gap-2 mb-0.5 px-1 sticky left-0 z-[10] w-fit">
+        {/* Group drag handle — appears on hover, drags the entire group to
+            reorder it within the board. Order is saved globally on the
+            board so every viewer sees the same arrangement. Hidden when
+            the parent did not wire up a Draggable. */}
+        {groupDragHandleProps && (
+          <span
+            {...groupDragHandleProps}
+            aria-label="Drag to reorder group"
+            title="Drag to reorder group"
+            className={`inline-flex items-center justify-center p-0.5 -ml-1 rounded text-[#c4c4c4] hover:text-[#676879] hover:bg-gray-100 cursor-grab active:cursor-grabbing transition-opacity ${isGroupDragging ? 'opacity-100' : 'opacity-0 group-hover/group:opacity-100'}`}
+          >
+            <GripVertical size={16} />
+          </span>
+        )}
         <button onClick={() => setCollapsed(!collapsed)} className="p-0.5 hover:bg-gray-100 rounded transition-colors" style={{ color }}>
           {collapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
         </button>
-        <h3 className="text-[18px] font-bold" style={{ color }}>{group.title || group.name}</h3>
-        <span className="text-[13px] text-[#676879]">{tasks.length} items</span>
+        <h3 className="text-[18px] font-bold" style={{ color }}>{translateSystemGroupName(group.title || group.name, language)}</h3>
+        <span className="text-[13px] text-[#676879]">{formatItemsCount(tasks.length, t)}</span>
         <div className="relative ml-auto">
           <button onClick={e => { e.stopPropagation(); setShowGroupMenu(!showGroupMenu); }}
             className="p-1 rounded hover:bg-gray-100 text-[#c4c4c4] opacity-0 group-hover/group:opacity-100 transition-opacity">
@@ -281,7 +329,7 @@ export default function TaskGroup({
               {canManage && onArchiveGroup && (
                 <button onClick={() => { setShowGroupMenu(false); if (confirm(`Archive group "${group.title || group.name}"? Tasks will be archived.`)) onArchiveGroup(group.id); }}
                   className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-orange-600 hover:bg-orange-50 transition-colors">
-                  <Archive size={12} /> Archive Group
+                  <Archive size={12} /> {t('board.archiveGroup')}
                 </button>
               )}
             </div>
@@ -304,7 +352,7 @@ export default function TaskGroup({
                 <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color }} />
                 <div className="w-10 flex-shrink-0 py-2.5" />
                 <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#e6e9ef] relative">
-                  Task
+                  {t('board.columns.task')}
                   {/* Task column resize handle (mouse + touch) */}
                   <div onMouseDown={handleTaskColResize} onTouchStart={handleTaskColResize}
                     className={`absolute right-0 top-0 bottom-0 w-[6px] md:w-[3px] cursor-col-resize z-[22] hover:bg-[#0073ea] transition-colors ${resizingCol === '__task__' ? 'bg-[#0073ea]' : 'bg-transparent'}`} />
@@ -340,7 +388,7 @@ export default function TaskGroup({
                   ) : (
                     <div className="flex items-center justify-center gap-1">
                       <span className="truncate cursor-default" onDoubleClick={() => startEditColumn(col)}>
-                        {col.title}
+                        {translateDefaultColumnTitle(col, t)}
                         {col.required && <span className="text-[#e2445c] ml-0.5" title="Required">*</span>}
                       </span>
                       <ColumnInfoTooltip column={col} />
@@ -409,7 +457,7 @@ export default function TaskGroup({
                             onKeyDown={handleTitleKeyDown}
                             onBlur={handleInlineBlur}
                             disabled={submittingTask}
-                            placeholder="Task name"
+                            placeholder={t('board.taskNamePlaceholder')}
                             className="w-full text-[14px] border-none outline-none bg-transparent text-[#323338] placeholder:text-[#c4c4c4] disabled:opacity-60"
                             autoFocus
                           />
@@ -421,7 +469,7 @@ export default function TaskGroup({
                             onKeyDown={handleDescriptionKeyDown}
                             onBlur={handleInlineBlur}
                             disabled={submittingTask}
-                            placeholder="Add description (optional)"
+                            placeholder={t('board.descriptionPlaceholder')}
                             className="w-full text-[12px] border-none outline-none bg-transparent text-[#676879] placeholder:text-[#c4c4c4] disabled:opacity-60"
                           />
                         </div>
@@ -430,7 +478,7 @@ export default function TaskGroup({
                           onMouseDown={e => e.preventDefault()}
                           onClick={submitNewTask}
                           disabled={submittingTask || !newTaskTitle.trim()}
-                          title={newTaskTitle.trim() ? 'Add task (Enter)' : 'Enter a task name to add'}
+                          title={newTaskTitle.trim() ? t('board.addTaskTitle') : t('board.addTaskTitle')}
                           className={`flex-shrink-0 self-start mt-0.5 inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-md text-[12px] font-medium transition-colors ${
                             submittingTask || !newTaskTitle.trim()
                               ? 'bg-[#e6e9ef] text-[#c4c4c4] cursor-not-allowed'
@@ -440,12 +488,12 @@ export default function TaskGroup({
                           {submittingTask ? (
                             <>
                               <span className="inline-block w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                              <span>Adding</span>
+                              <span>{t('common.saving')}</span>
                             </>
                           ) : (
                             <>
                               <Plus size={12} strokeWidth={2.5} />
-                              <span>Add</span>
+                              <span>{t('common.add')}</span>
                             </>
                           )}
                         </button>
@@ -453,7 +501,7 @@ export default function TaskGroup({
                     </div>
                   ) : (
                     <button onClick={() => setAdding(true)} style={{ width: taskColWidth }} className=" flex items-center gap-1.5 px-3 py-2.5 text-[14px] text-[#c4c4c4] hover:text-[#0073ea] transition-colors">
-                      <Plus size={14} /> Add task
+                      <Plus size={14} /> {t('board.addTask')}
                     </button>
                   )}
                 </div>

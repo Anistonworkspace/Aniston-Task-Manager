@@ -1,11 +1,179 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const axios = require('axios');
-const { User, RefreshToken } = require('../models');
+const bcrypt = require('bcryptjs');
+const { User, RefreshToken, PendingLoginToken } = require('../models');
 const { validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { getTeamsConfig } = require('../config/teams');
-const { setAuthCookies, clearAuthCookies, getRefreshTokenFromRequest } = require('../utils/authCookies');
+const {
+  setAuthCookies,
+  clearAuthCookies,
+  getRefreshTokenFromRequest,
+  setPendingLoginCookie,
+  clearPendingLoginCookie,
+  getPendingLoginTokenFromRequest,
+} = require('../utils/authCookies');
+
+// Single-active-session feature.
+//
+// A "session" in this app is a RefreshToken row. We bind every access
+// token to its refresh-token JTI via the new `sid` claim. The auth
+// middleware (server/middleware/auth.js) looks up the session row on
+// every request: if it has been hard-revoked (revokedAt set AND
+// replacedByJti null), the request is rejected and cookies are cleared.
+//
+// Force-logout works because revokeAllRefreshTokensForUser sets
+// revokedAt only on currently-active rows (replacedByJti null). Rows
+// already revoked by rotation are untouched, so an in-flight access
+// token whose `sid` points to a rotation-revoked row continues to be
+// accepted by the middleware until its natural 1-h expiry. Only hard
+// revokes (logout / force-logout / password change) kill an access
+// token mid-flight.
+const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const PENDING_LOGIN_TTL_SEC = 5 * 60;
+
+/**
+ * SHA-256 hex of a raw token. Used to look up pending_login_tokens rows
+ * without ever storing the raw token. Length is always 64.
+ */
+function hashPendingToken(rawToken) {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+/**
+ * Issue a pending-login token row for `user`. Returns the RAW token
+ * (caller delivers it to the client — for local login via the response
+ * body, for SSO via an httpOnly cookie). Only the hash is persisted.
+ *
+ * `origin` is either 'local' or 'sso' and is checked at consume time
+ * so a local-login pending token can't be consumed by the SSO force
+ * endpoint and vice versa.
+ */
+async function createPendingLoginToken(user, origin, req) {
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  const hashed = hashPendingToken(rawToken);
+  const expiresAt = new Date(Date.now() + PENDING_LOGIN_TTL_MS);
+
+  await PendingLoginToken.create({
+    userId: user.id,
+    tokenHash: hashed,
+    expiresAt,
+    origin,
+    ip: req?.ip?.slice(0, 45) || null,
+    userAgent: req?.headers?.['user-agent']?.slice(0, 255) || null,
+  });
+
+  return rawToken;
+}
+
+/**
+ * Atomically consume a pending-login token. Returns `{ok:true, userId}`
+ * on success or `{ok:false, reason}` on failure. The reason is opaque
+ * to the client — callers translate it into a generic error message.
+ *
+ * Single-use is enforced at the DB layer via an UPDATE that filters
+ * `used_at IS NULL` and `expires_at > now()`. A race that loses the
+ * update returns 0 rows and is rejected.
+ */
+async function consumePendingLoginToken(rawToken, expectedOrigin) {
+  if (!rawToken || typeof rawToken !== 'string') {
+    return { ok: false, reason: 'missing' };
+  }
+  const hashed = hashPendingToken(rawToken);
+  // Look the row up first — separate from the UPDATE so we can return a
+  // useful reason (expired vs already-used vs wrong-origin). The
+  // single-use guarantee comes from the conditional UPDATE below, not
+  // from this read.
+  const row = await PendingLoginToken.findOne({ where: { tokenHash: hashed } });
+  if (!row) return { ok: false, reason: 'invalid' };
+  if (row.usedAt) return { ok: false, reason: 'used' };
+  if (new Date(row.expiresAt) <= new Date()) return { ok: false, reason: 'expired' };
+  if (row.origin !== expectedOrigin) return { ok: false, reason: 'origin_mismatch' };
+
+  const [affected] = await PendingLoginToken.update(
+    { usedAt: new Date() },
+    { where: { id: row.id, usedAt: null } }
+  );
+  if (affected === 0) {
+    // Lost the race — another request consumed it microseconds before us.
+    return { ok: false, reason: 'used' };
+  }
+
+  return { ok: true, userId: row.userId, row };
+}
+
+/**
+ * Return the currently-active session row for a user, or null. "Active"
+ * = revokedAt is null AND expiresAt is in the future. Rows that have
+ * been rotated have revokedAt set, so they don't count.
+ *
+ * Used by the login flow to decide whether to mint tokens immediately
+ * (no active session) or return SESSION_ALREADY_ACTIVE (active session
+ * exists somewhere else).
+ */
+async function findActiveSessionForUser(userId) {
+  return RefreshToken.findOne({
+    where: {
+      userId,
+      revokedAt: null,
+      expiresAt: { [Op.gt]: new Date() },
+    },
+    order: [['issuedAt', 'DESC']],
+  });
+}
+
+/**
+ * Atomically establish a brand-new session for `user`. Mints a refresh
+ * token (which writes the RefreshToken row), then mints an access
+ * token whose `sid` claim equals the new refresh JTI. Sets both
+ * httpOnly cookies. Returns `{accessToken, refreshToken, sid}`.
+ *
+ * Used by:
+ *   - normal local login (no active session)
+ *   - force-login (after revoking all prior sessions)
+ *   - SSO callback (no active session)
+ *   - SSO force-login (after revoking all prior sessions)
+ *
+ * The refresh-then-access ordering matters: we need the JTI in hand
+ * before we can sign the access token.
+ */
+async function establishSession(user, res, req) {
+  const { token: refreshToken, jti } = await issueRefreshToken(user.id, req);
+  const accessToken = generateToken(user.id, jti);
+  setAuthCookies(res, { accessToken, refreshToken });
+  return { accessToken, refreshToken, sid: jti };
+}
+
+/**
+ * Force-logout helper used by both the local force-login endpoint and
+ * the SSO force-login endpoint. Revokes every active refresh token for
+ * the user (hard revoke — replacedByJti stays null so the middleware
+ * treats it as a kill rather than a rotation), force-disconnects every
+ * active socket for the user, and emits `auth:force_logout` so the
+ * other device's UI can render the "you were signed out because…"
+ * banner before the socket closes.
+ *
+ * Returns the number of refresh tokens revoked and sockets killed for
+ * caller-side logging.
+ */
+async function revokeAllSessionsForForceLogout(userId, reason = 'forced_other_device') {
+  const tokensRevoked = await revokeAllRefreshTokensForUser(userId);
+
+  let socketsKilled = 0;
+  try {
+    const socketService = require('../services/socketService');
+    socketsKilled = await socketService.disconnectUser(userId, null, {
+      event: 'auth:force_logout',
+      payload: { reason },
+    });
+  } catch (err) {
+    // socket service may not be initialized in tests
+    console.warn('[Auth.forceLogout] socket disconnect failed:', err && err.message);
+  }
+
+  return { tokensRevoked, socketsKilled };
+}
 
 // In-memory store for per-email login rate limiting
 // Key: email, Value: { count, firstAttempt }
@@ -56,11 +224,23 @@ function validatePassword(password) {
 
 /**
  * Generate a short-lived access token (1 hour).
+ *
+ * The `sid` (session id) claim is the JTI of the refresh-token row that
+ * represents this session. The auth middleware looks the row up on
+ * every request — when it's hard-revoked (revokedAt set,
+ * replacedByJti null), the access token stops working immediately even
+ * though the JWT itself is still cryptographically valid.
+ *
+ * `sid` is optional for backward compatibility with the very small
+ * window of access tokens minted before this feature deployed; those
+ * tokens continue to work for at most 1 hour (their natural exp).
+ * Every NEW login or refresh issues a token with sid populated.
  */
-const generateToken = (userId) =>
-  jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '1h',
-  });
+const generateToken = (userId, sid = null) => {
+  const payload = { id: userId };
+  if (sid) payload.sid = sid;
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+};
 
 // Refresh token lifetime kept in one place so the JWT and the DB row agree.
 const REFRESH_TOKEN_TTL_DAYS = 7;
@@ -107,7 +287,11 @@ async function issueRefreshToken(userId, req) {
     // catch and reject. Loudness here helps ops diagnose before users notice.
     console.error('[Auth] Failed to record refresh token:', err && err.message);
   }
-  return token;
+  // Returns BOTH the token and the JTI. The single-active-session feature
+  // needs the JTI so it can embed it as `sid` in the access token minted
+  // by establishSession() / refresh rotation. Callers that only want the
+  // string destructure `{token}`.
+  return { token, jti };
 }
 
 /**
@@ -192,7 +376,26 @@ const register = async (req, res) => {
 
 /**
  * POST /api/auth/login
- * Supports both local users and Microsoft SSO users who have created a local password.
+ *
+ * Single-active-session aware login flow:
+ *
+ *  1. Validate format (express-validator) and per-email rate limit.
+ *  2. Look up the user — ALWAYS run bcrypt.compare (against the real
+ *     hash if found, or a dummy hash if not) so the response time
+ *     reveals nothing about whether the email exists.
+ *  3. If password didn't match → 401 generic (no enumeration).
+ *  4. AFTER password is verified, check isActive / accountStatus.
+ *     A wrong password and a deactivated account return distinct
+ *     responses, but both require a valid password first — so an
+ *     attacker without the password learns nothing.
+ *  5. Check for an active session (RefreshToken row with revokedAt
+ *     null + expiresAt in the future). If found, mint a single-use
+ *     pending-login token (5 min TTL) and return
+ *     `{code:'SESSION_ALREADY_ACTIVE', pendingLoginToken}` with HTTP
+ *     200 + success:false. The client renders the "another session is
+ *     active — continue here?" UI.
+ *  6. Otherwise, establish a brand-new session via establishSession()
+ *     (refresh row + access token whose `sid` claim is the new JTI).
  */
 const login = async (req, res) => {
   try {
@@ -204,7 +407,9 @@ const login = async (req, res) => {
     const { email, password } = req.body;
     const normalizedEmail = email.trim().toLowerCase();
 
-    // Per-email rate limiting
+    // Per-email rate limiting (in-memory; see audit F-10 for the
+    // multi-instance hardening note). Returns 429 well before bcrypt
+    // burns CPU on a spray.
     const rateCheck = checkLoginRateLimit(normalizedEmail);
     if (!rateCheck.allowed) {
       return res.status(429).json({
@@ -214,7 +419,30 @@ const login = async (req, res) => {
     }
 
     const user = await User.findOne({ where: { email: normalizedEmail } });
-    if (!user) {
+
+    // Constant-time-ish password compare. If the user doesn't exist we
+    // still run bcrypt against a dummy hash so the response timing
+    // doesn't differ from the user-exists/wrong-password case. The dummy
+    // hash is a precomputed bcrypt of the empty string at cost 12 —
+    // generating it on every request would itself be a leak.
+    const DUMMY_BCRYPT =
+      '$2a$12$CwTycUXWue0Thq9StjUM0uJ8.tRBQVrYxLPXM0aL0WJqXqfNw3qfu';
+    let isMatch = false;
+    if (user && user.password) {
+      isMatch = await user.comparePassword(password);
+    } else if (user && user.authProvider === 'microsoft' && !user.hasLocalPassword) {
+      // Microsoft SSO user with no local password — also run a dummy
+      // compare so the response time is uniform.
+      await bcrypt.compare(password || '', DUMMY_BCRYPT);
+      isMatch = false;
+    } else {
+      // No user OR user with no password set at all. Dummy compare
+      // for timing parity, then fall through to the generic 401.
+      await bcrypt.compare(password || '', DUMMY_BCRYPT);
+      isMatch = false;
+    }
+
+    if (!user || !isMatch) {
       recordFailedLogin(normalizedEmail);
       return res.status(401).json({
         success: false,
@@ -222,6 +450,9 @@ const login = async (req, res) => {
       });
     }
 
+    // Password verified — now apply account-status checks. These leak
+    // status only to a caller who already proved they own the
+    // credentials, which is the intended security tradeoff.
     if (!user.isActive) {
       return res.status(403).json({
         success: false,
@@ -243,48 +474,43 @@ const login = async (req, res) => {
       });
     }
 
-    // For Microsoft SSO users: allow login only if they've created a local password
-    if (user.authProvider === 'microsoft' && !user.hasLocalPassword) {
-      recordFailedLogin(normalizedEmail);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password.',
-      });
-    }
-
-    // For local users or Microsoft users with local password — validate password
-    if (!user.password) {
-      recordFailedLogin(normalizedEmail);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password.',
-      });
-    }
-
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      recordFailedLogin(normalizedEmail);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password.',
-      });
-    }
-
-    // Successful login — clear rate limit counter
+    // Successful auth — clear rate-limit counter regardless of session-
+    // conflict outcome below. The user proved possession of the
+    // password; that's enough to not penalize their IP further.
     clearLoginAttempts(normalizedEmail);
 
-    const token = generateToken(user.id);
-    // issueRefreshToken records a refresh_tokens row with the new JTI so the
-    // refresh endpoint can verify the token wasn't already rotated/revoked.
-    const refreshToken = await issueRefreshToken(user.id, req);
+    // ── Single-active-session check ──────────────────────────────
+    // If a live refresh-token row exists for this user, do NOT mint a
+    // new session. Return a structured 200 with a 5-minute single-use
+    // pending-login token. The client renders the "already signed in
+    // elsewhere — continue here?" UI and posts to /auth/login/force
+    // to actually take over.
+    const activeSession = await findActiveSessionForUser(user.id);
+    if (activeSession) {
+      const rawPendingToken = await createPendingLoginToken(user, 'local', req);
+      // Best-effort device hint for the UI. Never any PII beyond what
+      // the user could already see in their own Account Settings.
+      const otherDevice = {
+        userAgent: (activeSession.userAgent || '').slice(0, 80) || null,
+        ip: activeSession.ip || null,
+        issuedAt: activeSession.issuedAt,
+      };
+      return res.json({
+        success: false,
+        code: 'SESSION_ALREADY_ACTIVE',
+        message: 'This account is already signed in on another device or browser.',
+        data: {
+          pendingLoginToken: rawPendingToken,
+          expiresIn: PENDING_LOGIN_TTL_SEC,
+          otherDevice,
+        },
+      });
+    }
 
-    // D-1 Phase 2: tokens are delivered ONLY via httpOnly cookies. The
-    // response body no longer carries them — JS in the page can't read the
-    // session, which closes the XSS-token-exfiltration vector. External
-    // (programmatic) API consumers that still need a Bearer token can call
-    // a dedicated machine-token endpoint or use API keys; the browser flow
-    // is cookie-only.
-    setAuthCookies(res, { accessToken: token, refreshToken });
+    // No active session — mint a fresh one. establishSession writes the
+    // refresh row, signs the access token with `sid` = new JTI, and
+    // sets both httpOnly cookies on the response.
+    await establishSession(user, res, req);
 
     res.json({
       success: true,
@@ -294,6 +520,82 @@ const login = async (req, res) => {
   } catch (error) {
     console.error('[Auth] Login error:', error);
     res.status(500).json({ success: false, message: 'Server error during login.' });
+  }
+};
+
+/**
+ * POST /api/auth/login/force
+ *
+ * Confirm-and-take-over endpoint for the SESSION_ALREADY_ACTIVE flow.
+ * Consumes the pending-login token returned by /api/auth/login, revokes
+ * every active refresh token for the user, force-disconnects every
+ * socket for the user (with `auth:force_logout` so the other tab gets
+ * a clean reason banner), then establishes a brand-new session.
+ *
+ * Security:
+ *   - The pending token is single-use, enforced by a conditional UPDATE
+ *     against pending_login_tokens. Reuse fails closed.
+ *   - The pending token can only be minted AFTER password verification,
+ *     so a caller without the password cannot reach this endpoint.
+ *   - We re-validate account status — a user who was deactivated in
+ *     the 5-minute pending window is rejected here.
+ *   - The token's origin must be 'local'; SSO tokens are rejected so
+ *     an attacker who somehow got a pending-SSO cookie can't reuse it
+ *     on this endpoint.
+ */
+const forceLogin = async (req, res) => {
+  try {
+    const { pendingLoginToken } = req.body || {};
+    if (!pendingLoginToken) {
+      return res.status(400).json({
+        success: false,
+        code: 'PENDING_TOKEN_REQUIRED',
+        message: 'Confirmation token is required.',
+      });
+    }
+
+    const consumed = await consumePendingLoginToken(pendingLoginToken, 'local');
+    if (!consumed.ok) {
+      // 'used' / 'expired' / 'invalid' / 'origin_mismatch' all collapse
+      // into a single generic error from the client's perspective. The
+      // log line carries the specific reason for ops.
+      console.warn(`[Auth.forceLogin] consume failed: ${consumed.reason}`);
+      return res.status(400).json({
+        success: false,
+        code: 'PENDING_TOKEN_INVALID',
+        message:
+          'Session confirmation expired or invalid. Please enter your password again.',
+      });
+    }
+
+    const user = await User.findByPk(consumed.userId);
+    if (!user || !user.isActive || user.accountStatus !== 'approved') {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_UNAVAILABLE',
+        message:
+          'This account is no longer available. Please contact an administrator.',
+      });
+    }
+
+    // Revoke ALL of the user's currently-active refresh tokens, drop
+    // every live socket connection, and emit `auth:force_logout` to the
+    // soon-to-be-disconnected sockets so the other tab can render a
+    // banner instead of just silently dying.
+    await revokeAllSessionsForForceLogout(user.id, 'forced_other_device');
+
+    // Mint the new session. From here on the new browser is the only
+    // valid session for this user.
+    await establishSession(user, res, req);
+
+    res.json({
+      success: true,
+      message: 'Signed in. The other session has been ended.',
+      data: { user: user.toJSON() },
+    });
+  } catch (error) {
+    console.error('[Auth] forceLogin error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
 
@@ -327,7 +629,7 @@ const updateProfile = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const allowedFields = ['name', 'avatar', 'department', 'designation', 'departmentId', 'teamsNotificationsEnabled', 'fontSizePreference'];
+    const allowedFields = ['name', 'avatar', 'department', 'designation', 'departmentId', 'teamsNotificationsEnabled', 'fontSizePreference', 'language'];
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
@@ -345,6 +647,21 @@ const updateProfile = async (req, res) => {
         return res.status(400).json({
           success: false,
           message: `fontSizePreference must be one of: ${ALLOWED_FONT_SIZES.join(', ')}.`,
+        });
+      }
+    }
+
+    // Language preference — restricted to the locales the client actually
+    // ships translations for. Same belt-and-braces pattern as fontSize:
+    // the route validator already rejects bad input, this is a defensive
+    // controller-level check (and protects controller-to-controller callers
+    // that bypass express-validator).
+    const ALLOWED_LANGUAGES = ['en', 'hi'];
+    if (updates.language !== undefined && updates.language !== null) {
+      if (!ALLOWED_LANGUAGES.includes(updates.language)) {
+        return res.status(400).json({
+          success: false,
+          message: `language must be one of: ${ALLOWED_LANGUAGES.join(', ')}.`,
         });
       }
     }
@@ -825,8 +1142,8 @@ const refreshTokenEndpoint = async (req, res) => {
     // Soft-cutover: tokens issued before D-2 don't carry a `jti`. Treat them
     // as legacy — let them refresh once, the new token will be tracked.
     if (!decoded.jti) {
-      const newToken = generateToken(user.id);
-      const newRefreshToken = await issueRefreshToken(user.id, req);
+      const { token: newRefreshToken, jti: newJti } = await issueRefreshToken(user.id, req);
+      const newToken = generateToken(user.id, newJti);
       setAuthCookies(res, { accessToken: newToken, refreshToken: newRefreshToken });
       return res.json({ success: true });
     }
@@ -862,12 +1179,15 @@ const refreshTokenEndpoint = async (req, res) => {
     }
 
     // All checks passed — issue new pair and rotate the old row.
-    const newToken = generateToken(user.id);
-    const newRefreshToken = await issueRefreshToken(user.id, req);
-    // Decode just to recover the new JTI for the chain audit trail (cheap —
-    // jwt.decode skips signature verification, but we just signed it).
-    const newDecoded = jwt.decode(newRefreshToken) || {};
-    await revokeRefreshToken(decoded.jti, newDecoded.jti || null);
+    // Single-active-session: the new access token's `sid` is the NEW
+    // refresh JTI, so the middleware's session lookup follows the
+    // current head of the rotation chain. The OLD refresh row gets
+    // revokedAt + replacedByJti set, which the middleware treats as
+    // a rotation (NOT a hard revoke) so any in-flight access token
+    // issued in the previous cycle stays valid until natural expiry.
+    const { token: newRefreshToken, jti: newJti } = await issueRefreshToken(user.id, req);
+    const newToken = generateToken(user.id, newJti);
+    await revokeRefreshToken(decoded.jti, newJti || null);
 
     // D-1: refresh the cookies so the new pair takes effect on the next
     // request. The browser overwrites the old cookies in place because the
@@ -1142,23 +1462,160 @@ const microsoftCallback = async (req, res) => {
 
     console.log(`[Auth] SSO login resolved: user=${user.id} email=${user.email} matchedBy=${matchedBy}`);
 
-    // Generate app JWT tokens. The refresh token is tracked in the
-    // refresh_tokens table just like the local-login path so SSO sessions
-    // share the same revoke / rotate / reuse-detect machinery.
-    const token = generateToken(user.id);
-    const appRefreshToken = await issueRefreshToken(user.id, req);
+    // ── Single-active-session — SSO branch ───────────────────────
+    // Mirror the local-login behaviour: if a live session already
+    // exists for this user, DO NOT silently take it over. Mint a
+    // pending-login token, drop it into an httpOnly cookie (so it
+    // never appears in browser history / Referer headers), and
+    // redirect to /login?sso=session_conflict. The frontend renders
+    // the "continue here?" UI and posts to /auth/login/force-sso,
+    // which reads the cookie and consumes the token.
+    const activeSession = await findActiveSessionForUser(user.id);
+    if (activeSession) {
+      const rawPendingToken = await createPendingLoginToken(user, 'sso', req);
+      setPendingLoginCookie(res, rawPendingToken);
+      return res.redirect(`${CLIENT_URL}/login?sso=session_conflict`);
+    }
 
-    // D-1 Phase 2: set httpOnly cookies BEFORE the redirect, and the redirect
-    // URL no longer carries the tokens as query parameters. This closes the
-    // exposure where tokens lived in the browser history, the Referer header
-    // of any subsequent navigation, and any analytics that captured the URL.
-    // The frontend reads the cookie on the next page load to confirm the
-    // session and fetch the user profile.
-    setAuthCookies(res, { accessToken: token, refreshToken: appRefreshToken });
+    // No active session — establish one. establishSession writes the
+    // refresh row, signs the access token with `sid` = new JTI, and
+    // sets both httpOnly cookies. The frontend reads the cookie on
+    // /login?sso=success and calls /auth/me to load the user.
+    await establishSession(user, res, req);
     res.redirect(`${CLIENT_URL}/login?sso=success`);
   } catch (error) {
     console.error('[Auth] Microsoft SSO callback error:', error.response?.data || error.message);
     res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Authentication failed. Please try again.')}`);
+  }
+};
+
+/**
+ * GET /api/auth/login/pending-sso
+ *
+ * Read-only endpoint the SSO conflict page calls to confirm there is a
+ * valid pending-SSO cookie and to surface the email/name of the
+ * authenticated user (so the UI can say "Continue as <name>?"). Does
+ * NOT consume the token — only inspects it.
+ *
+ * Returns:
+ *   200 { success:true, data:{ email, name, avatar, otherDevice } }
+ *   401 if the cookie is missing/expired/used/origin-mismatched.
+ */
+const getPendingSsoInfo = async (req, res) => {
+  try {
+    const rawToken = getPendingLoginTokenFromRequest(req);
+    if (!rawToken) {
+      return res.status(401).json({
+        success: false,
+        code: 'PENDING_SSO_MISSING',
+        message: 'No pending SSO sign-in.',
+      });
+    }
+    const hashed = hashPendingToken(rawToken);
+    const row = await PendingLoginToken.findOne({ where: { tokenHash: hashed } });
+    if (!row || row.usedAt || new Date(row.expiresAt) <= new Date() || row.origin !== 'sso') {
+      clearPendingLoginCookie(res);
+      return res.status(401).json({
+        success: false,
+        code: 'PENDING_SSO_INVALID',
+        message: 'Pending SSO sign-in expired. Please sign in again.',
+      });
+    }
+    const user = await User.findByPk(row.userId, {
+      attributes: ['id', 'name', 'email', 'avatar'],
+    });
+    if (!user) {
+      clearPendingLoginCookie(res);
+      return res.status(401).json({ success: false, message: 'User not found.' });
+    }
+    // Best-effort device hint for the UI. Look up the active session
+    // we'd be displacing; safe to omit if it disappeared in the
+    // meantime (still allow the confirm flow to proceed).
+    const activeSession = await findActiveSessionForUser(user.id);
+    const otherDevice = activeSession
+      ? {
+          userAgent: (activeSession.userAgent || '').slice(0, 80) || null,
+          ip: activeSession.ip || null,
+          issuedAt: activeSession.issuedAt,
+        }
+      : null;
+    res.json({
+      success: true,
+      data: {
+        email: user.email,
+        name: user.name,
+        avatar: user.avatar,
+        otherDevice,
+      },
+    });
+  } catch (err) {
+    console.error('[Auth] getPendingSsoInfo error:', err && err.message);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
+ * POST /api/auth/login/force-sso
+ *
+ * SSO equivalent of /api/auth/login/force. Reads the pending-SSO token
+ * from the httpOnly cookie (set by microsoftCallback when it detected a
+ * conflict), consumes it, revokes every existing session for the user,
+ * force-disconnects their sockets, and establishes a new session.
+ *
+ * Security:
+ *   - Token origin must be 'sso'; a local-login pending token cannot be
+ *     redeemed here.
+ *   - Single-use enforced at the DB layer.
+ *   - User must still be active + approved; deactivated-in-the-window
+ *     case is rejected.
+ *   - The token came from a successful Microsoft `code` exchange, so
+ *     password proof is implicit through the OAuth round-trip.
+ */
+const forceLoginSSO = async (req, res) => {
+  try {
+    const rawToken = getPendingLoginTokenFromRequest(req);
+    if (!rawToken) {
+      return res.status(400).json({
+        success: false,
+        code: 'PENDING_TOKEN_REQUIRED',
+        message: 'Pending SSO sign-in is missing or expired. Please sign in again.',
+      });
+    }
+
+    const consumed = await consumePendingLoginToken(rawToken, 'sso');
+    if (!consumed.ok) {
+      clearPendingLoginCookie(res);
+      console.warn(`[Auth.forceLoginSSO] consume failed: ${consumed.reason}`);
+      return res.status(400).json({
+        success: false,
+        code: 'PENDING_TOKEN_INVALID',
+        message: 'Pending SSO sign-in expired or invalid. Please sign in again.',
+      });
+    }
+
+    const user = await User.findByPk(consumed.userId);
+    if (!user || !user.isActive || user.accountStatus !== 'approved') {
+      clearPendingLoginCookie(res);
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_UNAVAILABLE',
+        message:
+          'This account is no longer available. Please contact an administrator.',
+      });
+    }
+
+    await revokeAllSessionsForForceLogout(user.id, 'forced_other_device');
+    await establishSession(user, res, req);
+    clearPendingLoginCookie(res);
+
+    res.json({
+      success: true,
+      message: 'Signed in. The other session has been ended.',
+      data: { user: user.toJSON() },
+    });
+  } catch (err) {
+    console.error('[Auth] forceLoginSSO error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
 
@@ -1196,6 +1653,9 @@ const getAssignableUsersList = async (req, res) => {
 module.exports = {
   register,
   login,
+  forceLogin,
+  forceLoginSSO,
+  getPendingSsoInfo,
   getProfile,
   updateProfile,
   getAllUsers,

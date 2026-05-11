@@ -1,9 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Type, Hash, Calendar, Circle, User, Flag, Tag, BarChart, CheckSquare, Link, Paperclip, Clock, X
+  Type, Hash, Calendar, Circle, User, Flag, Tag, BarChart, CheckSquare, Paperclip, Clock, X, BookOpen, Link2
 } from 'lucide-react';
 
+// The single-link `link` column type is no longer exposed here — the
+// default `links` (multi-value) column covers the same need and rendered
+// as two options it was causing users to pick the wrong one. Existing
+// custom columns of `type: 'link'` keep working via TaskRow's switch case
+// for backward compatibility.
 const COLUMN_OPTIONS = [
   { type: 'text', label: 'Text', icon: Type, desc: 'Single line text field' },
   { type: 'number', label: 'Number', icon: Hash, desc: 'Numeric values' },
@@ -14,7 +19,8 @@ const COLUMN_OPTIONS = [
   { type: 'label', label: 'Label', icon: Tag, desc: 'Colored tags' },
   { type: 'progress', label: 'Progress', icon: BarChart, desc: 'Completion percentage' },
   { type: 'checkbox', label: 'Checkbox', icon: CheckSquare, desc: 'Yes/No toggle' },
-  { type: 'link', label: 'Link/URL', icon: Link, desc: 'Web links' },
+  { type: 'references', label: 'Reference', icon: BookOpen, desc: 'Multiple reference entries' },
+  { type: 'links', label: 'Link/URL', icon: Link2, desc: 'Multiple URL links per task' },
   { type: 'file', label: 'File', icon: Paperclip, desc: 'File attachments' },
   { type: 'time_tracking', label: 'Time Tracking', icon: Clock, desc: 'Track time spent' },
 ];

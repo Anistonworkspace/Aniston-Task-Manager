@@ -11,7 +11,7 @@ function getPageContext(pathname) {
     '/': 'Home page - shows greeting, stat cards (Total Tasks, Completed, Overdue, Due Today, Team Tasks, In Progress, Stuck/Blocked, Completion Rate), My Tasks table, Recent boards list',
     '/my-work': 'My Work page - personal task view with Table & Calendar tabs, tasks grouped by due date',
     '/boards': 'Boards page - board library with grid/list view, search, create board',
-    '/dashboard': 'Dashboard page - analytics with stat cards, charts, team overview, board summaries',
+    '/dashboard': 'Team Dashboard page - analytics with stat cards, charts, team overview, board summaries',
     '/admin-dashboard': 'My Dashboard - smart views, status/priority charts, tasks table',
     '/time-plan': 'Time Plan page - daily/weekly time planner with hourly blocks, team view for managers',
     '/meetings': 'Meetings page - meeting scheduling, accept/decline, stats, date-grouped list',
@@ -25,7 +25,7 @@ function getPageContext(pathname) {
     '/feedback': 'Feedback page (admin) - view all user feedback, stats, update status',
     '/archive': 'Archive - archived tasks, boards, workspaces',
     '/cross-team': 'Dependencies - cross-board task dependencies',
-    '/tasks': 'Tasks & Workflows - approvals, extensions, help requests',
+    '/tasks': 'Approvals & Requests - approvals, extensions, help requests',
     '/timeline': 'Timeline page - Gantt chart view with zoom controls',
   };
 

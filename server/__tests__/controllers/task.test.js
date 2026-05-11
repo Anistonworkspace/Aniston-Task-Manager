@@ -251,6 +251,65 @@ describe('POST /api/tasks', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.errors).toBeDefined();
+    // The controller now returns a top-level `message` so the frontend toast
+    // can surface the actual reason instead of axios's opaque "Request failed
+    // with status code 400". Production audit (prod 400 ticket, 2026-05-11)
+    // showed every intermittent task-create failure was actually a
+    // validation error — but the user only ever saw the generic axios
+    // fallback because the controller used to return `{ errors: [...] }`
+    // without a message.
+    expect(res.body.message).toMatch(/title/i);
+    expect(res.body.code).toBe('validation_failed');
+  });
+
+  it('accepts an empty-string description on quick-create (treats as omitted)', async () => {
+    // Regression: production clients send `description: ''` on the inline
+    // "+ Add task" path because the input is bound to a controlled state
+    // that initializes to ''. Previously this passed `isString()` but
+    // `optional({nullable:true})` did NOT skip the chain for '' — and any
+    // future rule (e.g. min:1) would 400. The new route uses
+    // `optional({nullable:true, checkFalsy:true})` so empty string skips
+    // the entire chain. Locks in that defensive defaulting.
+    setupManagerUser();
+    Board.findByPk.mockResolvedValue(makeBoardRecord());
+    Task.max.mockResolvedValue(0);
+    const createdTask = makeTaskRecord({ title: 'Quick task' });
+    Task.create.mockResolvedValue(createdTask);
+    Task.findByPk.mockResolvedValue({
+      ...createdTask,
+      toJSON: jest.fn().mockReturnValue({ id: TASK_ID, title: 'Quick task' }),
+    });
+
+    const token = generateToken(USER_ID, 'manager');
+    const res = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Quick task', boardId: BOARD_ID, description: '' });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('accepts an empty-string status on quick-create (falls through to default)', async () => {
+    // Same regression class as the description one — older clients can
+    // serialize status='' when the user hasn't picked anything. The
+    // backend should default to 'not_started' rather than 400ing.
+    setupManagerUser();
+    Board.findByPk.mockResolvedValue(makeBoardRecord());
+    Task.max.mockResolvedValue(0);
+    const createdTask = makeTaskRecord({ title: 'Quick task' });
+    Task.create.mockResolvedValue(createdTask);
+    Task.findByPk.mockResolvedValue({
+      ...createdTask,
+      toJSON: jest.fn().mockReturnValue({ id: TASK_ID, title: 'Quick task' }),
+    });
+
+    const token = generateToken(USER_ID, 'manager');
+    const res = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Quick task', boardId: BOARD_ID, status: '' });
+
+    expect(res.status).toBe(201);
   });
 
   it('returns 400 when boardId is missing', async () => {
@@ -503,19 +562,25 @@ describe('PUT /api/tasks/:id', () => {
     );
   });
 
-  it('returns 403 with title_locked when a manager (Tier 2) tries to rename a task they created', async () => {
-    // Title-lock rule: once a task exists, only Tier 1 / Super Admin may
-    // change the title. A Tier 2 manager — even one who created the task —
-    // gets a 403 with code `title_locked`. Non-title field updates remain
-    // unaffected (covered by the priority test above).
+  it('allows a manager (Tier 2) to rename a task — title-lock applies to Tier 3/4 only', async () => {
+    // Title-lock rule (post-fix): Tier 1 (Super Admin) AND Tier 2 (Admin /
+    // Manager) may rename a task at any time. Tier 3 / Tier 4 cannot.
+    // This test inverts the previous "Tier 2 manager → 403 title_locked"
+    // assertion, which was the headline blocker behind "Tier 2 can't edit
+    // all task fields like Tier 1". The matching test for Tier 3/4 lives
+    // alongside this in the same describe block.
     const managerUser = makeUserRecord({ role: 'manager', id: USER_ID });
     User.findByPk
       .mockResolvedValueOnce(managerUser)                       // authenticate
       .mockResolvedValueOnce({ id: USER_ID, role: 'manager' }); // creator lookup
 
     const existingTask = makeTaskRecord({ assignedTo: OTHER_ID, createdBy: USER_ID });
-
-    Task.findByPk.mockResolvedValueOnce(existingTask);
+    Task.findByPk.mockResolvedValueOnce(existingTask)
+      .mockResolvedValueOnce({
+        ...existingTask,
+        title: 'Renamed Task',
+        toJSON: jest.fn().mockReturnValue({ ...existingTask, title: 'Renamed Task' }),
+      });
 
     const token = generateToken(USER_ID, 'manager');
 
@@ -524,9 +589,35 @@ describe('PUT /api/tasks/:id', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ title: 'Renamed Task' });
 
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true });
+    expect(existingTask.update).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Renamed Task' })
+    );
+  });
+
+  it('still returns 403 with title_locked when a member (Tier 4) tries to rename', async () => {
+    // Defense for the inverse: Tier 3/4 must remain blocked on title
+    // rename. The frontend `canEditTaskTitle` helper hides the editor
+    // affordance; this test pins the backend gate so a forged PUT still
+    // 403s.
+    const memberUser = makeUserRecord({ role: 'member', id: USER_ID });
+    User.findByPk
+      .mockResolvedValueOnce(memberUser)                       // authenticate
+      .mockResolvedValueOnce({ id: USER_ID, role: 'member' }); // creator lookup
+
+    const existingTask = makeTaskRecord({ assignedTo: USER_ID, createdBy: USER_ID });
+    Task.findByPk.mockResolvedValueOnce(existingTask);
+
+    const token = generateToken(USER_ID, 'member');
+
+    const res = await request(app)
+      .put(`/api/tasks/${TASK_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Renamed Task' });
+
     expect(res.status).toBe(403);
     expect(res.body).toMatchObject({ success: false, code: 'title_locked' });
-    // The mutation must never reach the DB on a title-lock denial.
     expect(existingTask.update).not.toHaveBeenCalled();
   });
 });

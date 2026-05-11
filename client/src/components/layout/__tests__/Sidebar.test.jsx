@@ -156,10 +156,10 @@ describe('Sidebar component', () => {
 
   // ---- Admin-only items ----
 
-  it('renders Dashboard, Team, Admin Settings, Integrations, and Archive for admin', () => {
+  it('renders Team Dashboard, Admin Settings, Integrations, and Archive for admin', () => {
     renderSidebar();
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Team')).toBeInTheDocument();
+    expect(screen.getByText('Team Dashboard')).toBeInTheDocument();
+    expect(screen.queryByText('Team')).not.toBeInTheDocument();
     expect(screen.getByText('Admin Settings')).toBeInTheDocument();
     expect(screen.getByText('Integrations')).toBeInTheDocument();
     expect(screen.getByText('Archive')).toBeInTheDocument();
@@ -173,18 +173,18 @@ describe('Sidebar component', () => {
     expect(screen.queryByText('Archive')).not.toBeInTheDocument();
   });
 
-  it('does NOT render Dashboard and Team for a plain member', () => {
+  it('does NOT render Team Dashboard for a plain member', () => {
     setMemberAuth();
     renderSidebar();
-    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('Team Dashboard')).not.toBeInTheDocument();
     expect(screen.queryByText('Team')).not.toBeInTheDocument();
   });
 
-  it('renders Dashboard and Team for a manager but NOT Admin Settings', () => {
+  it('renders Team Dashboard for a manager but NOT Admin Settings', () => {
     setManagerAuth();
     renderSidebar();
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
-    expect(screen.getByText('Team')).toBeInTheDocument();
+    expect(screen.getByText('Team Dashboard')).toBeInTheDocument();
+    expect(screen.queryByText('Team')).not.toBeInTheDocument();
     expect(screen.queryByText('Admin Settings')).not.toBeInTheDocument();
   });
 
@@ -281,9 +281,9 @@ describe('Sidebar component', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/my-work');
   });
 
-  it('navigates to /dashboard when Dashboard is clicked (admin)', () => {
+  it('navigates to /dashboard when Team Dashboard is clicked (admin)', () => {
     renderSidebar();
-    fireEvent.click(screen.getByText('Dashboard'));
+    fireEvent.click(screen.getByText('Team Dashboard'));
     expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
   });
 

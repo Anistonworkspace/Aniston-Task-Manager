@@ -46,6 +46,8 @@ const accessRequestRoutes = require('./routes/accessRequests');
 const taskExtrasRoutes = require('./routes/taskExtras');
 const announcementRoutes = require('./routes/announcements');
 const labelRoutes = require('./routes/labels');
+const taskReferenceRoutes = require('./routes/taskReferences');
+const taskLinkRoutes = require('./routes/taskLinks');
 const extensionRoutes = require('./routes/extensions');
 const helpRequestRoutes = require('./routes/helpRequests');
 const promotionRoutes = require('./routes/promotions');
@@ -469,6 +471,8 @@ app.use('/api/access-requests', accessRequestRoutes);
 app.use('/api/task-extras', taskExtrasRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/labels', labelRoutes);
+app.use('/api/task-references', taskReferenceRoutes);
+app.use('/api/task-links', taskLinkRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
@@ -832,6 +836,41 @@ const start = async () => {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration: pending_login_tokens table ────────────────
+    // Single-active-session feature. One row per "you're already logged in
+    // somewhere — click to take over" confirmation handshake. Raw token is
+    // returned ONCE to the client; only its SHA-256 hash lives here.
+    //
+    // Idempotent: every statement uses IF NOT EXISTS. Non-destructive: no
+    // existing data is altered.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS pending_login_tokens (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId"      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash    VARCHAR(64) NOT NULL,
+        expires_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+        used_at       TIMESTAMP WITH TIME ZONE,
+        ip            VARCHAR(45),
+        user_agent    VARCHAR(255),
+        origin        VARCHAR(16) NOT NULL DEFAULT 'local',
+        "createdAt"   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt"   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      // Partial index: tokenHash is only ever looked up among unused, unexpired
+      // rows. Filtering at the index level keeps it tight and cheap as old
+      // rows accumulate. lookups also still work without it via the secondary
+      // (token_hash) index below.
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_plt_hash
+        ON pending_login_tokens (token_hash)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_plt_user
+        ON pending_login_tokens ("userId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_plt_expires
+        ON pending_login_tokens (expires_at)`);
+      console.log('[Server] pending_login_tokens table ensured.');
+    } catch (e) {
+      console.warn('[Server] pending_login_tokens migration warning:', e.message?.slice(0, 200));
+    }
+
     // ── Auto-migration: user_board_orders table ───────────────────
     // Per-user board ordering inside workspaces (sidebar Rearrange feature).
     // Idempotent — safe to run on every boot.
@@ -1007,6 +1046,110 @@ const start = async () => {
       console.log('[Server] labels and task_labels tables ensured.');
     } catch (e) {
       console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: task_references and task_links tables ──
+    // Backing storage for the "Reference" and "Link" default columns
+    // (multi-value per task). Idempotent CREATE IF NOT EXISTS — safe to
+    // run on every boot. CASCADE on taskId so archiving a task wipes its
+    // associated refs/links; SET NULL on createdBy so deactivating a user
+    // doesn't lose history of who added what.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS task_references (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        text VARCHAR(500) NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        "createdBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_task_references_task_pos ON task_references("taskId", position)`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS task_links (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        url VARCHAR(2048) NOT NULL,
+        title VARCHAR(200),
+        position INTEGER NOT NULL DEFAULT 0,
+        "createdBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_task_links_task_pos ON task_links("taskId", position)`);
+      console.log('[Server] task_references and task_links tables ensured.');
+    } catch (e) {
+      console.warn('[Server] task_references/task_links migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: backfill default board columns ──
+    // Every board should include the multi-value Reference + Link/URL columns
+    // alongside the existing Labels/Progress defaults. Append-only so the
+    // user-customised column ORDER and any extra custom columns are
+    // preserved. Idempotent — appends only when a column of the target
+    // TYPE doesn't already exist on the board.
+    //
+    // Why this is rewritten: the previous version used `sequelize.query()`
+    // with a stringified JSONB value, which silently no-op'd on some
+    // installs (the UPDATE bound the string but the WHERE matched 0 rows
+    // when columns came back differently shaped). Using the Sequelize
+    // model + `board.changed('columns', true)` is the canonical pattern in
+    // this codebase for JSONB mutation and surfaces failures clearly.
+    try {
+      const { Board: BoardModel } = require('./models');
+      const DEFAULT_BACKFILL = [
+        { id: 'labels',     title: 'Labels',   type: 'label',      width: 160 },
+        { id: 'references', title: 'Reference', type: 'references', width: 180 },
+        { id: 'links',      title: 'Link/URL', type: 'links',      width: 180 },
+      ];
+      const boards = await BoardModel.findAll({ attributes: ['id', 'name', 'columns'] });
+      let backfilledCount = 0;
+      let renamedCount = 0;
+      const summary = [];
+      for (const b of boards) {
+        const existing = Array.isArray(b.columns) ? b.columns : [];
+        const toAdd = DEFAULT_BACKFILL.filter(c => !existing.some(e => e.type === c.type));
+        // Title normalization: previous backfill seeded type='links' with
+        // title 'Link', which users found ambiguous next to the existing
+        // single-link 'Link/URL' option. Standardize on 'Link/URL' for
+        // the multi-value column so the column header matches what users
+        // expect. References likewise normalizes to title 'Reference'.
+        let changed = toAdd.length > 0;
+        const normalized = existing.map((c) => {
+          if (c.type === 'links' && c.title !== 'Link/URL') { changed = true; return { ...c, title: 'Link/URL' }; }
+          if (c.type === 'references' && c.title !== 'Reference') { changed = true; return { ...c, title: 'Reference' }; }
+          return c;
+        });
+        if (!changed) continue;
+        const next = [...normalized, ...toAdd];
+        // Sequelize's JSONB change-detection skips in-place mutations and
+        // can miss reassignments when the array reference is "equal enough"
+        // — `changed()` forces it to write.
+        b.columns = next;
+        b.changed('columns', true);
+        await b.save({ fields: ['columns'] });
+        if (toAdd.length > 0) {
+          backfilledCount++;
+          summary.push(`${b.name || b.id} += [${toAdd.map(c => c.title).join(', ')}]`);
+        } else {
+          renamedCount++;
+        }
+      }
+      if (backfilledCount > 0) {
+        console.log(`[Server] Default-column backfill applied to ${backfilledCount} board(s):`);
+        for (const line of summary) console.log(`         · ${line}`);
+      }
+      if (renamedCount > 0) {
+        console.log(`[Server] Default-column titles normalized on ${renamedCount} board(s) (Link → Link/URL).`);
+      }
+      if (backfilledCount === 0 && renamedCount === 0) {
+        console.log('[Server] Default-column backfill: all boards already have label/references/links columns with correct titles.');
+      }
+    } catch (e) {
+      // Surface the FULL error here — silent backfill failures were the
+      // exact reason existing boards still didn't show Reference / Link
+      // after the previous deploy.
+      console.error('[Server] default columns backfill ERROR:', e);
     }
 
     // ── Auto-migration: file_attachments table ──
@@ -1601,6 +1744,37 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] users.font_size_preference migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: Add language column to users (migration 016) ──
+    // Mirrors server/migrations/016_add_user_language.sql. Self-installing
+    // so production deploys (which only restart the container, never invoke
+    // run_016.js) get the column and CHECK constraint on every boot.
+    // Idempotent: ADD COLUMN IF NOT EXISTS + DO $$ guard for the constraint.
+    try {
+      const [userTablesLang] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
+      );
+      if (userTablesLang.length > 0) {
+        await sequelize.query(
+          `ALTER TABLE users ADD COLUMN IF NOT EXISTS language VARCHAR(8) DEFAULT NULL`
+        );
+        await sequelize.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname = 'users_language_check'
+            ) THEN
+              ALTER TABLE users
+                ADD CONSTRAINT users_language_check
+                CHECK (language IS NULL OR language IN ('en','hi'));
+            END IF;
+          END $$;
+        `);
+        console.log('[Server] users.language column ensured.');
+      }
+    } catch (e) {
+      console.warn('[Server] users.language migration warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: Add tier column to users (migration 014) ──

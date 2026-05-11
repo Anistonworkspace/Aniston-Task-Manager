@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const { User, RefreshToken } = require('../models');
 const { Op } = require('sequelize');
 const {
   resolveTier,
@@ -7,7 +7,7 @@ const {
   TIER_2,
   TIER_3,
 } = require('../config/tiers');
-const { getAccessTokenFromRequest } = require('../utils/authCookies');
+const { getAccessTokenFromRequest, clearAuthCookies } = require('../utils/authCookies');
 
 /**
  * Authenticate requests via JWT — read from the httpOnly cookie set on
@@ -61,10 +61,41 @@ const authenticate = async (req, res, next) => {
     if (user.passwordChangedAt && decoded.iat) {
       const passwordChangedAtSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
       if (decoded.iat + 1 < passwordChangedAtSec) {
+        clearAuthCookies(res);
         return res.status(401).json({
           success: false,
           message: 'Session expired. Please log in again.',
           code: 'PASSWORD_CHANGED',
+        });
+      }
+    }
+
+    // ── Single-active-session check ───────────────────────────────
+    // Every access token minted after this feature ships carries a
+    // `sid` claim equal to the JTI of the refresh-token row that
+    // represents the session. Look it up. If the row was hard-revoked
+    // (revokedAt set AND replacedByJti null — i.e. logout, force-
+    // logout, or password change), reject the request and clear
+    // cookies so the browser doesn't keep sending dead credentials.
+    //
+    // Rotation-revoked rows (revokedAt set BUT replacedByJti set) are
+    // accepted — the existing access token is still within its 1-h
+    // window and represents a legitimate continuation of the same
+    // session. The next refresh attempt will pick up the new chain
+    // head naturally.
+    //
+    // Tokens without a `sid` are pre-feature legacy. They keep working
+    // for at most 1 hour (their natural TTL); after that every active
+    // session has a sid claim and the check is universally enforced.
+    if (decoded.sid) {
+      const session = await RefreshToken.findByPk(decoded.sid);
+      if (!session || (session.revokedAt && !session.replacedByJti)) {
+        clearAuthCookies(res);
+        return res.status(401).json({
+          success: false,
+          message:
+            'Your session is no longer active. Please log in again.',
+          code: 'SESSION_REVOKED',
         });
       }
     }
