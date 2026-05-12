@@ -56,8 +56,15 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// Register Service Worker for PWA + force updates
-if ('serviceWorker' in navigator) {
+// Register Service Worker for PWA + force updates — production only.
+//
+// In dev, a registered SW fights Vite HMR (it caches stale module URLs and
+// turns Vite-server outages into misleading 503s because the SW's catch-all
+// fetch fallback returns a synthetic 503 when upstream is down). We register
+// only when the production build runs. If a stale dev SW from a prior run
+// is still active we unregister it so the dev session has a clean slate.
+const SW_ENABLED = import.meta.env.PROD;
+if ('serviceWorker' in navigator && SW_ENABLED) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
       .then((reg) => {
@@ -86,6 +93,31 @@ if ('serviceWorker' in navigator) {
       })
       .catch((err) => console.warn('[SW] Registration failed:', err));
   });
+}
+
+// Dev-mode cleanup: a SW from a prior production preview or pre-fix dev
+// session may still be controlling this origin. Unregister it AND clear its
+// caches so the NEXT manual reload loads fresh modules from Vite. Without
+// this the browser would keep returning the SW's synthetic 503 fallback
+// whenever Vite is restarting or briefly unreachable.
+//
+// We intentionally do NOT auto-reload here. The unregister + cache wipe is
+// quiet and idempotent; we log a one-line console hint so the developer
+// knows a manual reload is needed for this session. Subsequent sessions
+// load without the SW automatically because registration is gated above.
+// No-op in production builds.
+if ('serviceWorker' in navigator && !SW_ENABLED) {
+  navigator.serviceWorker.getRegistrations()
+    .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+    .then((unregistered) => {
+      if (unregistered.some(Boolean)) {
+        if (typeof caches !== 'undefined' && caches.keys) {
+          caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
+        }
+        console.info('[SW] dev-mode cleanup: unregistered stale service worker + cleared caches. Reload the tab once to drop SW control of the current document.');
+      }
+    })
+    .catch(() => { /* best-effort cleanup; non-fatal */ });
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(

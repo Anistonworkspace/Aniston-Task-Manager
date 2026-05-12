@@ -149,7 +149,17 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
         setShowCreate(false);
       }
     } catch (err) {
-      safeSet(setError, err?.response?.data?.message || 'Failed to create label');
+      // In dev mode the server attaches `detail` to its 500 envelope so the
+      // root cause surfaces directly to the cell instead of being buried in
+      // server logs. We append it after the user-facing message; in
+      // production responses `detail` is omitted and the message-only fall
+      // back below kicks in unchanged.
+      const data = err?.response?.data;
+      let msg = data?.message || 'Failed to create label';
+      if (data?.detail && data.detail !== data.message) {
+        msg = `${msg} — ${data.detail}`;
+      }
+      safeSet(setError, msg);
     } finally {
       safeSet(setBusy, false);
       scheduleLatchRelease();

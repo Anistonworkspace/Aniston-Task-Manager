@@ -31,6 +31,15 @@ const REALTIME_EVENTS = [
   'task:delegated', 'task:approval-updated', 'task:receipt',
   'task:unblocked',
   'tasks:bulkUpdated', 'tasks:reordered',
+  // Per-task multi-value columns. Fired by labelController.emitLabelsUpdated,
+  // taskReferenceController.{create,update,delete}Reference, and
+  // taskLinkController.{create,update,delete}Link respectively. Must be
+  // listed here so the Provider's socket listener actually subscribes — the
+  // BoardPage hooks them via useRealtimeEvent(), but useRealtimeEvent is an
+  // escape hatch on TOP of the Provider's single socket subscription. Until
+  // they were added to this list (May 12 bug), the assignee's BoardPage
+  // never received the event and the cells stayed stale until manual reload.
+  'task:labels_updated', 'task:references_updated', 'task:links_updated',
   // Subtasks
   'subtask:created', 'subtask:updated', 'subtask:deleted',
   // Watchers (Phase 2)

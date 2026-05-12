@@ -9,7 +9,6 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useT } from '../context/LanguageContext';
-import { useUndo } from '../context/UndoContext';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { joinBoard, leaveBoard } from '../services/socket';
@@ -205,7 +204,6 @@ export default function BoardPage() {
   // "+ Add task" payload explicitly self-assigns so the task is created as a
   // personal task without going through the "missing owner" path on the server.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
-  const { pushAction } = useUndo();
   const { error: toastError, success: toastSuccess } = useToast();
   const [board, setBoard] = useState(null);
   const [tasks, setTasks] = useState([]);
@@ -626,17 +624,6 @@ export default function BoardPage() {
       const res = await api.post('/tasks', payload, { _silent: true });
       const newTask = res.data.task || res.data;
       setTasks(prev => [...prev, newTask]);
-      pushAction({
-        description: `Added task "${cleanTitle}"`,
-        undo: async () => {
-          await api.put(`/tasks/${newTask.id}`, { isArchived: true });
-          setTasks(prev => prev.filter(t => t.id !== newTask.id));
-        },
-        redo: async () => {
-          await api.put(`/tasks/${newTask.id}`, { isArchived: false });
-          loadTasks();
-        },
-      });
       return newTask;
     } catch (err) {
       console.error('[BoardPage] handleAddTask error:', err);
@@ -656,7 +643,6 @@ export default function BoardPage() {
   }
 
   async function handleTaskUpdate(taskId, updates) {
-    const oldTask = tasks.find(t => t.id === taskId);
     try {
       const res = await api.put(`/tasks/${taskId}`, updates);
       // Use the full task from server response to get correct assignedTo/taskAssignees
@@ -664,23 +650,6 @@ export default function BoardPage() {
       const mergeData = serverTask || updates;
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...mergeData } : t));
       if (selectedTask?.id === taskId) setSelectedTask(prev => ({ ...prev, ...mergeData }));
-
-      // Push to undo stack
-      if (oldTask) {
-        const oldValues = {};
-        Object.keys(updates).forEach(k => { oldValues[k] = oldTask[k]; });
-        pushAction({
-          description: `Updated task "${oldTask.title}"`,
-          undo: async () => {
-            await api.put(`/tasks/${taskId}`, oldValues);
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...oldValues } : t));
-          },
-          redo: async () => {
-            await api.put(`/tasks/${taskId}`, updates);
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
-          },
-        });
-      }
     } catch (err) {
       console.error('[BoardPage] handleTaskUpdate error:', err);
       // 4xx responses already surface their specific server messages via
@@ -697,21 +666,9 @@ export default function BoardPage() {
   }
 
   async function handleArchiveTask(taskId) {
-    const oldTask = tasks.find(t => t.id === taskId);
     try {
       await api.put(`/tasks/${taskId}`, { isArchived: true });
       setTasks(prev => prev.filter(t => t.id !== taskId));
-      pushAction({
-        description: `Archived "${oldTask?.title || 'task'}"`,
-        undo: async () => {
-          await api.put(`/tasks/${taskId}`, { isArchived: false });
-          loadTasks();
-        },
-        redo: async () => {
-          await api.put(`/tasks/${taskId}`, { isArchived: true });
-          setTasks(prev => prev.filter(t => t.id !== taskId));
-        },
-      });
     } catch (err) {
       console.error('[BoardPage] handleArchiveTask error:', err);
       toastError('Failed to archive task. Please try again.');

@@ -835,21 +835,75 @@ const start = async () => {
       )`);
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_task_assignees_task_user_role ON task_assignees("taskId", "userId", role)`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_task_assignees_user_id ON task_assignees("userId")`);
-      // Migrate existing assignedTo data into task_assignees (idempotent)
-      await sequelize.query(`
-        INSERT INTO task_assignees ("taskId", "userId", role, "assignedAt", "createdAt", "updatedAt")
-        SELECT t.id, t."assignedTo", 'assignee', COALESCE(t."createdAt", NOW()), NOW(), NOW()
-        FROM tasks t WHERE t."assignedTo" IS NOT NULL
-        ON CONFLICT ("taskId", "userId", role) DO NOTHING
-      `);
-      // Also migrate task_owners entries
-      await sequelize.query(`
-        INSERT INTO task_assignees ("taskId", "userId", role, "assignedAt", "createdAt", "updatedAt")
-        SELECT o."taskId", o."userId", 'assignee', COALESCE(o."createdAt", NOW()), NOW(), NOW()
-        FROM task_owners o WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.id = o."taskId")
-        ON CONFLICT ("taskId", "userId", role) DO NOTHING
-      `);
-      console.log('[Server] task_assignees table ensured and data migrated.');
+
+      // ── One-shot legacy backfill (gated) ──────────────────────────────
+      //
+      // These two INSERTs migrate pre-junction-table data into task_assignees:
+      //   1. Every task whose legacy `tasks.assignedTo` is set gets a matching
+      //      ('assignee') row.
+      //   2. Every existing task_owners row gets a matching ('assignee') row.
+      // Both used ON CONFLICT DO NOTHING and were intended to be idempotent.
+      //
+      // BUT: running them on every deploy creates a subtle restoration vector.
+      // If an assignee was removed via a path that cleared task_assignees but
+      // NOT the legacy `tasks.assignedTo` column (e.g. an out-of-band psql
+      // edit, a now-fixed controller bug, or a one-off script), the next
+      // backend restart silently re-inserts the assignee — making it look
+      // like deleted data is "coming back" after a deploy.
+      //
+      // For mature installs (production), the backfill has long since
+      // completed. Gate it behind `system_flags.task_assignees_legacy_backfill_v1`
+      // — same pattern as the BoardMembers.autoAdded cleanup further below.
+      // The first deploy after this code lands runs the INSERTs once and
+      // writes the marker. All subsequent deploys short-circuit via a
+      // single SELECT and the restoration vector is closed.
+      //
+      // Fresh / dev databases still get the legacy data migrated on first
+      // boot. We log a clear summary of how many rows the backfill touched
+      // so operators see exactly what happened.
+      try {
+        await sequelize.query(`
+          CREATE TABLE IF NOT EXISTS system_flags (
+            flag VARCHAR(100) PRIMARY KEY,
+            completed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            details JSONB DEFAULT '{}'
+          )
+        `);
+        const [taFlagRows] = await sequelize.query(
+          `SELECT flag FROM system_flags WHERE flag = 'task_assignees_legacy_backfill_v1'`
+        );
+        if (taFlagRows.length === 0) {
+          const [, fromAssignedToMeta] = await sequelize.query(`
+            INSERT INTO task_assignees ("taskId", "userId", role, "assignedAt", "createdAt", "updatedAt")
+            SELECT t.id, t."assignedTo", 'assignee', COALESCE(t."createdAt", NOW()), NOW(), NOW()
+            FROM tasks t WHERE t."assignedTo" IS NOT NULL
+            ON CONFLICT ("taskId", "userId", role) DO NOTHING
+          `);
+          const [, fromOwnersMeta] = await sequelize.query(`
+            INSERT INTO task_assignees ("taskId", "userId", role, "assignedAt", "createdAt", "updatedAt")
+            SELECT o."taskId", o."userId", 'assignee', COALESCE(o."createdAt", NOW()), NOW(), NOW()
+            FROM task_owners o WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.id = o."taskId")
+            ON CONFLICT ("taskId", "userId", role) DO NOTHING
+          `);
+          const fromAssignedTo = fromAssignedToMeta?.rowCount ?? 0;
+          const fromOwners = fromOwnersMeta?.rowCount ?? 0;
+          console.log(`[Server] task_assignees legacy backfill v1 ran: assignedTo→${fromAssignedTo}, task_owners→${fromOwners}.`);
+          await sequelize.query(
+            `INSERT INTO system_flags (flag, completed_at, details)
+             VALUES ('task_assignees_legacy_backfill_v1', NOW(), $1)
+             ON CONFLICT (flag) DO NOTHING`,
+            { bind: [JSON.stringify({ fromAssignedTo, fromOwners })] }
+          );
+          console.log('[Server] task_assignees legacy backfill v1 marked complete in system_flags.');
+        } else {
+          // Subsequent boots: explicit skip log so the absence of a backfill
+          // line in deploy output is not mistaken for a missing migration.
+          console.log('[Server] task_assignees legacy backfill v1 already complete — skipping.');
+        }
+      } catch (e) {
+        console.warn('[Server] task_assignees legacy backfill v1 warning:', e.message?.slice(0, 200));
+      }
+      console.log('[Server] task_assignees table ensured.');
     } catch (e) {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
@@ -1064,6 +1118,50 @@ const start = async () => {
       console.log('[Server] labels and task_labels tables ensured.');
     } catch (e) {
       console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: legacy task_labels.id column repair ──
+    //
+    // Root cause of the May 12 "null value in column \"id\" of relation
+    // \"task_labels\" violates not-null constraint" regression:
+    //
+    // An earlier revision of server/models/TaskLabel.js declared an `id` UUID
+    // primary key. On environments where the Sequelize `sync({ alter: true })`
+    // path ran at any point during that window (older dev DBs, the audit
+    // workstation), Postgres got a `task_labels.id UUID NOT NULL` column with
+    // NO default. The model was later rewritten to use a composite PK
+    // (taskId, labelId) — see TaskLabel.js comment — and the boot DDL above
+    // was hardened to match, but `CREATE TABLE IF NOT EXISTS` no-ops on those
+    // environments so the legacy `id` column persists. Every INSERT then
+    // fails because Sequelize doesn't send `id` and the column has no default.
+    //
+    // Fix: detect the legacy column, ensure pgcrypto is available, and set
+    // DEFAULT gen_random_uuid() so the DB fills the value on insert. We
+    // intentionally do NOT drop the column — a unique/PK constraint may still
+    // reference it, and dropping would risk losing junction rows on databases
+    // we cannot inspect from here. Backfilling the default is non-destructive
+    // and idempotent: re-running the block is a no-op when the default is
+    // already in place.
+    try {
+      await sequelize.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+      const [legacyIdCols] = await sequelize.query(`
+        SELECT column_default, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        AND table_name = 'task_labels'
+        AND column_name = 'id'
+      `);
+      if (legacyIdCols.length > 0) {
+        const hasDefault = !!legacyIdCols[0].column_default;
+        if (!hasDefault) {
+          await sequelize.query(`ALTER TABLE task_labels ALTER COLUMN id SET DEFAULT gen_random_uuid()`);
+          console.log('[Server] task_labels.id legacy column backfilled with DEFAULT gen_random_uuid().');
+        } else {
+          console.log('[Server] task_labels.id legacy column already has a default — no action.');
+        }
+      }
+    } catch (e) {
+      console.warn('[Server] task_labels.id legacy repair warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: task_references and task_links tables ──

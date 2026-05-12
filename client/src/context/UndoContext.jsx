@@ -1,93 +1,51 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useMemo } from 'react';
+
+// App-level undo/redo for task operations was disabled per product request
+// (May 12 2026). Background:
+//
+//   - Ctrl+Z / Ctrl+Y previously reverted *saved* task state (status, due
+//     date, priority, assignee, archive, etc.) via the stack maintained
+//     here. That behaviour was surprising in a shared multi-user board:
+//     one user could quietly roll back another user's persisted change
+//     simply by pressing a keyboard shortcut.
+//   - The PM decision is to remove this surface entirely for every tier.
+//
+// We keep the file (instead of deleting the module) and the `UndoProvider`
+// + `useUndo` exports so the existing callers in BoardPage.jsx — and any
+// future caller that re-introduces a `useUndo()` lookup — don't crash with
+// "useUndo must be inside UndoProvider". Every API entry is a no-op:
+//
+//   - pushAction(...) silently drops the action; no toast, no stack push.
+//   - undo() / redo() are no-ops.
+//   - canUndo / canRedo are always false; undoCount is 0.
+//   - No keyboard listener is registered, so Ctrl+Z / Ctrl+Y fall through
+//     to the browser's native handler (text-input undo in <input>/<textarea>
+//     still works as expected — we only stripped the *app-level* override).
+//   - The bottom-centre Undo toast UI is removed.
+//
+// If you ever want to re-enable a task-level undo system, do it as a new
+// well-scoped feature (per-board opt-in, server-side audit-trail-backed)
+// rather than restoring this client-only stack.
 
 const UndoContext = createContext(null);
-const MAX_HISTORY = 50;
+
+const NOOP_API = Object.freeze({
+  pushAction: () => {},
+  undo: () => {},
+  redo: () => {},
+  canUndo: false,
+  canRedo: false,
+  undoCount: 0,
+});
 
 export function UndoProvider({ children }) {
-  const [undoStack, setUndoStack] = useState([]);
-  const [redoStack, setRedoStack] = useState([]);
-  const [toast, setToast] = useState(null);
-
-  const pushAction = useCallback((action) => {
-    // action = { type, description, undo: async () => void, redo: async () => void }
-    setUndoStack(prev => [...prev.slice(-MAX_HISTORY + 1), action]);
-    setRedoStack([]);
-    setToast({ message: action.description, action });
-    setTimeout(() => setToast(null), 5000);
-  }, []);
-
-  const undo = useCallback(async () => {
-    if (undoStack.length === 0) return;
-    const action = undoStack[undoStack.length - 1];
-    try {
-      await action.undo();
-      setUndoStack(prev => prev.slice(0, -1));
-      setRedoStack(prev => [...prev, action]);
-      setToast({ message: `Undone: ${action.description}`, undone: true });
-      setTimeout(() => setToast(null), 3000);
-    } catch (err) {
-      console.error('Undo failed:', err);
-    }
-  }, [undoStack]);
-
-  const redo = useCallback(async () => {
-    if (redoStack.length === 0) return;
-    const action = redoStack[redoStack.length - 1];
-    try {
-      await action.redo();
-      setRedoStack(prev => prev.slice(0, -1));
-      setUndoStack(prev => [...prev, action]);
-    } catch (err) {
-      console.error('Redo failed:', err);
-    }
-  }, [redoStack]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    function handleKeyDown(e) {
-      // Ctrl+Z = Undo
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-      }
-      // Ctrl+Y or Ctrl+Shift+Z = Redo
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault();
-        redo();
-      }
-      // Delete key = show archive message
-      if (e.key === 'Delete') {
-        setToast({ message: 'Tasks cannot be deleted. Use archive instead.', isWarning: true });
-        setTimeout(() => setToast(null), 3000);
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo]);
-
-  const dismissToast = useCallback(() => setToast(null), []);
-
-  return (
-    <UndoContext.Provider value={{ pushAction, undo, redo, canUndo: undoStack.length > 0, canRedo: redoStack.length > 0, undoCount: undoStack.length }}>
-      {children}
-      {/* Undo Toast */}
-      {toast && (
-        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-3 text-sm animate-slide-up ${
-          toast.isWarning ? 'bg-yellow-600 text-white' : toast.undone ? 'bg-green-600 text-white' : 'bg-gray-800 text-white'
-        }`}>
-          <span>{toast.message}</span>
-          {toast.action && !toast.undone && (
-            <button onClick={() => { undo(); dismissToast(); }} className="font-bold text-white/90 hover:text-white underline">Undo</button>
-          )}
-          <button onClick={dismissToast} className="text-white/60 hover:text-white ml-1">✕</button>
-        </div>
-      )}
-    </UndoContext.Provider>
-  );
+  const value = useMemo(() => NOOP_API, []);
+  return <UndoContext.Provider value={value}>{children}</UndoContext.Provider>;
 }
 
 export function useUndo() {
   const ctx = useContext(UndoContext);
-  if (!ctx) throw new Error('useUndo must be inside UndoProvider');
-  return ctx;
+  // If the provider is somehow missing (e.g. a test renders a component in
+  // isolation), still return the no-op surface so the caller doesn't crash.
+  return ctx || NOOP_API;
 }

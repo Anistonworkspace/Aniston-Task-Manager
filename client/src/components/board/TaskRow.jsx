@@ -227,7 +227,14 @@ const TaskRow = React.memo(function TaskRow({
       // P3-4: removed `task.taskLabels` fallback — no endpoint populates
       // it. `task.labels` (from the canonical Label include) is the only
       // source of truth.
-      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={canEditAllFields} />;
+      // Labels are task metadata, not a board-management surface. Any user
+      // who can see this row can add/remove labels; backend enforces
+      // canViewTask on POST /api/labels and /labels/{assign,unassign} so a
+      // hidden task is still blocked server-side. Passing canEdit={true}
+      // is intentional — gating this on `canEditAllFields` previously
+      // hid the Labels column entirely for Tier 3 + Tier 4 even on tasks
+      // they owned, which the May 12 RBAC ticket flagged as too strict.
+      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={true} />;
       case 'references': {
         // Multi-value reference column — backed by the task_references table
         // (NOT customFields). The cell handles its own POST/DELETE against

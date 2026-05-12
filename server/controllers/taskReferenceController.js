@@ -2,10 +2,29 @@ const xss = require('xss');
 const { TaskReference, Task, TaskAssignee } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
-const { emitToBoard } = require('../services/socketService');
+const { emitToBoard, emitToBoardAndUsers } = require('../services/socketService');
 const taskVisibility = require('../services/taskVisibilityService');
 const metrics = require('../services/metricsService');
 const logger = require('../utils/logger');
+
+// Fan-out a per-task realtime event to every viewer who has rights to see
+// the task — both the board room (for tabs that have the board page open)
+// AND directly to the assignee/creator/owners' user rooms (so MyWork /
+// Home / Tasks pages, and other-board pages, still see the change live).
+// Falls back to a plain board-room emit if recipient resolution fails.
+async function emitTaskUpdate(task, event, payload) {
+  if (!task || !task.boardId) return;
+  try {
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    if (recipients && recipients.length > 0 && typeof emitToBoardAndUsers === 'function') {
+      await emitToBoardAndUsers(task.boardId, event, payload, recipients);
+      return;
+    }
+  } catch (err) {
+    logger.warn('[taskRef.emit] recipient resolution failed', { taskId: task.id, err: err.message });
+  }
+  try { emitToBoard(task.boardId, event, payload); } catch { /* non-fatal */ }
+}
 
 // Whether the caller is allowed to mutate references on this task. Matches
 // the frontend's `canEditCustomFields` gate: Tier 1/2 can always edit, lower
@@ -92,7 +111,7 @@ exports.createReference = async (req, res) => {
       entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id,
     });
 
-    try { emitToBoard(task.boardId, 'task:references_updated', { taskId }); } catch {}
+    await emitTaskUpdate(task, 'task:references_updated', { taskId });
 
     return res.status(201).json({ success: true, data: { reference } });
   } catch (err) {
@@ -120,7 +139,7 @@ exports.updateReference = async (req, res) => {
     }
     await reference.update({ text });
 
-    try { emitToBoard(task.boardId, 'task:references_updated', { taskId: task.id }); } catch {}
+    await emitTaskUpdate(task, 'task:references_updated', { taskId: task.id });
 
     return res.json({ success: true, data: { reference } });
   } catch (err) {
@@ -148,7 +167,7 @@ exports.deleteReference = async (req, res) => {
       entityType: 'task', entityId: task.id, taskId: task.id, boardId: task.boardId, userId: req.user.id,
     });
 
-    try { emitToBoard(task.boardId, 'task:references_updated', { taskId: task.id }); } catch {}
+    await emitTaskUpdate(task, 'task:references_updated', { taskId: task.id });
 
     return res.json({ success: true, message: 'Reference removed.' });
   } catch (err) {

@@ -90,6 +90,26 @@ export function routeEvent(event, payload = {}) {
       break;
     }
 
+    // Per-task multi-value column updates (label/reference/link). BoardPage
+    // already patches state via raw useRealtimeEvent listeners, but ALSO
+    // wiring the router means any future consumer (MyWorkPage, HomePage,
+    // dashboard widgets that read task.labels / task.references) only needs
+    // to register a `tasks.id.<taskId>` or `tasks.board.<boardId>` queryKey
+    // to stay in sync — no per-event listener chain to maintain.
+    case 'task:labels_updated':
+    case 'task:references_updated':
+    case 'task:links_updated': {
+      pushIf(out, !!taskId, `tasks.id.${taskId}`);
+      pushIf(out, !!boardId, `tasks.board.${boardId}`);
+      // Assignee-side surfaces — MyWork, HomePage's "My Tasks" widget —
+      // also render these cells, so their canonical user-tasks query
+      // should refresh too. Server already gates the refetch via
+      // visibility, so a stray invalidation costs at most a 200 with no
+      // changed rows.
+      out.push('tasks.assignedTo.me');
+      break;
+    }
+
     case 'subtask:created':
     case 'subtask:updated':
     case 'subtask:deleted': {

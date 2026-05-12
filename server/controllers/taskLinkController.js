@@ -2,10 +2,28 @@ const xss = require('xss');
 const { TaskLink, Task, TaskAssignee } = require('../models');
 const { logActivity } = require('../services/activityService');
 const { resolveTier, TIER_1, TIER_2 } = require('../config/tiers');
-const { emitToBoard } = require('../services/socketService');
+const { emitToBoard, emitToBoardAndUsers } = require('../services/socketService');
 const taskVisibility = require('../services/taskVisibilityService');
 const metrics = require('../services/metricsService');
 const logger = require('../utils/logger');
+
+// Same fan-out helper as taskReferenceController — duplicated rather than
+// imported because both files are narrow surfaces and the helper depends
+// on the local logger / emit module identity. Refactor only if a third
+// per-task multi-value column joins the family.
+async function emitTaskUpdate(task, event, payload) {
+  if (!task || !task.boardId) return;
+  try {
+    const recipients = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    if (recipients && recipients.length > 0 && typeof emitToBoardAndUsers === 'function') {
+      await emitToBoardAndUsers(task.boardId, event, payload, recipients);
+      return;
+    }
+  } catch (err) {
+    logger.warn('[taskLink.emit] recipient resolution failed', { taskId: task.id, err: err.message });
+  }
+  try { emitToBoard(task.boardId, event, payload); } catch { /* non-fatal */ }
+}
 
 // P1-4 — hostname blocklist. The current UX never fetches these URLs
 // server-side, so this isn't actively exploitable today. But if any
@@ -163,7 +181,7 @@ exports.createLink = async (req, res) => {
       description: 'Added a link',
       entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id,
     });
-    try { emitToBoard(task.boardId, 'task:links_updated', { taskId }); } catch {}
+    await emitTaskUpdate(task, 'task:links_updated', { taskId });
 
     return res.status(201).json({ success: true, data: { link } });
   } catch (err) {
@@ -194,7 +212,7 @@ exports.updateLink = async (req, res) => {
     }
     await link.update(updates);
 
-    try { emitToBoard(task.boardId, 'task:links_updated', { taskId: task.id }); } catch {}
+    await emitTaskUpdate(task, 'task:links_updated', { taskId: task.id });
 
     return res.json({ success: true, data: { link } });
   } catch (err) {
@@ -220,7 +238,7 @@ exports.deleteLink = async (req, res) => {
       description: 'Removed a link',
       entityType: 'task', entityId: task.id, taskId: task.id, boardId: task.boardId, userId: req.user.id,
     });
-    try { emitToBoard(task.boardId, 'task:links_updated', { taskId: task.id }); } catch {}
+    await emitTaskUpdate(task, 'task:links_updated', { taskId: task.id });
 
     return res.json({ success: true, message: 'Link removed.' });
   } catch (err) {

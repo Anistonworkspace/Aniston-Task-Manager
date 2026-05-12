@@ -396,8 +396,13 @@ describe('Label CRUD role restriction (labels.js)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('rejects member from creating labels', async () => {
+  it('rejects member from creating a BOARD-LIBRARY label (no assignToTaskId)', async () => {
+    // Post-May-12 RBAC widening: members CAN create labels when they're
+    // attaching one to a task they can see (the task-scoped path tested
+    // below). What they cannot do is mint a stand-alone "library" label on
+    // a board they don't manage — that's still the audit's S-H6 boundary.
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
+    mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: 'someone-else' });
     const token = generateToken(USER_ID, 'member');
     const res = await request(app)
       .post('/api/labels')

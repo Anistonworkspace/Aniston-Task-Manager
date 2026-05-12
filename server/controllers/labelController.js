@@ -1,6 +1,6 @@
 const { Label, TaskLabel, Task, User, Board } = require('../models');
 const { sequelize } = require('../config/db');
-const { emitToBoard } = require('../services/socketService');
+const { emitToBoard, emitToBoardAndUsers } = require('../services/socketService');
 const { sanitizeInput } = require('../utils/sanitize');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
@@ -21,9 +21,10 @@ function normalizeColor(input, fallback = '#579bfc') {
 }
 
 // S-H6 — Board management check. Mirrors the pattern in automationController:
-// admin / super admin pass unconditionally; everyone else must be the creator.
-// Route-level role gates keep raw members out; this is the second line of
-// defence (manager-on-stranger-board case).
+// admin / super admin pass unconditionally; everyone else (including Tier 2
+// managers) must be the board creator. Intentional: the audit decision was
+// to keep managers scoped to their own boards for label/automation surfaces
+// so cross-board admin actions are explicitly admin-only.
 function canManageBoard(user, board) {
   if (!user || !board) return false;
   if (user.isSuperAdmin) return true;
@@ -33,17 +34,41 @@ function canManageBoard(user, board) {
 }
 
 // Helper: look up the boardId for a task and emit task:labels_updated to
-// the board room. The frontend BoardPage listener picks this up and
-// refetches just that task's labels, keeping every open tab / open modal
-// in sync without a full board reload. Wrapped in try/catch so a socket
-// dispatch failure can't break the underlying CRUD response.
+// the board room AND every directly-affected user (assignees, owners,
+// creator) who is not currently in that board room — so the assignee
+// sitting on MyWork / Home / Tasks pages also sees the label change live.
+// Wrapped in try/catch so a socket dispatch failure can't break the
+// underlying CRUD response.
 async function emitLabelsUpdated(taskId) {
   try {
     const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId'] });
-    if (task && task.boardId) {
+    if (!task || !task.boardId) return;
+    let recipients = [];
+    try {
+      recipients = await taskVisibility.getAuthorizedRealtimeRecipients(task);
+    } catch { /* non-fatal — falls back to board-room only */ }
+    if (typeof emitToBoardAndUsers === 'function' && recipients.length > 0) {
+      await emitToBoardAndUsers(task.boardId, 'task:labels_updated', { taskId }, recipients);
+    } else {
       emitToBoard(task.boardId, 'task:labels_updated', { taskId });
     }
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    logger.warn('[labels.emit] socket dispatch failed', { taskId, err: err?.message });
+  }
+}
+
+// Build the developer-safe error envelope for a 500 response. In dev
+// (NODE_ENV !== 'production') we include the actual error message + name
+// so the UI surfaces a useful toast instead of the generic "Failed to ...".
+// Prod still returns the generic message — but logger.error() captures the
+// full detail server-side regardless of environment.
+function envelope500(message, err) {
+  const body = { success: false, message };
+  if (process.env.NODE_ENV !== 'production' && err && err.message) {
+    body.detail = err.message;
+    if (err.name) body.errorName = err.name;
+  }
+  return body;
 }
 
 // GET /api/labels?boardId=...
@@ -67,43 +92,53 @@ exports.getLabels = async (req, res) => {
     const labels = await Label.findAll({ where, order: [['name', 'ASC']] });
     res.json({ success: true, data: { labels } });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to fetch labels.' });
+    logger.error('[labels.list] error', { error: err.message, name: err.name, stack: err.stack });
+    res.status(500).json(envelope500('Failed to fetch labels.', err));
   }
 };
 
 // POST /api/labels
+//
+// Two distinct paths, separated by whether the request carries
+// `assignToTaskId`:
+//
+// 1. TASK-SCOPED (assignToTaskId present) — "create a label and attach it
+//    to THIS task in one transaction." Open to any authenticated user who
+//    can see the task. The visibility gate is the same one that decides
+//    whether the task row renders for them at all — so a Tier 4 member who
+//    owns the task, a Tier 3 supervisor on the parent task, and a Tier 2/1
+//    admin all pass. This is the path the LabelCell uses in both the board
+//    table and the task modal. The DB write is wrapped in a transaction so
+//    a failed TaskLabel insert rolls back the parent Label insert — no
+//    orphan rows on partial failure (P2-2).
+//
+// 2. BOARD-LIBRARY (no assignToTaskId, boardId only) — "create a label in
+//    the board's label library, do not attach it anywhere yet." This is a
+//    shared-resource mutation: the resulting label appears in every user's
+//    picker on that board. Stays admin-only via `canManageBoard` to match
+//    the audit's S-H6 boundary (the same boundary preserved on PUT/DELETE).
+//    No assignToTaskId means we have no per-task visibility hook to lean on,
+//    so the board-management check is the right gate here.
 exports.createLabel = async (req, res) => {
   try {
     const { name, color, boardId } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Name is required.' });
 
-    // S-H6 — if a boardId is supplied, verify the board exists and the actor
-    // can manage it. Global labels (boardId === null) are kept as-is — the
-    // route-level role gate already restricts them.
-    if (boardId) {
-      const board = await Board.findByPk(boardId);
-      if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
-      if (!canManageBoard(req.user, board)) {
-        return res.status(403).json({
-          success: false,
-          message: 'You do not have permission to manage labels on this board.',
-        });
-      }
-    }
-
-    // P2-2 — optional atomic "create + assign" path. The frontend used
-    // to do this as two separate API calls; if the assign failed, the
-    // freshly-created label was orphaned in the DB. When the client
-    // passes assignToTaskId, we now do both in a single transaction so
-    // a failed assign rolls back the create.
     const assignToTaskId = req.body.assignToTaskId;
     let label;
+
     if (assignToTaskId) {
+      // ── Path 1: TASK-SCOPED create + assign ──────────────────────────
       const task = await Task.findByPk(assignToTaskId, { attributes: ['id', 'boardId'] });
       if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
       if (boardId && task.boardId !== boardId) {
         return res.status(400).json({ success: false, message: 'Task is not on the requested board.' });
       }
+      // Per-task visibility is the gate. Lower-tier users (T3/T4) pass
+      // when they own, were assigned to, created, or supervise the task —
+      // matching the same predicate that lets them see the row in the
+      // first place. Users who CANNOT see the task get a 403, same as a
+      // direct GET would.
       if (!(await taskVisibility.canViewTask(req.user, task))) {
         return res.status(403).json({ success: false, message: 'Forbidden.' });
       }
@@ -119,6 +154,17 @@ exports.createLabel = async (req, res) => {
       });
       emitLabelsUpdated(assignToTaskId);
     } else {
+      // ── Path 2: BOARD-LIBRARY create (admin-only) ───────────────────
+      if (boardId) {
+        const board = await Board.findByPk(boardId);
+        if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
+        if (!canManageBoard(req.user, board)) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to manage labels on this board.',
+          });
+        }
+      }
       label = await Label.create({
         name: sanitizeInput(name),
         color: normalizeColor(color),
@@ -128,7 +174,15 @@ exports.createLabel = async (req, res) => {
     }
     res.status(201).json({ success: true, data: { label } });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to create label.' });
+    logger.error('[labels.create] error', {
+      error: err.message,
+      name: err.name,
+      sql: err.parent?.message || err.original?.message,
+      stack: err.stack,
+      userId: req.user?.id,
+      body: { name: req.body?.name, color: req.body?.color, boardId: req.body?.boardId, assignToTaskId: req.body?.assignToTaskId },
+    });
+    res.status(500).json(envelope500('Failed to create label.', err));
   }
 };
 
@@ -161,7 +215,8 @@ exports.updateLabel = async (req, res) => {
     });
     res.json({ success: true, data: { label } });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to update label.' });
+    logger.error('[labels.update] error', { error: err.message, name: err.name, sql: err.parent?.message || err.original?.message });
+    res.status(500).json(envelope500('Failed to update label.', err));
   }
 };
 
@@ -194,7 +249,8 @@ exports.deleteLabel = async (req, res) => {
     });
     res.json({ success: true, message: 'Label deleted.' });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to delete label.' });
+    logger.error('[labels.delete] error', { error: err.message, name: err.name, sql: err.parent?.message || err.original?.message });
+    res.status(500).json(envelope500('Failed to delete label.', err));
   }
 };
 
@@ -260,7 +316,8 @@ exports.unassignLabel = async (req, res) => {
     emitLabelsUpdated(taskId);
     res.json({ success: true, message: 'Label removed from task.' });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to remove label.' });
+    logger.error('[labels.unassign] error', { error: err.message, name: err.name, sql: err.parent?.message || err.original?.message });
+    res.status(500).json(envelope500('Failed to remove label.', err));
   }
 };
 
@@ -279,6 +336,7 @@ exports.getTaskLabels = async (req, res) => {
     }
     res.json({ success: true, data: { labels: task.labels || [] } });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to fetch task labels.' });
+    logger.error('[labels.taskLabels] error', { error: err.message, name: err.name, sql: err.parent?.message || err.original?.message });
+    res.status(500).json(envelope500('Failed to fetch task labels.', err));
   }
 };

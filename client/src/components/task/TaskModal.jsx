@@ -2080,7 +2080,13 @@ export default function TaskModal({
                   taskId={task?.id}
                   boardId={boardId || task?.boardId}
                   labels={task?.labels || []}
-                  canEdit={canEditAllFields}
+                  // Labels are task metadata — any user who can open this
+                  // modal can attach a label. The backend's
+                  // taskVisibility.canViewTask check on POST /api/labels and
+                  // /labels/{assign,unassign} is the security boundary.
+                  // We still honour explicit DENY grants on tasks.edit
+                  // since that's an admin-set "no edits at all" override.
+                  canEdit={!denyEdit}
                   // Propagate the new label list back into the parent
                   // task object so the board row's LabelCell (mounted
                   // simultaneously when the modal is open over the

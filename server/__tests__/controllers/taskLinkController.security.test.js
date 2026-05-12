@@ -29,10 +29,12 @@ jest.mock('../../services/activityService', () => ({
 
 jest.mock('../../services/socketService', () => ({
   emitToBoard: jest.fn(),
+  emitToBoardAndUsers: jest.fn(),
 }));
 
 jest.mock('../../services/taskVisibilityService', () => ({
   canViewTask: jest.fn(),
+  getAuthorizedRealtimeRecipients: jest.fn(async () => []),
 }));
 
 jest.mock('../../config/tiers', () => ({
