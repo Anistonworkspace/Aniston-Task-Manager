@@ -3,10 +3,16 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install dependencies
-# P1-10: use `npm ci` instead of `npm install` for reproducible builds —
-# fails if package-lock.json drifts instead of silently updating it.
+# We use `npm install` (not `npm ci`) because client/package-lock.json was
+# generated on Windows and pins only the win32 esbuild/rollup native binaries.
+# On the Linux Docker build, `npm ci` rejects the Linux-binary install as
+# "Missing from lock file" for all 27 esbuild platform packages. This is the
+# well-known npm cross-platform optionalDependencies bug (npm#4828).
+# `--no-audit --no-fund` keeps the install quiet inside the Docker layer.
+# Follow-up: regenerate client/package-lock.json on a Linux box and switch
+# back to `npm ci --prefer-offline` for reproducible builds.
 COPY client/package*.json ./
-RUN npm ci --prefer-offline
+RUN npm install --no-audit --no-fund
 
 # Copy source and build
 COPY client/ .
