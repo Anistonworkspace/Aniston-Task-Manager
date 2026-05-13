@@ -210,7 +210,11 @@ describe('Login component', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('shows a fallback error message when API error has no message', async () => {
+  it('shows a network-error message when the request never reaches the server', async () => {
+    // A plain Error with no `.response` field is the shape Axios produces
+    // for network-level failures (offline, DNS, CORS, timeout). The
+    // centralised errorMap now distinguishes this case from a 4xx
+    // response and shows network-themed copy instead of "Login failed".
     mockLogin.mockRejectedValue(new Error('Network Error'));
     renderLogin();
     const emailInput = await screen.findByPlaceholderText('name@company.com');
@@ -219,7 +223,7 @@ describe('Login component', () => {
     fireEvent.change(passwordInput, { target: { value: 'pass123' } });
     fireEvent.click(screen.getByRole('button', { name: /log in/i }));
     expect(
-      await screen.findByText(/login failed/i)
+      await screen.findByText(/network error/i)
     ).toBeInTheDocument();
   });
 

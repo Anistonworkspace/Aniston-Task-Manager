@@ -24,7 +24,12 @@ const axios = require('axios');
 const { User, Task, Board } = require('../models');
 const { getTeamsConfig } = require('../config/teams');
 const { getAppToken } = require('./teamsUserSync');
-const logger = require('../utils/logger');
+// safeLogger wraps winston with a redaction pass. We use it here (and not the
+// raw winston logger) because every outbound Microsoft Graph call attaches a
+// Bearer access token on the request, and any wrapped Axios error logged with
+// `{ err }` would otherwise carry that token into the log file via
+// `err.config.headers.Authorization`.
+const logger = require('../utils/safeLogger');
 const { encryptTeamsToken, decryptTeamsTokenSafe } = require('../utils/teamsTokenStorage');
 
 // Note: we do NOT write to the Activity table for calendar sync outcomes —

@@ -199,7 +199,10 @@ const ROW_DROP = 14;      // vertical line length above each child
 const ROW_DROP_TOP = 12;  // vertical line dropping from parent
 const CONNECTOR_COLOR = '#E1E5EB';
 function TreeNode({ node, hierarchyLevels, canDrag, selectedId, depth, handlers }) {
-  const [expanded, setExpanded] = useState(depth < 2);
+  // All nodes default to expanded so the hierarchy renders fully open on load.
+  // Manual collapse via the toggle button still persists for the session because
+  // each TreeNode keeps its own state for as long as it stays mounted.
+  const [expanded, setExpanded] = useState(true);
   const hasChildren = node.children?.length > 0;
   const hlInfo = hierarchyLevels.find(l => l.name === node.hierarchyLevel);
   const hlColor = hlInfo?.color || tierColorOf(node).color;

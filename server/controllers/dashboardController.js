@@ -4,6 +4,7 @@ const { sequelize } = require('../config/db');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 /**
  * Merge the CP-3 task visibility WHERE-fragment into an existing where clause.
@@ -61,6 +62,12 @@ const getDashboardStats = async (req, res) => {
     weekEndDate.setDate(weekEndDate.getDate() + 7);
     const weekEnd = weekEndDate.toISOString().slice(0, 10);
 
+    // Phase 6 — org-metadata leak fix. department / designation / managerId
+    // are only included for Tier 1 / Tier 2 viewers. Tier 3 / Tier 4 see
+    // names + avatars only (matches the rest of the app — see authController
+    // getAllUsers which already redacts email/role for lower tiers).
+    const canSeeOrgMetadata = hasTierAtLeast(req.user, TIER_2);
+
     tasks.forEach(t => {
       const plain = t.toJSON();
       // Status counts
@@ -78,9 +85,9 @@ const getDashboardStats = async (req, res) => {
           id: memberId,
           name: memberName,
           avatar: memberAvatar,
-          department: plain.assignee?.department || null,
-          designation: plain.assignee?.designation || null,
-          managerId: plain.assignee?.managerId || null,
+          department: canSeeOrgMetadata ? (plain.assignee?.department || null) : null,
+          designation: canSeeOrgMetadata ? (plain.assignee?.designation || null) : null,
+          managerId: canSeeOrgMetadata ? (plain.assignee?.managerId || null) : null,
           total: 0, done: 0, working: 0, stuck: 0, overdue: 0,
           // Filter metadata for the Team Overview filter toolbar — populated
           // from the same task scan so we never need a second DB pass.
@@ -106,7 +113,14 @@ const getDashboardStats = async (req, res) => {
     // Recent activity (last 20) — scope to visible tasks for non-admin viewers.
     const activityWhere = {};
     if (boardId) activityWhere.boardId = boardId;
-    const isUnrestricted = req.user.isSuperAdmin || req.user.role === 'admin';
+    // Phase 6 — replaced legacy 'isSuperAdmin || role===admin' check.
+    // hasTierAtLeast(TIER_2) covers {super_admin, admin, manager} which is
+    // a SUPERSET of the old gate (the old check excluded managers, which
+    // was inconsistent with the rest of the controller that scopes manager
+    // visibility via taskVisibilityService). Managers also already get
+    // unrestricted task visibility under TASK_VISIBILITY_TIER2_UNRESTRICTED,
+    // so this is consistent and not a regression.
+    const isUnrestricted = hasTierAtLeast(req.user, TIER_2);
     if (!isUnrestricted) {
       const visibleTaskIds = tasks.map(t => t.id);
       // If the viewer has no visible tasks, don't surface ANY activity.

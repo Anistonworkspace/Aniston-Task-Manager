@@ -91,6 +91,23 @@ const uploadFile = async (req, res) => {
       });
     }
 
+    // Phase 7 — granular `task_files.upload` gate (umbrella → tasks.upload
+    // for legacy compat). A deny override here blocks uploads everywhere,
+    // including the legacy tasks.upload key.
+    {
+      const { hasPermission: enginePermissionUpload } = require('../services/permissionEngine');
+      const canUpload = await enginePermissionUpload(req.user, 'task_files', 'upload');
+      if (!canUpload) {
+        cleanupOnError(req.file);
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'task_files.upload',
+          message: 'You do not have permission to upload task files.',
+        });
+      }
+    }
+
     // Store through provider. Two-phase: file lands in storage, then we
     // record the metadata in DB. If the DB insert fails the file would be
     // orphaned forever (no row → admin can't see it → can't garbage-collect).
@@ -170,6 +187,13 @@ const getFiles = async (req, res) => {
       return res.status(403).json({ success: false, message: 'You do not have access to this task.' });
     }
 
+    // Phase B — granular task_files.view gate. Umbrella → tasks.view.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'task_files', 'view',
+          'You do not have permission to view task files.')) return;
+    }
+
     const files = await FileAttachment.findAll({
       where: { taskId },
       include: [
@@ -213,6 +237,27 @@ const deleteFileHandler = async (req, res) => {
       const { sendIfTierError } = require('../utils/tierResponseHelpers');
       const isOwnResource = attachment.uploadedBy === req.user.id;
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'file', { isOwnResource }))) return;
+    }
+
+    // Phase 7+B — granular task_files.delete_own / delete_any gates. The
+    // tier rule + uploader check above is the floor; these add per-action
+    // deny-override hooks. Umbrella → task_files.delete preserves
+    // backward compat.
+    {
+      const { hasPermission: enginePermissionDel } = require('../services/permissionEngine');
+      const isOwnResource = attachment.uploadedBy === req.user.id;
+      const actionKey = isOwnResource ? 'delete_own' : 'delete_any';
+      const canDelete = await enginePermissionDel(req.user, 'task_files', actionKey);
+      if (!canDelete) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: `task_files.${actionKey}`,
+          message: isOwnResource
+            ? 'You do not have permission to delete your own task files.'
+            : 'You do not have permission to delete other users\' task files.',
+        });
+      }
     }
 
     // Remove through storage provider
@@ -264,6 +309,22 @@ const downloadFile = async (req, res) => {
     const hasAccess = await canAccessTask(attachment.taskId, req.user);
     if (!hasAccess) {
       return res.status(403).json({ success: false, message: 'You do not have access to this file.' });
+    }
+
+    // Phase 7 — granular task_files.download gate (no umbrella; new key).
+    // Allows admins to revoke download capability for a user even when they
+    // still have task view access (e.g. read-only data-room contractor).
+    {
+      const { hasPermission: enginePermissionDl } = require('../services/permissionEngine');
+      const canDownload = await enginePermissionDl(req.user, 'task_files', 'download');
+      if (!canDownload) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'task_files.download',
+          message: 'You do not have permission to download task files.',
+        });
+      }
     }
 
     const filePath = await resolveFile(attachment.filename, attachment.category);

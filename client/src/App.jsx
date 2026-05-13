@@ -33,9 +33,6 @@ const OrgChartPage = lazy(() => import('./pages/OrgChartPage'));
 // routed — the new DependenciesPage replaces it in place.
 const DependenciesPage = lazy(() => import('./pages/DependenciesPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
-const MemberDashboardPage = lazy(() => import('./pages/MemberDashboardPage'));
-const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage'));
-const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
 const RecurringWorkPage = lazy(() => import('./pages/RecurringWorkPage'));
@@ -181,9 +178,15 @@ export default function App() {
           <Route path="boards/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><BoardPage /></Suspense></ErrorBoundary>} />
           <Route path="boards/:id/dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></AdminRoute>} />
           <Route path="dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
-          <Route path="member-dashboard" element={<Suspense fallback={<PageLoader />}><MemberDashboardPage /></Suspense>} />
-          <Route path="manager-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><ManagerDashboardPage /></Suspense></AdminRoute>} />
-          <Route path="admin-dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><AdminDashboardPage /></Suspense></AdminRoute>} />
+          {/* Legacy "My Dashboard" routes — folded into the new Dashboard
+              (formerly Home) at `/`. The three role-specific paths plus
+              `/my-dashboard` and `/home` all redirect home so existing
+              bookmarks and deep-links keep working. */}
+          <Route path="member-dashboard" element={<Navigate to="/" replace />} />
+          <Route path="manager-dashboard" element={<Navigate to="/" replace />} />
+          <Route path="admin-dashboard" element={<Navigate to="/" replace />} />
+          <Route path="my-dashboard" element={<Navigate to="/" replace />} />
+          <Route path="home" element={<Navigate to="/" replace />} />
           {/* Director Dashboard and Director Plan routes removed — modules retired. */}
           <Route path="director-dashboard" element={<Navigate to="/" replace />} />
           <Route path="director-plan" element={<Navigate to="/" replace />} />

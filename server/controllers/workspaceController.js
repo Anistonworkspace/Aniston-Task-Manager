@@ -4,6 +4,8 @@ const { logActivity } = require('../services/activityService');
 const boardMembershipService = require('../services/boardMembershipService');
 const boardVisibility = require('../services/boardVisibilityService');
 const { getIO } = require('../services/socketService');
+const safeLogger = require('../utils/safeLogger');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 // Sidebar refresh: workspace mutations have no per-room concept (workspaces
 // don't have socket rooms), so we broadcast globally and let each receiving
@@ -23,7 +25,11 @@ function broadcastWorkspaceChange(event, workspaceId, extra = {}) {
 exports.getMyWorkspaces = async (req, res) => {
   try {
     const userId = req.user.id;
-    const isAdminOrManager = !!req.user.isSuperAdmin || req.user.role === 'admin' || req.user.role === 'manager';
+    // Phase 6 — replaced legacy isSuperAdmin || role-string check with the
+    // canonical tier helper. T1 + T2 currently encompass {super_admin, admin,
+    // manager} so behaviour is identical; the helper stays correct if role
+    // strings ever change.
+    const isAdminOrManager = hasTierAtLeast(req.user, TIER_2);
 
     // Admins, Managers, and Super Admins see all workspaces
     if (isAdminOrManager) {
@@ -106,7 +112,7 @@ exports.getMyWorkspaces = async (req, res) => {
 
     res.json({ success: true, data: { workspaces: myWorkspaces } });
   } catch (err) {
-    console.error('[Workspace] getMyWorkspaces error:', err.message, err.stack);
+    safeLogger.error('[Workspace] getMyWorkspaces error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch your workspaces.' });
   }
 };
@@ -134,7 +140,7 @@ exports.getWorkspaces = async (req, res) => {
     });
     res.json({ success: true, data: { workspaces } });
   } catch (err) {
-    console.error('[Workspace] getWorkspaces error:', err.message, err.stack);
+    safeLogger.error('[Workspace] getWorkspaces error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch workspaces.' });
   }
 };
@@ -145,7 +151,7 @@ exports.getWorkspace = async (req, res) => {
   // comment there. If we get here with id="order" the workspace-order
   // route file isn't being honored on the running backend.
   if (req.params.id === 'order' && process.env.NODE_ENV !== 'production') {
-    console.warn('[RouteBug] /api/workspaces/order is being handled by getWorkspace. Check route order in server/routes/workspaces.js and restart the backend.');
+    safeLogger.warn('[RouteBug] /api/workspaces/order is being handled by getWorkspace. Check route order in server/routes/workspaces.js and restart the backend.');
     return res.status(500).json({
       success: false,
       message: 'Workspace order route is misconfigured. Please restart the backend dev server.',
@@ -198,7 +204,7 @@ exports.getWorkspace = async (req, res) => {
 
     res.json({ success: true, data: { workspace } });
   } catch (err) {
-    console.error('[Workspace] getWorkspace error:', err.message, err.stack);
+    safeLogger.error('[Workspace] getWorkspace error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch workspace.' });
   }
 };
@@ -236,7 +242,7 @@ exports.createWorkspace = async (req, res) => {
 
     res.status(201).json({ success: true, data: { workspace: full } });
   } catch (err) {
-    console.error('[Workspace] createWorkspace error:', err.message);
+    safeLogger.error('[Workspace] createWorkspace error', { err });
     res.status(500).json({ success: false, message: 'Failed to create workspace.' });
   }
 };
@@ -249,7 +255,7 @@ exports.updateWorkspace = async (req, res) => {
   // registered at all on the running backend). Loudly signal that in dev
   // so the regression is caught immediately. Production stays silent.
   if (req.params.id === 'order' && process.env.NODE_ENV !== 'production') {
-    console.warn('[RouteBug] /api/workspaces/order is being handled by updateWorkspace. The literal `/order` route must be registered before `/:id` in server/routes/workspaces.js, and the backend must be restarted to pick up the change.');
+    safeLogger.warn('[RouteBug] /api/workspaces/order is being handled by updateWorkspace. The literal `/order` route must be registered before `/:id` in server/routes/workspaces.js, and the backend must be restarted to pick up the change.');
     return res.status(500).json({
       success: false,
       message: 'Workspace order route is misconfigured. Please restart the backend dev server.',
@@ -294,7 +300,7 @@ exports.updateWorkspace = async (req, res) => {
 
     res.json({ success: true, data: { workspace } });
   } catch (err) {
-    console.error('[Workspace] updateWorkspace error:', err.message);
+    safeLogger.error('[Workspace] updateWorkspace error', { err });
     res.status(500).json({ success: false, message: 'Failed to update workspace.' });
   }
 };
@@ -346,7 +352,7 @@ exports.deleteWorkspace = async (req, res) => {
 
     res.json({ success: true, message: 'Workspace deleted.' });
   } catch (err) {
-    console.error('[Workspace] deleteWorkspace error:', err.message);
+    safeLogger.error('[Workspace] deleteWorkspace error', { err });
     res.status(500).json({ success: false, message: 'Failed to delete workspace.' });
   }
 };
@@ -453,7 +459,7 @@ exports.createFromTemplate = async (req, res) => {
 
     res.status(201).json({ success: true, data: { workspace: full } });
   } catch (err) {
-    console.error('[Workspace] createFromTemplate error:', err.message);
+    safeLogger.error('[Workspace] createFromTemplate error', { err });
     res.status(500).json({ success: false, message: 'Failed to create workspace from template.' });
   }
 };
@@ -499,7 +505,7 @@ exports.applyTemplate = async (req, res) => {
 
     res.json({ success: true, data: { boards: createdBoards } });
   } catch (err) {
-    console.error('[Workspace] applyTemplate error:', err.message);
+    safeLogger.error('[Workspace] applyTemplate error', { err });
     res.status(500).json({ success: false, message: 'Failed to apply template.' });
   }
 };
@@ -547,7 +553,7 @@ exports.getArchivedWorkspaces = async (req, res) => {
     });
     res.json({ success: true, data: { workspaces } });
   } catch (err) {
-    console.error('[Workspace] getArchivedWorkspaces error:', err.message, err.stack);
+    safeLogger.error('[Workspace] getArchivedWorkspaces error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch archived workspaces.' });
   }
 };

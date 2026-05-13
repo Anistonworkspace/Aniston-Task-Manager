@@ -42,6 +42,14 @@ const addComment = async (req, res) => {
       });
     }
 
+    // Phase 7 — granular comments.create gate. Umbrella → tasks.comment
+    // preserves backward compat with existing rows on the legacy key.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'comments', 'create',
+          'You do not have permission to add comments.')) return;
+    }
+
     const comment = await Comment.create({
       content,
       attachments: attachments || [],
@@ -192,6 +200,13 @@ const getComments = async (req, res) => {
       });
     }
 
+    // Phase B — granular comments.view gate. Umbrella → tasks.view.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'comments', 'view',
+          'You do not have permission to view comments.')) return;
+    }
+
     const comments = await Comment.findAll({
       where: { taskId },
       include: [
@@ -240,6 +255,27 @@ const deleteComment = async (req, res) => {
       const { sendIfTierError } = require('../utils/tierResponseHelpers');
       const isOwnResource = comment.userId === req.user.id;
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'comment', { isOwnResource }))) return;
+    }
+
+    // Phase 7+B — granular comments.delete_own / delete_any gates. The
+    // ownership check above + tier rules form the floor; these add
+    // deny-override hooks per-action so an admin can revoke one without
+    // the other. Umbrella → task_comments.delete preserves backward compat.
+    {
+      const { hasPermission: enginePermissionDel } = require('../services/permissionEngine');
+      const isOwnResource = comment.userId === req.user.id;
+      const actionKey = isOwnResource ? 'delete_own' : 'delete_any';
+      const canDelete = await enginePermissionDel(req.user, 'comments', actionKey);
+      if (!canDelete) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: `comments.${actionKey}`,
+          message: isOwnResource
+            ? 'You do not have permission to delete your own comments.'
+            : 'You do not have permission to delete other users\' comments.',
+        });
+      }
     }
 
     const taskId = comment.taskId;

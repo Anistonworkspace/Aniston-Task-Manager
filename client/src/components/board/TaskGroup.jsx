@@ -37,6 +37,30 @@ function translateDefaultColumnTitle(col, t) {
   return col.title;
 }
 
+// Per-user, per-board group collapse persistence. Stored shape:
+//   { [groupId]: true }  // true = expanded/open, false = collapsed.
+// Missing keys default to expanded so brand-new groups start open.
+function getBoardGroupStateStorageKey(userId, boardId) {
+  return `boardGroupCollapseState:${userId}:${boardId}`;
+}
+function loadGroupCollapseState(userId, boardId) {
+  if (!userId || !boardId) return {};
+  try {
+    const raw = localStorage.getItem(getBoardGroupStateStorageKey(userId, boardId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function saveGroupCollapseState(userId, boardId, state) {
+  if (!userId || !boardId) return;
+  try {
+    localStorage.setItem(getBoardGroupStateStorageKey(userId, boardId), JSON.stringify(state));
+  } catch { /* quota / privacy mode — ignore */ }
+}
+
 export default function TaskGroup({
   group, tasks = [], members = [], columns = [], boardId, boardStatuses,
   onTaskClick, onTaskUpdate, onAddTask, onArchiveTask,
@@ -59,7 +83,25 @@ export default function TaskGroup({
   const t = useT();
   const { language } = useLanguage();
   const canCreateTask = canUser(user?.role, 'create_task', isSuperAdmin, permissionGrants, effectivePermissions);
-  const [collapsed, setCollapsed] = useState(false);
+  const groupStorageKey = group?.id || group?.title || group?.name || null;
+  const [collapsed, setCollapsed] = useState(() => {
+    if (!groupStorageKey) return false;
+    const state = loadGroupCollapseState(user?.id, boardId);
+    // Default (missing key) = expanded. Only explicit `false` means collapsed.
+    return state[groupStorageKey] === false;
+  });
+  const handleToggleCollapsed = useCallback(() => {
+    setCollapsed(prev => {
+      const next = !prev;
+      if (groupStorageKey && user?.id && boardId) {
+        const state = loadGroupCollapseState(user.id, boardId);
+        // true = expanded/open, false = collapsed
+        state[groupStorageKey] = !next;
+        saveGroupCollapseState(user.id, boardId, state);
+      }
+      return next;
+    });
+  }, [groupStorageKey, user?.id, boardId]);
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDescription, setNewTaskDescription] = useState('');
@@ -307,7 +349,7 @@ export default function TaskGroup({
             <GripVertical size={16} />
           </span>
         )}
-        <button onClick={() => setCollapsed(!collapsed)} className="p-0.5 hover:bg-gray-100 rounded transition-colors" style={{ color }}>
+        <button onClick={handleToggleCollapsed} className="p-0.5 hover:bg-gray-100 rounded transition-colors" style={{ color }}>
           {collapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
         </button>
         <h3 className="text-[18px] font-bold" style={{ color }}>{translateSystemGroupName(group.title || group.name, language)}</h3>

@@ -66,6 +66,11 @@ export default function BoardSubtaskSection({
   // Only privileged roles or super admin may assign subtasks to OTHER users.
   // Members and managers without `tasks.assign_others` may still self-assign.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+  // Phase 7 — granular assign_self gate. Mirror the rule used in TaskRow.
+  const canAssignSelf = isSuperAdmin
+    ? true
+    : (granularPermissions?.['tasks.assign_self'] !== false
+       && granularPermissions?.['tasks.assign'] !== false);
   // Member-mutability: a member can act on subtasks of their own parent
   // task or subtasks they themselves created. Mirrors the backend's
   // canMemberMutateSubtask check; backend remains source of truth.
@@ -275,6 +280,7 @@ export default function BoardSubtaskSection({
             // PersonCell handles the simple-assignee path via `value` + `onChange`.
             onChange={canMutate ? (v) => onUpdate({ assignedTo: v }) : undefined}
             assignSelfOnly={!canAssignOthers}
+            canAssignSelf={canAssignSelf}
             currentUserId={user?.id}
             // Subtask doesn't enforce due-date-before-assign (there's no
             // calendar dependency on subtasks). Pass dueDate so the cell

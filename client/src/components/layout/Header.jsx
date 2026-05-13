@@ -7,14 +7,75 @@ import { isExplicitlyDenied } from '../../utils/permissions';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import NotificationsPanel from '../common/NotificationsPanel';
+import ErrorBoundary from '../common/ErrorBoundary';
 import GlobalSearch from '../common/GlobalSearch';
 import KeyboardShortcuts from '../common/KeyboardShortcuts';
+import { useConfirm } from '../common/ConfirmDialog';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import { useToast } from '../common/Toast';
 import { useTheme } from '../../context/ThemeContext';
 import { requestPushPermission, isPushSupported, subscribeToPush, showLocalNotification } from '../../services/pushNotifications';
 import { useDependenciesBadgeCount, formatBadgeCount } from '../../hooks/useNavBadgeCounts';
+import useDebouncedCallback from '../../hooks/useDebouncedCallback';
+import useNotificationBurstDispatcher from '../../hooks/useNotificationBurstDispatcher';
+
+// Storm-mitigation (May 2026): bursts of notification:new (e.g. an admin
+// who's the escalation target for many missed recurring tasks at once)
+// used to dispatch one toast + one OS notification per event, flooding
+// the corner of the screen and the OS tray.
+//
+// Pattern: leading-edge dispatch + trailing summary.
+//   - First event of a burst window  → fires the individual toast + OS
+//     notification IMMEDIATELY. This restores the pre-storm UX for the
+//     common "one task assigned" case — no 1500ms delay.
+//   - Subsequent events in window    → accumulate silently.
+//   - After NOTIFICATION_BURST_WINDOW_MS of quiet:
+//       - If ≥ (threshold - 1) late events accumulated → one grouped
+//         summary toast + one grouped OS notification. Result for a
+//         30-event storm: 1 leading individual + 1 trailing summary = 2
+//         OS notifications, not 30.
+//       - Else (1-2 late events) → each fires individually with the same
+//         routing as the leading path.
+//
+// Initial implementation used a pure trailing buffer which delayed single
+// notifications by 1500ms — the regression we are fixing here.
+const NOTIFICATION_BURST_WINDOW_MS = 1500;
+const NOTIFICATION_BURST_GROUP_THRESHOLD = 3;
+
+// Type → human label for individual toasts. Kept module-scope so a fresh
+// reference isn't created every render (the burst dispatcher hook reads
+// callbacks via a ref so identity stability isn't critical, but pulling
+// this out is one less object per render).
+const NOTIFICATION_TYPE_TITLES = {
+  task_assigned: 'Task assigned',
+  task_supervisor_added: 'Supervisor role',
+  task_role_changed: 'Role updated',
+  task_removed: 'Removed from task',
+  task_updated: 'Task update',
+  comment_added: 'New comment',
+  due_date: 'Deadline reminder',
+  mention: 'You were mentioned',
+  approval_submitted: 'Approval needed',
+  approval_approved: 'Approval needed',
+  approval_rejected: 'Approval rejected',
+  approval_changes_requested: 'Changes requested',
+  approval_completed: 'Task approved',
+  access_requested: 'Access request',
+  access_approved: 'Access approved',
+  access_rejected: 'Access rejected',
+  extension_requested: 'Extension requested',
+  extension_approved: 'Extension approved',
+  extension_rejected: 'Extension rejected',
+  help_requested: 'Help requested',
+  help_responded: 'Help update',
+  promotion: 'Promotion',
+  priority_change: 'Priority changed',
+  deadline_2day: 'Deadline in 2 days',
+  deadline_2hour: 'Deadline in 2 hours',
+  recurring_generated: 'New recurring task',
+  recurring_missed: 'Recurring task missed',
+};
 
 // Module-scope state for the push pipeline. Survives Header re-mounts (route
 // change, theme toggle, HMR) so we don't re-prompt or re-subscribe on every
@@ -50,6 +111,24 @@ export default function Header({ onToggleSidebar }) {
   const { success: toastSuccess, info: toastInfo, notify: toastNotify } = useToast();
   const { darkMode, toggleDarkMode } = useTheme();
   const location = useLocation();
+  const confirm = useConfirm();
+
+  // Close the dropdown, ask for confirmation, then run the existing logout
+  // flow only on a positive confirmation. Cancel / Escape / backdrop click
+  // resolve to false and leave the session intact.
+  async function handleSignOut() {
+    setShowUserMenu(false);
+    const ok = await confirm({
+      title: 'Sign out?',
+      body: 'Are you sure you want to sign out of your account?',
+      confirmLabel: 'Sign out',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!ok) return;
+    logout();
+    navigate('/login');
+  }
 
   // Request push notification permission and subscribe to VAPID push.
   //
@@ -93,68 +172,28 @@ export default function Header({ onToggleSidebar }) {
 
   // Notification side-effects:
   //
-  //   1. In-app toast — fires unconditionally. Cleanly invisible on
-  //      backgrounded tabs (the user won't see it until they refocus, and
-  //      that's fine).
-  //   2. Foreground OS notification (safety net) — fires ONLY when the tab
-  //      is HIDDEN (document.hidden=true). When the tab is focused, the
-  //      toast is the visible surface and the OS notification would be a
-  //      duplicate in the user's view.
+  //   1. In-app toast — fires unconditionally.
+  //   2. Foreground OS notification — fires whenever permission is
+  //      granted, regardless of tab focus. Uses the SAME stable
+  //      `notif-<id>` tag the backend SW push uses, so when both paths
+  //      fire for the same event, browsers tag-collapse them into a
+  //      single OS-tray entry. The previous behaviour gated this on
+  //      `document.hidden || !document.hasFocus()` — that made OS
+  //      notifications disappear for users whose backend SW push was
+  //      not configured (no VAPID, no subscription), which was the
+  //      regression behind "browser notifications are no longer
+  //      coming for anything". The focused-tab no-op was the bug.
   //
-  // The safety net uses the SAME stable `notif-<id>` tag the SW push uses,
-  // so when both the SW push (from backend Web Push) AND the foreground
-  // local notification fire for the same event, browsers tag-collapse them
-  // into a single OS-tray entry. That gives us:
-  //   - SW push works (VAPID configured, subscription active) → SW handles
-  //     OS notification, foreground call is a no-op tag-collision update.
-  //   - SW push fails (VAPID misconfig, no subscription) → foreground call
-  //     fires the OS notification anyway, so the user is never silently
-  //     skipped.
-  //   - Tab focused → showLocalNotification's internal `document.hasFocus()`
-  //     guard short-circuits, only the toast fires.
-  //
-  // The structured `notify(...)` toast shape renders as a Teams-style card
-  // with a type-aware title and a click-through to the linked task.
-  useRealtimeEvent('notification:new', (data) => {
-    const n = data?.notification;
+  // Per-event side effect: toast + (best-effort) OS notification.
+  function dispatchIndividualNotification({ n, data }) {
     const msg = n?.message;
     if (!msg) return;
-    const titleByType = {
-      task_assigned: 'Task assigned',
-      task_supervisor_added: 'Supervisor role',
-      task_role_changed: 'Role updated',
-      task_removed: 'Removed from task',
-      task_updated: 'Task update',
-      comment_added: 'New comment',
-      due_date: 'Deadline reminder',
-      mention: 'You were mentioned',
-      approval_submitted: 'Approval needed',
-      approval_approved: 'Approval needed',
-      approval_rejected: 'Approval rejected',
-      approval_changes_requested: 'Changes requested',
-      approval_completed: 'Task approved',
-      access_requested: 'Access request',
-      access_approved: 'Access approved',
-      access_rejected: 'Access rejected',
-      extension_requested: 'Extension requested',
-      extension_approved: 'Extension approved',
-      extension_rejected: 'Extension rejected',
-      help_requested: 'Help requested',
-      help_responded: 'Help update',
-      promotion: 'Promotion',
-      priority_change: 'Priority changed',
-      deadline_2day: 'Deadline in 2 days',
-      deadline_2hour: 'Deadline in 2 hours',
-      recurring_generated: 'New recurring task',
-      recurring_missed: 'Recurring task missed',
-    };
-    const toastTitle = titleByType[n?.type] || 'New notification';
+    const toastTitle = NOTIFICATION_TYPE_TITLES[n?.type] || 'New notification';
+
     toastNotify({
       title: toastTitle,
       body: msg,
       duration: 5000,
-      // Click-through: navigate to the linked task / board / etc. Mirrors the
-      // logic in NotificationsPanel's handleNotificationClick.
       onClick: () => {
         const boardId = n?.boardId || data?.boardId;
         if (n?.entityType === 'task' && n?.entityId) {
@@ -172,14 +211,10 @@ export default function Header({ onToggleSidebar }) {
       },
     });
 
-    // Safety-net OS notification — covers the case where backend Web Push
-    // is misconfigured (no VAPID, expired subscription, etc.) so the SW
-    // never fires. Internal `document.hasFocus()` guard inside
-    // showLocalNotification means a focused tab silently no-ops; ONLY a
-    // hidden/backgrounded tab fires this. The stable `notif-<id>` tag
-    // matches the SW push tag, so when both fire, browsers collapse them
-    // into a single OS-tray entry.
-    if (n?.id && Notification && Notification.permission === 'granted') {
+    // OS notification — permission-guarded here so we don't even call the
+    // helper without consent. Inside the helper the hidden-only guard
+    // takes care of focused-tab suppression.
+    if (n?.id && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       const boardId = n?.boardId || data?.boardId;
       let url = '/';
       if (n.entityType === 'task' && n.entityId) {
@@ -199,7 +234,48 @@ export default function Header({ onToggleSidebar }) {
         url,
       });
     }
+  }
+
+  // Per-burst summary side effect — only fires when a burst exceeded the
+  // threshold AFTER the leading individual already showed.
+  function dispatchGroupedSummary(lateCount) {
+    // Leading event already shown → "+ N more notifications" reads more
+    // naturally than "You have N+1 notifications" which counts the
+    // already-displayed one.
+    const grouped = lateCount === 1
+      ? '1 more notification arrived'
+      : `${lateCount} more notifications arrived`;
+    toastNotify({
+      title: 'New notifications',
+      body: grouped,
+      duration: 5000,
+      onClick: () => setShowNotifications(true),
+    });
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      // Stable per-window tag keeps a second burst from ballooning the tray.
+      showLocalNotification('New notifications', {
+        body: grouped,
+        tag: 'notif-burst',
+        url: '/',
+      });
+    }
+  }
+
+  // The dispatcher returns a function we feed each notification:new event
+  // into. It manages its own buffer + trailing timer + cleanup.
+  const dispatchNotification = useNotificationBurstDispatcher({
+    onIndividual: dispatchIndividualNotification,
+    onGrouped: dispatchGroupedSummary,
+    threshold: NOTIFICATION_BURST_GROUP_THRESHOLD,
+    windowMs: NOTIFICATION_BURST_WINDOW_MS,
   });
+
+  useRealtimeEvent('notification:new', (data) => {
+    const n = data?.notification;
+    if (!n?.message) return; // malformed payload — defensive, no crash
+    dispatchNotification({ n, data });
+  });
+
   useRealtimeEvent('task:unblocked', (data) => { toastSuccess(`Task "${data?.title || 'task'}" unblocked!`); });
   useRealtimeEvent('task:delegated', (data) => { toastInfo(`"${data?.title || 'Task'}" delegated to you`); });
 
@@ -228,8 +304,13 @@ export default function Header({ onToggleSidebar }) {
   }, [authReady, user]);
 
   // Unread count is a derived cache — every notification:new + notification:read
-  // event invalidates 'notifications.unreadCount' via the router, refetching once.
-  useRealtimeQuery({ queryKey: 'notifications.unreadCount', refetch: loadUnreadCount });
+  // event invalidates 'notifications.unreadCount' via the router. We debounce
+  // the refetch so a burst of N notifications (escalation storm, multi-task
+  // bulk assign) settles into ONE GET instead of N. The bell's count is still
+  // accurate to within the debounce window (~500ms) and the user sees the
+  // final value once the burst ends.
+  const debouncedLoadUnread = useDebouncedCallback(loadUnreadCount, 500);
+  useRealtimeQuery({ queryKey: 'notifications.unreadCount', refetch: debouncedLoadUnread });
 
   useEffect(() => {
     function handleClick(e) { if (menuRef.current && !menuRef.current.contains(e.target)) setShowUserMenu(false); }
@@ -270,7 +351,7 @@ export default function Header({ onToggleSidebar }) {
   // re-renders in the user's selected language without a refresh.
   const getPageTitle = () => {
     const path = location.pathname;
-    if (path === '/') return t('header.pages.home');
+    if (path === '/') return t('header.pages.dashboard');
     if (path === '/my-work') return t('header.pages.myWork');
     if (path === '/dashboard') return t('header.pages.teamDashboard');
     if (path === '/time-plan') return t('header.pages.timePlan');
@@ -281,9 +362,6 @@ export default function Header({ onToggleSidebar }) {
     if (path === '/org-chart') return t('header.pages.orgChart');
     if (path === '/cross-team') return t('header.pages.dependencies');
     if (path === '/admin-settings') return t('header.pages.adminSettings');
-    if (path === '/admin-dashboard') return t('header.pages.myDashboard');
-    if (path === '/manager-dashboard') return t('header.pages.myDashboard');
-    if (path === '/member-dashboard') return t('header.pages.myDashboard');
     if (path === '/tasks') return t('header.pages.approvalsAndRequests');
     if (path === '/integrations') return t('header.pages.integrations');
     if (path === '/archive') return t('header.pages.archive');
@@ -495,7 +573,7 @@ export default function Header({ onToggleSidebar }) {
                   )}
                 </div>
                 <div className="border-t border-border dark:border-[#222327]" />
-                <button onClick={() => { logout(); navigate('/login'); }}
+                <button onClick={handleSignOut}
                   className="flex items-center gap-3 px-4 py-2 text-sm text-danger hover:bg-danger/5 w-full transition-colors">
                   <LogOut size={15} strokeWidth={1.8} /> Sign out
                 </button>
@@ -504,9 +582,24 @@ export default function Header({ onToggleSidebar }) {
           </div>
         </div>
       </header>
-      {showNotifications && <NotificationsPanel onClose={() => { setShowNotifications(false); loadUnreadCount(); }} />}
-      {showGlobalSearch && <GlobalSearch onClose={() => setShowGlobalSearch(false)} />}
-      {showShortcuts && <KeyboardShortcuts onClose={() => setShowShortcuts(false)} />}
+      {/* Notification/Search/Shortcuts panels each get their own boundary.
+          A render crash in one (e.g. malformed notification payload) must
+          not take down the global Header — it lives on every page. */}
+      {showNotifications && (
+        <ErrorBoundary name="Notifications" variant="section">
+          <NotificationsPanel onClose={() => { setShowNotifications(false); loadUnreadCount(); }} />
+        </ErrorBoundary>
+      )}
+      {showGlobalSearch && (
+        <ErrorBoundary name="Search" variant="section">
+          <GlobalSearch onClose={() => setShowGlobalSearch(false)} />
+        </ErrorBoundary>
+      )}
+      {showShortcuts && (
+        <ErrorBoundary name="Keyboard shortcuts" variant="section">
+          <KeyboardShortcuts onClose={() => setShowShortcuts(false)} />
+        </ErrorBoundary>
+      )}
     </>
   );
 }

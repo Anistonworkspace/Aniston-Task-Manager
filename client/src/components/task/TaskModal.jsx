@@ -478,6 +478,13 @@ export default function TaskModal({
   const denyEdit = granularPermissions?.['tasks.edit'] === false;
   const canEditAllFields = !isApproved && !denyEdit && (isAdmin || (canManage && !!task?.creator && task.creator.role !== 'admin'));
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+  // Phase 7 — granular tasks.assign_self gate. The umbrella tasks.assign
+  // resolves first when no explicit row is present; an explicit deny on
+  // tasks.assign_self takes priority. Super admin bypasses.
+  const canAssignSelf = isSuperAdmin
+    ? true
+    : (granularPermissions?.['tasks.assign_self'] !== false
+       && granularPermissions?.['tasks.assign'] !== false);
   const canSetPriority = canSetPriorityForTask(user, task, isSuperAdmin, granularPermissions);
   const canEditOwnFields = canEditTaskFn(user, task, granularPermissions);
   const canEditTitle = !isApproved && canEditTaskTitleFn(user, task, granularPermissions);
@@ -518,6 +525,58 @@ export default function TaskModal({
     setReminders(normalizeReminderProps(task?.reminders));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(task?.reminders || null)]);
+
+  // The board task list endpoint (`GET /api/tasks?boardId=...`) only enriches
+  // each row with the reminder *summary* (hasActiveReminder, nextReminderAt,
+  // activeReminderCount) for the bell icon — not the full `reminders` array
+  // of specs. So when the modal opens with a task object from the board list
+  // (or after a socket-triggered refetch wipes the previous merge), the
+  // Reminders tile would render "No reminders" even though active reminders
+  // exist server-side. Re-hydrate from `GET /api/tasks/:id` on every task.id
+  // change. We bail out if the prop already carries a populated `reminders`
+  // array (e.g. caller is TasksPage which fetches the full task), so the
+  // common path is one redundant GET avoided.
+  //
+  // We only update the local `reminders` state — not the other task fields —
+  // because the user may be mid-edit on title/status/etc. and overwriting
+  // those would clobber their input.
+  useEffect(() => {
+    if (!task?.id) return;
+    // If the prop already has an array (even empty []), trust it — caller
+    // already paid for the fetch. Only fetch when the array is missing /
+    // undefined, which is the board-list case.
+    if (Array.isArray(task?.reminders)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get(`/tasks/${task.id}`);
+        const fresh = res.data?.data?.task || res.data?.task || res.data || null;
+        if (cancelled || !fresh) return;
+        if (Array.isArray(fresh.reminders)) {
+          setReminders(normalizeReminderProps(fresh.reminders));
+        }
+        // Propagate the freshly hydrated reminder summary + specs up to the
+        // parent so the bell icon and the next modal open stay consistent.
+        // We only patch reminder-related fields to avoid clobbering any
+        // in-flight edits the user has made via this modal.
+        if (typeof onUpdate === 'function') {
+          onUpdate({
+            ...task,
+            reminders: Array.isArray(fresh.reminders) ? fresh.reminders : [],
+            hasActiveReminder: !!fresh.hasActiveReminder,
+            nextReminderAt: fresh.nextReminderAt ?? null,
+            activeReminderCount: fresh.activeReminderCount ?? 0,
+          });
+        }
+      } catch {
+        // Non-fatal: leave the local state as-is. The user can still set new
+        // reminders; the worst case is an outdated "No reminders" hint until
+        // the next save round-trip refreshes the data.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.id]);
   const [tags, setTags] = useState(task?.tags || []);
   const [newTag, setNewTag] = useState('');
   const [comments, setComments] = useState([]);
@@ -1244,8 +1303,16 @@ export default function TaskModal({
             More menu have all been removed from this row per UX request.
             Backend watch logic (toggleWatch / refreshWatchers / useRealtimeQuery)
             is preserved and still drives the Watchers tile below. Duplicate /
-            Archive remain available on other surfaces (e.g. board context). */}
-        <div className="flex items-center gap-2 px-5 h-[56px] border-b border-border bg-white dark:bg-[#1E1F23] flex-shrink-0">
+            Archive remain available on other surfaces (e.g. board context).
+
+            Long-title wrap: the row used to be a fixed `h-[56px]` strip with
+            `truncate` on the title, so a long title like "need to create
+            pwc app for desktop like teams for 24/7 run and updates for mo…"
+            ellipsis'd off the right edge. Switched to `min-h-[56px]` +
+            `items-start` + small vertical padding so the row grows
+            downward when the title wraps. Action buttons keep their
+            `flex-shrink-0` lane on the right and stay top-aligned. */}
+        <div className="flex items-start gap-2 px-5 min-h-[56px] py-2 border-b border-border bg-white dark:bg-[#1E1F23] flex-shrink-0">
           <div className="flex-1 min-w-0">
             {editingTitle && canEditTitle ? (
               // Edit mode — input + explicit Save / Cancel. No onBlur save.
@@ -1290,18 +1357,29 @@ export default function TaskModal({
             ) : canEditTitle ? (
               // Display mode (editable user) — clickable text becomes the
               // entry point into edit mode. Pencil hint on hover.
+              //
+              // Long-title wrap: dropped the `truncate` on both the button
+              // and the inner <span> so the title flows onto multiple lines
+              // instead of ellipsis-ing. Using `items-start` keeps the
+              // pencil hint pinned to the first line. `break-words` lets
+              // very long unbroken tokens (e.g. URLs) wrap mid-word
+              // instead of forcing horizontal overflow.
               <button
                 id={titleElementId}
                 type="button"
                 onClick={enterTitleEdit}
-                className="group flex items-center gap-1.5 text-left text-[18px] font-semibold text-text-primary truncate w-full rounded px-1 -mx-1 hover:bg-surface/40 cursor-text"
+                className="group flex items-start gap-1.5 text-left text-[18px] font-semibold text-text-primary w-full rounded px-1 -mx-1 hover:bg-surface/40 cursor-text"
                 title={`${title || 'Untitled task'} — click to edit`}
               >
-                <span className="truncate">{title || 'Untitled task'}</span>
-                <Pencil size={12} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                <span className="whitespace-normal break-words leading-snug">{title || 'Untitled task'}</span>
+                <Pencil size={12} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1.5" />
               </button>
             ) : (
-              <h2 id={titleElementId} className="text-[18px] font-semibold text-text-primary truncate" title={title}>
+              <h2
+                id={titleElementId}
+                className="text-[18px] font-semibold text-text-primary whitespace-normal break-words leading-snug"
+                title={title}
+              >
                 {title || 'Untitled task'}
               </h2>
             )}
@@ -1759,7 +1837,7 @@ export default function TaskModal({
                                 );
                               })() : (
                                 <span className="text-text-tertiary inline-flex items-center gap-1 border border-dashed border-border px-2 py-0.5 rounded-full text-[11px]">
-                                  <Plus size={10} /> {canAssignOthers ? 'Add assignee' : 'Assign to me'}
+                                  <Plus size={10} /> {canAssignOthers ? 'Add assignee' : (canAssignSelf ? 'Assign to me' : 'No assignee')}
                                 </span>
                               )}
                             </button>
@@ -1806,7 +1884,11 @@ export default function TaskModal({
                               {(canAssignOthers
                                 ? members.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(assigneeSearch.toLowerCase()))
                                 : members.filter(m => (m.id || m.user?.id) === user?.id)
-                              ).map(m => {
+                              )
+                                // Phase 7 — hide self when canAssignSelf is false
+                                // (admin denied tasks.assign_self for this user).
+                                .filter(m => canAssignSelf || (m.id || m.user?.id) !== user?.id)
+                                .map(m => {
                                 const mId = m.id || m.user?.id;
                                 const mName = m.name || m.user?.name || 'Unknown';
                                 const isChecked = selectedAssignees.includes(mId);

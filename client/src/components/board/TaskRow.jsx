@@ -69,6 +69,14 @@ const TaskRow = React.memo(function TaskRow({
   // true for managers/asst-mgrs that have an admin DENY on tasks.assign_others).
   // Backend remains the source of truth — this just hides invalid options.
   const canAssignOthers = isSuperAdmin || !!granularPermissions?.['tasks.assign_others'];
+  // Phase 7 — granular assign_self gate. The backend resolves this via the
+  // umbrella tasks.assign for unset rows, so legacy deny on tasks.assign also
+  // hides "me" from the picker. Explicit deny on tasks.assign_self takes
+  // priority over both.
+  const canAssignSelf = isSuperAdmin
+    ? true
+    : (granularPermissions?.['tasks.assign_self'] !== false
+       && granularPermissions?.['tasks.assign'] !== false);
 
   // Priority is gated by its own granular action (`tasks.set_priority`).
   // Members default to false; managers/admins/asst-mgrs default to true.
@@ -184,6 +192,7 @@ const TaskRow = React.memo(function TaskRow({
             onChange={personEditable ? (val => onUpdate({ assignedTo: val })) : undefined}
             onOwnersChange={personEditable ? (ids => onUpdate({ ownerIds: ids })) : undefined}
             assignSelfOnly={lockToSelf}
+            canAssignSelf={canAssignSelf}
             currentUserId={user?.id}
             assigneeFallback={task.assignee || null}
           />

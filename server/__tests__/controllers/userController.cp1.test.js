@@ -33,6 +33,14 @@ jest.mock('../../services/activityService', () => ({
   logActivity: jest.fn(),
 }));
 
+// Phase B — updateUser now has granular per-field gates (change_role,
+// change_tier, etc.). The CP-1 tests cover the field-allowlist /
+// privilege-escalation rules, not the new permission gate. Mock to allow.
+jest.mock('../../utils/permissionGate', () => ({
+  denyIfNoPermission: jest.fn(async () => false),
+  checkPermission: jest.fn(async () => true),
+}));
+
 const { User, ManagerRelation } = require('../../models');
 const userController = require('../../controllers/userController');
 

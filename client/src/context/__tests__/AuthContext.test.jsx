@@ -171,7 +171,11 @@ describe('AuthContext', () => {
     await waitFor(() => {
       expect(screen.getByTestId('user').textContent).toBe('Alice');
     });
-    expect(mockApiGet).toHaveBeenCalledWith('/auth/me');
+    // _silent: true tells the api interceptor to skip the global
+    // api-error toast for this probe — added in the centralised error
+    // handling refactor so a 401 on the login page never produces a
+    // user-facing toast.
+    expect(mockApiGet).toHaveBeenCalledWith('/auth/me', { _silent: true });
   });
 
   // D-1 Phase 2 removed legacy localStorage→sessionStorage migration; auth now
@@ -185,7 +189,7 @@ describe('AuthContext', () => {
     await waitFor(() => {
       expect(screen.getByTestId('user').textContent).toBe('Bob');
     });
-    expect(mockApiGet).toHaveBeenCalledWith('/auth/me');
+    expect(mockApiGet).toHaveBeenCalledWith('/auth/me', { _silent: true });
   });
 
   // ---- login() function ----

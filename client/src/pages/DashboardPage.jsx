@@ -512,8 +512,7 @@ export default function DashboardPage() {
             </h3>
             <p className="text-xs text-text-tertiary mb-3">Grouped by department · hover a member to see their direct reports · click to view tasks</p>
 
-            {/* Filter toolbar — same controls as the Tasks table on My Dashboard,
-                applied to per-member aggregates. */}
+            {/* Filter toolbar — task-table controls applied to per-member aggregates. */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <div className="relative" ref={memberRef}>
                 <button

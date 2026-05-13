@@ -307,6 +307,13 @@ describe('GET /api/boards/:id', () => {
   // controller's catch must return a clean JSON 500 (not crash, not leak
   // HTML), and the log must include `original.message` so prod logs name
   // the missing column.
+  //
+  // After the Phase 2 logger migration, the controller calls
+  // `safeLogger.error('[Board] GetBoard error', { err })` instead of a
+  // bespoke console.error structured object. The redactor in safeLogger
+  // flattens `err.original.message` to a plain string on the logged err,
+  // so the same diagnostic field is still present — we just spy on the
+  // safeLogger module instead of console.
   it('returns a clean JSON 500 when the DB layer throws (e.g. missing column)', async () => {
     User.findByPk.mockResolvedValue(makeUserRecord({ role: 'manager' }));
     const dbErr = Object.assign(new Error('database error'), {
@@ -315,7 +322,8 @@ describe('GET /api/boards/:id', () => {
       sql: 'SELECT * FROM "boards" ...',
     });
     Board.findByPk.mockRejectedValue(dbErr);
-    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const safeLogger = require('../../utils/safeLogger');
+    const errSpy = jest.spyOn(safeLogger, 'error').mockImplementation(() => {});
 
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
@@ -324,10 +332,19 @@ describe('GET /api/boards/:id', () => {
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ success: false, message: 'Server error fetching board.' });
+    // safeLogger receives the raw error object — the redactor inside
+    // safeLogger flattens `original.message` to a plain string downstream
+    // when winston serializes. Asserting on the raw input is what proves
+    // ops will see the missing-column detail when this fires in prod.
     expect(errSpy).toHaveBeenCalledWith(
-      '[Board] GetBoard error:',
+      '[Board] GetBoard error',
       expect.objectContaining({
-        original: 'column tasks."syncStatus" does not exist',
+        err: expect.objectContaining({
+          name: 'SequelizeDatabaseError',
+          original: expect.objectContaining({
+            message: 'column tasks."syncStatus" does not exist',
+          }),
+        }),
       })
     );
     errSpy.mockRestore();

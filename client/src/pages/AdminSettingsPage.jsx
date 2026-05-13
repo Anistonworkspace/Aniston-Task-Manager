@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useT } from '../context/LanguageContext';
+import safeLog from '../utils/safeLog';
 
 // TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 import {
@@ -152,7 +153,7 @@ function UsersTab() {
     try {
       const res = await api.get('/users');
       setUsers(res.data.users || res.data.data?.users || res.data || []);
-    } catch (err) { console.error(err); } finally { setLoading(false); }
+    } catch (err) { safeLog.error('[AdminSettings] error', err); } finally { setLoading(false); }
   }
 
   // Stage the tier change — does NOT hit the API. Confirmation modal calls
@@ -186,7 +187,7 @@ function UsersTab() {
       toast.success(`${tierLabel(newTier)} assigned.`);
       setPendingTierChange(null);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
       toast.error(err.response?.data?.message || 'Failed to change tier');
       fetchUsers();
       setPendingTierChange(null);
@@ -208,7 +209,7 @@ function UsersTab() {
       fetchUsers();
       toast.success(`Deleted ${name}.`);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
       toast.error(err.response?.data?.message || 'Failed to delete user');
     }
   }
@@ -222,7 +223,7 @@ function UsersTab() {
         toast.success(updated.isActive ? 'User activated.' : 'User deactivated.');
       }
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
       toast.error(err.response?.data?.message || 'Failed to toggle status');
     }
     setActionMenu(null);
@@ -529,7 +530,7 @@ function WorkspacesTab() {
       setAllUsers(usersRes.data.users || usersRes.data || []);
       setAllBoards(boardsRes.data.boards || []);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     } finally {
       setLoading(false);
     }
@@ -547,7 +548,7 @@ function WorkspacesTab() {
       setEditId(null);
       fetchAll();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -557,7 +558,7 @@ function WorkspacesTab() {
       await api.delete(`/workspaces/${id}`);
       fetchAll();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -568,7 +569,7 @@ function WorkspacesTab() {
       setAssignUserId('');
       fetchAll();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -577,7 +578,7 @@ function WorkspacesTab() {
       await api.delete(`/workspaces/${wsId}/members/${userId}`);
       fetchAll();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -588,7 +589,7 @@ function WorkspacesTab() {
       setAssignBoardId('');
       fetchAll();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -749,7 +750,15 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
       })
     : null;
 
-  function toggle(value) {
+  function isDisabled(o) {
+    return typeof o === 'object' && o !== null && !!o.disabled;
+  }
+
+  function toggle(value, optDisabled = false) {
+    // Phase 7 — disabled options (enforcement: pending / locked / no_surface)
+    // are not togglable from the UI. Backend would reject them anyway with
+    // PERMISSION_NOT_ENFORCEABLE / PERMISSION_LOCKED.
+    if (optDisabled) return;
     if (selected.includes(value)) {
       onChange(selected.filter(v => v !== value));
     } else {
@@ -758,7 +767,11 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
   }
 
   function selectAll() {
-    const allKeys = allOptions.map(o => typeof o === 'string' ? o : o.key);
+    // Skip disabled options on select-all so we never auto-select non-savable
+    // actions (which would silently strip on submit).
+    const allKeys = allOptions
+      .filter((o) => !isDisabled(o))
+      .map(o => typeof o === 'string' ? o : o.key);
     onChange(allKeys);
   }
 
@@ -807,63 +820,61 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
             </div>
           </div>
 
-          {/* Options list */}
+          {/* Options list. Phase 7 — supports per-option badge / disabled
+              metadata so the Actions dropdown can render "Pending",
+              "Locked", "Dangerous" labels and prevent selection of
+              non-savable actions. */}
           <div className="overflow-y-auto flex-1 py-1">
-            {filtered ? (
-              filtered.map(o => {
+            {(() => {
+              const renderOpt = (o) => {
                 const key = typeof o === 'string' ? o : o.key;
                 const display = typeof o === 'string' ? (ACTIONS[o]?.label || o) : (o.label || o.key);
-                const desc = typeof o === 'string' ? (ACTIONS[o]?.description || '') : '';
+                const desc = typeof o === 'string' ? (ACTIONS[o]?.description || '') : (o.description || '');
+                const disabled = isDisabled(o);
+                const badge = typeof o === 'object' ? o.badge : null;
+                const badgeTone = typeof o === 'object' ? o.badgeTone : null;
                 const isSelected = selected.includes(key);
                 return (
-                  <button key={key} type="button" onClick={() => toggle(key)}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-gray-50 dark:hover:bg-zinc-700 transition-colors ${isSelected ? 'bg-primary/5' : ''}`}>
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => toggle(key, disabled)}
+                    disabled={disabled}
+                    title={disabled ? (typeof o === 'object' && o.reason) || 'Not available' : (desc || '')}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors ${
+                      disabled
+                        ? 'opacity-50 cursor-not-allowed'
+                        : 'hover:bg-gray-50 dark:hover:bg-zinc-700'
+                    } ${isSelected ? 'bg-primary/5' : ''}`}
+                  >
                     <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-gray-300 dark:border-zinc-500'}`}>
                       {isSelected && <Check size={9} className="text-white" />}
                     </div>
                     <span className="font-medium text-gray-700 dark:text-gray-300">{display}</span>
-                    {desc && <span className="text-gray-400 text-[10px] ml-auto">{desc}</span>}
+                    {badge && (
+                      <span className={`ml-1 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                        badgeTone === 'red' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        : badgeTone === 'amber' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                        : badgeTone === 'gray' ? 'bg-gray-100 text-gray-600 dark:bg-zinc-700 dark:text-zinc-300'
+                        : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                      }`}>{badge}</span>
+                    )}
+                    {!badge && desc && <span className="text-gray-400 text-[10px] ml-auto">{desc}</span>}
                   </button>
                 );
-              })
-            ) : groupedOptions ? (
-              Object.entries(groupedOptions).map(([category, items]) => (
-                <div key={category}>
-                  <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50/50 dark:bg-zinc-800/50 sticky top-0">{category}</div>
-                  {items.map(o => {
-                    const key = typeof o === 'string' ? o : o.key;
-                    const display = typeof o === 'string' ? o : (o.label || o.key);
-                    const isSelected = selected.includes(key);
-                    return (
-                      <button key={key} type="button" onClick={() => toggle(key)}
-                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-gray-50 dark:hover:bg-zinc-700 transition-colors ${isSelected ? 'bg-primary/5' : ''}`}>
-                        <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-gray-300 dark:border-zinc-500'}`}>
-                          {isSelected && <Check size={9} className="text-white" />}
-                        </div>
-                        <span className="font-medium text-gray-700 dark:text-gray-300">{display}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))
-            ) : (
-              allOptions.map(o => {
-                const key = typeof o === 'string' ? o : o.key;
-                const display = typeof o === 'string' ? (ACTIONS[o]?.label || o) : (o.label || o.key);
-                const desc = typeof o === 'string' ? (ACTIONS[o]?.description || '') : '';
-                const isSelected = selected.includes(key);
-                return (
-                  <button key={key} type="button" onClick={() => toggle(key)}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left hover:bg-gray-50 dark:hover:bg-zinc-700 transition-colors ${isSelected ? 'bg-primary/5' : ''}`}>
-                    <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-gray-300 dark:border-zinc-500'}`}>
-                      {isSelected && <Check size={9} className="text-white" />}
-                    </div>
-                    <span className="font-medium text-gray-700 dark:text-gray-300">{display}</span>
-                    {desc && <span className="text-gray-400 text-[10px] ml-auto">{desc}</span>}
-                  </button>
-                );
-              })
-            )}
+              };
+
+              if (filtered) return filtered.map(renderOpt);
+              if (groupedOptions) {
+                return Object.entries(groupedOptions).map(([category, items]) => (
+                  <div key={category}>
+                    <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50/50 dark:bg-zinc-800/50 sticky top-0">{category}</div>
+                    {items.map(renderOpt)}
+                  </div>
+                ));
+              }
+              return allOptions.map(renderOpt);
+            })()}
           </div>
         </div>
       )}
@@ -872,6 +883,8 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
 }
 
 function PermissionsTab() {
+  const { user: currentUser } = useAuth();
+  const currentUserTier = resolveTier(currentUser);
   const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -888,21 +901,134 @@ function PermissionsTab() {
   const [historyData, setHistoryData] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [filterResource, setFilterResource] = useState('');
+  // Phase B — by default, the actions dropdown shows ONLY savable/wired
+  // entries to reduce the visual noise from pending / locked / no_surface
+  // catalog entries. Operators can flip this toggle to see the full
+  // catalog and understand why an action isn't currently grantable.
+  const [showNonSavable, setShowNonSavable] = useState(false);
 
-  const resourcesByCategory = getResourcesByCategory();
+  // Phase 6 — canonical catalog fetched from the backend. Includes resources,
+  // actions, and per-(resource,action) grantability flags so the UI can hide
+  // or disable actions the current admin cannot legitimately grant/deny.
+  // Falls back to the bundled RESOURCES/RESOURCE_ACTIONS constants on first
+  // paint so the form is usable even before the API returns.
+  const [catalog, setCatalog] = useState(null);
+
+  const resourcesByCategory = catalog?.resourcesByCategory
+    || getResourcesByCategory();
+  const resourceActionsMap = catalog?.resourceActions || RESOURCE_ACTIONS;
+  const grantabilityMap = catalog?.grantability || {};
   const selectedUser = users.find(u => u.id === form.userId);
 
-  // Compute union of available actions across all selected resources
+  // Helper: is (resource, action) grantable/deniable by the current admin?
+  // Defaults to the bundled action list if the catalog hasn't loaded yet.
+  function isAuthoredByCurrentUser(resource, action, effect) {
+    const g = grantabilityMap[resource]?.[action];
+    if (!g) {
+      // Catalog not loaded yet — fall back to "allow" so the dropdown
+      // stays usable; the backend will still reject if the pair is
+      // non-grantable.
+      return true;
+    }
+    const list = effect === 'deny' ? g.deniableBy : g.grantableBy;
+    return Array.isArray(list) && list.includes(currentUserTier);
+  }
+
+  function actionsForResource(resource) {
+    return resourceActionsMap[resource] || getActionsForResource(resource);
+  }
+
+  // Compute available actions per Phase 7 — every catalog action for the
+  // selected resources is surfaced, with metadata. Non-savable actions
+  // (pending / locked / no_surface) are RENDERED but DISABLED with an
+  // explanatory badge instead of being silently hidden, so admins can see
+  // the full intended catalog and understand why each row isn't settable.
+  // Actions outside the grantability for the current admin's tier ARE
+  // hidden (they could neither grant nor deny these anyway).
   const availableActions = React.useMemo(() => {
     if (form.resources.length === 0) return [];
-    const actionSet = new Set();
+    const out = [];
+    const seen = new Set();
     for (const r of form.resources) {
-      for (const a of getActionsForResource(r)) {
-        actionSet.add(a);
+      for (const a of actionsForResource(r)) {
+        if (seen.has(a)) continue;
+        seen.add(a);
+        const meta = catalog?.meta?.[`${r}.${a}`] || {};
+        const enforcement = meta.enforcement || 'wired';
+        const dangerous = !!meta.dangerous;
+        const warnOnDeny = !!meta.warnOnDeny;
+        const grantable = isAuthoredByCurrentUser(r, a, form.effect);
+
+        // Build per-option object. Hide entries the current admin is not
+        // authorised to author (true "not your business"); render but
+        // disable non-savable entries (visible but unusable).
+        const isWired = enforcement === 'wired';
+        if (!grantable && isWired) continue; // hidden by GRANTABILITY for current tier
+
+        let badge = null;
+        let badgeTone = null;
+        let disabled = false;
+        let reason = null;
+        if (enforcement === 'locked') {
+          badge = 'Locked';
+          badgeTone = 'red';
+          disabled = true;
+          reason = 'System rule — cannot be granted or denied via overrides.';
+        } else if (enforcement === 'no_surface') {
+          badge = 'Not enforceable';
+          badgeTone = 'gray';
+          disabled = true;
+          reason = 'No in-app surface to gate — granting / denying would have no effect.';
+        } else if (enforcement === 'pending') {
+          badge = 'Pending';
+          badgeTone = 'amber';
+          disabled = true;
+          reason = 'Not yet wired in the backend — saving would have no effect.';
+        } else if (dangerous) {
+          badge = 'Dangerous';
+          badgeTone = 'red';
+        } else if (warnOnDeny && form.effect === 'deny') {
+          badge = 'Default ON';
+          badgeTone = 'amber';
+        }
+
+        // Phase B — default behavior: hide non-savable entries to reduce
+        // visual noise. Operator can toggle "Show non-wired" to see the
+        // full catalog with explanatory badges.
+        if (disabled && !showNonSavable) continue;
+
+        out.push({
+          key: a,
+          label: ACTIONS[a]?.label || a,
+          description: ACTIONS[a]?.description || '',
+          disabled,
+          badge,
+          badgeTone,
+          reason,
+        });
       }
     }
-    return [...actionSet];
-  }, [form.resources]);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.resources, form.effect, catalog, currentUserTier, showNonSavable]);
+
+  // Count actions that were filtered out by grantability so we can show a
+  // small explainer banner. This is a UX signal that the catalog is active —
+  // operators learn which (resource, action) pairs are reserved for higher
+  // tiers rather than chasing silent submit failures.
+  const filteredOutActions = React.useMemo(() => {
+    if (form.resources.length === 0) return [];
+    const blocked = [];
+    for (const r of form.resources) {
+      for (const a of actionsForResource(r)) {
+        if (!isAuthoredByCurrentUser(r, a, form.effect)) {
+          blocked.push({ resource: r, action: a });
+        }
+      }
+    }
+    return blocked;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.resources, form.effect, catalog, currentUserTier]);
 
   // Build preview: which resource+action combos will be created
   const grantPreview = React.useMemo(() => {
@@ -939,18 +1065,20 @@ function PermissionsTab() {
 
   async function fetchData() {
     setLoadError('');
-    // Fetch users and permissions independently so a permissions failure does
-    // not also wipe out the user dropdown (and vice versa). We still show a
-    // banner for the permissions failure so the operator sees what broke.
-    const [permResult, usersResult] = await Promise.allSettled([
+    // Fetch users, permissions, and the canonical catalog in parallel so a
+    // single failure does not block the others. Catalog failures are
+    // recoverable — the form falls back to the bundled RESOURCE_ACTIONS list
+    // and the backend remains the authoritative gate on submission.
+    const [permResult, usersResult, catalogResult] = await Promise.allSettled([
       api.get('/permissions', { _silent: true }),
       api.get('/auth/users', { _silent: true }),
+      api.get('/permissions/catalog', { _silent: true }),
     ]);
 
     if (permResult.status === 'fulfilled') {
       setPermissions(permResult.value.data.permissions || []);
     } else {
-      console.error('[Permissions] load failed:', permResult.reason);
+      safeLog.error('[Permissions] load failed', permResult.reason);
       setLoadError(describePermissionsError(permResult.reason));
     }
 
@@ -958,11 +1086,38 @@ function PermissionsTab() {
       const d = usersResult.value.data;
       setUsers(d.users || d || []);
     } else {
-      console.error('[Permissions] users load failed:', usersResult.reason);
+      safeLog.error('[Permissions] users load failed', usersResult.reason);
+    }
+
+    if (catalogResult.status === 'fulfilled') {
+      // API shape: { data: { catalog: { resources, actions, resourceActions,
+      //   resourcesByCategory, grantability, tierPermissions } } }
+      const cat = catalogResult.value.data?.data?.catalog
+        || catalogResult.value.data?.catalog;
+      if (cat) setCatalog(cat);
+    } else {
+      safeLog.warn('[Permissions] catalog load failed (using bundled fallback)', catalogResult.reason);
     }
 
     setLoading(false);
   }
+
+  // When the user toggles between Grant and Deny — or selects new resources —
+  // some previously-selected actions may become non-grantable or non-savable.
+  // Strip them silently so the operator is never holding an invalid selection
+  // that the backend would reject. Phase 7 — only keeps actions that are
+  // present AND not disabled (locked / pending / no_surface).
+  useEffect(() => {
+    if (form.actions.length === 0) return;
+    const validKeys = new Set(
+      availableActions.filter((o) => !o.disabled).map((o) => o.key)
+    );
+    const stillValid = form.actions.filter((a) => validKeys.has(a));
+    if (stillValid.length !== form.actions.length) {
+      setForm((prev) => ({ ...prev, actions: stillValid }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.effect, form.resources, catalog]);
 
   async function handleGrant() {
     setGrantError('');
@@ -971,6 +1126,35 @@ function PermissionsTab() {
       setGrantError('Please select user, at least one resource, and at least one action.');
       return;
     }
+
+    // Phase 7 — dangerous-action warning. Confirm before granting a
+    // dangerous action OR denying a default-everyone action (warnOnDeny).
+    // Native confirm keeps the UI footprint small while making the rule
+    // explicit. The label is built per-pair so the admin sees what
+    // they're about to do.
+    const warnings = [];
+    for (const r of form.resources) {
+      for (const a of form.actions) {
+        const meta = catalog?.meta?.[`${r}.${a}`] || {};
+        if (form.effect === 'grant' && meta.dangerous) {
+          warnings.push(`Grant DANGEROUS: ${r}.${a}`);
+        }
+        if (form.effect === 'deny' && meta.warnOnDeny) {
+          warnings.push(`Deny default-on action: ${r}.${a}`);
+        }
+      }
+    }
+    if (warnings.length > 0) {
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm(
+        `You are about to apply ${warnings.length} sensitive change(s):\n\n`
+        + warnings.slice(0, 6).join('\n')
+        + (warnings.length > 6 ? `\n... and ${warnings.length - 6} more` : '')
+        + `\n\nDeny overrides win over base role and grant. Continue?`
+      );
+      if (!ok) return;
+    }
+
     setGranting(true);
     try {
       const res = await api.post('/permissions/multi', {
@@ -1002,7 +1186,7 @@ function PermissionsTab() {
     try {
       await api.delete(`/permissions/${id}`);
       fetchData();
-    } catch (err) { console.error(err); }
+    } catch (err) { safeLog.error('[AdminSettings] error', err); }
   }
 
   async function fetchEffective() {
@@ -1011,7 +1195,7 @@ function PermissionsTab() {
     try {
       const res = await api.get(`/permissions/effective/${effectiveUser}`);
       setEffectiveData(res.data.effective);
-    } catch (err) { console.error(err); }
+    } catch (err) { safeLog.error('[AdminSettings] error', err); }
     finally { setEffectiveLoading(false); }
   }
 
@@ -1021,7 +1205,7 @@ function PermissionsTab() {
     try {
       const res = await api.get(`/permissions/history/${userId}`);
       setHistoryData(res.data.history || []);
-    } catch (err) { console.error(err); }
+    } catch (err) { safeLog.error('[AdminSettings] error', err); }
   }
 
   const filteredPermissions = filterResource
@@ -1121,6 +1305,27 @@ function PermissionsTab() {
               })()}
             </div>
 
+            {/* Phase B — non-wired filter toggle. Default OFF so the operator
+                sees only actions that can actually be granted/denied. Flip
+                ON to see the full catalog with Pending / Locked / Not
+                enforceable badges and per-action explanations. */}
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                {showNonSavable
+                  ? 'Showing the full catalog including non-savable entries (greyed out).'
+                  : 'Showing only actions that can be granted or denied (current default).'}
+              </p>
+              <label className="inline-flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={showNonSavable}
+                  onChange={(e) => setShowNonSavable(e.target.checked)}
+                  className="w-3 h-3 rounded border-gray-300 text-primary focus:ring-0"
+                />
+                Show pending / locked / not-enforceable actions
+              </label>
+            </div>
+
             {/* Row 2: Multi-select Resource + Multi-select Action */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
               <MultiSelectDropdown
@@ -1152,6 +1357,28 @@ function PermissionsTab() {
               <div className="mb-4 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
                 <Shield size={12} className="text-primary" />
                 <span>{form.resources.length} resource{form.resources.length > 1 ? 's' : ''} × {form.actions.length} action{form.actions.length > 1 ? 's' : ''} = <strong className="text-gray-700 dark:text-gray-200">{totalCombinations} permission{totalCombinations !== 1 ? 's' : ''}</strong></span>
+              </div>
+            )}
+
+            {/* Grantability hint — surfaces when the GRANTABILITY catalog
+                hides actions for the current admin's tier. Without this,
+                operators wonder why expected actions don't appear in the
+                dropdown (the backend would reject them anyway, but silent
+                filtering is confusing). */}
+            {filteredOutActions.length > 0 && form.resources.length > 0 && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/15 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+                <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                <div>
+                  <strong className="font-semibold">{filteredOutActions.length} action{filteredOutActions.length === 1 ? '' : 's'} hidden</strong>
+                  {' '}— reserved for higher tiers, destructive, or system-only. Examples:{' '}
+                  <span className="font-mono">
+                    {filteredOutActions.slice(0, 4).map((p) => `${p.resource}.${p.action}`).join(', ')}
+                    {filteredOutActions.length > 4 ? `, +${filteredOutActions.length - 4} more` : ''}
+                  </span>
+                  {form.effect === 'grant' && (
+                    <>. Switch to <strong>Deny</strong> to revoke (if your tier permits) or promote the user instead.</>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1496,7 +1723,7 @@ function AccessRequestsTab() {
       const res = await api.get(`/access-requests?status=${statusFilter}`);
       setRequests(res.data.requests || []);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     } finally {
       setLoading(false);
     }
@@ -1508,7 +1735,7 @@ function AccessRequestsTab() {
       setReviewNote('');
       fetchRequests();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -1518,7 +1745,7 @@ function AccessRequestsTab() {
       setReviewNote('');
       fetchRequests();
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -1619,7 +1846,7 @@ function TemplatesTab() {
       setTemplates(tRes.data.templates || {});
       setUsers(uRes.data.users || uRes.data || []);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 
@@ -1630,7 +1857,7 @@ function TemplatesTab() {
       setApplied(true);
       setTimeout(() => setApplied(false), 3000);
     } catch (err) {
-      console.error(err);
+      safeLog.error('[AdminSettings] error', err);
     }
   }
 

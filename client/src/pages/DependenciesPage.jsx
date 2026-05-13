@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Link2, Inbox, Send, CheckCircle2, XCircle, Search,
   Calendar, Flag, ExternalLink, Play, Check, X, Trash2,
-  AlertCircle, FileText, Archive, RefreshCw,
+  AlertCircle, FileText, Archive, RefreshCw, ArrowRight,
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -16,26 +16,61 @@ import Avatar from '../components/common/Avatar';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import RejectDependencyDialog from '../components/dependencies/RejectDependencyDialog';
 
+// ── Soft Neumorphic design tokens (aligned with the Approvals page) ──
+// Mirrors the canonical app palette used in TasksPage (Approvals & Requests):
+// neutral slate surfaces + indigo brand accent, semantic mint/amber/coral
+// for status meaning. Old purple/pink/lavender pastels removed.
+const TONE = {
+  pageBg:        '#F3F5FA',
+  tile:          '#F6F7FB',
+  textPrimary:   '#323338',
+  textSecondary: '#676879',
+  textMuted:     '#94A3B8',
+  onDark:        '#FAFAFA',
+  indigo:        '#4F46E5',
+  indigoDeep:    '#4338CA',
+  indigoSoft:    '#EEF2FF',
+  mint:          '#10B981',
+  mintText:      '#047857',
+  coral:         '#DC2626',
+  coralText:     '#B91C1C',
+  amber:         '#F59E0B',
+  amberText:     '#C2410C',
+};
+
+// Subtle gradients — indigo/mint hint instead of the previous strong
+// lavender/pink/peach pastels. Hero gets a soft mint tail to signal "this
+// is your active piece of work"; secondary stays in an indigo-soft band.
+const HERO_GRADIENT      = 'linear-gradient(135deg, #EEF2FF 0%, #F3F4F6 55%, #ECFDF5 100%)';
+const SECONDARY_GRADIENT = 'linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)';
+
+// Slate-based neumorphic shadows — match the Approvals page exactly so
+// both pages read as part of the same surface system.
+const SHADOW_RAISED    = '5px 5px 12px rgba(148, 163, 184, 0.30), -5px -5px 12px rgba(255, 255, 255, 0.95)';
+const SHADOW_RAISED_LG = '7px 7px 16px rgba(148, 163, 184, 0.36), -7px -7px 16px rgba(255, 255, 255, 1), inset 1px 1px 2px rgba(255, 255, 255, 0.5)';
+const SHADOW_PRESSED   = 'inset 2px 2px 5px rgba(148, 163, 184, 0.22), inset -2px -2px 5px rgba(255, 255, 255, 0.95)';
+const SHADOW_BUTTON    = '3px 3px 6px rgba(148, 163, 184, 0.32), -3px -3px 6px rgba(255, 255, 255, 0.95)';
+
 const STATUS_BADGES = {
-  pending:        { label: 'Pending',        bg: 'bg-amber-100',   text: 'text-amber-700',   ring: 'ring-amber-200' },
-  accepted:       { label: 'Accepted',       bg: 'bg-blue-100',    text: 'text-blue-700',    ring: 'ring-blue-200' },
-  working_on_it:  { label: 'Working on it',  bg: 'bg-orange-100',  text: 'text-orange-700',  ring: 'ring-orange-200' },
-  done:           { label: 'Done',           bg: 'bg-emerald-100', text: 'text-emerald-700', ring: 'ring-emerald-200' },
-  rejected:       { label: 'Rejected',       bg: 'bg-red-100',     text: 'text-red-700',     ring: 'ring-red-200' },
-  cancelled:      { label: 'Cancelled',      bg: 'bg-gray-100',    text: 'text-gray-600',    ring: 'ring-gray-200' },
+  pending:        { label: 'Pending',       bg: '#F1F5F9', fg: '#475569' }, // slate neutral
+  accepted:       { label: 'Accepted',      bg: '#E0E7FF', fg: '#4338CA' }, // indigo soft
+  working_on_it:  { label: 'Working on it', bg: '#FEF3C7', fg: '#92400E' }, // amber soft
+  done:           { label: 'Done',          bg: '#D1FAE5', fg: '#047857' }, // mint
+  rejected:       { label: 'Rejected',      bg: '#FEE2E2', fg: '#B91C1C' }, // coral
+  cancelled:      { label: 'Cancelled',     bg: '#E5E7EB', fg: '#4B5563' }, // slate
 };
 
 const PRIORITY_BADGES = {
-  low:      { label: 'Low',      color: '#9aa6b8' },
-  medium:   { label: 'Medium',   color: '#fdab3d' },
-  high:     { label: 'High',     color: '#ff7575' },
-  critical: { label: 'Critical', color: '#e2445c' },
+  low:      { label: 'Low',      fg: '#047857' }, // mint
+  medium:   { label: 'Medium',   fg: '#C2410C' }, // amber text
+  high:     { label: 'High',     fg: '#B91C1C' }, // coral
+  critical: { label: 'Critical', fg: '#7F1D1D' }, // deep coral
 };
 
 const TABS = [
-  { key: 'assigned',  label: 'Assigned to Me',  icon: Inbox },
-  { key: 'created',   label: 'Created by Me',   icon: Send },
-  { key: 'completed', label: 'Completed',       icon: CheckCircle2 },
+  { key: 'assigned',  label: 'Assigned to Me',      icon: Inbox },
+  { key: 'created',   label: 'Created by Me',       icon: Send },
+  { key: 'completed', label: 'Completed',           icon: CheckCircle2 },
   { key: 'rejected',  label: 'Rejected / Cancelled', icon: XCircle },
 ];
 
@@ -182,6 +217,7 @@ export default function DependenciesPage() {
 
   const loading    = phase === 'initial';
   const refreshing = phase === 'refreshing';
+  const errored    = phase === 'error';
 
   // Tab partitions. The "Completed" and "Rejected/Cancelled" tabs unify rows
   // from BOTH directions so the user sees their full history regardless of
@@ -205,6 +241,24 @@ export default function DependenciesPage() {
     completed: tabRows.completed.length,
     rejected:  tabRows.rejected.length,
   };
+
+  // Global stats — derived from already-loaded arrays only. No new API.
+  const stats = useMemo(() => {
+    const activeUnion = dedupe([...tabRows.assigned, ...tabRows.created]);
+    const now = startOfDay(new Date());
+    const in7 = new Date(now.getTime() + 7 * 86_400_000);
+    const dueSoon = activeUnion.filter(r => {
+      if (!r.dueDate) return false;
+      const d = startOfDay(new Date(r.dueDate));
+      return d >= now && d <= in7;
+    });
+    return {
+      active:    activeUnion.length,
+      dueSoon:   dueSoon.length,
+      completed: tabRows.completed.length,
+      rejected:  tabRows.rejected.length,
+    };
+  }, [tabRows]);
 
   const visibleRows = useMemo(() => {
     const base = tabRows[tab] || [];
@@ -264,39 +318,80 @@ export default function DependenciesPage() {
     }
   }
 
+  // Bento split — backend order is preserved, no client-side resort.
+  const hero      = visibleRows[0] || null;
+  const secondary = visibleRows[1] || null;
+  const rest      = visibleRows.slice(2);
+
+  const cardCommonProps = {
+    viewerId: user?.id,
+    onStatus: handleStatusChange,
+    onCancel: handleCancel,
+    onArchive: handleArchive,
+    onReject: (dep) => setRejectTarget(dep),
+    onOpenParent: openParentTask,
+    onOpenBoard: openBoard,
+  };
+
   return (
-    <div className="p-6 bg-white min-h-full">
-      <div className="max-w-5xl mx-auto">
+    <div className="min-h-full p-4 sm:p-6" style={{ backgroundColor: TONE.pageBg }}>
+      <div className="max-w-6xl mx-auto">
         {/* Header */}
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="text-lg font-bold text-gray-800 flex items-center gap-2 mb-1">
-            <Link2 size={18} className="text-purple-500" /> {t('dependenciesPage.title')}
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className="mb-4"
+        >
+          <h1
+            className="text-xl sm:text-2xl font-bold flex items-center gap-2.5 mb-0.5"
+            style={{ color: TONE.textPrimary, letterSpacing: '-0.02em' }}
+          >
+            <span
+              className="w-9 h-9 flex items-center justify-center"
+              style={{ background: HERO_GRADIENT, boxShadow: SHADOW_BUTTON, borderRadius: 12 }}
+              aria-hidden="true"
+            >
+              <Link2 size={16} style={{ color: TONE.indigo }} />
+            </span>
+            {t('dependenciesPage.title')}
           </h1>
-          <p className="text-[12px] text-gray-400 mb-5">
+          <p className="text-[13px] ml-[46px]" style={{ color: TONE.textSecondary }}>
             {t('dependenciesPage.subtitle')}
           </p>
         </motion.div>
 
-        {/* Tabs */}
-        <div className="flex items-center gap-1 mb-4 border-b border-gray-100 overflow-x-auto">
+        {/* Tabs as pill chips */}
+        <div className="flex items-center gap-1.5 mb-3 flex-wrap" role="tablist" aria-label="Dependency views">
           {TABS.map(tabItem => {
             const Icon = tabItem.icon;
             const active = tab === tabItem.key;
+            const label = DEP_TAB_LABEL_KEYS[tabItem.key] ? t(DEP_TAB_LABEL_KEYS[tabItem.key]) : tabItem.label;
             return (
               <button
                 key={tabItem.key}
+                role="tab"
+                aria-selected={active}
                 onClick={() => setTab(tabItem.key)}
-                className={`flex items-center gap-2 px-3 py-2 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  active
-                    ? 'border-purple-500 text-purple-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
+                className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 text-[11px] sm:text-[12px] font-semibold transition-all duration-200 whitespace-nowrap"
+                style={{
+                  borderRadius: 999,
+                  ...(active
+                    ? { backgroundColor: TONE.indigoDeep, color: TONE.onDark, boxShadow: SHADOW_BUTTON }
+                    : { backgroundColor: TONE.pageBg, color: TONE.textSecondary, boxShadow: SHADOW_PRESSED }),
+                }}
               >
-                <Icon size={13} />
-                {DEP_TAB_LABEL_KEYS[tabItem.key] ? t(DEP_TAB_LABEL_KEYS[tabItem.key]) : tabItem.label}
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                  active ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-500'
-                }`}>
+                <Icon size={12} />
+                <span>{label}</span>
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5"
+                  style={{
+                    borderRadius: 999,
+                    ...(active
+                      ? { backgroundColor: 'rgba(255,255,255,0.18)', color: TONE.onDark }
+                      : { backgroundColor: 'rgba(45,48,71,0.06)', color: TONE.textPrimary }),
+                  }}
+                >
                   {counts[tabItem.key]}
                 </span>
               </button>
@@ -305,28 +400,36 @@ export default function DependenciesPage() {
         </div>
 
         {/* Search */}
-        <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg border border-gray-200 bg-white">
-          <Search size={14} className="text-gray-400" />
+        <div
+          className="flex items-center gap-2.5 mb-4 px-3.5 py-2.5"
+          style={{ backgroundColor: TONE.pageBg, boxShadow: SHADOW_PRESSED, borderRadius: 12 }}
+        >
+          <Search size={14} style={{ color: TONE.textMuted }} />
           <input
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder={t('dependenciesPage.searchPlaceholder')}
-            className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-gray-400"
+            className="flex-1 bg-transparent border-none outline-none text-[13px]"
+            style={{ color: TONE.textPrimary }}
+            aria-label={t('dependenciesPage.searchPlaceholder')}
           />
           {search && (
-            <button onClick={() => setSearch('')} className="text-gray-400 hover:text-gray-600">
+            <button
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="p-1 transition-opacity hover:opacity-70"
+              style={{ color: TONE.textMuted }}
+            >
               <X size={14} />
             </button>
           )}
         </div>
 
         {/* Subtle refresh indicator — visible only during background refreshes,
-            never on initial load (the skeleton already covers that case).
-            Keeps the existing list visible underneath so the page doesn't
-            jitter back to skeleton on every socket event. */}
+            never on initial load (the skeleton already covers that case). */}
         {refreshing && (
-          <div className="flex items-center gap-2 text-[11px] text-gray-400 mb-2">
+          <div className="flex items-center gap-2 text-[11px] mb-2" style={{ color: TONE.textMuted }}>
             <RefreshCw size={11} className="animate-spin" />
             <span>Refreshing…</span>
           </div>
@@ -334,29 +437,46 @@ export default function DependenciesPage() {
 
         {/* Content */}
         {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="animate-pulse h-28 bg-gray-50 rounded-xl" />
-            ))}
-          </div>
+          <LoadingSkeleton />
+        ) : errored ? (
+          <ErrorState onRetry={reload} />
         ) : visibleRows.length === 0 ? (
           <EmptyState tab={tab} hasSearch={!!search} />
         ) : (
-          <div className="space-y-3">
-            {visibleRows.map(dep => (
-              <RequestCard
-                key={dep.id}
-                dep={dep}
-                viewerId={user?.id}
-                onStatus={handleStatusChange}
-                onCancel={handleCancel}
-                onArchive={handleArchive}
-                onReject={() => setRejectTarget(dep)}
-                onOpenParent={() => openParentTask(dep)}
-                onOpenBoard={() => openBoard(dep)}
-              />
-            ))}
-          </div>
+          <>
+            {/* Bento: hero + optional secondary */}
+            {secondary ? (
+              <div className="grid gap-3 sm:gap-4 mb-4 lg:grid-cols-3">
+                <div className="lg:col-span-2">
+                  <HeroCard dep={hero} {...cardCommonProps} />
+                </div>
+                <div>
+                  <SecondaryCard dep={secondary} {...cardCommonProps} />
+                </div>
+              </div>
+            ) : (
+              <div className="mb-4">
+                <HeroCard dep={hero} {...cardCommonProps} />
+              </div>
+            )}
+
+            {/* Stats — global summary, derived from already-loaded data */}
+            <StatsRow stats={stats} />
+
+            {/* Compact rows for #3+ */}
+            {rest.length > 0 && (
+              <div className="mt-4 space-y-2.5">
+                {rest.map((dep, idx) => (
+                  <CompactRow
+                    key={dep.id}
+                    dep={dep}
+                    delay={Math.min(idx * 0.04, 0.24)}
+                    {...cardCommonProps}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -372,101 +492,113 @@ export default function DependenciesPage() {
   );
 }
 
-// ─── Request card ───────────────────────────────────────────────
-function RequestCard({
-  dep, viewerId,
-  onStatus, onCancel, onArchive, onReject, onOpenParent, onOpenBoard,
-}) {
-  const status = STATUS_BADGES[dep.status] || STATUS_BADGES.pending;
-  const priority = PRIORITY_BADGES[dep.priority] || PRIORITY_BADGES.medium;
+// ─── Hero card ──────────────────────────────────────────────────
+function HeroCard({ dep, viewerId, onStatus, onCancel, onArchive, onReject, onOpenParent, onOpenBoard }) {
+  if (!dep) return null;
   const isAssignee  = dep.assignedToUserId === viewerId;
   const isRequester = dep.requestedByUserId === viewerId;
-
-  const dueOverdue = dep.dueDate && new Date(dep.dueDate) < new Date() && ACTIVE_STATUSES.includes(dep.status);
+  const dueInfo = dueLabel(dep);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
+    <motion.section
+      initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`bg-white rounded-xl border p-4 hover:shadow-sm transition-shadow ${
-        dep.status === 'rejected' ? 'border-red-200 bg-red-50/30' : 'border-gray-100'
-      }`}
+      transition={{ duration: 0.35 }}
+      className="relative p-4 sm:p-5 h-full"
+      style={{ background: HERO_GRADIENT, borderRadius: 20, boxShadow: SHADOW_RAISED_LG }}
+      aria-label={`Dependency request: ${dep.title}`}
     >
-      {/* Title row */}
-      <div className="flex items-start gap-3 mb-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            {/* Phase 11 — distinguish dependency requests from regular tasks
-                with a persistent "Dependency Request" type chip in the
-                top-left of every card. */}
-            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 ring-1 ring-purple-200">
-              <Link2 size={10} /> Dependency Request
-            </span>
-            <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ring-1 ${status.bg} ${status.text} ${status.ring}`}>
-              {status.label}
-            </span>
-            <span className="text-[10px] font-medium uppercase tracking-wide flex items-center gap-1" style={{ color: priority.color }}>
-              <Flag size={10} /> {priority.label}
-            </span>
-            {dueOverdue && (
-              <span className="text-[10px] font-bold uppercase text-red-600 flex items-center gap-1">
-                <AlertCircle size={10} /> Overdue
-              </span>
-            )}
-          </div>
-          <h3 className="text-sm font-semibold text-gray-800 truncate">{dep.title}</h3>
-          {dep.parentTask && (
-            <button
-              onClick={onOpenParent}
-              className="text-[11px] text-gray-500 hover:text-purple-600 hover:underline mt-0.5 inline-flex items-center gap-1"
-            >
-              in parent task <span className="font-medium">{dep.parentTask.title}</span>
-              <ExternalLink size={10} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Meta row */}
-      <div className="flex items-center flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 mb-2">
+      {/* Pills */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-3">
+        <StatusPill status={dep.status} />
+        <PriorityPill priority={dep.priority} />
         {dep.parentTask?.board?.name && (
-          <button onClick={onOpenBoard} className="flex items-center gap-1 hover:text-purple-600">
-            <span className="w-1.5 h-1.5 rounded-sm" style={{ backgroundColor: dep.parentTask.board.color || '#0073ea' }} />
-            {dep.parentTask.board.name}
-          </button>
+          <BoardPill
+            name={dep.parentTask.board.name}
+            color={dep.parentTask.board.color}
+            onClick={() => onOpenBoard(dep)}
+          />
         )}
-        {dep.dueDate && (
-          <span className={`flex items-center gap-1 ${dueOverdue ? 'text-red-600 font-medium' : ''}`}>
-            <Calendar size={11} /> {String(dep.dueDate).slice(0, 10)}
+        {dueInfo && (
+          <span
+            className="ml-auto text-[10.5px] font-semibold px-2.5 py-0.5 inline-flex items-center gap-1"
+            style={{
+              backgroundColor: 'rgba(255,255,255,0.7)',
+              color: dueInfo.overdue ? TONE.coral : TONE.textPrimary,
+              boxShadow: SHADOW_BUTTON,
+              borderRadius: 999,
+            }}
+          >
+            <Calendar size={10} /> {dueInfo.label}
           </span>
         )}
       </div>
 
-      {/* People row — only show roles that exist on this row, deduped */}
-      <PeopleRow dep={dep} />
+      {/* Title */}
+      <h2
+        className="text-lg sm:text-xl lg:text-[26px] font-bold leading-tight mb-2"
+        style={{ color: TONE.textPrimary, letterSpacing: '-0.02em' }}
+      >
+        {dep.title}
+      </h2>
+
+      {/* Parent chip */}
+      {dep.parentTask && (
+        <button
+          onClick={() => onOpenParent(dep)}
+          className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 mb-3 transition-transform hover:-translate-y-px max-w-full"
+          style={{
+            backgroundColor: 'rgba(255,255,255,0.55)',
+            color: TONE.textPrimary,
+            boxShadow: SHADOW_BUTTON,
+            borderRadius: 999,
+          }}
+          aria-label={`Open parent task ${dep.parentTask.title}`}
+        >
+          <span style={{ color: TONE.textMuted }}>in</span>
+          <span className="font-semibold truncate">{dep.parentTask.title}</span>
+          <ExternalLink size={10} />
+        </button>
+      )}
+
+      {/* Requester → Assignee chain */}
+      <div
+        className="flex items-center gap-3 sm:gap-4 px-3 py-2.5 mb-3 flex-wrap"
+        style={{ backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: 14 }}
+      >
+        <PersonBlock label="Requester" user={dep.requestedBy} highlightIfSelf={viewerId} />
+        <ArrowRight size={14} style={{ color: TONE.textMuted }} className="flex-shrink-0" aria-hidden="true" />
+        <PersonBlock label="Assignee" user={dep.assignedTo} highlightIfSelf={viewerId} />
+      </div>
 
       {/* Blocking reason */}
       {dep.blockingReason && (
-        <div className="flex gap-2 mt-2 px-3 py-2 rounded-md bg-gray-50 text-[11px] text-gray-600 leading-relaxed">
-          <FileText size={11} className="mt-0.5 flex-shrink-0 text-gray-400" />
+        <div
+          className="flex gap-2 mb-3 px-3 py-2 text-[12px] leading-relaxed"
+          style={{ backgroundColor: 'rgba(255,255,255,0.55)', color: TONE.textSecondary, borderRadius: 12 }}
+        >
+          <FileText size={12} className="mt-0.5 flex-shrink-0" style={{ color: TONE.textMuted }} />
           <span className="italic">{dep.blockingReason}</span>
         </div>
       )}
 
       {/* Rejection reason — surface prominently when present */}
       {dep.status === 'rejected' && dep.rejectionReason && (
-        <div className="flex gap-2 mt-2 px-3 py-2 rounded-md bg-red-50 text-[11px] text-red-700 leading-relaxed border border-red-200">
-          <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+        <div
+          className="flex gap-2 mb-3 px-3 py-2 text-[12px]"
+          style={{ backgroundColor: '#FEE2E2', color: '#991B1B', borderRadius: 12 }}
+        >
+          <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
           <div>
-            <p className="font-medium">Rejected</p>
+            <p className="font-semibold">Rejected</p>
             <p>{dep.rejectionReason}</p>
           </div>
         </div>
       )}
 
-      {/* Footer: timestamps + actions */}
-      <div className="flex items-end justify-between mt-3 pt-2 border-t border-gray-50">
-        <p className="text-[10px] text-gray-400">
+      {/* Footer */}
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+        <p className="text-[11px]" style={{ color: TONE.textMuted }}>
           Created {formatRelative(dep.createdAt)}
           {dep.updatedAt && dep.updatedAt !== dep.createdAt && (
             <> · Updated {formatRelative(dep.updatedAt)}</>
@@ -480,144 +612,496 @@ function RequestCard({
           onCancel={onCancel}
           onArchive={onArchive}
           onReject={onReject}
-          onOpenParent={onOpenParent}
+          onOpenParent={() => onOpenParent(dep)}
+          variant="hero"
+        />
+      </div>
+    </motion.section>
+  );
+}
+
+// ─── Secondary card ─────────────────────────────────────────────
+function SecondaryCard({ dep, viewerId, onStatus, onCancel, onArchive, onReject, onOpenParent }) {
+  if (!dep) return null;
+  const isAssignee  = dep.assignedToUserId === viewerId;
+  const isRequester = dep.requestedByUserId === viewerId;
+  const dueInfo = dueLabel(dep);
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, delay: 0.05 }}
+      className="p-4 h-full flex flex-col"
+      style={{ background: SECONDARY_GRADIENT, borderRadius: 20, boxShadow: SHADOW_RAISED_LG }}
+      aria-label={`Dependency request: ${dep.title}`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <StatusPill status={dep.status} compact />
+        {dueInfo && (
+          <span
+            className="text-[10px] font-semibold"
+            style={{ color: dueInfo.overdue ? TONE.coral : TONE.amberText }}
+          >
+            {dueInfo.label}
+          </span>
+        )}
+      </div>
+
+      <h3
+        className="text-base sm:text-lg font-bold leading-tight mb-1.5"
+        style={{ color: TONE.textPrimary, letterSpacing: '-0.01em' }}
+      >
+        {dep.title}
+      </h3>
+
+      {dep.parentTask && (
+        <button
+          onClick={() => onOpenParent(dep)}
+          className="inline-flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 self-start mb-2.5 transition-transform hover:-translate-y-px max-w-full"
+          style={{
+            backgroundColor: 'rgba(255,255,255,0.55)',
+            color: TONE.textPrimary,
+            boxShadow: SHADOW_BUTTON,
+            borderRadius: 999,
+          }}
+          aria-label={`Open parent task ${dep.parentTask.title}`}
+        >
+          <span style={{ color: TONE.textMuted }}>in</span>
+          <span className="font-semibold truncate">{dep.parentTask.title}</span>
+          <ExternalLink size={9} />
+        </button>
+      )}
+
+      <div className="flex items-center gap-2 mt-auto flex-wrap">
+        <PersonBlock label={isAssignee ? 'From' : 'To'} user={isAssignee ? dep.requestedBy : dep.assignedTo} small highlightIfSelf={viewerId} />
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <ActionBar
+          dep={dep}
+          isAssignee={isAssignee}
+          isRequester={isRequester}
+          onStatus={onStatus}
+          onCancel={onCancel}
+          onArchive={onArchive}
+          onReject={onReject}
+          onOpenParent={() => onOpenParent(dep)}
+          variant="secondary"
+        />
+      </div>
+    </motion.section>
+  );
+}
+
+// ─── Compact row (3rd+ dependency) ──────────────────────────────
+function CompactRow({ dep, viewerId, onStatus, onCancel, onArchive, onReject, onOpenParent, delay = 0 }) {
+  const isAssignee  = dep.assignedToUserId === viewerId;
+  const isRequester = dep.requestedByUserId === viewerId;
+  const dueInfo = dueLabel(dep);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, delay }}
+      className="p-3 sm:p-3.5 transition-shadow duration-200"
+      style={{ backgroundColor: TONE.pageBg, borderRadius: 16, boxShadow: SHADOW_RAISED }}
+    >
+      <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 lg:gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+            <StatusPill status={dep.status} compact />
+            <PriorityPill priority={dep.priority} compact />
+            {dueInfo && (
+              <span
+                className="text-[10px] font-semibold inline-flex items-center gap-1"
+                style={{ color: dueInfo.overdue ? TONE.coral : TONE.textMuted }}
+              >
+                <Calendar size={10} /> {dueInfo.label}
+              </span>
+            )}
+          </div>
+          <h4 className="text-[13px] font-bold truncate" style={{ color: TONE.textPrimary }}>
+            {dep.title}
+          </h4>
+          {dep.parentTask && (
+            <button
+              onClick={() => onOpenParent(dep)}
+              className="text-[11px] inline-flex items-center gap-1 mt-0.5 hover:underline"
+              style={{ color: TONE.textSecondary }}
+              aria-label={`Open parent task ${dep.parentTask.title}`}
+            >
+              in parent task <span className="font-medium" style={{ color: TONE.textPrimary }}>{dep.parentTask.title}</span>
+              <ExternalLink size={10} />
+            </button>
+          )}
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px]" style={{ color: TONE.textSecondary }}>
+            <PersonInline label="Requested by" user={dep.requestedBy} />
+            <PersonInline label="Assigned to" user={dep.assignedTo} />
+          </div>
+
+          {dep.status === 'rejected' && dep.rejectionReason && (
+            <div
+              className="flex gap-2 mt-2 px-2.5 py-1.5 text-[11px]"
+              style={{ backgroundColor: '#FEE2E2', color: '#991B1B', borderRadius: 10 }}
+            >
+              <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="font-semibold">Rejected</p>
+                <p>{dep.rejectionReason}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <ActionBar
+          dep={dep}
+          isAssignee={isAssignee}
+          isRequester={isRequester}
+          onStatus={onStatus}
+          onCancel={onCancel}
+          onArchive={onArchive}
+          onReject={onReject}
+          onOpenParent={() => onOpenParent(dep)}
+          variant="compact"
         />
       </div>
     </motion.div>
   );
 }
 
-function PeopleRow({ dep }) {
-  // Build a list of distinct people with their role labels. requestedBy /
-  // assignedTo / originalAssigner can each be null when the underlying user
-  // was deleted (FK SET NULL); we still render the row label with an
-  // "(unavailable)" fallback so the chain reads correctly.
-  const people = [];
-  people.push({ key: 'requester',  label: 'Requested by',   user: dep.requestedBy });
-  people.push({ key: 'assignee',   label: 'Assigned to',    user: dep.assignedTo });
-  if (dep.parentTask?.assignee && dep.parentTask.assignee.id !== dep.requestedBy?.id) {
-    people.push({ key: 'parentOwner', label: 'Parent owner', user: dep.parentTask.assignee });
-  }
-  if (dep.originalAssigner && dep.originalAssigner.id !== dep.requestedBy?.id && dep.originalAssigner.id !== dep.parentTask?.assignee?.id) {
-    people.push({ key: 'orig', label: 'Originally assigned by', user: dep.originalAssigner });
+// ─── Action bar ─────────────────────────────────────────────────
+// Visibility rules preserved verbatim from the original (Phase 7 spec).
+function ActionBar({ dep, isAssignee, isRequester, onStatus, onCancel, onArchive, onReject, onOpenParent, variant = 'compact' }) {
+  const status = dep.status;
+  const buttons = [];
+
+  if (isAssignee && status === 'pending') {
+    buttons.push(
+      { key: 'accept', label: 'Accept',     icon: Check, onClick: () => onStatus(dep, 'accepted'),      kind: 'soft'    },
+      { key: 'start',  label: 'Start Work', icon: Play,  onClick: () => onStatus(dep, 'working_on_it'), kind: 'primary' },
+      { key: 'reject', label: 'Reject',     icon: X,     onClick: () => onReject(dep),                  kind: 'danger'  },
+    );
+  } else if (isAssignee && status === 'accepted') {
+    buttons.push(
+      { key: 'start',  label: 'Start Work', icon: Play,  onClick: () => onStatus(dep, 'working_on_it'), kind: 'primary' },
+      { key: 'done',   label: 'Mark Done',  icon: Check, onClick: () => onStatus(dep, 'done'),          kind: 'soft'    },
+      { key: 'reject', label: 'Reject',     icon: X,     onClick: () => onReject(dep),                  kind: 'danger'  },
+    );
+  } else if (isAssignee && status === 'working_on_it') {
+    buttons.push(
+      { key: 'done',   label: 'Mark Done', icon: Check, onClick: () => onStatus(dep, 'done'), kind: 'primary' },
+      { key: 'reject', label: 'Reject',    icon: X,     onClick: () => onReject(dep),         kind: 'danger'  },
+    );
   }
 
+  if (isRequester && ACTIVE_STATUSES.concat(['rejected']).includes(status)) {
+    buttons.push(
+      { key: 'cancel', label: 'Cancel', icon: Trash2, onClick: () => onCancel(dep), kind: 'danger' },
+    );
+  }
+
+  if (['done', 'cancelled', 'rejected'].includes(status) && !dep.archivedAt) {
+    buttons.push(
+      { key: 'archive', label: 'Archive', icon: Archive, onClick: () => onArchive(dep), kind: 'muted' },
+    );
+  }
+
+  buttons.push(
+    { key: 'parent', label: 'Open Parent', icon: ExternalLink, onClick: onOpenParent, kind: 'muted' },
+  );
+
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 mb-1 text-[11px]">
-      {people.map(p => (
-        <span key={p.key} className="flex items-center gap-1 text-gray-500">
-          <span className="text-gray-400">{p.label}</span>
-          {p.user ? (
-            <>
-              <Avatar name={p.user.name} size="xs" />
-              <span className="font-medium text-gray-700">{p.user.name}</span>
-            </>
-          ) : (
-            <span className="italic text-amber-600">unavailable</span>
-          )}
-        </span>
+    <div className={`flex items-center gap-2 flex-wrap ${variant === 'compact' ? 'lg:justify-end' : 'justify-end'}`}>
+      {buttons.map(b => (
+        <NeoButton key={b.key} kind={b.kind} onClick={b.onClick} icon={b.icon}>
+          {b.label}
+        </NeoButton>
       ))}
     </div>
   );
 }
 
-function ActionBar({ dep, isAssignee, isRequester, onStatus, onCancel, onArchive, onReject, onOpenParent }) {
-  const status = dep.status;
-
-  // Status-specific assignee actions (Phase 7 spec)
-  const buttons = [];
-  if (isAssignee && status === 'pending') {
-    buttons.push(
-      { key: 'accept', label: 'Accept',     icon: Check,  onClick: () => onStatus(dep, 'accepted'),       primary: false },
-      { key: 'start',  label: 'Start Work', icon: Play,   onClick: () => onStatus(dep, 'working_on_it'),  primary: true  },
-      { key: 'reject', label: 'Reject',     icon: X,      onClick: onReject,                              danger: true   },
-    );
-  } else if (isAssignee && status === 'accepted') {
-    buttons.push(
-      { key: 'start',  label: 'Start Work', icon: Play,   onClick: () => onStatus(dep, 'working_on_it'),  primary: true  },
-      { key: 'done',   label: 'Mark Done',  icon: Check,  onClick: () => onStatus(dep, 'done'),           primary: false },
-      { key: 'reject', label: 'Reject',     icon: X,      onClick: onReject,                              danger: true   },
-    );
-  } else if (isAssignee && status === 'working_on_it') {
-    buttons.push(
-      { key: 'done',   label: 'Mark Done', icon: Check, onClick: () => onStatus(dep, 'done'),           primary: true },
-      { key: 'reject', label: 'Reject',    icon: X,     onClick: onReject,                              danger: true  },
-    );
+// ─── Pill / button / person helpers ─────────────────────────────
+function NeoButton({ kind = 'soft', onClick, icon: Icon, children }) {
+  let style;
+  if (kind === 'primary') {
+    style = { backgroundColor: TONE.indigoDeep, color: TONE.onDark, boxShadow: SHADOW_BUTTON };
+  } else if (kind === 'danger') {
+    style = { backgroundColor: 'rgba(255,255,255,0.7)', color: TONE.coral, boxShadow: SHADOW_BUTTON };
+  } else if (kind === 'muted') {
+    style = { backgroundColor: TONE.pageBg, color: TONE.textSecondary, boxShadow: SHADOW_BUTTON };
+  } else {
+    // soft
+    style = { backgroundColor: 'rgba(255,255,255,0.8)', color: TONE.textPrimary, boxShadow: SHADOW_BUTTON };
   }
-
-  // Requester-side actions for active rows
-  if (isRequester && ACTIVE_STATUSES.concat(['rejected']).includes(status)) {
-    buttons.push(
-      { key: 'cancel', label: 'Cancel', icon: Trash2, onClick: () => onCancel(dep), danger: true },
-    );
-  }
-
-  // Closed-state actions: archive available to assignee/requester/manager
-  if (['done', 'cancelled', 'rejected'].includes(status) && !dep.archivedAt) {
-    buttons.push(
-      { key: 'archive', label: 'Archive', icon: Archive, onClick: () => onArchive(dep), muted: true },
-    );
-  }
-
-  // Always-available: open parent
-  buttons.push(
-    { key: 'parent', label: 'Open Parent', icon: ExternalLink, onClick: onOpenParent, muted: true },
-  );
-
   return (
-    <div className="flex items-center gap-1.5 flex-wrap justify-end">
-      {buttons.map(b => {
-        const Icon = b.icon;
-        const cls = b.primary
-          ? 'bg-emerald-500 text-white hover:bg-emerald-600'
-          : b.danger
-            ? 'bg-red-50 text-red-600 hover:bg-red-100 border border-red-100'
-            : b.muted
-              ? 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-              : 'bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100';
-        return (
-          <button
-            key={b.key}
-            onClick={b.onClick}
-            className={`flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium rounded-md transition-colors ${cls}`}
-          >
-            <Icon size={11} /> {b.label}
-          </button>
-        );
-      })}
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold transition-transform duration-150 hover:-translate-y-px active:translate-y-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+      style={{ ...style, borderRadius: 12 }}
+    >
+      {Icon ? <Icon size={11} /> : null}
+      <span>{children}</span>
+    </button>
+  );
+}
+
+function StatusPill({ status, compact = false }) {
+  const s = STATUS_BADGES[status] || STATUS_BADGES.pending;
+  return (
+    <span
+      className={`inline-flex items-center font-semibold uppercase tracking-wide ${
+        compact ? 'text-[9px] px-1.5 py-0.5' : 'text-[10px] px-2 py-0.5'
+      }`}
+      style={{ backgroundColor: s.bg, color: s.fg, borderRadius: 999 }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+function PriorityPill({ priority, compact = false }) {
+  const p = PRIORITY_BADGES[priority] || PRIORITY_BADGES.medium;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 font-semibold uppercase tracking-wide ${
+        compact ? 'text-[9px] px-1.5 py-0.5' : 'text-[10px] px-2 py-0.5'
+      }`}
+      style={{ backgroundColor: 'rgba(255,255,255,0.7)', color: p.fg, borderRadius: 999 }}
+    >
+      <Flag size={compact ? 8 : 9} /> {p.label}
+    </span>
+  );
+}
+
+function BoardPill({ name, color, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 transition-transform hover:-translate-y-px max-w-[180px]"
+      style={{ backgroundColor: 'rgba(255,255,255,0.7)', color: TONE.textPrimary, borderRadius: 999 }}
+      aria-label={`Open board ${name}`}
+    >
+      <span className="w-1.5 h-1.5 flex-shrink-0" style={{ backgroundColor: color || TONE.indigo, borderRadius: 2 }} />
+      <span className="truncate">{name}</span>
+    </button>
+  );
+}
+
+function PersonBlock({ label, user, small = false, highlightIfSelf }) {
+  const isSelf = user?.id && highlightIfSelf && user.id === highlightIfSelf;
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <Avatar name={user?.name || '?'} image={user?.avatar} size={small ? 'xs' : 'sm'} />
+      <div className="min-w-0">
+        <p className="text-[9px] uppercase tracking-wide font-semibold" style={{ color: TONE.textMuted }}>{label}</p>
+        <p className="text-[12px] sm:text-[13px] font-semibold truncate" style={{ color: TONE.textPrimary }}>
+          {user?.name || <span className="italic" style={{ color: TONE.amberText }}>unavailable</span>}
+          {isSelf && user?.name && <span className="ml-1 font-normal" style={{ color: TONE.textMuted }}>(you)</span>}
+        </p>
+      </div>
     </div>
   );
 }
 
-// ─── Empty state ───────────────────────────────────────────────
+function PersonInline({ label, user }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span style={{ color: TONE.textMuted }}>{label}</span>
+      {user ? (
+        <>
+          <Avatar name={user.name} image={user.avatar} size="xs" />
+          <span className="font-medium" style={{ color: TONE.textPrimary }}>{user.name}</span>
+        </>
+      ) : (
+        <span className="italic" style={{ color: TONE.amberText }}>unavailable</span>
+      )}
+    </span>
+  );
+}
+
+// ─── Stats row ──────────────────────────────────────────────────
+function StatsRow({ stats }) {
+  const tiles = [
+    { key: 'active',    label: 'Active',           value: stats.active,    accent: TONE.indigo },
+    { key: 'dueSoon',   label: 'Due Soon',         value: stats.dueSoon,   accent: TONE.amber  },
+    { key: 'completed', label: 'Completed',        value: stats.completed, accent: TONE.mint   },
+    { key: 'rejected',  label: 'Rejected / Canc.', value: stats.rejected,  accent: TONE.coral  },
+  ];
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+      {tiles.map(tile => <StatTile key={tile.key} {...tile} />)}
+    </div>
+  );
+}
+
+function StatTile({ label, value, accent }) {
+  return (
+    <div
+      className="px-3.5 py-3 sm:px-4 sm:py-3.5"
+      style={{ backgroundColor: TONE.pageBg, borderRadius: 16, boxShadow: SHADOW_RAISED }}
+    >
+      <p
+        className="text-[10px] uppercase tracking-wide font-semibold mb-1"
+        style={{ color: TONE.textMuted }}
+      >
+        {label}
+      </p>
+      <p
+        className="text-xl sm:text-2xl font-bold leading-tight"
+        style={{ color: TONE.textPrimary, letterSpacing: '-0.02em' }}
+      >
+        {value}
+      </p>
+      <span
+        className="inline-block w-6 h-0.5 mt-1.5"
+        style={{ backgroundColor: accent, opacity: 0.55, borderRadius: 999 }}
+      />
+    </div>
+  );
+}
+
+// ─── Loading / error / empty ────────────────────────────────────
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:gap-4 lg:grid-cols-3">
+        <div
+          className="h-44 lg:col-span-2 animate-pulse"
+          style={{ background: HERO_GRADIENT, opacity: 0.5, borderRadius: 20, boxShadow: SHADOW_RAISED }}
+          aria-hidden="true"
+        />
+        <div
+          className="h-44 animate-pulse"
+          style={{ background: SECONDARY_GRADIENT, opacity: 0.5, borderRadius: 20, boxShadow: SHADOW_RAISED }}
+          aria-hidden="true"
+        />
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        {[1, 2, 3, 4].map(i => (
+          <div
+            key={i}
+            className="h-[88px] animate-pulse"
+            style={{ backgroundColor: TONE.pageBg, borderRadius: 16, boxShadow: SHADOW_RAISED }}
+            aria-hidden="true"
+          />
+        ))}
+      </div>
+      <div className="space-y-2.5">
+        {[1, 2].map(i => (
+          <div
+            key={i}
+            className="h-[76px] animate-pulse"
+            style={{ backgroundColor: TONE.pageBg, borderRadius: 16, boxShadow: SHADOW_RAISED }}
+            aria-hidden="true"
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorState({ onRetry }) {
+  return (
+    <div
+      className="text-center py-10 px-6"
+      style={{ backgroundColor: TONE.pageBg, borderRadius: 18, boxShadow: SHADOW_PRESSED }}
+    >
+      <div
+        className="w-12 h-12 mx-auto mb-3 flex items-center justify-center"
+        style={{ background: HERO_GRADIENT, boxShadow: SHADOW_BUTTON, borderRadius: 999 }}
+        aria-hidden="true"
+      >
+        <AlertCircle size={20} style={{ color: TONE.coral }} />
+      </div>
+      <p className="text-[13px] font-semibold mb-1" style={{ color: TONE.textPrimary }}>
+        Could not load dependencies.
+      </p>
+      <p className="text-[12px] mb-3" style={{ color: TONE.textSecondary }}>
+        Check your connection and try again.
+      </p>
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-semibold"
+        style={{ backgroundColor: TONE.indigoDeep, color: TONE.onDark, borderRadius: 12, boxShadow: SHADOW_BUTTON }}
+      >
+        <RefreshCw size={11} /> Retry
+      </button>
+    </div>
+  );
+}
+
 function EmptyState({ tab, hasSearch }) {
   if (hasSearch) {
     return (
-      <div className="text-center py-16 bg-gray-50 rounded-xl">
-        <Search size={28} className="text-gray-200 mx-auto mb-3" />
-        <p className="text-sm text-gray-500">No matches.</p>
+      <div
+        className="text-center py-10 px-6"
+        style={{ backgroundColor: TONE.pageBg, borderRadius: 18, boxShadow: SHADOW_PRESSED }}
+      >
+        <div
+          className="w-12 h-12 mx-auto mb-3 flex items-center justify-center"
+          style={{ backgroundColor: TONE.pageBg, boxShadow: SHADOW_RAISED, borderRadius: 999 }}
+          aria-hidden="true"
+        >
+          <Search size={18} style={{ color: TONE.textMuted }} />
+        </div>
+        <p className="text-[13px] font-semibold" style={{ color: TONE.textPrimary }}>No matches.</p>
+        <p className="text-[12px] mt-1" style={{ color: TONE.textSecondary }}>Try a different search term.</p>
       </div>
     );
   }
   const copy = {
-    assigned:  { title: 'No dependency requests assigned to you.',   sub: 'When teammates need work from you to unblock their tasks, requests will appear here.' },
-    created:   { title: 'You have not requested dependency work yet.', sub: 'Open a task and click "Add Dependency" to request blocker work from a teammate.' },
-    completed: { title: 'No completed dependencies yet.',              sub: 'Finished dependency work — yours or work you requested — will be archived here.' },
-    rejected:  { title: 'Nothing rejected or cancelled.',              sub: 'Dependency requests that were rejected or cancelled will be listed here.' },
+    assigned:  { title: 'All clear',                       sub: 'When teammates need work from you to unblock their tasks, requests will appear here.' },
+    created:   { title: 'Nothing requested yet',           sub: 'Open a task and click "Add Dependency" to request blocker work from a teammate.' },
+    completed: { title: 'No completed dependencies yet',   sub: 'Finished dependency work — yours or work you requested — will appear here.' },
+    rejected:  { title: 'Nothing rejected or cancelled',   sub: 'Dependency requests that were rejected or cancelled will be listed here.' },
   }[tab] || { title: 'Nothing here.', sub: '' };
   return (
-    <div className="text-center py-16 bg-gray-50 rounded-xl">
-      <Link2 size={28} className="text-gray-200 mx-auto mb-3" />
-      <p className="text-sm text-gray-700 font-medium mb-1">{copy.title}</p>
-      <p className="text-[12px] text-gray-400 max-w-sm mx-auto">{copy.sub}</p>
+    <div
+      className="text-center py-10 px-6"
+      style={{ backgroundColor: TONE.pageBg, borderRadius: 18, boxShadow: SHADOW_PRESSED }}
+    >
+      <div
+        className="w-14 h-14 mx-auto mb-3 flex items-center justify-center"
+        style={{ background: HERO_GRADIENT, boxShadow: SHADOW_BUTTON, borderRadius: 999 }}
+        aria-hidden="true"
+      >
+        <Link2 size={20} style={{ color: TONE.indigo }} />
+      </div>
+      <p className="text-[14px] font-bold mb-1" style={{ color: TONE.textPrimary }}>{copy.title}</p>
+      <p className="text-[12px] max-w-sm mx-auto" style={{ color: TONE.textSecondary }}>{copy.sub}</p>
     </div>
   );
 }
 
-// ─── Helpers ───────────────────────────────────────────────────
+// ─── Pure helpers ───────────────────────────────────────────────
 function dedupe(rows) {
   const seen = new Set();
   return rows.filter(r => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+}
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function dueLabel(dep) {
+  if (!dep?.dueDate) return null;
+  const due = startOfDay(new Date(dep.dueDate));
+  const now = startOfDay(new Date());
+  const days = Math.round((due - now) / 86_400_000);
+  const isActive = ACTIVE_STATUSES.includes(dep.status);
+  if (days < 0) {
+    if (isActive) return { label: `${Math.abs(days)}d overdue`, overdue: true };
+    return { label: String(dep.dueDate).slice(0, 10), overdue: false };
+  }
+  if (days === 0) return { label: 'Today',     overdue: false };
+  if (days === 1) return { label: '1d left',   overdue: false };
+  return            { label: `${days}d left`, overdue: false };
 }
 
 function formatRelative(iso) {

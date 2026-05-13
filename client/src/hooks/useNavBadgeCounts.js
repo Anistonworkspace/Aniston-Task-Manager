@@ -2,6 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
+import useDebouncedCallback from '../hooks/useDebouncedCallback';
+
+// Debounce window for badge refetches. Storm-mitigation (May 2026):
+// when many notifications arrive within a short window the underlying
+// counts only change once at the end — refetching once after the burst
+// settles is enough. 500ms is well above the typical inter-event gap of
+// a single cron tick (~50–100ms in practice) and short enough that an
+// isolated update still feels real-time.
+const BADGE_REFETCH_DEBOUNCE_MS = 500;
 
 // Shared hooks for the two global navigation badges:
 //
@@ -48,7 +57,10 @@ export function useApprovalsBadgeCount() {
   }
 
   useAuthGated(load);
-  useRealtimeQuery({ queryKey: 'approvals.pendingCounts', refetch: load });
+  // The realtime hook registers the debounced wrapper — bursts of
+  // notification:new collapse to one refetch instead of N.
+  const debouncedLoad = useDebouncedCallback(load, BADGE_REFETCH_DEBOUNCE_MS);
+  useRealtimeQuery({ queryKey: 'approvals.pendingCounts', refetch: debouncedLoad });
 
   return count;
 }
@@ -70,7 +82,8 @@ export function useDependenciesBadgeCount() {
   }
 
   useAuthGated(load);
-  useRealtimeQuery({ queryKey: 'dependencies.assignedActiveCount', refetch: load });
+  const debouncedLoad = useDebouncedCallback(load, BADGE_REFETCH_DEBOUNCE_MS);
+  useRealtimeQuery({ queryKey: 'dependencies.assignedActiveCount', refetch: debouncedLoad });
 
   return count;
 }

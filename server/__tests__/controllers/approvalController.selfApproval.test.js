@@ -44,6 +44,14 @@ jest.mock('../../services/approvalChainService', () => ({
 }));
 jest.mock('../../services/approvalNotificationService', () => ({}));
 
+// Phase B — approve/rejectTask now have granular tasks.approve_completion /
+// tasks.reject_completion gates. These tests cover the self-approval
+// guard, not the permission gate; mock permissionGate to allow.
+jest.mock('../../utils/permissionGate', () => ({
+  denyIfNoPermission: jest.fn(async () => false),
+  checkPermission: jest.fn(async () => true),
+}));
+
 const { sequelize, Task, TaskApprovalFlow } = require('../../models');
 const approvalController = require('../../controllers/approvalController');
 

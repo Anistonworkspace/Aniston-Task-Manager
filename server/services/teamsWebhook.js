@@ -1,4 +1,8 @@
 const axios = require('axios');
+// safeLogger redacts any token/URL fragments that an Axios error from a
+// failed webhook POST might leak (the webhook URL itself contains a
+// per-channel secret token).
+const safeLogger = require('../utils/safeLogger');
 
 const WEBHOOK_URL = process.env.TEAMS_WEBHOOK_URL;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
@@ -17,7 +21,7 @@ const sendCard = async (card) => {
       timeout: 5000,
     });
   } catch (error) {
-    console.error('[TeamsWebhook] Failed to send card:', error.message);
+    safeLogger.error('[TeamsWebhook] Failed to send card', { err: error });
   }
 };
 

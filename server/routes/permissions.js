@@ -12,6 +12,7 @@ const {
   getTemplates,
   applyTemplate,
   getMetadata,
+  getCatalog,
   getBasePermissionsForRole,
   getPermissionHistory,
 } = require('../controllers/permissionController');
@@ -21,6 +22,10 @@ const router = express.Router();
 // Static routes must be before /:id patterns
 router.get('/my-grants', authenticate, getMyGrants);
 router.get('/metadata', authenticate, getMetadata);
+// Canonical permission catalog (Phase 6). Manager/admin only — used by the
+// Permission Overrides UI to populate resources, actions, and grantability
+// flags. Members do not need this and may not introspect the override surface.
+router.get('/catalog', authenticate, managerOrAdmin, getCatalog);
 router.get('/base-permissions/:role', authenticate, getBasePermissionsForRole);
 router.get('/templates', authenticate, getTemplates);
 
@@ -55,7 +60,20 @@ router.get('/effective/:userId', authenticate, (req, res, next) => {
     message: 'You may only view your own effective permissions.',
   });
 }, getEffective);
-router.get('/history/:userId', authenticate, managerOrAdmin, getPermissionHistory);
+// Phase 6 — Permission history is restricted to SELF or Tier 1. Previously
+// any Tier-2 user could read any other Tier-2's permission-modification
+// timeline (recon disclosure across peer admins). The change matches the
+// org-wide privacy expectation that override history is sensitive metadata.
+router.get('/history/:userId', authenticate, (req, res, next) => {
+  const { hasTierAtLeast } = require('../config/tiers');
+  if (req.params.userId === req.user.id || hasTierAtLeast(req.user, 1)) {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    message: 'Only Tier 1 (or the user themselves) may view permission history.',
+  });
+}, getPermissionHistory);
 
 router.delete('/:id', authenticate, managerOrAdmin, revokePermission);
 

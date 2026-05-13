@@ -1,30 +1,95 @@
-import React, { useState, useMemo } from 'react';
-import { addDays, subDays, format, differenceInDays, parseISO, startOfWeek, eachDayOfInterval, isWeekend, isToday } from 'date-fns';
+import React, { useState, useMemo, useCallback } from 'react';
+import { addDays, subDays, format, differenceInDays, parseISO, startOfWeek, eachDayOfInterval, isWeekend, isToday, isSameDay } from 'date-fns';
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
 import { STATUS_CONFIG } from '../../utils/constants';
 import { useT } from '../../context/LanguageContext';
 
+// startOfWeek defaults are environment-dependent — pin to Sunday so the header
+// matches the day grid (also matches how the screenshots render).
+const WEEK_OPTS = { weekStartsOn: 0 };
+
 export default function TimelineView({ tasks = [], members = [], onTaskClick }) {
   const t = useT();
-  const [startDate, setStartDate] = useState(startOfWeek(new Date()));
+  const [startDate, setStartDate] = useState(() => startOfWeek(new Date(), WEEK_OPTS));
   const [daysToShow, setDaysToShow] = useState(14);
 
-  const timelineTasks = useMemo(() => tasks.filter(t => t.startDate || t.dueDate), [tasks]);
+  // Only show tasks that have at least a due date (or start date). A task
+  // with neither has no place on a timeline.
+  const timelineTasks = useMemo(() => tasks.filter(tk => tk.startDate || tk.dueDate), [tasks]);
   const endDate = addDays(startDate, daysToShow - 1);
-  const days = eachDayOfInterval({ start: startDate, end: endDate });
+  const days = useMemo(() => eachDayOfInterval({ start: startDate, end: endDate }), [startDate, endDate]);
   const dayWidth = 60;
 
-  function getBarStyle(task) {
-    const taskStart = task.startDate ? parseISO(task.startDate) : task.dueDate ? subDays(parseISO(task.dueDate), 2) : startDate;
-    const taskEnd = task.dueDate ? parseISO(task.dueDate) : addDays(taskStart, 2);
+  // Bar geometry.
+  //
+  // Rules (matching the user's spec):
+  //   • due date only, no start date  →  single-day bar on the due date.
+  //   • start date only, no due date  →  single-day bar on the start date.
+  //   • both                          →  span from start → due (inclusive).
+  //   • start > due (data drift)      →  treat as single-day on due.
+  //
+  // The old implementation synthesized an artificial 3-day window
+  // (`subDays(dueDate, 2)`) when no start date existed, which is why a task
+  // with only a due date of May 15 was rendering as a May 13 → May 15 bar.
+  const getBarStyle = useCallback((task) => {
+    const hasStart = !!task.startDate;
+    const hasDue = !!task.dueDate;
+    if (!hasStart && !hasDue) return null;
+
+    const startISO = hasStart ? parseISO(task.startDate) : null;
+    const dueISO = hasDue ? parseISO(task.dueDate) : null;
+
+    let taskStart;
+    let taskEnd;
+    if (hasStart && hasDue) {
+      // If the data is inverted (start after due), collapse to a single-day
+      // bar on the due date rather than rendering a negative-width slab.
+      if (startISO.getTime() > dueISO.getTime()) {
+        taskStart = dueISO;
+        taskEnd = dueISO;
+      } else {
+        taskStart = startISO;
+        taskEnd = dueISO;
+      }
+    } else if (hasDue) {
+      taskStart = dueISO;
+      taskEnd = dueISO;
+    } else {
+      taskStart = startISO;
+      taskEnd = startISO;
+    }
+
     const offsetDays = differenceInDays(taskStart, startDate);
     const duration = Math.max(differenceInDays(taskEnd, taskStart) + 1, 1);
     const left = offsetDays * dayWidth;
     const width = duration * dayWidth;
-    if (left + width < 0 || left > daysToShow * dayWidth) return null;
+    // Clip bars that fall entirely outside the visible window.
+    if (left + width <= 0 || left >= daysToShow * dayWidth) return null;
+
     const cfg = STATUS_CONFIG[task.status] || STATUS_CONFIG.not_started;
-    return { left: Math.max(left, 0), width: Math.min(width, daysToShow * dayWidth - Math.max(left, 0)), color: cfg.bgColor || cfg.color };
-  }
+    const visibleLeft = Math.max(left, 0);
+    const visibleWidth = Math.min(left + width, daysToShow * dayWidth) - visibleLeft;
+    return {
+      left: visibleLeft,
+      width: Math.max(visibleWidth, dayWidth - 8),
+      color: cfg.bgColor || cfg.color,
+      singleDay: duration === 1,
+    };
+  }, [startDate, daysToShow]);
+
+  // Navigation handlers — derived from current startDate so prev/next reliably
+  // shift the visible window. Today resets to the current week's start. We
+  // pass an updater function so the most recent state is used even if the
+  // user presses the button repeatedly in quick succession.
+  const goPrev = useCallback(() => setStartDate(prev => subDays(prev, 7)), []);
+  const goNext = useCallback(() => setStartDate(prev => addDays(prev, 7)), []);
+  const goToday = useCallback(() => setStartDate(startOfWeek(new Date(), WEEK_OPTS)), []);
+
+  // The visible window is "showing today" only when one of the rendered day
+  // columns is the real calendar today — used to style the Today button so
+  // the user can tell when they're on the current period vs. having
+  // navigated away.
+  const viewingToday = days.some(d => isSameDay(d, new Date()));
 
   return (
     <div className="h-full flex flex-col">
@@ -34,12 +99,18 @@ export default function TimelineView({ tasks = [], members = [], onTaskClick }) 
           {format(startDate, 'MMM d')} – {format(endDate, 'MMM d, yyyy')}
         </span>
         <div className="flex items-center gap-1 ml-auto">
-          <button onClick={() => setStartDate(subDays(startDate, 7))} className="btn-ghost p-1.5"><ChevronLeft size={15} /></button>
-          <button onClick={() => setStartDate(startOfWeek(new Date()))} className="btn-ghost text-xs px-3 py-1">{t('task.today')}</button>
-          <button onClick={() => setStartDate(addDays(startDate, 7))} className="btn-ghost p-1.5"><ChevronRight size={15} /></button>
+          <button onClick={goPrev} className="btn-ghost p-1.5" aria-label="Previous period"><ChevronLeft size={15} /></button>
+          <button
+            onClick={goToday}
+            className={`btn-ghost text-xs px-3 py-1 ${viewingToday ? 'bg-primary-50 text-primary-600 font-semibold' : ''}`}
+            aria-pressed={viewingToday}
+          >
+            {t('task.today')}
+          </button>
+          <button onClick={goNext} className="btn-ghost p-1.5" aria-label="Next period"><ChevronRight size={15} /></button>
           <div className="h-4 w-px bg-border mx-1" />
-          <button onClick={() => setDaysToShow(Math.min(daysToShow + 7, 28))} className="btn-ghost p-1.5" title="Zoom out"><ZoomOut size={15} /></button>
-          <button onClick={() => setDaysToShow(Math.max(daysToShow - 7, 7))} className="btn-ghost p-1.5" title="Zoom in"><ZoomIn size={15} /></button>
+          <button onClick={() => setDaysToShow(d => Math.min(d + 7, 28))} className="btn-ghost p-1.5" title="Zoom out"><ZoomOut size={15} /></button>
+          <button onClick={() => setDaysToShow(d => Math.max(d - 7, 7))} className="btn-ghost p-1.5" title="Zoom in"><ZoomIn size={15} /></button>
         </div>
       </div>
 
@@ -81,8 +152,9 @@ export default function TimelineView({ tasks = [], members = [], onTaskClick }) 
                     <p className="text-sm font-medium text-text-primary truncate group-hover:text-primary-600 transition-colors">{task.title}</p>
                     <p className="text-[10px] text-text-muted mt-0.5">
                       {task.startDate ? format(parseISO(task.startDate), 'MMM d') : ''}
-                      {task.startDate && task.dueDate ? ' → ' : ''}
-                      {task.dueDate ? format(parseISO(task.dueDate), 'MMM d') : ''}
+                      {task.startDate && task.dueDate && task.startDate !== task.dueDate ? ' → ' : ''}
+                      {task.dueDate && task.dueDate !== task.startDate ? format(parseISO(task.dueDate), 'MMM d') : ''}
+                      {!task.startDate && task.dueDate ? format(parseISO(task.dueDate), 'MMM d') : ''}
                       {assignee && ` · ${assignee.name}`}
                     </p>
                   </div>
@@ -93,11 +165,17 @@ export default function TimelineView({ tasks = [], members = [], onTaskClick }) 
                         <div key={i} className={`border-r border-border/30 h-full ${isWeekend(day) ? 'bg-surface-50/50' : ''} ${isToday(day) ? 'bg-primary-50/30' : ''}`} style={{ width: dayWidth }} />
                       ))}
                     </div>
-                    {/* Bar */}
+                    {/* Bar — always render the title; `truncate` handles narrow
+                        widths (single-day bars are exactly one column wide,
+                        which the previous `bar.width > 60` guard treated as
+                        "too narrow" and rendered as a blank pill). */}
                     {bar && (
-                      <div className="absolute top-2.5 h-7 rounded-md flex items-center px-2 text-white text-[11px] font-medium truncate shadow-sm hover:shadow-md transition-shadow"
-                        style={{ left: bar.left, width: Math.max(bar.width, 30), backgroundColor: bar.color }}>
-                        {bar.width > 80 && task.title}
+                      <div
+                        className="absolute top-2.5 h-7 rounded-md flex items-center px-2 text-white text-[11px] font-medium shadow-sm hover:shadow-md transition-shadow overflow-hidden"
+                        style={{ left: bar.left, width: bar.width, backgroundColor: bar.color }}
+                        title={task.title}
+                      >
+                        <span className="truncate">{task.title}</span>
                       </div>
                     )}
                   </div>

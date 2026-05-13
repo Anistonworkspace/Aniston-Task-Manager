@@ -1,8 +1,23 @@
 /**
- * Deadline Reminder Cron Job
+ * Deadline / Task-Reminder Cron Job
  *
- * Runs every 15 minutes to process pending deadline reminders.
- * Uses the existing node-cron package already in the project.
+ * Runs every minute and processes any pending TaskReminder row whose
+ * `scheduledFor <= now`.
+ *
+ * Why every minute (not every 15 minutes):
+ *   The legacy schedule was the every-fifteen-minutes cron expression
+ *   ("slash-15 star star star star") because the only callers were the
+ *   auto-scheduled 2-day / 2-hour deadline reminders — 15-minute
+ *   precision was plenty for "2 days before the deadline". Phase 5 added
+ *   user-set custom reminders ("remind me at 5:13 PM"), and a 15-minute
+ *   tick means those fire up to 14 minutes late — users perceive this
+ *   as "the reminder never came". One-minute granularity puts the worst
+ *   case at ~60 s late, which feels prompt.
+ *
+ *   Cost: the WHERE clause is backed by the partial index
+ *   "idx_task_reminder_pending (scheduledFor) WHERE sentAt IS NULL AND
+ *   cancelled = false", so each empty tick is a single index probe.
+ *   processReminders also caps the batch at 200 rows.
  */
 
 const cron = require('node-cron');
@@ -20,8 +35,8 @@ const { withCronLock } = require('./cronLock');
  *      is sent at most once.
  */
 function startDeadlineReminderJob() {
-  // Every 15 minutes: */15 * * * *
-  cron.schedule('*/15 * * * *', async () => {
+  // Every minute: * * * * *  (was */15 * * * * — see header comment)
+  cron.schedule('* * * * *', async () => {
     try {
       await withCronLock('deadlineReminderJob', processReminders);
     } catch (err) {
@@ -29,7 +44,7 @@ function startDeadlineReminderJob() {
     }
   });
 
-  console.log('[DeadlineReminder] Cron job started (every 15 minutes)');
+  console.log('[DeadlineReminder] Cron job started (every minute)');
 }
 
 module.exports = { startDeadlineReminderJob };

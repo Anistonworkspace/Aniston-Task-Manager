@@ -3,6 +3,7 @@
  * Handles browser push permission, VAPID subscription, and local notifications.
  */
 import api from './api';
+import safeLog from '../utils/safeLog';
 
 export function isPushSupported() {
   return 'Notification' in window && 'serviceWorker' in navigator;
@@ -43,7 +44,7 @@ export async function requestPushPermission() {
  */
 export async function subscribeToPush() {
   if (!isPushSupported()) {
-    console.warn('[Push] subscribeToPush: browser does not support Notification + ServiceWorker.');
+    safeLog.warn('[Push] subscribeToPush: browser does not support Notification + ServiceWorker.');
     return { ok: false, reason: 'unsupported' };
   }
   if (Notification.permission !== 'granted') {
@@ -56,7 +57,7 @@ export async function subscribeToPush() {
     const keyRes = await api.get('/push/vapid-key');
     const { publicKey, configured } = keyRes.data?.data || keyRes.data || {};
     if (!configured || !publicKey) {
-      console.error(
+      safeLog.error(
         '[Push] subscribeToPush: backend reports VAPID NOT configured. '
         + 'Set VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY in server/.env. '
         + 'In-app toasts will work; OS notifications will not.'
@@ -69,7 +70,7 @@ export async function subscribeToPush() {
     try {
       registration = await navigator.serviceWorker.ready;
     } catch (err) {
-      console.warn('[Push] subscribeToPush: service worker not ready:', err?.message);
+      safeLog.warn('[Push] subscribeToPush: service worker not ready', err);
       return { ok: false, reason: 'sw-not-ready' };
     }
 
@@ -84,7 +85,7 @@ export async function subscribeToPush() {
       if (existingKey) {
         const existingB64 = uint8ArrayToBase64Url(new Uint8Array(existingKey));
         if (existingB64 !== normalizeBase64(publicKey)) {
-          console.warn(
+          safeLog.warn(
             '[Push] Existing subscription was created against a different VAPID '
             + 'public key. Unsubscribing and re-subscribing so backend pushes deliver.'
           );
@@ -103,7 +104,7 @@ export async function subscribeToPush() {
           applicationServerKey,
         });
       } catch (err) {
-        console.warn('[Push] PushManager.subscribe failed:', err?.message);
+        safeLog.warn('[Push] PushManager.subscribe failed', err);
         return { ok: false, reason: 'subscribe-failed' };
       }
     }
@@ -112,7 +113,7 @@ export async function subscribeToPush() {
     try {
       await api.post('/push/subscribe', { subscription: subscription.toJSON() });
     } catch (err) {
-      console.warn('[Push] Saving subscription on backend failed:', err?.message);
+      safeLog.warn('[Push] Saving subscription on backend failed', err);
       return { ok: false, reason: 'save-failed' };
     }
 
@@ -122,7 +123,7 @@ export async function subscribeToPush() {
     );
     return { ok: true, endpoint: subscription.endpoint };
   } catch (err) {
-    console.warn('[Push] subscribeToPush unexpected error:', err?.message);
+    safeLog.warn('[Push] subscribeToPush unexpected error', err);
     return { ok: false, reason: 'unknown' };
   }
 }
@@ -172,58 +173,102 @@ export async function unsubscribeFromPush() {
     try { await sub.unsubscribe(); } catch { /* best-effort */ }
     return endpoint;
   } catch (err) {
-    console.warn('[Push] unsubscribeFromPush failed:', err.message);
+    safeLog.warn('[Push] unsubscribeFromPush failed', err);
     return null;
   }
 }
 
 /**
- * Show a local OS notification — safety-net for events whose backend Web
- * Push didn't fire (e.g. VAPID misconfigured in dev). The caller is the
- * Header's `notification:new` listener; the SAFE guards live here so any
- * future caller automatically gets the same behaviour:
+ * Show a local OS notification.
  *
- *   - Permission must be 'granted'.
- *   - The page must be HIDDEN (document.hidden=true) OR document must
- *     not have focus. A focused tab uses the in-app toast as the visible
- *     surface; doubling up with an OS notification is the duplicate the
- *     user explicitly does not want.
- *   - Caller MUST pass a stable `options.tag` (typically `notif-<id>`) so
- *     when the SW push ALSO fires for the same logical event, browsers
- *     tag-collapse the two into a single OS-tray entry.
+ * Caller is the Header's `notification:new` listener (after the leading-edge
+ * burst dispatcher). The guards in this helper are the single safe place
+ * to enforce policy so any future caller inherits the same behaviour:
  *
- * Two render paths:
- *   - Preferred: SW.showNotification (works on every modern browser, plays
- *     nicely with our existing notificationclick handler).
- *   - Fallback: `new Notification()` for the rare browser without an
- *     active service worker registration.
+ *   - Permission must be 'granted'. Anything else → silent no-op.
+ *   - Notification API must exist (`typeof Notification !== 'undefined'`)
+ *     — guards iOS Safari < 16 + headless test environments.
+ *   - Caller MUST pass a stable `options.tag` (typically `notif-<id>`).
+ *     This is the dedup with the backend SW push: when both paths fire
+ *     for the same logical event, browsers tag-collapse them into one
+ *     OS-tray entry. `renotify: false` (set below) means the second call
+ *     silently updates the first without re-popping.
+ *
+ * Focus policy (May 2026):
+ *   We ALWAYS attempt showNotification regardless of tab focus. Users
+ *   expect Slack/Teams-style behaviour where the OS card surfaces even
+ *   when the app is open (peripheral-vision alerting + OS notification
+ *   centre history). Tag-collapse prevents duplicates with the SW push.
+ *
+ * SW-vs-fallback selection (May 2026 follow-up fix):
+ *   The previous version branched on `navigator.serviceWorker.ready` —
+ *   but `.ready` is a Promise that is ALWAYS truthy. In dev (where
+ *   client/src/main.jsx intentionally never registers a service worker
+ *   to avoid fighting Vite HMR) the SW never activates, so `.ready`
+ *   never resolves, the `.then` never fires, and the `new Notification`
+ *   fallback was never reached. Foreground OS notifications were
+ *   silently impossible.
+ *
+ *   Correct gate: `navigator.serviceWorker.controller` is the boolean
+ *   "is an active SW currently controlling this page?". When false we
+ *   go straight to the `new Notification(...)` constructor — which works
+ *   on every modern browser when permission is granted, no SW required.
+ *
+ *   We also race `.ready` against a defensive timeout so a registered-
+ *   but-stalled SW (rare; happens during install) can't hang the call
+ *   forever; if `.ready` hasn't resolved in 800ms we fall back too.
+ *
+ * Two render paths (in order):
+ *   1. SW.showNotification — preferred when controller is active. Plays
+ *      nicely with the existing notificationclick handler in sw.js.
+ *   2. `new Notification()` — used in dev, on first-page-load before SW
+ *      activation, and as the safety net for any SW-path failure.
  */
-export function showLocalNotification(title, options = {}) {
+export async function showLocalNotification(title, options = {}) {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
-  // Hidden-only guard — a focused/visible tab gets the in-app toast and
-  // doesn't need an OS notification competing for attention.
-  const hidden = (typeof document !== 'undefined') && (document.hidden || !document.hasFocus());
-  if (!hidden) return;
 
   const tag = options.tag || `aniston-${Date.now()}`;
   const body = options.body || '';
   const url = options.url || '/';
   const icon = options.icon || '/icons/anistonlogo.png';
   const badge = options.badge || '/icons/anistonlogo.png';
+  const swOpts = {
+    body, icon, badge, tag,
+    renotify: false,
+    data: { url, notificationId: options.notificationId || null },
+  };
 
-  // Prefer SW path so the existing notificationclick handler in sw.js
-  // (which knows how to focus an open tab and route via React Router)
-  // handles the click. Tag-collapse with backend Web Push happens
-  // automatically when both fire with the same tag.
-  if (navigator.serviceWorker && navigator.serviceWorker.ready) {
-    navigator.serviceWorker.ready
-      .then((reg) => reg.showNotification(title, {
-        body, icon, badge, tag, renotify: false, data: { url, notificationId: options.notificationId || null },
-      }))
-      .catch(() => fallbackNewNotification(title, { body, icon, badge, tag, url }));
-    return;
+  // SW path — only attempted when an active controller is present. This
+  // is the only reliable signal that `ready` will resolve in finite
+  // time. Dev (no SW registered) goes straight to the fallback below.
+  if (
+    typeof navigator !== 'undefined'
+    && navigator.serviceWorker
+    && navigator.serviceWorker.controller
+  ) {
+    try {
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('sw-ready-timeout')), 800)
+        ),
+      ]);
+      if (reg && typeof reg.showNotification === 'function') {
+        await reg.showNotification(title, swOpts);
+        return; // SW path succeeded — backend SW push (same tag) collapses.
+      }
+    } catch (err) {
+      // SW path stalled or failed — surface the reason once, then fall
+      // through to the constructor path so the user still sees the card.
+      // eslint-disable-next-line no-console
+      safeLog.warn('[showLocalNotification] SW path failed, falling back', err);
+    }
   }
+
+  // Fallback: direct `new Notification(...)`. Works without a SW —
+  // critical for the localhost dev environment where the SW is
+  // intentionally unregistered.
   fallbackNewNotification(title, { body, icon, badge, tag, url });
 }
 

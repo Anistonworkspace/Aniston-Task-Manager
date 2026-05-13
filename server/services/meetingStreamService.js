@@ -133,8 +133,17 @@ function createBridge(clientWs, upstreamUrl, apiKey, user, logInfo) {
   });
 
   upstream.on('error', (err) => {
-    console.warn('[MeetingStream] upstream error:', err.message);
-    safeClientSend({ type: 'error', code: 'upstream_error', message: err.message });
+    // err comes from the Deepgram WebSocket — its message can contain
+    // upstream diagnostic text and (rarely) request-config bits. Never
+    // forward the raw text to the browser client; send a canonical
+    // message and log the original under safeLogger which scrubs secrets.
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.warn('[MeetingStream] upstream error', { err });
+    safeClientSend({
+      type: 'error',
+      code: 'upstream_error',
+      message: 'The transcription service is temporarily unavailable. Please try again.',
+    });
     closeAll(CLOSE_UPSTREAM_ERROR, 'Upstream error');
   });
 

@@ -34,7 +34,7 @@ const {
   Board,
   User,
 } = require('../models');
-const { sendNotification } = require('./notificationService');
+const { sendNotification, buildIdempotencyKey } = require('./notificationService');
 const { logActivity } = require('./activityService');
 const realtime = require('./realtimeService');
 const boardMembershipService = require('./boardMembershipService');
@@ -705,13 +705,27 @@ async function afterInstanceCreated(template, task) {
   }
 
   // 3. In-app + push notification to the assignee.
+  //
+  // Idempotency: a duplicate cron tick (process restart mid-tick, replica
+  // race, manual generate-now retry) must not create a second "your
+  // recurring task is ready" notification. The (taskId, assigneeId) tuple
+  // is unique per generated instance — the DB partial unique index on
+  // (userId, idempotencyKey) collapses any retry to a SELECT of the
+  // already-existing row.
   try {
     await sendNotification(
       template.assigneeId,
       'Daily Work assigned',
       `Today's "${template.title}" is ready. Due ${task.dueDate} at ${formatDueTimeForHumans(template.dueTime)}.`,
       'recurring_generated',
-      task.id
+      task.id,
+      {
+        idempotencyKey: buildIdempotencyKey(
+          'recurring-generated',
+          task.id,
+          template.assigneeId,
+        ),
+      }
     );
   } catch (e) {
     logger.warn('[recurringTaskService] notification failed', { templateId: template.id, taskId: task.id, msg: e.message });

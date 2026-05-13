@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import safeLog from '../utils/safeLog';
 
 let socket = null;
 
@@ -71,7 +72,7 @@ export function connect(token) {
       socket.emit('board:join', { boardId });
     });
     connectListeners.forEach((cb) => {
-      try { cb(); } catch (err) { console.error('[Socket] connect listener threw:', err); }
+      try { cb(); } catch (err) { safeLog.error('[Socket] connect listener threw', err); }
     });
   });
 
@@ -80,7 +81,7 @@ export function connect(token) {
   });
 
   socket.on('connect_error', (err) => {
-    console.error('[Socket] connection error:', err.message);
+    safeLog.error('[Socket] connection error', err);
   });
 
   // Server-side logout signal — when the backend force-disconnects this
@@ -124,7 +125,7 @@ export function disconnectForLogout() {
       socket.removeAllListeners();
       socket.disconnect();
     } catch (err) {
-      console.warn('[Socket] disconnectForLogout failed:', err.message);
+      safeLog.warn('[Socket] disconnectForLogout failed', err);
     }
     socket = null;
   }

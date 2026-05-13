@@ -14,6 +14,10 @@ const {
 } = require('../utils/taskOverdueEligibility');
 const { getTaskNotificationRecipients } = require('../utils/taskNotificationRecipients');
 const logger = require('../utils/logger');
+const {
+  MAX_TASKS_PER_CRON_RUN,
+  createBudget,
+} = require('../config/notificationLimits');
 
 // Statuses excluded at the SQL layer. Same union the reminderJob uses: 'done'
 // + every status in AWAITING_REVIEW_STATUSES (waiting_for_review, review,
@@ -76,6 +80,10 @@ async function runPriorityEscalation() {
   console.log('[PriorityEscalation] Running daily priority escalation check...');
   const today = todayKey();
 
+  // Hard cap per tick (was unbounded). Daily midnight job, but installs
+  // with many high-progress tasks would emit dozens of priority-change
+  // notifications in one shot — that's the morning version of the 6:30 PM
+  // storm. Drain in batches.
   const tasks = await Task.findAll({
     where: {
       progress: { [Op.gte]: 80 },
@@ -87,11 +95,15 @@ async function runPriorityEscalation() {
       priority: { [Op.ne]: 'critical' },
       isArchived: false,
     },
+    order: [['progress', 'DESC'], ['createdAt', 'ASC']],
+    limit: MAX_TASKS_PER_CRON_RUN,
   });
 
+  const budget = createBudget();
   let escalated = 0;
   let skipped = 0;
   let notified = 0;
+  let userLimited = 0;
 
   for (const task of tasks) {
     try {
@@ -142,6 +154,10 @@ async function runPriorityEscalation() {
         `Task "${safeTitle}" has been auto-escalated to Critical priority (${task.progress}% complete)`;
 
       for (const [userId] of recipients) {
+        if (!budget.tryReserve(userId)) {
+          userLimited += 1;
+          continue;
+        }
         try {
           const notif = await createNotification({
             userId,
@@ -169,9 +185,24 @@ async function runPriorityEscalation() {
   }
 
   if (escalated > 0 || skipped > 0) {
-    console.log(
-      `[PriorityEscalation] escalated=${escalated} notifications=${notified} skipped=${skipped} (of ${tasks.length} candidate task(s))`
-    );
+    const b = budget.summary();
+    logger.info('[PriorityEscalation] tick', {
+      candidates: tasks.length,
+      escalated,
+      notified,
+      skipped,
+      userLimitedCount: b.userLimitedCount,
+      jobLimitedCount: b.jobLimitedCount,
+      uniqueUsers: b.uniqueUsers,
+    });
+    if (userLimited > 0 || tasks.length >= MAX_TASKS_PER_CRON_RUN) {
+      logger.warn('[PriorityEscalation] hit caps', {
+        candidates: tasks.length,
+        notified,
+        userLimitedCount: b.userLimitedCount,
+        nextTickWillDrain: true,
+      });
+    }
   }
 }
 

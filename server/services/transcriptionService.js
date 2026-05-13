@@ -2,6 +2,7 @@ const https = require('https');
 const { URL } = require('url');
 const { TranscriptionProvider } = require('../models');
 const { decrypt } = require('../utils/encryption');
+const safeLogger = require('../utils/safeLogger');
 
 const DEEPGRAM_API_HOST = 'api.deepgram.com';
 const DEEPGRAM_WS_URL = 'wss://api.deepgram.com/v1/listen';
@@ -20,7 +21,7 @@ async function getActiveDefaultProvider() {
   let apiKey;
   try { apiKey = decrypt(provider.apiKey); }
   catch (err) {
-    console.error('[TranscriptionService] Failed to decrypt provider key:', err.message);
+    safeLogger.error('[TranscriptionService] Failed to decrypt provider key', { err });
     return null;
   }
 

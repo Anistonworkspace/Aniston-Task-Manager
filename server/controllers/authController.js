@@ -15,6 +15,11 @@ const {
   getPendingLoginTokenFromRequest,
 } = require('../utils/authCookies');
 const { encryptTeamsToken } = require('../utils/teamsTokenStorage');
+// safeLogger redacts passwords, JWTs, Authorization headers, and Axios
+// outbound error config before logs hit disk. All auth-flow errors go
+// through it so a wrapped Axios error from a Microsoft Graph call can't
+// leak the bearer token in `error.config.headers.Authorization`.
+const safeLogger = require('../utils/safeLogger');
 
 // Single-active-session feature.
 //
@@ -170,7 +175,7 @@ async function revokeAllSessionsForForceLogout(userId, reason = 'forced_other_de
     });
   } catch (err) {
     // socket service may not be initialized in tests
-    console.warn('[Auth.forceLogout] socket disconnect failed:', err && err.message);
+    safeLogger.warn('[Auth.forceLogout] socket disconnect failed', { err });
   }
 
   return { tokensRevoked, socketsKilled };
@@ -286,7 +291,7 @@ async function issueRefreshToken(userId, req) {
     // Don't throw — but log loudly. A persistent failure here means refresh
     // tokens are issued but unverifiable, which the refresh endpoint will
     // catch and reject. Loudness here helps ops diagnose before users notice.
-    console.error('[Auth] Failed to record refresh token:', err && err.message);
+    safeLogger.error('[Auth] Failed to record refresh token', { err });
   }
   // Returns BOTH the token and the JTI. The single-active-session feature
   // needs the JTI so it can embed it as `sid` in the access token minted
@@ -311,7 +316,7 @@ async function revokeRefreshToken(jti, replacedByJti = null) {
       { where: { jti, revokedAt: null } }
     );
   } catch (err) {
-    console.warn('[Auth] revokeRefreshToken failed:', err && err.message);
+    safeLogger.warn('[Auth] revokeRefreshToken failed', { err });
   }
 }
 
@@ -329,7 +334,7 @@ async function revokeAllRefreshTokensForUser(userId) {
     );
     return count || 0;
   } catch (err) {
-    console.warn('[Auth] revokeAllRefreshTokensForUser failed:', err && err.message);
+    safeLogger.warn('[Auth] revokeAllRefreshTokensForUser failed', { err });
     return 0;
   }
 }
@@ -370,7 +375,7 @@ const register = async (req, res) => {
       data: { pending: true },
     });
   } catch (error) {
-    console.error('[Auth] Register error:', error);
+    safeLogger.error('[Auth] Register error', { err: error });
     res.status(500).json({ success: false, message: 'Server error during registration.' });
   }
 };
@@ -519,7 +524,7 @@ const login = async (req, res) => {
       data: { user: user.toJSON() },
     });
   } catch (error) {
-    console.error('[Auth] Login error:', error);
+    safeLogger.error('[Auth] Login error', { err: error });
     res.status(500).json({ success: false, message: 'Server error during login.' });
   }
 };
@@ -560,7 +565,7 @@ const forceLogin = async (req, res) => {
       // 'used' / 'expired' / 'invalid' / 'origin_mismatch' all collapse
       // into a single generic error from the client's perspective. The
       // log line carries the specific reason for ops.
-      console.warn(`[Auth.forceLogin] consume failed: ${consumed.reason}`);
+      safeLogger.warn('[Auth.forceLogin] consume failed', { reason: consumed.reason });
       return res.status(400).json({
         success: false,
         code: 'PENDING_TOKEN_INVALID',
@@ -595,7 +600,7 @@ const forceLogin = async (req, res) => {
       data: { user: user.toJSON() },
     });
   } catch (error) {
-    console.error('[Auth] forceLogin error:', error);
+    safeLogger.error('[Auth] forceLogin error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -615,7 +620,7 @@ const getProfile = async (req, res) => {
 
     res.json({ success: true, data: { user } });
   } catch (error) {
-    console.error('[Auth] GetProfile error:', error);
+    safeLogger.error('[Auth] GetProfile error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -704,7 +709,7 @@ const updateProfile = async (req, res) => {
       data: { user: req.user.toJSON() },
     });
   } catch (error) {
-    console.error('[Auth] UpdateProfile error:', error);
+    safeLogger.error('[Auth] UpdateProfile error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -737,9 +742,15 @@ const getAllUsers = async (req, res) => {
     // Phase 5e — closes audit P0-10. Redact sensitive fields (email, role)
     // for non-management tiers. T1/T2 see the full directory; T3/T4 see only
     // the minimum needed to pick someone in an assignable-users dropdown.
+    //
+    // Phase B — also honour the granular `users.view_sensitive` action.
+    // Even Tier 1/2 see redacted fields if explicitly denied via override.
     const { hasTierAtLeast } = require('../config/tiers');
-    const isManagement = hasTierAtLeast(req.user, 2);
-    const attributes = isManagement
+    const { hasPermission: enginePermissionUsers } = require('../services/permissionEngine');
+    const tierAllowsSensitive = hasTierAtLeast(req.user, 2);
+    const grantAllowsSensitive = await enginePermissionUsers(req.user, 'users', 'view_sensitive');
+    const showSensitive = tierAllowsSensitive && grantAllowsSensitive;
+    const attributes = showSensitive
       ? ['id', 'name', 'email', 'avatar', 'role', 'department']
       : ['id', 'name', 'avatar', 'department'];
 
@@ -751,7 +762,7 @@ const getAllUsers = async (req, res) => {
 
     res.json({ success: true, data: { users } });
   } catch (error) {
-    console.error('[Auth] GetAllUsers error:', error);
+    safeLogger.error('[Auth] GetAllUsers error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -785,7 +796,7 @@ const uploadAvatar = async (req, res) => {
       data: { user: req.user.toJSON(), avatarUrl: url },
     });
   } catch (error) {
-    console.error('[Auth] UploadAvatar error:', error);
+    safeLogger.error('[Auth] UploadAvatar error', { err: error });
     const { cleanupOnError } = require('../services/storageService');
     cleanupOnError(req.file);
     res.status(500).json({ success: false, message: 'Server error uploading avatar.' });
@@ -838,7 +849,7 @@ const forgotPassword = async (req, res) => {
       data: process.env.NODE_ENV === 'development' ? { resetUrl } : {},
     });
   } catch (error) {
-    console.error('[Auth] ForgotPassword error:', error);
+    safeLogger.error('[Auth] ForgotPassword error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -893,7 +904,7 @@ const resetPassword = async (req, res) => {
 
     res.json({ success: true, message: 'Password reset successfully. You can now login.' });
   } catch (error) {
-    console.error('[Auth] ResetPassword error:', error);
+    safeLogger.error('[Auth] ResetPassword error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -947,7 +958,7 @@ const createPassword = async (req, res) => {
       message: 'Password created successfully. You can now log in with your email and password.',
     });
   } catch (error) {
-    console.error('[Auth] CreatePassword error:', error);
+    safeLogger.error('[Auth] CreatePassword error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -1012,7 +1023,7 @@ const changePassword = async (req, res) => {
       message: 'Password changed successfully. Please log in again.',
     });
   } catch (error) {
-    console.error('[Auth] ChangePassword error:', error);
+    safeLogger.error('[Auth] ChangePassword error', { err: error });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -1239,7 +1250,7 @@ const microsoftAuthUrl = async (req, res) => {
 
     res.json({ success: true, data: { authUrl } });
   } catch (error) {
-    console.error('[Auth] Microsoft SSO URL error:', error);
+    safeLogger.error('[Auth] Microsoft SSO URL error', { err: error });
     res.status(500).json({ success: false, message: 'Failed to start Microsoft sign-in.' });
   }
 };
@@ -1313,7 +1324,7 @@ const microsoftCallback = async (req, res) => {
         name = name || profileRes.data.displayName || '';
         oid = oid || profileRes.data.id || '';
       } catch (profileErr) {
-        console.error('[Auth] SSO profile fetch error:', profileErr.message);
+        safeLogger.error('[Auth] SSO profile fetch error', { err: profileErr });
         return res.redirect(`${CLIENT_URL}/login?sso=error&msg=profile_fetch_failed`);
       }
     }
@@ -1326,7 +1337,7 @@ const microsoftCallback = async (req, res) => {
     // different app or, in single-tenant mode, a different tenant.
     if (id_token && config.clientId) {
       if (aud && aud !== config.clientId) {
-        console.error('[Auth] SSO rejected: id_token audience does not match client id.');
+        safeLogger.error('[Auth] SSO rejected: id_token audience does not match client id.');
         return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
       }
       // For single-tenant deployments (tenantId is a real GUID, not 'common'/'organizations'/'consumers'),
@@ -1339,7 +1350,7 @@ const microsoftCallback = async (req, res) => {
           `https://sts.windows.net/${tid}/`,
         ];
         if (!expectedIssuers.includes(iss)) {
-          console.error(`[Auth] SSO rejected: unexpected id_token issuer (got=${iss}).`);
+          safeLogger.error('[Auth] SSO rejected: unexpected id_token issuer', { iss });
           return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
         }
       }
@@ -1358,10 +1369,11 @@ const microsoftCallback = async (req, res) => {
     if (oid) {
       const oidMatches = await User.findAll({ where: { teamsUserId: oid } });
       if (oidMatches.length > 1) {
-        console.error(
-          `[Auth] SSO security error: ${oidMatches.length} users share teamsUserId for ` +
-            `incoming email=${email}. User ids=[${oidMatches.map((u) => u.id).join(',')}].`
-        );
+        safeLogger.error('[Auth] SSO security error: multiple users share teamsUserId', {
+          count: oidMatches.length,
+          email,
+          userIds: oidMatches.map((u) => u.id),
+        });
         return res.redirect(
           `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
             'Account conflict detected — multiple users are linked to this Microsoft identity. Contact your administrator.'
@@ -1373,10 +1385,11 @@ const microsoftCallback = async (req, res) => {
         // The OID-matched user's email should match the SSO email. If it doesn't,
         // the teamsUserId on this row is stale/wrong — refuse to log in.
         if ((candidate.email || '').toLowerCase() !== email) {
-          console.error(
-            `[Auth] SSO security error: OID matched user ${candidate.id} but email differs ` +
-              `(db=${candidate.email}, sso=${email}). Refusing login.`
-          );
+          safeLogger.error('[Auth] SSO security error: OID matched user but email differs', {
+            userId: candidate.id,
+            dbEmail: candidate.email,
+            ssoEmail: email,
+          });
           return res.redirect(
             `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
               'Account conflict detected — Microsoft identity does not match this account. Contact your administrator.'
@@ -1392,7 +1405,7 @@ const microsoftCallback = async (req, res) => {
     if (!user) {
       const emailMatches = await User.findAll({ where: { email } });
       if (emailMatches.length > 1) {
-        console.error(`[Auth] SSO security error: duplicate emails detected for ${email}.`);
+        safeLogger.error('[Auth] SSO security error: duplicate emails detected', { email });
         return res.redirect(
           `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
             'Account conflict detected — multiple users have this email. Contact your administrator.'
@@ -1404,10 +1417,11 @@ const microsoftCallback = async (req, res) => {
         // If the candidate is already linked to a DIFFERENT Microsoft identity,
         // refuse — this prevents silently overwriting an existing link.
         if (candidate.teamsUserId && oid && candidate.teamsUserId !== oid) {
-          console.error(
-            `[Auth] SSO security error: email ${email} is already linked to a different ` +
-              `Microsoft identity (db=${candidate.teamsUserId.slice(0, 6)}…, sso=${oid.slice(0, 6)}…).`
-          );
+          safeLogger.error('[Auth] SSO security error: email already linked to a different Microsoft identity', {
+            email,
+            dbTeamsUserIdPrefix: candidate.teamsUserId.slice(0, 6),
+            ssoOidPrefix: oid.slice(0, 6),
+          });
           return res.redirect(
             `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
               'This account is linked to a different Microsoft identity. Contact your administrator.'
@@ -1487,7 +1501,10 @@ const microsoftCallback = async (req, res) => {
     await establishSession(user, res, req);
     res.redirect(`${CLIENT_URL}/login?sso=success`);
   } catch (error) {
-    console.error('[Auth] Microsoft SSO callback error:', error.response?.data || error.message);
+    // safeLogger redacts Microsoft Graph response details so a Graph 401
+    // error's `response.data` (which can carry refresh-token state) is
+    // summarised, not dumped verbatim, into the log file.
+    safeLogger.error('[Auth] Microsoft SSO callback error', { err: error });
     res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Authentication failed. Please try again.')}`);
   }
 };
@@ -1552,7 +1569,7 @@ const getPendingSsoInfo = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[Auth] getPendingSsoInfo error:', err && err.message);
+    safeLogger.error('[Auth] getPendingSsoInfo error', { err });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -1588,7 +1605,7 @@ const forceLoginSSO = async (req, res) => {
     const consumed = await consumePendingLoginToken(rawToken, 'sso');
     if (!consumed.ok) {
       clearPendingLoginCookie(res);
-      console.warn(`[Auth.forceLoginSSO] consume failed: ${consumed.reason}`);
+      safeLogger.warn('[Auth.forceLoginSSO] consume failed', { reason: consumed.reason });
       return res.status(400).json({
         success: false,
         code: 'PENDING_TOKEN_INVALID',
@@ -1617,7 +1634,7 @@ const forceLoginSSO = async (req, res) => {
       data: { user: user.toJSON() },
     });
   } catch (err) {
-    console.error('[Auth] forceLoginSSO error:', err);
+    safeLogger.error('[Auth] forceLoginSSO error', { err });
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
@@ -1648,7 +1665,7 @@ const getAssignableUsersList = async (req, res) => {
     const users = await getAssignableUsers(req.user);
     res.json({ success: true, data: { users } });
   } catch (error) {
-    console.error('[Auth] getAssignableUsers error:', error);
+    safeLogger.error('[Auth] getAssignableUsers error', { err: error });
     res.status(500).json({ success: false, message: 'Failed to fetch assignable users.' });
   }
 };

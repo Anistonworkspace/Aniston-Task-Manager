@@ -34,6 +34,46 @@ function pushIf(arr, cond, value) {
 }
 
 /**
+ * Notification types that affect the Approvals & Requests sidebar badge
+ * (`/task-extras/pending-counts`). These map to the four pending-action
+ * surfaces a user can reach from that menu:
+ *   - task approvals       → approval_*
+ *   - due-date extensions  → extension_*
+ *   - cross-team help asks → help_*
+ *   - access requests      → access_*
+ *
+ * Anything outside this list (task_assigned, comment_added, due_date,
+ * recurring_*, mention, priority_change, …) leaves the badge value
+ * unchanged, so a 30-notification burst of recurring_missed escalations
+ * no longer triggers 30 GETs to `/task-extras/pending-counts`.
+ */
+function isApprovalLikeType(t) {
+  if (!t) return false;
+  return (
+    t.startsWith('approval_')
+    || t.startsWith('extension_')
+    || t.startsWith('help_')
+    || t.startsWith('access_')
+  );
+}
+
+/**
+ * Notification types that affect the global Dependencies header badge
+ * (`/dependencies/assigned-active-count`). Same idea: gate the refetch
+ * on payload shape so a notification storm in another domain doesn't
+ * flood the dependencies endpoint.
+ *
+ * `dependency_*` is the canonical prefix on the server-side Notification
+ * enum. `task_unblocked` is included because an unblock event is the one
+ * lifecycle transition that flips an "active" dependency to "done" from
+ * the assigned user's perspective.
+ */
+function isDependencyLikeType(t) {
+  if (!t) return false;
+  return t.startsWith('dependency_') || t === 'task_unblocked';
+}
+
+/**
  * @param {string} event   Socket event name (e.g. 'task:created')
  * @param {object} payload Event payload — Phase 2 envelope adds taskId/boardId
  *                         /groupId/changedFields/actorId/timestamp at the top
@@ -144,13 +184,25 @@ export function routeEvent(event, payload = {}) {
     case 'notification:read': {
       out.push('notifications.list');
       out.push('notifications.unreadCount');
-      // Notifications are the canonical fan-out point for approval / extension
-      // / help / dependency events — invalidating the badge counts here
-      // catches every cross-cutting case (e.g. a manager approves a task
-      // elsewhere → the submitter's badge is unaffected, but the next-stage
-      // approver gets a notification, and their pendingCounts must refresh).
-      out.push('approvals.pendingCounts');
-      out.push('dependencies.assignedActiveCount');
+      // Type-aware fan-out (May 2026 storm fix): the unconditional invalidation
+      // of `approvals.pendingCounts` + `dependencies.assignedActiveCount` on
+      // every notification used to multiply a 30-notification burst into
+      // 120 unrelated API calls in a few hundred milliseconds. The badges
+      // only change when an approval-shaped or dependency-shaped event
+      // arrives, so gate the invalidation on the notification type. The
+      // server-side `Notification.type` enum is the contract here:
+      //   approvals  → approval_*, extension_*, help_*, access_*
+      //   dependencies → dependency_* (and the generic task_unblocked)
+      // All other types (task_assigned, comment_added, due_date,
+      // recurring_*, mention, priority_change, ...) keep the bell count
+      // accurate via `notifications.unreadCount` alone.
+      const notifType = payload?.notification?.type;
+      if (isApprovalLikeType(notifType)) {
+        out.push('approvals.pendingCounts');
+      }
+      if (isDependencyLikeType(notifType)) {
+        out.push('dependencies.assignedActiveCount');
+      }
       break;
     }
 

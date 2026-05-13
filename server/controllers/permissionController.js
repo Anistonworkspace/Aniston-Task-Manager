@@ -7,19 +7,31 @@ const {
   computeEffectivePermissions,
   canGrantPermission,
   getPermissionMetadata,
+  getPermissionCatalog,
   VALID_EFFECTS,
 } = require('../services/permissionEngine');
+const { resolveTier, TIER_1 } = require('../config/tiers');
+const safeLogger = require('../utils/safeLogger');
 
 // Push a 'permissions:updated' event to a user's personal socket room so
 // that a logged-in target re-fetches their effective permissions immediately
 // after an admin grants/denies/revokes — eliminating stale UI state without
 // requiring a page reload.
+//
+// Phase 6 — also emits 'user:force_refresh' which the client AuthContext
+// listens for and reloads BOTH the user record (role/tier/isSuperAdmin)
+// AND the permissions. Permission changes don't usually require a user
+// reload, but emitting both keeps the AuthContext path uniform with role
+// changes and makes the stale-state guarantee end-to-end: after a grant
+// or deny lands, the next render reflects the new permission within ~1
+// socket round-trip.
 function notifyPermissionChange(userId, payload = {}) {
   if (!userId) return;
   try {
     emitToUser(userId, 'permissions:updated', { reason: 'admin-changed', ...payload });
+    emitToUser(userId, 'user:force_refresh', { reason: 'permissions-changed', ...payload });
   } catch (err) {
-    console.error('[Permission] notifyPermissionChange error:', err.message);
+    safeLogger.error('[Permission] notifyPermissionChange error', { err });
   }
 }
 const {
@@ -51,18 +63,11 @@ exports.getPermissions = async (req, res) => {
     });
     res.json({ success: true, data: { permissions: grants } });
   } catch (err) {
-    // Log SQL detail (PG error code, missing column, etc.) so a production
-    // failure is diagnosable without enabling DEBUG everywhere. Common cause:
-    // schema drift — a model column missing from the deployed database.
-    console.error('[Permission] getPermissions error:', {
-      message: err.message,
-      name: err.name,
-      code: err.original?.code,
-      detail: err.original?.detail,
-      column: err.original?.column,
-      table: err.original?.table,
-      sqlState: err.original?.sqlState,
-    });
+    // safeLogger (imported at top of file) keeps the full Sequelize/PG
+    // error (sql, original) in the structured log under err — useful
+    // for diagnosing schema drift — while redacting wrapped Axios
+    // headers, JWT-shaped tokens, and password fields before disk.
+    safeLogger.error('[Permission] getPermissions error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch permissions.' });
   }
 };
@@ -147,10 +152,18 @@ exports.grantPermission = async (req, res) => {
     }
 
     // Authority check — granter must have the right to issue this effect.
-    const grantCheck = await canGrantPermission(req.user, resourceType, action || 'manage', grantEffect);
+    // Pass targetUserId so the self-grant block in canGrantPermission engages.
+    const grantCheck = await canGrantPermission(req.user, resourceType, action || 'manage', grantEffect, userId);
     if (!grantCheck.allowed) {
-      return res.status(403).json({
+      // Phase 7 — Savability errors are 400 (client-side validation), authority
+      // errors are 403 (the request is structurally valid but the user lacks
+      // authority). Always include a stable machine-readable code so the UI
+      // can render the right banner.
+      const savabilityCodes = ['PERMISSION_LOCKED', 'PERMISSION_NOT_ENFORCEABLE', 'PERMISSION_UNKNOWN'];
+      const status = savabilityCodes.includes(grantCheck.code) ? 400 : 403;
+      return res.status(status).json({
         success: false,
+        code: grantCheck.code || 'PERMISSION_DENIED',
         message: grantCheck.reason || 'You do not have authority to issue this permission override.',
       });
     }
@@ -214,7 +227,7 @@ exports.grantPermission = async (req, res) => {
 
     res.status(201).json({ success: true, data: { permission: grant } });
   } catch (err) {
-    console.error('[Permission] grantPermission error:', err.message);
+    safeLogger.error('[Permission] grantPermission error', { err });
     res.status(500).json({ success: false, message: 'Failed to grant permission.' });
   }
 };
@@ -273,7 +286,7 @@ exports.bulkGrantPermissions = async (req, res) => {
 
     res.json({ success: true, data: { permissions: results, count: results.length } });
   } catch (err) {
-    console.error('[Permission] bulkGrant error:', err.message);
+    safeLogger.error('[Permission] bulkGrant error', { err });
     res.status(500).json({ success: false, message: 'Failed to bulk update permissions.' });
   }
 };
@@ -342,16 +355,24 @@ exports.multiGrant = async (req, res) => {
     for (const resource of resourceList) {
       const validActions = RESOURCE_ACTIONS[resource] || [];
 
-      // Check granter authority for this resource (once per resource).
-      const grantCheck = await canGrantPermission(req.user, resource, 'manage', grantEffect);
-      if (!grantCheck.allowed) {
-        errors.push({ resource, reason: grantCheck.reason || 'No authority to grant.' });
-        continue;
-      }
-
       for (const action of actionList) {
         if (!validActions.includes(action)) {
           skipped.push({ resource, action, reason: `'${action}' is not a valid action for '${resource}'` });
+          continue;
+        }
+
+        // Per-action authority check. Phase 7 — canGrantPermission also
+        // rejects locked/pending/no_surface actions with a structured code
+        // before authority gating, so the UI can render a precise banner
+        // instead of a generic "denied" message.
+        const grantCheck = await canGrantPermission(req.user, resource, action, grantEffect, userId);
+        if (!grantCheck.allowed) {
+          errors.push({
+            resource,
+            action,
+            code: grantCheck.code || 'PERMISSION_DENIED',
+            reason: grantCheck.reason || 'No authority to grant.',
+          });
           continue;
         }
 
@@ -452,7 +473,7 @@ exports.multiGrant = async (req, res) => {
     });
   } catch (err) {
     await t.rollback();
-    console.error('[Permission] multiGrant error:', err.message);
+    safeLogger.error('[Permission] multiGrant error', { err });
     res.status(500).json({ success: false, message: 'Failed to process multi-grant.' });
   }
 };
@@ -493,7 +514,7 @@ exports.revokePermission = async (req, res) => {
 
     res.json({ success: true, message: 'Permission revoked.' });
   } catch (err) {
-    console.error('[Permission] revokePermission error:', err.message);
+    safeLogger.error('[Permission] revokePermission error', { err });
     res.status(500).json({ success: false, message: 'Failed to revoke permission.' });
   }
 };
@@ -514,7 +535,7 @@ exports.getMyGrants = async (req, res) => {
     });
     res.json({ success: true, data: { grants } });
   } catch (err) {
-    console.error('[Permission] getMyGrants error:', err.message);
+    safeLogger.error('[Permission] getMyGrants error', { err });
     res.status(500).json({ success: false, message: 'Failed to fetch your permissions.' });
   }
 };
@@ -556,7 +577,7 @@ exports.getEffective = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[Permission] getEffective error:', err.message);
+    safeLogger.error('[Permission] getEffective error', { err });
     res.status(500).json({ success: false, message: 'Failed to get effective permissions.' });
   }
 };
@@ -567,8 +588,24 @@ exports.getMetadata = async (_req, res) => {
     const metadata = getPermissionMetadata();
     res.json({ success: true, data: { metadata } });
   } catch (err) {
-    console.error('[Permission] getMetadata error:', err.message);
+    safeLogger.error('[Permission] getMetadata error', { err });
     res.status(500).json({ success: false, message: 'Failed to get permission metadata.' });
+  }
+};
+
+// GET /api/permissions/catalog — canonical permission catalog (Phase 6)
+//
+// Returns resources, actions, grantability flags, and tier base matrices
+// in one payload so the frontend Permission Overrides UI is driven from a
+// single backend source of truth. Frontend should fetch this once per
+// session and use it for all dropdowns / grantability gating.
+exports.getCatalog = async (_req, res) => {
+  try {
+    const catalog = getPermissionCatalog();
+    res.json({ success: true, data: { catalog } });
+  } catch (err) {
+    safeLogger.error('[Permission] getCatalog error', { err });
+    res.status(500).json({ success: false, message: 'Failed to get permission catalog.' });
   }
 };
 
@@ -583,7 +620,7 @@ exports.getBasePermissionsForRole = async (req, res) => {
     const base = getBasePermissions(role);
     res.json({ success: true, data: { role, permissions: base } });
   } catch (err) {
-    console.error('[Permission] getBasePermissions error:', err.message);
+    safeLogger.error('[Permission] getBasePermissions error', { err });
     res.status(500).json({ success: false, message: 'Failed to get base permissions.' });
   }
 };
@@ -621,7 +658,7 @@ exports.getPermissionHistory = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[Permission] getHistory error:', err.message);
+    safeLogger.error('[Permission] getHistory error', { err });
     res.status(500).json({ success: false, message: 'Failed to get permission history.' });
   }
 };

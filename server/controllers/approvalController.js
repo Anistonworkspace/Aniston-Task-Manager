@@ -369,6 +369,13 @@ exports.submitForApproval = async (req, res) => {
 // just notify). If this was the final level, marks task approvalStatus=approved
 // and main status='done'.
 exports.approveTask = async (req, res) => {
+  // Phase B — granular tasks.approve_completion gate. The existing approver
+  // identity check inside processApprovalAction still fires; this is the
+  // deny-override hook so a Tier 1 can revoke approve authority for a
+  // specific user without removing them from the approval chain.
+  const { denyIfNoPermission } = require('../utils/permissionGate');
+  if (await denyIfNoPermission(res, req.user, 'tasks', 'approve_completion',
+      'You do not have permission to approve task completions.')) return;
   return processApprovalAction(req, res, {
     action: 'approve',
     actorRequiresComment: false,
@@ -383,6 +390,10 @@ exports.approveTask = async (req, res) => {
 // becomes 'rejected' and the submitter must re-submit. If rejecter is level
 // >=2, the previous-level approver is reset to 'pending' for re-review.
 exports.rejectTask = async (req, res) => {
+  // Phase B — granular tasks.reject_completion gate.
+  const { denyIfNoPermission } = require('../utils/permissionGate');
+  if (await denyIfNoPermission(res, req.user, 'tasks', 'reject_completion',
+      'You do not have permission to reject task completions.')) return;
   return processApprovalAction(req, res, {
     action: 'reject',
     actorRequiresComment: true,

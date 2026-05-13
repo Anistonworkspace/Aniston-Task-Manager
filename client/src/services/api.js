@@ -1,4 +1,25 @@
 import axios from 'axios';
+import { getErrorMessage, getErrorCode, getRequestId } from '../utils/errorMap';
+
+// URLs that are part of the auth-probe / login flow. Failures here are
+// already handled by AuthContext (loadUser silently) and Login (inline
+// red box), so emitting an `api-error` event would either duplicate or
+// confuse the user with a generic toast layered on top of the form copy.
+// Keep this list small and explicit.
+const AUTH_PROBE_URL_PATTERNS = [
+  /\/auth\/me\b/,
+  /\/auth\/refresh\b/,
+  /\/auth\/login\b/,
+  /\/auth\/logout\b/,
+  /\/auth\/sso-status\b/,
+  /\/auth\/microsoft\b/,
+  /\/auth\/login\/pending-sso\b/,
+];
+
+function isAuthProbeUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  return AUTH_PROBE_URL_PATTERNS.some((re) => re.test(url));
+}
 
 const api = axios.create({
   baseURL: '/api',
@@ -117,16 +138,36 @@ api.interceptors.response.use(
         if (window.location.pathname !== '/login') {
           window.location.href = '/login';
         }
+        // Tag the rejection so caller code (AuthContext.loadUser, etc.)
+        // can recognise this is a refresh-chain failure rather than an
+        // ordinary 4xx — useful for staying silent on the login page
+        // boot probe, where the refresh status will be 400 (no cookie)
+        // rather than the original 401 from /auth/me.
+        try {
+          refreshError._isRefreshFailure = true;
+          refreshError._originalRequestUrl = originalRequest.url;
+        } catch { /* ignore — frozen error */ }
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
       }
     }
 
-    // Handle 403 Forbidden — permission denied (skip silent requests)
+    // Stamp errors with the backend's correlation id (when present) so
+    // callers can include it in support copy or per-page error banners.
+    try {
+      const rid = getRequestId(error);
+      if (rid) error.requestId = rid;
+      const ec = getErrorCode(error);
+      if (ec) error.errorCode = ec;
+    } catch { /* ignore — non-fatal */ }
+
+    // Handle 403 Forbidden — permission denied (skip silent requests).
+    // We route the message through errorMap so any future code-specific
+    // copy override applies (e.g. PERMISSION_DENIED vs TIER_INSUFFICIENT).
     if (error.response?.status === 403) {
-      if (!originalRequest?._silent) {
-        const message = error.response?.data?.message || "You don't have permission to perform this action.";
+      if (!originalRequest?._silent && !isAuthProbeUrl(originalRequest?.url)) {
+        const message = getErrorMessage(error);
         window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 403 } }));
       }
       return Promise.reject(error);
@@ -144,11 +185,13 @@ api.interceptors.response.use(
       const retryAfterSec = Number(retryAfterHeader || retryAfterBody) || 60;
       error.retryAfter = retryAfterSec;
 
-      const isSilent = originalRequest?._silent;
+      const isSilent = originalRequest?._silent || isAuthProbeUrl(originalRequest?.url);
       if (!isSilent && !rateLimited429SuppressedUntil) {
         rateLimited429SuppressedUntil = Date.now() + Math.min(retryAfterSec, 30) * 1000;
-        const message = error.response.data?.message
-          || `Too many requests. Please wait ${retryAfterSec}s and try again.`;
+        // getErrorMessage falls back to the backend's `message` when
+        // there's no recognised code — keeps the existing "wait Ns"
+        // copy from the rate-limit handler intact.
+        const message = getErrorMessage(error) || `Too many requests. Please wait ${retryAfterSec}s and try again.`;
         window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status: 429, retryAfter: retryAfterSec } }));
         // Clear the guard once the suppression window passes so a NEW 429
         // event after recovery can still inform the user.
@@ -166,10 +209,17 @@ api.interceptors.response.use(
     // no permission row yet, no unread notifications, etc.). Every other
     // 404 — especially POST/PUT/PATCH/DELETE — surfaces a toast so the user
     // knows the action targeted something that no longer exists.
-    const isSilent = originalRequest?._silent;
+    //
+    // We ALSO suppress for the auth-probe URLs (/auth/me, /auth/refresh,
+    // /auth/login, /auth/logout). Those are owned by the login page /
+    // AuthContext, which renders its own inline error UI. A generic toast
+    // here would either duplicate the inline error or — worse — fire on
+    // the login page while the user is just sitting there (the screenshot
+    // bug where /auth/me 401 + /auth/refresh 400 produced a console error).
+    const url = originalRequest?.url || '';
+    const isSilent = originalRequest?._silent || isAuthProbeUrl(url);
     const status = error.response?.status;
     const method = (originalRequest?.method || 'get').toLowerCase();
-    const url = originalRequest?.url || '';
 
     // Endpoints that may legitimately 404 on GET as part of normal app
     // operation. Keep this list conservative and explicit — adding an
@@ -189,15 +239,21 @@ api.interceptors.response.use(
       method === 'get' &&
       SILENT_404_GET_PATTERNS.some((re) => re.test(url));
 
-    if (!isSilent && error.response && status !== 401 && !isAllowlisted404 && !axios.isCancel(error)) {
-      // Provide a friendlier default for un-allowlisted 404s — server messages
-      // are sometimes stack-y for missing resources, and the generic
-      // "Something went wrong" buries the cause.
-      const fallbackMessage = status === 404 ? 'Resource not found.' : 'Something went wrong';
-      const message = error.response?.data?.message || error.message || fallbackMessage;
-      window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status } }));
-    } else if (!isSilent && !error.response && error.message && !axios.isCancel(error)) {
-      window.dispatchEvent(new CustomEvent('api-error', { detail: { message: 'Network error. Please check your connection.', status: 0 } }));
+    // A refresh-chain failure during a /me probe ends up here with the
+    // refresh error (status 400) not the original 401. We already tagged
+    // it with `_isRefreshFailure` above; honour that so the boot-time
+    // anonymous probe never produces a user-facing toast.
+    const isRefreshChainFailure = Boolean(error?._isRefreshFailure);
+
+    if (!isSilent && !isRefreshChainFailure && error.response && status !== 401 && !isAllowlisted404 && !axios.isCancel(error)) {
+      // Route through errorMap so backend `code` strings are translated to
+      // the canonical user copy. The map falls back to the backend's
+      // `message` when no code is recognised, preserving the existing
+      // copy for legacy responses that don't yet carry a code.
+      const message = getErrorMessage(error);
+      window.dispatchEvent(new CustomEvent('api-error', { detail: { message, status, code: error.errorCode, requestId: error.requestId } }));
+    } else if (!isSilent && !isRefreshChainFailure && !error.response && error.message && !axios.isCancel(error)) {
+      window.dispatchEvent(new CustomEvent('api-error', { detail: { message: getErrorMessage(error), status: 0 } }));
     }
 
     return Promise.reject(error);

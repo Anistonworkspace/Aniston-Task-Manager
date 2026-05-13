@@ -15,14 +15,20 @@
 const { UserBoardOrder, Board, Workspace, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const boardVisibility = require('../services/boardVisibilityService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Resolve the set of board ids the calling user is allowed to see inside a
 // given workspace. Delegates to boardVisibilityService so the rule matches
 // the sidebar / search / direct-URL gate exactly.
+//
+// Phase 6 — replaced the legacy `isSuperAdmin || role === 'admin' || role === 'manager'`
+// dual-gate with hasTierAtLeast(TIER_2). Functionally equivalent today
+// (T1 = isSuperAdmin, T2 = admin/manager), but stays correct if the
+// role-name strings ever change.
 async function getVisibleBoardIds(user, workspaceId) {
-  const isAdminOrManager = !!user.isSuperAdmin || user.role === 'admin' || user.role === 'manager';
+  const isAdminOrManager = hasTierAtLeast(user, TIER_2);
   if (isAdminOrManager) {
     const rows = await Board.findAll({
       where: { workspaceId, isArchived: false },
@@ -81,7 +87,7 @@ exports.getForWorkspace = async (req, res) => {
     // Lightweight access check: if the user has zero visible boards in this
     // workspace AND isn't management, treat as forbidden. We don't try to
     // distinguish "exists but empty" vs "no access" — both yield an empty list.
-    const isMgmt = !!req.user.isSuperAdmin || req.user.role === 'admin' || req.user.role === 'manager';
+    const isMgmt = hasTierAtLeast(req.user, TIER_2);
     if (!isMgmt) {
       const visible = await getVisibleBoardIds(req.user, workspaceId);
       if (visible.size === 0) {
@@ -144,7 +150,7 @@ exports.setOrder = async (req, res) => {
     }
 
     const visibleBoardIds = await getVisibleBoardIds(req.user, workspaceId);
-    if (visibleBoardIds.size === 0 && !(req.user.isSuperAdmin || req.user.role === 'admin' || req.user.role === 'manager')) {
+    if (visibleBoardIds.size === 0 && !hasTierAtLeast(req.user, TIER_2)) {
       // No accessible boards in this workspace — same as no access.
       return res.status(403).json({ success: false, message: 'You do not have access to this workspace.' });
     }

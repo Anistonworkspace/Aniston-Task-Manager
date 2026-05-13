@@ -42,9 +42,19 @@ jest.mock('../../models', () => ({
 
 jest.mock('../../config/db', () => ({ sequelize: {} }));
 
-jest.mock('../../services/notificationService', () => ({
-  sendNotification: (...a) => mockSendNotification(...a),
-}));
+jest.mock('../../services/notificationService', () => {
+  // buildIdempotencyKey is a pure helper used by reminderService.processReminders
+  // to stamp every notification with a stable per-(reminder, user) key. Tests
+  // don't need to mock the dedup logic itself (that's verified separately in
+  // notificationService.test.js), but `buildIdempotencyKey` MUST resolve to a
+  // real function — otherwise the SUT's destructured import is `undefined`
+  // and the call throws inside the send loop.
+  const actual = jest.requireActual('../../services/notificationService');
+  return {
+    sendNotification: (...a) => mockSendNotification(...a),
+    buildIdempotencyKey: actual.buildIdempotencyKey,
+  };
+});
 
 jest.mock('../../utils/taskOverdueEligibility', () => ({
   isTaskEligibleForOverdueNotification: (...a) => mockIsEligible(...a),
@@ -117,10 +127,14 @@ beforeEach(() => {
 // ─── Cron wrapper ────────────────────────────────────────────────────────
 
 describe('startDeadlineReminderJob', () => {
-  it('schedules every 15 minutes and wraps work in withCronLock', async () => {
+  it('schedules every minute and wraps work in withCronLock', async () => {
+    // Cron interval was tightened from `*/15 * * * *` to `* * * * *` so that
+    // user-set custom reminders fire within ~60s of their scheduled time
+    // instead of up to 14 minutes late. The claim-first UPDATE in
+    // processReminders + withCronLock keep duplicate sends impossible.
     startDeadlineReminderJob();
     expect(cron.schedule).toHaveBeenCalledTimes(1);
-    expect(cron.schedule.mock.calls[0][0]).toBe('*/15 * * * *');
+    expect(cron.schedule.mock.calls[0][0]).toBe('* * * * *');
 
     // Avoid the real processReminders inside the cron tick — drive it once
     // and check that withCronLock was called with the correct key.
@@ -187,6 +201,76 @@ describe('processReminders — ineligible task', () => {
     mockTaskReminderFindAll.mockResolvedValueOnce([reminder]);
     mockTaskFindByPk.mockResolvedValueOnce(task);
     mockIsEligible.mockReturnValueOnce({ eligible: false, reason: 'done' });
+
+    await processReminders();
+
+    expect(reminder.update).toHaveBeenCalledWith({ cancelled: true });
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+});
+
+// ─── eligibility differs between legacy auto reminders and user-set ones ──
+//
+// Before: every reminder type ran the same `isTaskEligibleForOverdueNotification`
+// check. That destructively cancelled USER-SET custom reminders any time the
+// task was temporarily non-actionable (e.g. `pending_approval`), silently
+// dropping the user's explicit "remind me" intent.
+//
+// After: the eligibility predicate is gated on `reminderType`. Legacy
+// `2_day` / `2_hour` rows still run through `isTaskEligibleForOverdueNotification`
+// (they're overdue-style auto pings). User-set `offset` / `at_due` / `custom`
+// rows fire regardless of approval state — only `done` (completed) or
+// `isArchived` skips them.
+
+describe('processReminders — eligibility split (auto vs user-set)', () => {
+  it('FIRES a user-set custom reminder even when the task is awaiting approval', async () => {
+    const reminder = makeReminder({ reminderType: 'custom' });
+    const task = makeTask({ status: 'pending_review', approvalStatus: 'pending_approval' });
+    mockTaskReminderFindAll.mockResolvedValueOnce([reminder]);
+    mockTaskFindByPk.mockResolvedValueOnce(task);
+
+    await processReminders();
+
+    // Reminder should fire — the user explicitly asked for this ping.
+    expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    // It must NOT be cancelled — the user can still see it as active until
+    // it actually fires (sentAt is then set by the claim).
+    expect(reminder.update).not.toHaveBeenCalledWith({ cancelled: true });
+  });
+
+  it('FIRES a user-set offset reminder even when the task status is "waiting_for_review"', async () => {
+    const reminder = makeReminder({ reminderType: 'offset', offsetMinutes: 15 });
+    const task = makeTask({ status: 'waiting_for_review' });
+    mockTaskReminderFindAll.mockResolvedValueOnce([reminder]);
+    mockTaskFindByPk.mockResolvedValueOnce(task);
+
+    await processReminders();
+
+    expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    expect(reminder.update).not.toHaveBeenCalledWith({ cancelled: true });
+  });
+
+  it('still CANCELS a legacy 2_day reminder when the task is awaiting approval', async () => {
+    // Auto-scheduled overdue reminders ("you have 2 days left") DO get the
+    // eligibility gate — that's their original purpose. Mock the predicate
+    // to ineligible to confirm the gate still trips for these types.
+    const reminder = makeReminder({ reminderType: '2_day' });
+    const task = makeTask({ status: 'pending_review', approvalStatus: 'pending_approval' });
+    mockTaskReminderFindAll.mockResolvedValueOnce([reminder]);
+    mockTaskFindByPk.mockResolvedValueOnce(task);
+    mockIsEligible.mockReturnValueOnce({ eligible: false, reason: 'awaiting_approval' });
+
+    await processReminders();
+
+    expect(reminder.update).toHaveBeenCalledWith({ cancelled: true });
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it('CANCELS any reminder when the task is archived', async () => {
+    const reminder = makeReminder({ reminderType: 'custom' });
+    const task = makeTask({ isArchived: true });
+    mockTaskReminderFindAll.mockResolvedValueOnce([reminder]);
+    mockTaskFindByPk.mockResolvedValueOnce(task);
 
     await processReminders();
 

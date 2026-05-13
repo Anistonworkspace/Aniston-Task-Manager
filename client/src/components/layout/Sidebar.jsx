@@ -5,7 +5,7 @@ import {
   Home, User, ChevronDown, ChevronRight, Plus, Search, MoreHorizontal,
   FolderKanban, Star, StarOff, BarChart3, FileText, CalendarDays,
   Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
-  Edit3, ArrowUpDown, LayoutGrid, LayoutDashboard, ClipboardCheck,
+  Edit3, ArrowUpDown, LayoutGrid, ClipboardCheck,
   RefreshCw, Pin, PinOff
 } from 'lucide-react';
 import api from '../../services/api';
@@ -463,7 +463,7 @@ export default function Sidebar({ collapsed, onToggle }) {
       </button>
       <div className="w-5 border-t border-sidebar-border my-1" />
       {[
-        { icon: Home, path: '/', label: t('sidebar.home') },
+        { icon: Home, path: '/', label: t('sidebar.dashboard') },
         { icon: User, path: '/my-work', label: t('sidebar.myWork') },
         { icon: CalendarDays, path: '/meetings', label: t('sidebar.meetings') },
       ].map(item => (
@@ -522,11 +522,15 @@ export default function Sidebar({ collapsed, onToggle }) {
         {/* === FULLY SCROLLABLE MIDDLE SECTION (nav + workspaces) === */}
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-sidebar">
 
-          {/* Main Nav */}
+          {/* Main Nav — Dashboard (formerly Home) is the personal overview
+              at `/`. "My Dashboard" (the role-routed pages) was folded into
+              Dashboard; the old paths redirect there. My Work is now
+              available to every tier, including Tier 1 / Super Admin —
+              its /tasks?assignedTo=me data source is server-scoped to the
+              caller, so it stays personal regardless of role. */}
           <nav className="py-2 flex flex-col gap-0.5">
-            <NavItem icon={Home} label={t('sidebar.home')} path="/" tourId="nav-home" />
-            {!isSuperAdmin && <NavItem icon={User} label={t('sidebar.myWork')} path="/my-work" tourId="nav-mywork" />}
-            <NavItem icon={LayoutDashboard} label={t('sidebar.myDashboard')} path={isAdmin ? '/admin-dashboard' : isManager ? '/manager-dashboard' : '/member-dashboard'} tourId="nav-mydashboard" />
+            <NavItem icon={Home} label={t('sidebar.dashboard')} path="/" tourId="nav-home" />
+            <NavItem icon={User} label={t('sidebar.myWork')} path="/my-work" tourId="nav-mywork" />
             {/* Org Chart and Time Plan moved to header icons (see Header.jsx). */}
             <NavItem icon={CalendarDays} label={t('sidebar.meetings')} path="/meetings" tourId="nav-meetings" />
             <NavItem icon={FileText} label={t('sidebar.reviews')} path="/reviews" tourId="nav-reviews" />

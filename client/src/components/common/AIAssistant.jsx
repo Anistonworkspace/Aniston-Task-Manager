@@ -8,11 +8,10 @@ import api from '../../services/api';
  */
 function getPageContext(pathname) {
   const pageMap = {
-    '/': 'Home page - shows greeting, stat cards (Total Tasks, Completed, Overdue, Due Today, Team Tasks, In Progress, Stuck/Blocked, Completion Rate), My Tasks table, Recent boards list',
-    '/my-work': 'My Work page - personal task view with Table & Calendar tabs, tasks grouped by due date',
+    '/': 'Dashboard page - personal overview with greeting, stat cards (Completion Rate, Completed, Due Today, Overdue, In Progress, Total Tasks, Stuck/Blocked, Updates), My Tasks preview, Recent boards list',
+    '/my-work': 'My Work page - personal task view with Table & Calendar tabs, tasks grouped by due date (overdue/today/this week/upcoming/completed)',
     '/boards': 'Boards page - board library with grid/list view, search, create board',
-    '/dashboard': 'Team Dashboard page - analytics with stat cards, charts, team overview, board summaries',
-    '/admin-dashboard': 'My Dashboard - smart views, status/priority charts, tasks table',
+    '/dashboard': 'Team Dashboard page - team/all-board analytics with stat cards, charts, team overview, board summaries (admin/manager only)',
     '/time-plan': 'Time Plan page - daily/weekly time planner with hourly blocks, team view for managers',
     '/meetings': 'Meetings page - meeting scheduling, accept/decline, stats, date-grouped list',
     '/reviews': 'Reviews page - weekly review with task summary, PDF/CSV export',
@@ -45,23 +44,23 @@ function getPageContext(pathname) {
 
 const APP_STRUCTURE_CONTEXT = `
 The application sidebar has these sections:
-- Home: Overview with stats and recent boards
-- My Work: Personal task view
-- My Dashboard: Advanced task views with filters
-- Org Chart: Organization hierarchy
-- Time Plan: Daily/weekly time planner
+- Dashboard: Personal overview with stat cards, my tasks preview, recent boards
+- My Work: Personal task list grouped by due date (all tiers including Tier 1)
 - Meetings: Schedule and manage meetings
 - Reviews: Weekly task reviews with export
-- Tasks: Approvals, extensions, delegations
-- Dependencies: Cross-board task links
-- Notes: Voice notes and text notes
-- Help & SOP: Application guide
-- Dashboard: Board analytics (managers+)
-- Team: User management (managers+)
-- Admin Settings: System configuration (admin)
-- Integrations: Teams, AI setup (admin)
-- Feedback: View user feedback (admin)
-- Archive: Archived items (managers+)
+- Approvals & Requests: Approvals, extensions, delegations
+- Recurring Work: Recurring task templates
+- Team Dashboard: Team-wide / all-board analytics (managers+ only)
+- Org Chart: Organization hierarchy (header icon)
+- Time Plan: Daily/weekly time planner (header icon)
+- Dependencies: Cross-board task links (header icon)
+- Notes: Voice notes and text notes (header icon)
+- Help & SOP: Application guide (header icon)
+- Team: User management (managers+, header menu)
+- Admin Settings: System configuration (admin only, header menu)
+- Integrations: Teams, AI setup (admin only, header menu)
+- Feedback: View user feedback (admin only, header menu)
+- Archive: Archived items (managers+, header menu)
 - Boards/Workspaces: Listed in sidebar with search
 
 Key features: task boards with multiple views (table/kanban/calendar/gantt), drag-drop, multi-owner tasks, subtasks, time planning, meetings, voice notes, AI assistant.`;

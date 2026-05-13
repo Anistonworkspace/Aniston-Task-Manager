@@ -65,7 +65,8 @@ exports.createNote = async (req, res) => {
 
     res.status(201).json({ success: true, data: { note } });
   } catch (err) {
-    console.error('[NoteController] createNote error:', err.message);
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.error('[NoteController] createNote error', { err });
     // If the error is about the lang column not existing, try without it
     if (err.message && err.message.includes('lang')) {
       try {
@@ -84,10 +85,12 @@ exports.createNote = async (req, res) => {
         });
         return res.status(201).json({ success: true, data: { note } });
       } catch (retryErr) {
-        console.error('[NoteController] createNote retry error:', retryErr.message);
+        safeLogger.error('[NoteController] createNote retry error', { err: retryErr });
       }
     }
-    res.status(500).json({ success: false, message: 'Failed to create note: ' + (err.message || 'Unknown error') });
+    // Never concatenate raw err.message into the client response — it may
+    // carry Sequelize/PG detail (column names, constraint text).
+    res.status(500).json({ success: false, message: 'Failed to create note. Please try again.' });
   }
 };
 

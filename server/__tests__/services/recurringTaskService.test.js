@@ -26,7 +26,16 @@ jest.mock('../../models', () => ({
   Board: {},
   User: {},
 }));
-jest.mock('../../services/notificationService', () => ({ sendNotification: jest.fn() }));
+jest.mock('../../services/notificationService', () => {
+  const actual = jest.requireActual('../../services/notificationService');
+  return {
+    sendNotification: jest.fn(),
+    // recurringTaskService.runTemplateOnce stamps the "recurring task ready"
+    // notification with an idempotency key — preserve the real helper so the
+    // destructured import resolves to a function.
+    buildIdempotencyKey: actual.buildIdempotencyKey,
+  };
+});
 jest.mock('../../services/activityService', () => ({ logActivity: jest.fn() }));
 jest.mock('../../services/realtimeService', () => ({ emitTaskCreated: jest.fn() }));
 jest.mock('../../services/boardMembershipService', () => ({ autoAddMember: jest.fn() }));

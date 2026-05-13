@@ -11,6 +11,7 @@ const {
   tierFromLegacy,
   assertNotLastTier1Change,
 } = require('../config/tiers');
+const safeLogger = require('../utils/safeLogger');
 
 /**
  * Phase 5c — Last Tier-1 protection helper.
@@ -91,7 +92,7 @@ const createUser = async (req, res) => {
       data: { user: user.toJSON() },
     });
   } catch (error) {
-    console.error('[User] Create error:', error);
+    safeLogger.error('[User] Create error', { err: error });
     res.status(500).json({ success: false, message: 'Server error creating user.' });
   }
 };
@@ -129,7 +130,7 @@ const getAllUsersAdmin = async (req, res) => {
 
     res.json({ success: true, data: { users } });
   } catch (error) {
-    console.error('[User] GetAll error:', error);
+    safeLogger.error('[User] GetAll error', { err: error });
     res.status(500).json({ success: false, message: 'Server error fetching users.' });
   }
 };
@@ -228,6 +229,26 @@ const updateUser = async (req, res) => {
         updates[field] = field === 'email'
           ? String(req.body[field]).toLowerCase()
           : req.body[field];
+      }
+    }
+
+    // Phase B — granular per-field user mgmt gates. Each gate fires only
+    // when the field is actually being mutated. Umbrellas fall back to
+    // users.manage / users.edit so legacy overrides still work.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      const fieldGates = [
+        { field: 'role',            action: 'change_role',         label: 'change user roles' },
+        { field: 'tier',            action: 'change_tier',         label: 'change user tiers' },
+        { field: 'managerId',       action: 'change_manager',      label: 'change user managers' },
+        { field: 'hierarchyLevel',  action: 'change_hierarchy',    label: 'change user hierarchy levels' },
+        { field: 'isSuperAdmin',    action: 'change_super_admin',  label: 'change super-admin status' },
+      ];
+      for (const g of fieldGates) {
+        if (updates[g.field] !== undefined && updates[g.field] !== user[g.field]) {
+          if (await denyIfNoPermission(res, req.user, 'users', g.action,
+              `You do not have permission to ${g.label}.`)) return;
+        }
       }
     }
 
@@ -340,6 +361,12 @@ const updateUser = async (req, res) => {
     // a socket failure here MUST NOT fail the user-update response, since the
     // backend remains the source of truth and the next /auth/me call will
     // pick up the new tier regardless.
+    //
+    // Phase 6 — also emit 'user:force_refresh' which the AuthContext listens
+    // for and reloads BOTH user AND permissions. The legacy 'user:role-updated'
+    // event is preserved for any consumers (toasts, UI banners) that depend
+    // on the structured payload; force_refresh is the canonical signal that
+    // a re-fetch is required.
     if (tierChanged && String(user.id) !== String(req.user.id)) {
       try {
         const { emitToUser } = require('../services/socketService');
@@ -351,8 +378,13 @@ const updateUser = async (req, res) => {
           changedBy: { id: req.user.id, name: req.user.name },
           at: new Date().toISOString(),
         });
+        emitToUser(user.id, 'user:force_refresh', {
+          reason: 'role-changed',
+          previousTier: prevTier,
+          newTier,
+        });
       } catch (err) {
-        console.error('[User] role-update emit failed:', err.message);
+        safeLogger.error('[User] role-update emit failed', { err });
       }
     }
 
@@ -362,7 +394,7 @@ const updateUser = async (req, res) => {
       data: { user: user.toJSON(), scope: auth.scope },
     });
   } catch (error) {
-    console.error('[User] Update error:', error);
+    safeLogger.error('[User] Update error', { err: error });
     res.status(500).json({ success: false, message: 'Server error updating user.' });
   }
 };
@@ -393,6 +425,13 @@ const resetPassword = async (req, res) => {
       });
     }
 
+    // Phase B — granular users.reset_password gate. Umbrella → users.manage.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'users', 'reset_password',
+          'You do not have permission to reset user passwords.')) return;
+    }
+
     const { newPassword } = req.body;
     await user.update({ password: newPassword });
 
@@ -406,7 +445,7 @@ const resetPassword = async (req, res) => {
 
     res.json({ success: true, message: 'Password reset successfully.' });
   } catch (error) {
-    console.error('[User] ResetPassword error:', error);
+    safeLogger.error('[User] ResetPassword error', { err: error });
     res.status(500).json({ success: false, message: 'Server error resetting password.' });
   }
 };
@@ -439,6 +478,16 @@ const toggleUserStatus = async (req, res) => {
     }
 
     const newStatus = !user.isActive;
+
+    // Phase B — granular users.activate / users.deactivate gates. Umbrella
+    // → users.manage. Composes on top of the tier rules below.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      const actionKey = newStatus ? 'activate' : 'deactivate';
+      if (await denyIfNoPermission(res, req.user, 'users', actionKey,
+          newStatus ? 'You do not have permission to activate users.'
+                    : 'You do not have permission to deactivate users.')) return;
+    }
 
     // Phase 7 — Tier-2 destructive guard. Deactivation is destructive; only
     // Tier 1 may perform it. The legacy `auth.scope === 'full'` admits Tier 2
@@ -520,7 +569,7 @@ const toggleUserStatus = async (req, res) => {
       data: { user: user.toJSON() },
     });
   } catch (error) {
-    console.error('[User] ToggleStatus error:', error);
+    safeLogger.error('[User] ToggleStatus error', { err: error });
     res.status(500).json({ success: false, message: 'Server error toggling user status.' });
   }
 };
@@ -561,7 +610,7 @@ const getMyTeam = async (req, res) => {
     }
     res.json({ success: true, data: { members } });
   } catch (error) {
-    console.error('[User] getMyTeam error:', error);
+    safeLogger.error('[User] getMyTeam error', { err: error });
     res.status(500).json({ success: false, message: 'Failed to fetch team.' });
   }
 };
@@ -631,7 +680,7 @@ const deleteUser = async (req, res) => {
 
     res.json({ success: true, message: `${userName}'s account has been permanently deleted.` });
   } catch (error) {
-    console.error('[User] Delete error:', error);
+    safeLogger.error('[User] Delete error', { err: error });
     res.status(500).json({ success: false, message: 'Server error deleting user.' });
   }
 };

@@ -33,19 +33,22 @@ router.use(authenticate);
 // ─── Read endpoints ─────────────────────────────────────────────────────────
 // All authenticated users may LIST/GET. Visibility is filtered server-side
 // (members see only their own templates).
-router.get('/', listTemplates);
+// Phase B — granular recurring_work.view gate (umbrella → tasks.view).
+router.get('/', requirePermission('recurring_work', 'view'), listTemplates);
 router.get(
   '/:id',
+  requirePermission('recurring_work', 'view'),
   [param('id').isUUID().withMessage('id must be a UUID')],
   getTemplate
 );
 
 // ─── Write endpoints ────────────────────────────────────────────────────────
-// `tasks.create` is the entry-level gate. Members hold it by default; the
-// controller still enforces "members can only target self" on top.
+// Phase B — granular recurring_work.create gate. Umbrella → tasks.create
+// preserves the legacy "members can hold create" rule. The controller still
+// enforces "members can only target self".
 router.post(
   '/',
-  requirePermission('tasks', 'create'),
+  requirePermission('recurring_work', 'create'),
   [
     body('title')
       .isString().withMessage('title must be a string')
@@ -84,7 +87,8 @@ router.post(
 
 router.patch(
   '/:id',
-  requirePermission('tasks', 'create'),
+  // Phase B — granular recurring_work.edit (umbrella → tasks.create).
+  requirePermission('recurring_work', 'edit'),
   [
     param('id').isUUID().withMessage('id must be a UUID'),
     body('title').optional().isString().trim().isLength({ min: 1, max: 300 }),
@@ -111,40 +115,42 @@ router.patch(
   updateTemplate
 );
 
+// Phase B — granular pause / resume / delete gates (umbrellas → recurring_work.edit / .delete).
 router.post(
   '/:id/pause',
-  requirePermission('tasks', 'create'),
+  requirePermission('recurring_work', 'pause'),
   [param('id').isUUID()],
   pauseTemplate
 );
 router.post(
   '/:id/resume',
-  requirePermission('tasks', 'create'),
+  requirePermission('recurring_work', 'resume'),
   [param('id').isUUID()],
   resumeTemplate
 );
 router.post(
   '/:id/archive',
-  requirePermission('tasks', 'create'),
+  requirePermission('recurring_work', 'delete'),
   [param('id').isUUID()],
   archiveTemplate
 );
 // DELETE is an alias for archive (soft-delete) — the spec lists both.
 router.delete(
   '/:id',
-  requirePermission('tasks', 'create'),
+  requirePermission('recurring_work', 'delete'),
   [param('id').isUUID()],
   archiveTemplate
 );
 
 // Admin-only utility: force a generation cycle for one template. Useful for
-// tests and for catch-up after cron downtime. Phase 5e — closes audit P0-9
-// (route was previously authenticated only; the comment promised admin-only
-// but the middleware did not enforce it). Tier 1 only.
+// tests and for catch-up after cron downtime. Tier 1 only (existing rule);
+// Phase B also adds the granular `recurring_work.generate_now` deny hook so
+// the catalog reflects this as an enforced action.
 const { requireTier } = require('../middleware/tier');
 router.post(
   '/:id/generate-now',
   requireTier(1),
+  requirePermission('recurring_work', 'generate_now'),
   [param('id').isUUID()],
   generateNow
 );

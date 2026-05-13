@@ -86,6 +86,13 @@ const createDependencyRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: `priority must be one of: ${DependencyRequest.PRIORITIES.join(', ')}` });
     }
 
+    // Phase B — granular dependencies.request gate (umbrella → dependencies.create).
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'dependencies', 'request',
+          'You do not have permission to create dependency requests.')) return;
+    }
+
     // Parent-task existence + access already verified by loadParentTask +
     // requireParentTaskCreateAccess middleware. Re-fetch with the workspace
     // relation we need at create time. Keeps the middleware load lean and
@@ -295,6 +302,30 @@ const updateStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: 'You do not have permission to update this dependency.' });
     }
 
+    // Phase 7 — granular dependencies.approve / dependencies.reject gates.
+    // The transition check above ensures the actor is a valid party; this
+    // adds a deny-override hook so an admin can revoke approve / reject
+    // capability for a specific user even when they would otherwise be
+    // entitled (e.g. a contractor we want read-only).
+    {
+      const acceptingStates = ['accepted', 'working_on_it', 'done'];
+      let actionKey = null;
+      if (acceptingStates.includes(newStatus)) actionKey = 'approve';
+      else if (newStatus === 'rejected')       actionKey = 'reject';
+      if (actionKey) {
+        const { hasPermission: enginePermissionDep } = require('../services/permissionEngine');
+        const canTransition = await enginePermissionDep(req.user, 'dependencies', actionKey);
+        if (!canTransition) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: `dependencies.${actionKey}`,
+            message: `You do not have permission to ${actionKey} dependency requests.`,
+          });
+        }
+      }
+    }
+
     const fromStatus = dep.status;
     // Capture override flag BEFORE mutating — the 'done' transition sets
     // completedByUserId = req.user.id, which would retroactively make an
@@ -381,6 +412,13 @@ const updateDetails = async (req, res) => {
     }
     if (dep.status === 'cancelled') {
       return res.status(400).json({ success: false, message: 'This dependency is already cancelled.' });
+    }
+
+    // Phase B — granular dependencies.edit gate. Umbrella → dependencies.create.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'dependencies', 'edit',
+          'You do not have permission to edit dependency details.')) return;
     }
     // Capture pre-mutation — reassign-to-self by an admin would make them
     // a party after the update and mask the override flag in the audit log.

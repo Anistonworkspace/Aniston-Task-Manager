@@ -16,6 +16,7 @@
 const { UserWorkspaceOrder, Workspace, Board, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const boardVisibility = require('../services/boardVisibilityService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -24,8 +25,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // and managers see every active workspace; everyone else sees workspaces
 // they created, are a direct workspace member of, or have at least one
 // accessible board inside.
+//
+// Phase 6 — uses hasTierAtLeast(TIER_2) so the gate matches the canonical
+// helper used elsewhere; behaviour unchanged.
 async function getVisibleWorkspaceIds(user) {
-  const isAdminOrManager = !!user.isSuperAdmin || user.role === 'admin' || user.role === 'manager';
+  const isAdminOrManager = hasTierAtLeast(user, TIER_2);
 
   if (isAdminOrManager) {
     const rows = await Workspace.findAll({

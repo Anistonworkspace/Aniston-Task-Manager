@@ -58,6 +58,31 @@ jest.mock('../../services/activityService', () => ({
   logActivity: jest.fn(),
 }));
 
+// Phase 7 — dependencyRequestController gained granular gates on
+// dependencies.approve / dependencies.reject. These existing tests cover
+// the state-machine + audit-log behavior, not the permission gating
+// (which has its own dedicated suite in permissionEngine.grantability).
+// Mock the engine so the new gates never deny in this suite.
+jest.mock('../../services/permissionEngine', () => ({
+  hasPermission: jest.fn(async () => true),
+  canGrantPermission: jest.fn(async () => ({ allowed: true })),
+  computeEffectivePermissions: jest.fn(async () => ({ permissions: {}, basePermissions: {}, overrides: [], denials: [], grants: [] })),
+  fetchActiveGrants: jest.fn(async () => []),
+  getPermissionCatalog: jest.fn(() => ({ meta: {}, resources: {}, actions: {}, resourceActions: {}, resourcesByCategory: {}, grantability: {}, tierPermissions: {}, umbrellaFallbacks: {}, tierPermissionsFlat: {} })),
+  getPermissionMetadata: jest.fn(() => ({ resources: {}, resourceActions: {}, resourcesByCategory: {}, effects: ['grant', 'deny'] })),
+  getEffectiveBasePermission: jest.fn(() => true),
+  getEffectiveBasePermissions: jest.fn(() => ({})),
+  mapLegacyLevelToActions: jest.fn(() => []),
+  getGrantability: jest.fn(() => ({ grantableBy: [1, 2], deniableBy: [1, 2] })),
+  isGrantableByTier: jest.fn(() => true),
+  isDeniableByTier: jest.fn(() => true),
+  VALID_EFFECTS: ['grant', 'deny'],
+}));
+jest.mock('../../utils/permissionGate', () => ({
+  denyIfNoPermission: jest.fn(async () => false),
+  checkPermission: jest.fn(async () => true),
+}));
+
 // xss is used to sanitise input — pass-through is fine for tests.
 jest.mock('xss', () => (s) => s);
 

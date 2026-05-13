@@ -1,5 +1,9 @@
 const axios = require('axios');
 const { decrypt } = require('../utils/encryption');
+// safeLogger so any wrapped Axios error from an upstream AI provider call
+// is scrubbed of its `config.headers.Authorization` (which carries the
+// provider's API key) before being logged.
+const safeLogger = require('../utils/safeLogger');
 
 /**
  * Get a specific AI provider by ID from the new AIProvider table.
@@ -12,7 +16,7 @@ async function getProviderById(providerId) {
   try {
     return { ...provider.toJSON(), apiKey: decrypt(provider.apiKey) };
   } catch (err) {
-    console.error('[AIService] Failed to decrypt API key for provider:', providerId, err.message);
+    safeLogger.error('[AIService] Failed to decrypt API key for provider', { providerId, err });
     return null;
   }
 }
@@ -36,7 +40,7 @@ async function getActiveConfig() {
     try {
       return { ...provider.toJSON(), apiKey: decrypt(provider.apiKey) };
     } catch (err) {
-      console.error('[AIService] Failed to decrypt AIProvider key:', err.message);
+      safeLogger.error('[AIService] Failed to decrypt AIProvider key', { err });
     }
   }
 
@@ -46,7 +50,7 @@ async function getActiveConfig() {
   try {
     return { ...config.toJSON(), apiKey: decrypt(config.apiKey) };
   } catch (err) {
-    console.error('[AIService] Failed to decrypt legacy AIConfig key:', err.message);
+    safeLogger.error('[AIService] Failed to decrypt legacy AIConfig key', { err });
     return null;
   }
 }
@@ -424,7 +428,7 @@ function classifyError(err, elapsed, tempConfig) {
   // TypeError / unexpected runtime errors
   if (err instanceof TypeError) {
     diagnostics.failureType = 'unexpected_response';
-    console.error('[AIService] Unexpected TypeError during test:', err.message, err.stack);
+    safeLogger.error('[AIService] Unexpected TypeError during provider test', { err });
     return {
       success: false,
       message: `Connection failed (${elapsed}ms): Unexpected response format from the AI provider. Check the base URL, model name, and API key.`,
@@ -497,7 +501,7 @@ async function migrateFromLegacy() {
     }
     console.log(`[AIService] Migrated ${legacyConfigs.length} legacy AIConfig(s) to AIProvider table.`);
   } catch (err) {
-    console.error('[AIService] Legacy migration failed (non-fatal):', err.message);
+    safeLogger.error('[AIService] Legacy migration failed (non-fatal)', { err });
   }
 }
 

@@ -23,8 +23,8 @@ export async function resolveTaskTarget({ taskId, boardId } = {}) {
 // strips the param so refreshing/closing the modal leaves a clean URL.
 //
 // Use this from any task tile/list/notification that should land on the exact
-// task sheet (Home My Tasks, My Dashboard task table, Notifications, Dashboard
-// Overdue, MemberDrillDown, RecurringWorkPage).
+// task sheet (Dashboard My Tasks, Team Dashboard Overdue, Notifications,
+// MemberDrillDown, RecurringWorkPage).
 export async function openTaskFromAnywhere(navigate, input = {}) {
   const target = await resolveTaskTarget(input);
   if (!target) return false;

@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import api from '../services/api';
 import { connect, disconnect, disconnectForLogout, subscribe, getSocketId } from '../services/socket';
 import { unsubscribeFromPush } from '../services/pushNotifications';
+import safeLog from '../utils/safeLog';
 import {
   TIER_1, TIER_2, TIER_3, TIER_4,
   resolveTier as resolveTierFn,
@@ -256,7 +257,11 @@ export function AuthProvider({ children }) {
     // sessions expire (≤ refresh token TTL = 7 days) this becomes dead
     // code; safe to keep until then.
     try {
-      const res = await api.get('/auth/me');
+      // _silent: the api interceptor will not emit a global `api-error`
+      // toast for this request, and a refresh-chain failure that ends
+      // here with status 400 (no refresh cookie on login page) will be
+      // tagged so we don't surface it as a scary console error either.
+      const res = await api.get('/auth/me', { _silent: true });
       const u = res.data?.data?.user || res.data?.user || res.data;
       setUser(u);
       connect();
@@ -264,10 +269,26 @@ export function AuthProvider({ children }) {
       broadcastAuthStateToSW('authenticated');
       if (u?.id) await loadPermissions();
     } catch (err) {
-      // 401 here is the normal "no session" path — silent. Any other
-      // error is logged so ops can see network failures.
-      if (err?.response?.status !== 401) {
-        console.error('Failed to load user:', err);
+      // Three legitimate "not signed in" shapes hit this catch:
+      //   1. /auth/me returns 401 (no cookie at all).
+      //   2. /auth/me returns 401, the interceptor silently tries
+      //      /auth/refresh, refresh returns 400 (no refresh cookie),
+      //      and the rejection that bubbles here is the refresh error
+      //      with `_isRefreshFailure: true` tagged by the interceptor.
+      //   3. Network unavailable (no err.response).
+      // None of these are user-actionable on the login page — the form
+      // already handles invalid-credentials; this code path runs on
+      // every page load to probe for an existing session. So we stay
+      // silent in production. In dev, safeLog.debug surfaces the error
+      // for diagnostics without spamming the console with full
+      // AxiosError dumps.
+      const isAnonymousProbe =
+        err?.response?.status === 401 ||
+        err?._isRefreshFailure === true;
+      if (!isAnonymousProbe) {
+        safeLog.warn('[Auth] loadUser unexpected error', err);
+      } else {
+        safeLog.debug('[Auth] loadUser anonymous (no session)');
       }
       // One-time drain of pre-Phase-2 storage tokens.
       sessionStorage.removeItem('token');
@@ -316,14 +337,44 @@ export function AuthProvider({ children }) {
   // user's personal socket room. We re-fetch effective permissions so the
   // sidebar, route guards, and in-page checks all reflect the new state
   // without requiring the user to reload.
+  //
+  // Phase 6 — we now ALSO listen for 'user:force_refresh' which fires on
+  // both role/tier changes (userController.updateUser) and permission
+  // grants (permissionController). When that fires, we reload BOTH the
+  // user record AND the permissions so a demoted-T1-now-T4 user's frontend
+  // tier helpers (isTier1, isStrictAdmin, canManage) refresh in the same
+  // ~socket round-trip as the permission grants. Without this, the user
+  // object stayed stale until the next /auth/me call (~minutes) while
+  // permissions had already changed — confusing UI state that showed
+  // admin chrome but failed every action with 403.
   useEffect(() => {
     if (!user) return;
-    const unsubscribe = subscribe('permissions:updated', () => {
+    const unsubscribePerm = subscribe('permissions:updated', () => {
       console.log('[Auth] permissions:updated received — refreshing grants');
       loadPermissions();
     });
-    return () => { if (unsubscribe) unsubscribe(); };
-  }, [user, loadPermissions]);
+    const unsubscribeForce = subscribe('user:force_refresh', (payload) => {
+      console.log('[Auth] user:force_refresh received — reloading user + grants', payload?.reason);
+      // Reload the user record first so tier/role helpers update before
+      // any guards re-render against the new permission map. loadUser
+      // itself calls loadPermissions on success, so this is a single
+      // chained call rather than two parallel ones.
+      loadUser();
+    });
+    // Keep backward-compat with the existing 'user:role-updated' event
+    // which carries the structured payload some surfaces (toasts) rely
+    // on. The force_refresh fires in addition, not instead, so this is
+    // an additive listener.
+    const unsubscribeRole = subscribe('user:role-updated', () => {
+      console.log('[Auth] user:role-updated received — reloading user + grants');
+      loadUser();
+    });
+    return () => {
+      if (unsubscribePerm) unsubscribePerm();
+      if (unsubscribeForce) unsubscribeForce();
+      if (unsubscribeRole) unsubscribeRole();
+    };
+  }, [user, loadPermissions, loadUser]);
 
   // Single-active-session: the server emits 'auth:force_logout' on the
   // OLD device's socket when a new device confirms takeover via

@@ -37,17 +37,32 @@ const {
   User,
   ManagerRelation,
 } = require('../models');
-const { sendNotification } = require('../services/notificationService');
+const {
+  sendNotification,
+  buildIdempotencyKey,
+} = require('../services/notificationService');
 const recurringTaskService = require('../services/recurringTaskService');
 const logger = require('../utils/logger');
 const { withCronLock } = require('./cronLock');
+const {
+  isTaskEligibleForOverdueNotification,
+  AWAITING_REVIEW_STATUSES,
+} = require('../utils/taskOverdueEligibility');
+const {
+  MAX_TASKS_PER_CRON_RUN,
+  createBudget,
+} = require('../config/notificationLimits');
 
 const CRON_EXPR = '*/10 * * * *';
 
-// Statuses that count as "completed" — `done` is the canonical case. Custom
-// status configs may add per-task done-equivalents in the future, but until
-// the platform formalises a "completion" flag we anchor on 'done'.
+// Statuses excluded at the SQL layer. `done` plus every awaiting-review key
+// from the central eligibility module — this is the same union the
+// reminderJob / priorityEscalationJob use, so the missed cron stops paging
+// users for tasks they've already handed off for review. Per-row
+// `isTaskEligibleForOverdueNotification` runs again below as defence in
+// depth (it catches `approvalStatus` flips and any custom board statuses).
 const COMPLETED_STATUSES = ['done'];
+const EXCLUDED_STATUSES_FOR_MISSED = ['done', ...AWAITING_REVIEW_STATUSES];
 
 // ─── Manager lookup ─────────────────────────────────────────────────────────
 
@@ -190,15 +205,24 @@ async function tickOnce(now = new Date()) {
   // Coarse filter:
   //   - is a recurring instance
   //   - escalation hasn't fired yet
-  //   - status not yet completed
+  //   - status not yet completed AND not handed off for review
+  //   - approvalStatus null or 'changes_requested' (back on assignee)
   //   - not archived
   //   - dueDate is in the past (or today, in some timezone — refined below)
+  //
+  // Hard cap: MAX_TASKS_PER_CRON_RUN. Was 500. Ordering by occurrenceDate so
+  // the oldest missed instances escalate first and any overflow drains in the
+  // next tick (10 min later) instead of being starved.
   const todayUtc = new Date(now.toISOString().slice(0, 10));
   const candidates = await Task.findAll({
     where: {
       isRecurringInstance: true,
       missedEscalationSent: false,
-      status: { [Op.notIn]: COMPLETED_STATUSES },
+      status: { [Op.notIn]: EXCLUDED_STATUSES_FOR_MISSED },
+      [Op.or]: [
+        { approvalStatus: null },
+        { approvalStatus: 'changes_requested' },
+      ],
       isArchived: false,
       occurrenceDate: { [Op.ne]: null, [Op.lte]: todayUtc },
       recurringTemplateId: { [Op.ne]: null },
@@ -210,16 +234,24 @@ async function tickOnce(now = new Date()) {
         attributes: ['id', 'title', 'dueTime', 'timezone', 'escalateIfMissed', 'escalationTargets'],
       },
     ],
-    limit: 500, // batch cap; subsequent ticks drain the rest
+    order: [['occurrenceDate', 'ASC'], ['createdAt', 'ASC']],
+    limit: MAX_TASKS_PER_CRON_RUN,
   });
 
   if (candidates.length === 0) {
-    return { processed: 0, escalated: 0, skipped: 0, errors: 0 };
+    return { processed: 0, escalated: 0, skipped: 0, errors: 0, deferred: 0 };
   }
+
+  // Per-tick budget — caps the storm potential. Defaults from
+  // notificationLimits config (overridable via env). When a candidate's
+  // recipient set can't all be served, we DEFER the whole row by NOT
+  // flipping `missedEscalationSent`; the next tick (10 min) tries again.
+  const budget = createBudget();
 
   let escalated = 0;
   let skipped = 0;
   let errors = 0;
+  let deferred = 0;
 
   for (const task of candidates) {
     try {
@@ -231,9 +263,66 @@ async function tickOnce(now = new Date()) {
       // simply remains overdue without anyone being paged.
       if (!tpl.escalateIfMissed) { skipped += 1; continue; }
 
+      // Defence-in-depth eligibility — catches `approvalStatus='approved'`
+      // drift between the SQL scan and the row read, plus any custom board
+      // status the IN-list above didn't enumerate. Logged + the row's flag is
+      // FLIPPED so we never reconsider an ineligible row every 10 minutes
+      // (the audit's "reprocesses the same task forever" finding).
+      const eligibility = isTaskEligibleForOverdueNotification(task);
+      if (!eligibility.eligible) {
+        logger.info('[MissedRecurringJob] skip + close (ineligible)', {
+          taskId: task.id,
+          status: task.status,
+          approvalStatus: task.approvalStatus,
+          reason: eligibility.reason,
+        });
+        try {
+          await Task.update(
+            { missedEscalationSent: true, missedEscalationSentAt: new Date() },
+            { where: { id: task.id, missedEscalationSent: false } }
+          );
+        } catch (_) { /* best-effort */ }
+        skipped += 1;
+        continue;
+      }
+
       // Refine: real dueAt = occurrenceDate at dueTime in template tz.
       const dueAt = recurringTaskService.dueAtUtc(task.occurrenceDate, tpl.dueTime, tpl.timezone);
       if (dueAt > now) { skipped += 1; continue; }
+
+      // Resolve recipients BEFORE claiming so we can apply the per-user cap
+      // and defer the row (no flag flip) if the budget can't cover this
+      // recipient set. Order: assignee first, then managers, then admins —
+      // that way overflow tends to drop low-priority broadcast targets
+      // before paging the actual assignee.
+      const recipients = await buildRecipients(tpl, task);
+      if (recipients.length === 0) {
+        // No actionable recipient — claim the row so we don't keep
+        // resurveying it every 10 minutes for the rest of the day.
+        try {
+          await Task.update(
+            { missedEscalationSent: true, missedEscalationSentAt: new Date() },
+            { where: { id: task.id, missedEscalationSent: false } }
+          );
+        } catch (_) { /* best-effort */ }
+        skipped += 1;
+        continue;
+      }
+
+      // Allow-list under the budget — defers the entire row if any of the
+      // recipients would be capped, so the next tick can re-attempt the
+      // same notification set without "this user got their assignee ping
+      // but not their manager ping" partial fan-outs.
+      const allowed = recipients.filter((uid) => budget.canEmit(uid));
+      if (allowed.length < recipients.length) {
+        deferred += 1;
+        logger.info('[MissedRecurringJob] defer (budget)', {
+          taskId: task.id,
+          recipients: recipients.length,
+          allowed: allowed.length,
+        });
+        continue; // do NOT flip the flag — pick up next tick
+      }
 
       // Race-safe claim: a conditional UPDATE that only succeeds while the
       // flag is still FALSE. The Task model's update() returns
@@ -256,26 +345,41 @@ async function tickOnce(now = new Date()) {
         continue;
       }
 
-      const recipients = await buildRecipients(tpl, task);
-      if (recipients.length === 0) {
-        // We claimed the row but there's nobody to notify (assignee
-        // deactivated, no managers, etc.). Flag is already flipped — done.
-        skipped += 1;
-        continue;
-      }
-
       const message = escalationMessage(tpl, task);
+      let notifiedThisRow = 0;
       // Send sequentially per recipient. notificationService is fire-and-
-      // forget on the email side, so the loop is fast.
+      // forget on the email side, so the loop is fast. Each recipient gets
+      // an idempotency key — a partial-unique-index dedup on the DB side —
+      // so a duplicate cron tick or a process restart cannot produce a
+      // second notification for the same (task, user) pair.
       for (const userId of recipients) {
+        if (!budget.tryReserve(userId)) {
+          // Budget exhausted mid-row (shouldn't happen given the canEmit
+          // check above, but guards against a concurrent emitter). Stop —
+          // missedEscalationSent is already flipped so the residual
+          // recipients won't be retried; better to log than to flood.
+          logger.warn('[MissedRecurringJob] budget exhausted mid-row', {
+            taskId: task.id, userId, notifiedThisRow,
+          });
+          break;
+        }
         try {
           await sendNotification(
             userId,
             'Recurring task missed',
             message,
             'recurring_missed',
-            task.id
+            task.id,
+            {
+              idempotencyKey: buildIdempotencyKey(
+                'recurring-missed',
+                task.id,
+                userId,
+                task.occurrenceDate || ''
+              ),
+            }
           );
+          notifiedThisRow += 1;
         } catch (e) {
           logger.warn('[MissedRecurringJob] notify failed', {
             taskId: task.id, userId, msg: e.message,
@@ -293,6 +397,7 @@ async function tickOnce(now = new Date()) {
         occurrenceDate: task.occurrenceDate,
         generatedTaskId: task.id,
         recipients: recipients.length,
+        notified: notifiedThisRow,
         source: 'missedRecurringTaskJob',
         timestamp: new Date().toISOString(),
       });
@@ -304,7 +409,14 @@ async function tickOnce(now = new Date()) {
     }
   }
 
-  return { processed: candidates.length, escalated, skipped, errors };
+  return {
+    processed: candidates.length,
+    escalated,
+    skipped,
+    errors,
+    deferred,
+    budget: budget.summary(),
+  };
 }
 
 function startMissedRecurringTaskJob() {
@@ -317,9 +429,12 @@ function startMissedRecurringTaskJob() {
       // the multi-replica scan cost (5xx queries per tick × N replicas).
       const result = await withCronLock('missedRecurringTaskJob', () => tickOnce(new Date()));
       if (result && (result.processed > 0 || result.errors > 0)) {
+        const b = result.budget || {};
         logger.info(
           `[MissedRecurringJob] tick: processed=${result.processed} escalated=${result.escalated} `
-          + `skipped=${result.skipped} errors=${result.errors} (${Date.now() - start}ms)`
+          + `skipped=${result.skipped} deferred=${result.deferred || 0} `
+          + `notifications=${b.totalEmitted || 0} userLimited=${b.userLimitedCount || 0} `
+          + `jobLimited=${b.jobLimitedCount || 0} errors=${result.errors} (${Date.now() - start}ms)`
         );
       }
     } catch (err) {

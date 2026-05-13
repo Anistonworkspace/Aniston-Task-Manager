@@ -19,6 +19,18 @@ export default function PersonCell({
    * truth; this is a UX guardrail to avoid letting them try to assign others.
    */
   assignSelfOnly = false,
+  /**
+   * Phase 7 — when false, the current user is HIDDEN from the picker so a
+   * user with `tasks.assign_self` denied can't try to self-assign from this
+   * surface. Default true (existing behaviour). Combine with `assignSelfOnly`
+   * to express the four combinations:
+   *   assignSelfOnly=true,  canAssignSelf=true  → only show self (default
+   *      member)
+   *   assignSelfOnly=true,  canAssignSelf=false → show empty picker
+   *   assignSelfOnly=false, canAssignSelf=true  → normal picker
+   *   assignSelfOnly=false, canAssignSelf=false → show everyone EXCEPT self
+   */
+  canAssignSelf = true,
   currentUserId = null,
   /**
    * Server-populated assignee object (User include from /api/tasks). Used as
@@ -88,9 +100,14 @@ export default function PersonCell({
   const assigneeName = assignee?.name || assignee?.user?.name || value?.name;
 
   // When the actor cannot assign others, restrict the picker to just them.
-  const visibleMembers = assignSelfOnly && currentUserId
+  // Phase 7 — additionally hide the current user if canAssignSelf is false
+  // (Admin denied tasks.assign_self for them).
+  let visibleMembers = assignSelfOnly && currentUserId
     ? members.filter(m => (m.id || m.user?.id) === currentUserId)
     : members;
+  if (!canAssignSelf && currentUserId) {
+    visibleMembers = visibleMembers.filter(m => (m.id || m.user?.id) !== currentUserId);
+  }
 
   const filtered = search
     ? visibleMembers.filter(m => (m.name || m.user?.name || '').toLowerCase().includes(search.toLowerCase()))

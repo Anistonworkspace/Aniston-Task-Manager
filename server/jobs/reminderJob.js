@@ -12,6 +12,10 @@ const {
 } = require('../utils/taskOverdueEligibility');
 const { getTaskNotificationRecipients } = require('../utils/taskNotificationRecipients');
 const logger = require('../utils/logger');
+const {
+  MAX_TASKS_PER_CRON_RUN,
+  createBudget,
+} = require('../config/notificationLimits');
 
 // Socket emission + DB insert are now handled inside
 // `notificationService.createNotification`. We deliberately no longer import
@@ -90,6 +94,8 @@ async function checkDueSoon() {
   const today = now.toISOString().slice(0, 10);
   const tomorrow = in24h.toISOString().slice(0, 10);
 
+  // Hard cap per tick. Deterministic order (oldest dueDate first) so any
+  // overflow is drained on the next hourly tick.
   const tasks = await Task.findAll({
     where: {
       status: { [Op.notIn]: EXCLUDED_STATUSES_FOR_NOTIFY },
@@ -105,10 +111,15 @@ async function checkDueSoon() {
       { model: User, as: 'assignee', attributes: ['id', 'name'] },
       { model: Board, as: 'board', attributes: ['id', 'name'] },
     ],
+    order: [['dueDate', 'ASC'], ['priority', 'DESC'], ['createdAt', 'ASC']],
+    limit: MAX_TASKS_PER_CRON_RUN,
   });
 
+  const budget = createBudget();
   let sent = 0;
   let skipped = 0;
+  let userLimited = 0;
+
   for (const task of tasks) {
     try {
       const eligibility = isTaskEligibleForOverdueNotification(task);
@@ -134,6 +145,15 @@ async function checkDueSoon() {
         `${task.board ? ` on board "${task.board.name}"` : ''}`;
 
       for (const [userId] of recipients) {
+        // Per-user cap: a user with 200 due-soon tasks in one tick used to
+        // receive 200 notifications back-to-back. Now we cap and rely on
+        // idempotencyKey to make the next tick a no-op for tasks already
+        // notified (a user who's actually getting flooded will still see
+        // the most-overdue ones first thanks to the ORDER BY).
+        if (!budget.tryReserve(userId)) {
+          userLimited += 1;
+          continue;
+        }
         try {
           const notification = await createNotification({
             userId,
@@ -159,7 +179,23 @@ async function checkDueSoon() {
   }
 
   if (tasks.length > 0) {
-    console.log(`[Reminder] Due-soon: ${sent} sent, ${skipped} skipped (of ${tasks.length} candidate task(s))`);
+    const b = budget.summary();
+    logger.info('[Reminder] checkDueSoon tick', {
+      candidates: tasks.length,
+      sent,
+      skipped,
+      userLimitedCount: b.userLimitedCount,
+      jobLimitedCount: b.jobLimitedCount,
+      uniqueUsers: b.uniqueUsers,
+    });
+    if (userLimited > 0 || tasks.length >= MAX_TASKS_PER_CRON_RUN) {
+      logger.warn('[Reminder] checkDueSoon hit caps', {
+        candidates: tasks.length,
+        sent,
+        userLimitedCount: b.userLimitedCount,
+        nextTickWillDrain: true,
+      });
+    }
   }
 }
 
@@ -182,6 +218,12 @@ async function checkDueSoon() {
 async function checkOverdue() {
   const today = todayKey();
 
+  // Hard cap per tick. Was unbounded — a 1000-overdue-task install would
+  // pull every row, allocate the loop frame, and emit a notification per
+  // recipient in one shot. Now: oldest dueDate first, up to
+  // MAX_TASKS_PER_CRON_RUN. Overflow drains on the next hourly tick.
+  // Idempotency keys make the next tick a no-op for already-notified rows,
+  // so we drain forward without re-paging anyone.
   const tasks = await Task.findAll({
     where: {
       status: { [Op.notIn]: EXCLUDED_STATUSES_FOR_NOTIFY },
@@ -198,10 +240,15 @@ async function checkOverdue() {
       { model: User, as: 'creator', attributes: ['id', 'name'] },
       { model: Board, as: 'board', attributes: ['id', 'name'] },
     ],
+    order: [['dueDate', 'ASC'], ['priority', 'DESC'], ['createdAt', 'ASC']],
+    limit: MAX_TASKS_PER_CRON_RUN,
   });
 
+  const budget = createBudget();
   let sent = 0;
   let skipped = 0;
+  let userLimited = 0;
+
   for (const task of tasks) {
     try {
       const eligibility = isTaskEligibleForOverdueNotification(task);
@@ -234,6 +281,10 @@ async function checkOverdue() {
         `Task "${task.title}" is overdue (due ${task.dueDate})` +
         `${task.board ? ` on board "${task.board.name}"` : ''}`;
       for (const [userId] of recipients) {
+        if (!budget.tryReserve(userId)) {
+          userLimited += 1;
+          continue;
+        }
         try {
           const notification = await createNotification({
             userId,
@@ -252,19 +303,23 @@ async function checkOverdue() {
 
       // Also notify creator/manager if different from every assignee.
       // Separate idempotency-key tuple → cannot collide with the assignee
-      // notifications above.
+      // notifications above. Subject to the same per-user budget.
       if (task.creator && !recipients.has(task.creator.id)) {
-        const creatorMsg =
-          `${primaryName}'s task "${task.title}" is overdue (due ${task.dueDate})`;
-        await createNotification({
-          userId: task.creator.id,
-          type: 'task_updated',
-          message: creatorMsg,
-          entityType: 'task',
-          entityId: task.id,
-          boardId: task.boardId || null,
-          idempotencyKey: buildIdempotencyKey('overdue', task.id, task.creator.id, today),
-        });
+        if (!budget.tryReserve(task.creator.id)) {
+          userLimited += 1;
+        } else {
+          const creatorMsg =
+            `${primaryName}'s task "${task.title}" is overdue (due ${task.dueDate})`;
+          await createNotification({
+            userId: task.creator.id,
+            type: 'task_updated',
+            message: creatorMsg,
+            entityType: 'task',
+            entityId: task.id,
+            boardId: task.boardId || null,
+            idempotencyKey: buildIdempotencyKey('overdue', task.id, task.creator.id, today),
+          });
+        }
       }
     } catch (err) {
       console.error(`[Reminder] checkOverdue row failed for task ${task?.id}:`, err?.message || err);
@@ -272,7 +327,23 @@ async function checkOverdue() {
   }
 
   if (tasks.length > 0) {
-    console.log(`[Reminder] Overdue: ${sent} sent, ${skipped} skipped (of ${tasks.length} candidate task(s))`);
+    const b = budget.summary();
+    logger.info('[Reminder] checkOverdue tick', {
+      candidates: tasks.length,
+      sent,
+      skipped,
+      userLimitedCount: b.userLimitedCount,
+      jobLimitedCount: b.jobLimitedCount,
+      uniqueUsers: b.uniqueUsers,
+    });
+    if (userLimited > 0 || tasks.length >= MAX_TASKS_PER_CRON_RUN) {
+      logger.warn('[Reminder] checkOverdue hit caps', {
+        candidates: tasks.length,
+        sent,
+        userLimitedCount: b.userLimitedCount,
+        nextTickWillDrain: true,
+      });
+    }
   }
 }
 
@@ -303,10 +374,15 @@ async function checkDueIn3Days() {
       { model: User, as: 'assignee', attributes: ['id', 'name'] },
       { model: Board, as: 'board', attributes: ['id', 'name'] },
     ],
+    order: [['priority', 'DESC'], ['createdAt', 'ASC']],
+    limit: MAX_TASKS_PER_CRON_RUN,
   });
 
+  const budget = createBudget();
   let sent = 0;
   let skipped = 0;
+  let userLimited = 0;
+
   for (const task of tasks) {
     try {
       const eligibility = isTaskEligibleForOverdueNotification(task);
@@ -326,6 +402,10 @@ async function checkDueIn3Days() {
 
       const message = `Heads up: "${task.title}" is due in 3 days (${task.dueDate})`;
       for (const [userId] of recipients) {
+        if (!budget.tryReserve(userId)) {
+          userLimited += 1;
+          continue;
+        }
         try {
           const notification = await createNotification({
             userId,
@@ -347,7 +427,14 @@ async function checkDueIn3Days() {
   }
 
   if (tasks.length > 0) {
-    console.log(`[Reminder] 3-day: ${sent} sent, ${skipped} skipped (of ${tasks.length} candidate task(s))`);
+    const b = budget.summary();
+    logger.info('[Reminder] checkDueIn3Days tick', {
+      candidates: tasks.length,
+      sent,
+      skipped,
+      userLimitedCount: b.userLimitedCount,
+      jobLimitedCount: b.jobLimitedCount,
+    });
   }
 }
 

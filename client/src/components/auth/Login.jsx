@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { FolderKanban, Mail, Lock, ArrowRight, Eye, EyeOff, ShieldAlert, Monitor } from 'lucide-react';
 import api from '../../services/api';
+import { getErrorMessage, getErrorCode } from '../../utils/errorMap';
 
 // Pretty-printer for the device hint surfaced in the conflict banner.
 // We deliberately keep this compact and best-effort — the user-agent
@@ -158,7 +159,16 @@ export default function Login() {
       }
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed. Please check your email and password.');
+      // Map backend `code` to the canonical login string. We override
+      // VALIDATION_FAILED to a shorter message here — the generic
+      // "check the highlighted fields" copy from the map is for forms
+      // with field-level highlights; the login form is two fields, so
+      // the classic "Invalid email or password" reads cleaner.
+      const message = getErrorMessage(err, {
+        VALIDATION_FAILED: 'Invalid email or password.',
+        AUTH_INVALID_CREDENTIALS: 'Invalid email or password.',
+      });
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -175,11 +185,11 @@ export default function Login() {
       }
       navigate('/');
     } catch (err) {
-      const code = err.response?.data?.code;
+      const code = getErrorCode(err);
       if (code === 'PENDING_TOKEN_INVALID' || code === 'PENDING_TOKEN_REQUIRED') {
         setError('Session confirmation expired. Please sign in again.');
       } else {
-        setError(err.response?.data?.message || 'Could not take over the session. Please try again.');
+        setError(getErrorMessage(err) || 'Could not take over the session. Please try again.');
       }
       // Drop back to the password form on any error — the token is
       // single-use either way.
@@ -216,7 +226,7 @@ export default function Login() {
         setSsoLoading(false);
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to start Microsoft sign-in.');
+      setError(getErrorMessage(err) || 'Failed to start Microsoft sign-in.');
       setSsoLoading(false);
     }
   }

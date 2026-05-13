@@ -8,6 +8,7 @@ const SORT_OPTIONS = [
   { key: 'dueDate', label: 'Due Date' },
   { key: 'assignedTo', label: 'Owner' },
   { key: 'progress', label: 'Progress' },
+  { key: 'labels', label: 'Labels' },
   { key: 'createdAt', label: 'Created Date' },
   { key: 'updatedAt', label: 'Last Updated' },
 ];

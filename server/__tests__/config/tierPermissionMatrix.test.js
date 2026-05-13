@@ -37,19 +37,30 @@ describe('TIER_PERMISSIONS shape', () => {
     expect(Object.keys(TIER_PERMISSIONS).map(Number).sort()).toEqual([1, 2, 3, 4]);
   });
 
-  it.each(ALL_TIERS)('Tier %i covers every RESOURCE', (tier) => {
-    const tierMap = TIER_PERMISSIONS[tier];
+  it.each(ALL_TIERS)('Tier %i resolves a boolean for every RESOURCE (Phase 7: via umbrella synthesis)', (tier) => {
+    // Phase 7 — newly added resources (comments, recurring_work, approvals,
+    // calendar, search, backup, system, browser_notifications, task_links,
+    // task_references) are not literally in TIER_PERMISSIONS — they're
+    // synthesized via getTierPermissions. The test asserts every resource
+    // is reachable via the canonical helper, not via direct property access.
+    const flat = getTierPermissions(tier);
     for (const resource of Object.keys(RESOURCES)) {
-      expect(tierMap[resource]).toBeDefined();
+      const someAction = (RESOURCE_ACTIONS[resource] || [])[0];
+      if (!someAction) continue;
+      const key = `${resource}.${someAction}`;
+      expect(flat[key]).toBeDefined();
     }
   });
 
-  it.each(ALL_TIERS)('Tier %i defines every action declared in RESOURCE_ACTIONS', (tier) => {
-    const tierMap = TIER_PERMISSIONS[tier];
+  it.each(ALL_TIERS)('Tier %i resolves a boolean for every action in RESOURCE_ACTIONS (Phase 7: via umbrella synthesis)', (tier) => {
+    // Use direct key access (not toHaveProperty) because keys contain dots
+    // which Jest treats as a nested path.
+    const flat = getTierPermissions(tier);
     for (const [resource, actions] of Object.entries(RESOURCE_ACTIONS)) {
       for (const action of actions) {
-        expect(tierMap[resource]).toHaveProperty(action);
-        expect(typeof tierMap[resource][action]).toBe('boolean');
+        const key = `${resource}.${action}`;
+        expect(flat[key]).toBeDefined();
+        expect(typeof flat[key]).toBe('boolean');
       }
     }
   });
@@ -69,10 +80,23 @@ describe('TIER_PERMISSIONS shape', () => {
 // ── Tier 1: full access ──────────────────────────────────────────────────
 
 describe('Tier 1 — full system access', () => {
-  it('every declared (resource.action) is true', () => {
+  it('every declared (resource.action) is true — EXCEPT locked / no_surface system rules', () => {
+    // Phase 7 — `locked` actions (e.g. approvals.approve_own) are FALSE for
+    // Tier 1 too because they're system rules, not Tier-1 capabilities.
+    // `no_surface` (e.g. backup.create) is also FALSE because there is no
+    // app feature to enable. Everything else resolves true for Tier 1 via
+    // the canonical resolver.
+    const { getActionMeta } = require('../../config/permissionMatrix');
+    const flat = getTierPermissions(1);
     for (const [resource, actions] of Object.entries(RESOURCE_ACTIONS)) {
       for (const action of actions) {
-        expect(TIER_PERMISSIONS[1][resource][action]).toBe(true);
+        const meta = getActionMeta(resource, action);
+        const key = `${resource}.${action}`;
+        if (meta.enforcement === 'locked' || meta.enforcement === 'no_surface') {
+          expect(flat[key]).toBe(false);
+        } else {
+          expect(flat[key]).toBe(true);
+        }
       }
     }
   });

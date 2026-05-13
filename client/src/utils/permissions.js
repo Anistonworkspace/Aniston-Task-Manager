@@ -44,22 +44,122 @@ export const RESOURCES = {
   api_keys:         { label: 'API Keys',              category: 'Administration' },
 };
 
+// Phase 7 — full granular action label catalog (matches backend
+// permissionMatrix.js ACTIONS). The UI fetches the canonical catalog via
+// /api/permissions/catalog at boot; this list is the first-paint fallback
+// for human-readable action labels in the Permission Overrides dropdown.
 export const ACTIONS = {
-  view:              { label: 'View',                 description: 'View/read access' },
-  create:            { label: 'Create',               description: 'Create new records' },
-  edit:              { label: 'Edit',                 description: 'Edit/update records' },
-  delete:            { label: 'Delete',               description: 'Delete/archive records' },
-  assign:            { label: 'Assign Self',          description: 'Assign self as owner/assignee' },
-  assign_others:     { label: 'Assign Others',        description: 'Assign tasks to other users' },
-  set_priority:      { label: 'Set Priority',         description: 'Change task priority (low/medium/high/critical)' },
-  approve:           { label: 'Approve/Reject',       description: 'Approve or reject requests' },
-  export:            { label: 'Export',               description: 'Export/download data' },
-  manage:            { label: 'Manage',               description: 'Full management access' },
-  manage_members:    { label: 'Manage Members',       description: 'Add/remove members' },
-  manage_settings:   { label: 'Manage Settings',      description: 'Configure settings' },
-  change_status:     { label: 'Change Status',        description: 'Change status fields' },
-  comment:           { label: 'Comment',              description: 'Add comments' },
-  upload:            { label: 'Upload Files',         description: 'Upload attachments' },
+  // Common verbs
+  view:                    { label: 'View',                       description: 'View/read access' },
+  view_all:                { label: 'View all',                   description: 'View every instance (not just own/scoped)' },
+  view_team:               { label: 'View team',                  description: 'View data for your team / direct reports' },
+  view_history:            { label: 'View history',               description: 'View audit / change history' },
+  view_activity:           { label: 'View activity',              description: 'View activity feed' },
+  view_sensitive:          { label: 'View sensitive fields',      description: 'View sensitive fields like email, manager, designation' },
+  view_sensitive_stats:    { label: 'View sensitive stats',       description: 'View sensitive aggregate stats' },
+  view_effective:          { label: 'View effective permissions',  description: 'View another user\'s effective permissions' },
+  view_all_results:        { label: 'View all search results',     description: 'See results outside your normal visibility scope' },
+  view_restricted_results: { label: 'View restricted search results', description: 'See restricted/archived results in search' },
+  create:                  { label: 'Create',                     description: 'Create new records' },
+  edit:                    { label: 'Edit',                       description: 'Edit/update records (umbrella)' },
+  delete:                  { label: 'Delete',                     description: 'Delete records (umbrella)' },
+  manage:                  { label: 'Manage',                     description: 'Full management access (umbrella)' },
+  export:                  { label: 'Export',                     description: 'Export/download data' },
+  archive:                 { label: 'Archive',                    description: 'Soft-delete / archive' },
+  restore:                 { label: 'Restore',                    description: 'Restore from archive' },
+  permanent_delete:        { label: 'Permanently delete',         description: 'Hard delete from archive (irreversible)' },
+  approve:                 { label: 'Approve',                    description: 'Approve a request' },
+  reject:                  { label: 'Reject',                     description: 'Reject a request' },
+  request:                 { label: 'Request',                    description: 'Create a request' },
+  create_request:          { label: 'Create request',             description: 'Create an approval / access request' },
+  delegate:                { label: 'Delegate',                   description: 'Delegate to another user' },
+  use:                     { label: 'Use',                        description: 'Use this feature' },
+  receive:                 { label: 'Receive',                    description: 'Receive notifications' },
+  clear:                   { label: 'Clear',                      description: 'Clear/dismiss all' },
+  manage_members:          { label: 'Manage members',             description: 'Add/remove members (umbrella)' },
+  manage_settings:         { label: 'Manage settings',            description: 'Configure settings' },
+  manage_structure:        { label: 'Manage structure',           description: 'Manage org-chart structure' },
+
+  // Task fields
+  edit_title:              { label: 'Edit task title',            description: 'Rename a task after creation' },
+  edit_description:        { label: 'Edit task description',      description: 'Edit a task description (set-once for lower tiers)' },
+  edit_locked_description: { label: 'Edit locked description',    description: 'Edit a task description after it has been set' },
+  edit_status:             { label: 'Change status',              description: 'Change a task status' },
+  edit_priority:           { label: 'Change priority',             description: 'Change task priority' },
+  edit_start_date:         { label: 'Change start date',          description: 'Change a task start date' },
+  edit_due_date:           { label: 'Change due date',            description: 'Change a task due date' },
+  edit_timeline:           { label: 'Change timeline',            description: 'Change a task timeline (start + due together)' },
+  edit_assignee:           { label: 'Edit assignee field',        description: 'Modify the task assignee value directly' },
+  change_status:           { label: 'Change status (legacy)',     description: 'LEGACY umbrella — superseded by tasks.edit_status' },
+  set_priority:            { label: 'Set priority (legacy)',      description: 'LEGACY umbrella — superseded by tasks.edit_priority' },
+
+  // Task assignment
+  assign:                  { label: 'Self-assign (legacy)',       description: 'LEGACY umbrella — superseded by tasks.assign_self' },
+  assign_self:             { label: 'Assign task to self',        description: 'Add yourself as an assignee on an existing task' },
+  assign_others:           { label: 'Assign task to others',      description: 'Assign tasks to other users' },
+  unassign_self:           { label: 'Unassign self',              description: 'Remove yourself from a task\'s assignees' },
+  unassign_others:         { label: 'Unassign others',            description: 'Remove other users from a task\'s assignees' },
+
+  // Task lifecycle
+  complete:                { label: 'Complete task',              description: 'Mark a task as done' },
+  mark_incomplete:         { label: 'Mark incomplete',            description: 'Revert a task from done back to working' },
+  approve_completion:      { label: 'Approve completion',          description: 'Approve a task completion submission' },
+  reject_completion:       { label: 'Reject completion',           description: 'Reject a task completion submission' },
+  reopen:                  { label: 'Reopen task',                description: 'Reopen a closed task' },
+  move_between_groups:     { label: 'Move between groups',        description: 'Move a task to a different group' },
+  move_between_boards:     { label: 'Move between boards',        description: 'Move a task to a different board' },
+  reorder:                 { label: 'Reorder task',               description: 'Drag-reorder a task within a group' },
+  bulk_edit:               { label: 'Bulk edit',                  description: 'Apply edits to multiple tasks at once' },
+  bulk_delete:             { label: 'Bulk delete',                description: 'Delete multiple tasks at once' },
+  create_for_self:         { label: 'Create task for self',       description: 'FUTURE — gate creation-time self-assign separately' },
+
+  // Comments / labels / files (granular)
+  comment:                 { label: 'Comment (legacy)',           description: 'LEGACY umbrella — superseded by comments.create' },
+  edit_own:                { label: 'Edit own',                   description: 'Edit your own records' },
+  edit_any:                { label: 'Edit any',                   description: 'Edit any record (not just your own)' },
+  delete_own:              { label: 'Delete own',                 description: 'Delete your own records' },
+  delete_any:              { label: 'Delete any',                 description: 'Delete any record (not just your own)' },
+  add_to_task:             { label: 'Add to task',                description: 'Add a label / item to a task' },
+  remove_from_task:        { label: 'Remove from task',           description: 'Remove a label / item from a task' },
+  upload:                  { label: 'Upload (legacy)',            description: 'LEGACY umbrella — superseded by task_files.upload' },
+  download:                { label: 'Download',                   description: 'Download a file' },
+  access_private:          { label: 'Access private files',      description: 'Access files not directly attached to your visible tasks' },
+
+  // Boards / workspaces
+  add_member:              { label: 'Add member',                 description: 'Add a member to a board' },
+  remove_member:           { label: 'Remove member',              description: 'Remove a member from a board' },
+  change_member_role:      { label: 'Change member role',         description: 'Change a member\'s role on a board' },
+  create_group:            { label: 'Create group',               description: 'Create a new group on a board' },
+  edit_group:              { label: 'Edit group',                 description: 'Rename or recolor a group' },
+  delete_group:            { label: 'Delete group',               description: 'Delete a group from a board' },
+  reorder_group:           { label: 'Reorder groups',             description: 'Drag-reorder groups on a board' },
+  reorder_task:            { label: 'Reorder tasks',              description: 'Drag-reorder tasks (board-level)' },
+
+  // User / role mgmt
+  activate:                { label: 'Activate user',              description: 'Activate a deactivated user' },
+  deactivate:              { label: 'Deactivate user',            description: 'Deactivate an active user' },
+  reset_password:          { label: 'Reset password',             description: 'Reset another user\'s password' },
+  change_role:             { label: 'Change role',                description: 'Change a user\'s role' },
+  change_tier:             { label: 'Change tier',                description: 'Change a user\'s tier (T1-T4)' },
+  change_manager:          { label: 'Change manager',             description: 'Change a user\'s manager' },
+  change_hierarchy:        { label: 'Change hierarchy level',     description: 'Change a user\'s hierarchy level' },
+  change_super_admin:      { label: 'Change super-admin flag',    description: 'Grant or revoke super-admin' },
+  grant:                   { label: 'Grant permission',           description: 'Issue a grant override' },
+  deny:                    { label: 'Deny permission',            description: 'Issue a deny override' },
+  revoke:                  { label: 'Revoke permission',          description: 'Revoke an existing override' },
+  rotate:                  { label: 'Rotate key',                 description: 'Rotate / regenerate' },
+
+  // LOCKED system rules
+  approve_own:             { label: 'Approve own requests',       description: 'LOCKED system rule — self-approval is permanently blocked' },
+  reject_own:              { label: 'Reject own requests',        description: 'LOCKED system rule — self-rejection is permanently blocked' },
+
+  // Recurring
+  generate_now:            { label: 'Generate now',               description: 'Manually trigger recurring task generation' },
+  pause:                   { label: 'Pause',                      description: 'Pause a recurring template' },
+  resume:                  { label: 'Resume',                     description: 'Resume a paused recurring template' },
+
+  // Time planning
+  edit_team:               { label: 'Edit team time plan',        description: 'Edit other users\' time plans' },
 };
 
 export const RESOURCE_ACTIONS = {
@@ -69,7 +169,11 @@ export const RESOURCE_ACTIONS = {
   admin_settings:   ['view', 'manage'],
   workspaces:       ['view', 'create', 'edit', 'delete', 'manage_members'],
   boards:           ['view', 'create', 'edit', 'delete', 'manage_members', 'manage_settings', 'export'],
-  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'set_priority', 'change_status', 'comment', 'upload', 'approve'],
+  // Phase 6 — added edit_locked_description (mirrors backend permissionMatrix.js).
+  // This action overrides the set-once task-description lock; backend marks it
+  // T1-grantable only. UI fetches the canonical catalog from /permissions/catalog
+  // and uses this local list only as a fallback for offline / first-paint cases.
+  tasks:            ['view', 'create', 'edit', 'delete', 'assign', 'assign_others', 'set_priority', 'change_status', 'comment', 'upload', 'approve', 'edit_locked_description'],
   subtasks:         ['view', 'create', 'edit', 'delete'],
   task_comments:    ['view', 'create', 'edit', 'delete'],
   task_files:       ['view', 'upload', 'delete'],
@@ -92,7 +196,20 @@ export const RESOURCE_ACTIONS = {
   api_keys:         ['view', 'create', 'delete', 'manage'],
 };
 
-// ── Legacy flat permissions (backward compatibility) ────────────────────
+// ── Legacy flat permissions (DEPRECATED — Phase 6 sunset candidate) ────
+//
+// This flat-action map is the pre-tier permission model. Still consumed by
+// canUser() below for legacy callers in Sidebar.jsx / BoardsPage / BoardPage
+// / TaskGroup. New code MUST use:
+//   - hasGranularPermission(resource, action, ...)           ← preferred
+//   - isExplicitlyDenied(resource, action, ...)              ← for deny-aware UI
+//   - AuthContext effectivePermissions / granularPermissions ← React surface
+//
+// The role-string entries below are intentionally NOT in sync with the
+// post-Phase-6 tier matrix — they describe the original role gates and are
+// kept as a static safety net for users who haven't yet loaded permissions.
+// To remove this object entirely: migrate the remaining canUser() call sites
+// (4 files total) to hasGranularPermission, then delete this block.
 
 const PERMISSIONS = {
   create_workspace:    ['manager', 'admin'],

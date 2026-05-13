@@ -626,16 +626,31 @@ async function chatWithAI(req, res) {
       data: { message: reply },
     });
   } catch (error) {
-    console.error('[AIController] chat error:', error.message);
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.warn('[AIController] chat error', { err: error });
 
-    // Configuration errors thrown by aiService.chat() directly
+    // Configuration / provider-availability errors thrown by aiService.chat().
+    // The strings in error.message are app-controlled (see aiService.js where
+    // these are thrown) and safe to surface to the admin who triggered the
+    // request — but we send canonical text rather than echoing the raw
+    // message so a future change in aiService can't accidentally introduce
+    // provider-detail leakage into this response path.
     if (error.message?.includes('not configured') || error.message?.includes('not available')) {
-      return res.status(400).json({ success: false, message: error.message });
+      return res.status(400).json({
+        success: false,
+        code: 'AI_NOT_CONFIGURED',
+        message: 'AI is not configured. Ask an admin to set up AI in Integrations.',
+      });
     }
 
-    // Unknown provider type
+    // Unknown provider type — admin selected a provider type the backend
+    // does not support.
     if (error.message?.includes('Unknown AI provider type')) {
-      return res.status(400).json({ success: false, message: error.message });
+      return res.status(400).json({
+        success: false,
+        code: 'AI_PROVIDER_UNSUPPORTED',
+        message: 'The selected AI provider type is not supported.',
+      });
     }
 
     // Use shared classifyError for provider HTTP errors

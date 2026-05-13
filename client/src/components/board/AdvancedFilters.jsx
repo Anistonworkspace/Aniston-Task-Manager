@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, Save, BookmarkCheck, ChevronDown, Filter, Clock, AlertCircle, Calendar, User, Tag } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { X, Save, BookmarkCheck, ChevronDown, Filter, Clock, AlertCircle, Calendar, User, Tag, Search } from 'lucide-react';
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup } from '../../utils/constants';
 
 const SMART_VIEWS = [
@@ -13,14 +13,30 @@ const SMART_VIEWS = [
   { id: 'unassigned', label: 'Unassigned', icon: User, color: '#c4c4c4', filter: { unassigned: true } },
 ];
 
-export default function AdvancedFilters({ filters, onChange, members = [], onClear, currentUserId, boardStatuses }) {
-  const { status = [], priority = [], person = '', dateFilter = '', approvalStatus = '', tags = [], assignedToMe = false, unassigned = false, createdByMe = false, hasSubtasks = '', dueDateRange = '' } = filters;
+export default function AdvancedFilters({ filters, onChange, members = [], onClear, currentUserId, boardStatuses, boardLabels = [] }) {
+  const { status = [], priority = [], person = '', dateFilter = '', approvalStatus = '', tags = [], labels = [], assignedToMe = false, unassigned = false, createdByMe = false, hasSubtasks = '', dueDateRange = '' } = filters;
   const [showSaved, setShowSaved] = useState(false);
   const [showSmartViews, setShowSmartViews] = useState(false);
   const [savedFilters, setSavedFilters] = useState([]);
   const [saveName, setSaveName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [labelSearch, setLabelSearch] = useState('');
+  const [showLabelMenu, setShowLabelMenu] = useState(false);
+  const labelBoxRef = useRef(null);
+
+  // Click-outside closes the label suggestion dropdown so it doesn't linger
+  // when the user moves to another filter chip.
+  useEffect(() => {
+    if (!showLabelMenu) return undefined;
+    function onDocClick(e) {
+      if (labelBoxRef.current && !labelBoxRef.current.contains(e.target)) {
+        setShowLabelMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [showLabelMenu]);
 
   useEffect(() => {
     const saved = localStorage.getItem('savedFilters');
@@ -87,11 +103,45 @@ export default function AdvancedFilters({ filters, onChange, members = [], onCle
   }
 
   function getDefaultFilters() {
-    return { status: [], priority: [], person: '', dateFilter: '', approvalStatus: '', tags: [], assignedToMe: false, unassigned: false, createdByMe: false, hasSubtasks: '', dueDateRange: '' };
+    return { status: [], priority: [], person: '', dateFilter: '', approvalStatus: '', tags: [], labels: [], assignedToMe: false, unassigned: false, createdByMe: false, hasSubtasks: '', dueDateRange: '' };
   }
 
-  const hasFilters = status.length > 0 || priority.length > 0 || person || dateFilter || approvalStatus || assignedToMe || unassigned || createdByMe;
-  const filterCount = [status.length > 0, priority.length > 0, !!person, !!dateFilter, !!approvalStatus, assignedToMe, unassigned, createdByMe].filter(Boolean).length;
+  // Label filter helpers — `labels` in the filter state is an array of
+  // stable label IDs (strings). We never store the full label object to
+  // avoid stale colour/name when a label is renamed elsewhere; the chip
+  // colour/name is always looked up from `boardLabels` at render time.
+  function toggleLabel(id) {
+    if (!id) return;
+    const next = labels.includes(id) ? labels.filter(l => l !== id) : [...labels, id];
+    onChange({ ...filters, labels: next });
+  }
+
+  function removeLabel(id) {
+    onChange({ ...filters, labels: labels.filter(l => l !== id) });
+  }
+
+  // Case-insensitive search across the board's known labels. We exclude
+  // labels that are already selected so the dropdown only ever offers
+  // new picks, which keeps the suggestion list short and obvious.
+  const filteredLabelSuggestions = useMemo(() => {
+    const q = labelSearch.trim().toLowerCase();
+    return (boardLabels || []).filter(l => {
+      if (!l || !l.id) return false;
+      if (labels.includes(l.id)) return false;
+      if (!q) return true;
+      return (l.name || '').toLowerCase().includes(q);
+    });
+  }, [boardLabels, labelSearch, labels]);
+
+  const selectedLabelObjects = useMemo(() => {
+    const byId = new Map((boardLabels || []).map(l => [l.id, l]));
+    return labels
+      .map(id => byId.get(id) || { id, name: id, color: '#c4c4c4' })
+      .filter(Boolean);
+  }, [boardLabels, labels]);
+
+  const hasFilters = status.length > 0 || priority.length > 0 || person || dateFilter || approvalStatus || assignedToMe || unassigned || createdByMe || labels.length > 0;
+  const filterCount = [status.length > 0, priority.length > 0, !!person, !!dateFilter, !!approvalStatus, assignedToMe, unassigned, createdByMe, labels.length > 0].filter(Boolean).length;
 
   return (
     <div className="bg-surface/40 rounded-lg mb-2 border border-border/40 animate-fade-in">
@@ -161,6 +211,84 @@ export default function AdvancedFilters({ filters, onChange, members = [], onCle
               <option key={m.id || m.user?.id} value={m.id || m.user?.id}>{m.name || m.user?.name}</option>
             ))}
           </select>
+        </div>
+
+        <div className="w-px h-5 bg-border/60" />
+
+        {/* Labels filter — searchable, multi-select. Placed beside Person so
+            it sits next to the other task-attribute filters and lines up
+            visually with the Status / Priority chips above. The dropdown
+            is a sibling absolute-positioned panel rather than a portal,
+            since the filter row itself is not inside an overflow-clip
+            container — this keeps the markup simple and matches the
+            other inline filters here. */}
+        <div className="flex items-center gap-1" ref={labelBoxRef}>
+          <span className="text-[10px] uppercase tracking-wider text-text-tertiary font-semibold mr-0.5">Labels</span>
+          <div className="relative">
+            <div
+              className="flex items-center gap-1 flex-wrap bg-white dark:bg-zinc-700 border border-border/60 rounded-md px-1.5 py-0.5 min-w-[140px] max-w-[260px] focus-within:border-primary"
+              onClick={() => setShowLabelMenu(true)}
+            >
+              {selectedLabelObjects.map(l => (
+                <span
+                  key={l.id}
+                  className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full text-white"
+                  style={{ backgroundColor: l.color || '#c4c4c4' }}
+                  title={l.name}
+                >
+                  <span className="truncate max-w-[80px]">{l.name}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); removeLabel(l.id); }}
+                    className="hover:bg-black/20 rounded-full p-0.5"
+                    aria-label={`Remove ${l.name} filter`}
+                  >
+                    <X size={9} />
+                  </button>
+                </span>
+              ))}
+              <div className="relative flex-1 min-w-[60px] flex items-center">
+                {selectedLabelObjects.length === 0 && (
+                  <Search size={10} className="text-text-tertiary mr-1" />
+                )}
+                <input
+                  type="text"
+                  value={labelSearch}
+                  onChange={(e) => { setLabelSearch(e.target.value); setShowLabelMenu(true); }}
+                  onFocus={() => setShowLabelMenu(true)}
+                  placeholder={selectedLabelObjects.length === 0 ? 'Search labels…' : ''}
+                  className="bg-transparent text-[11px] py-0.5 focus:outline-none flex-1 min-w-[60px] text-text-secondary"
+                  aria-label="Search labels"
+                />
+              </div>
+            </div>
+            {showLabelMenu && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-gray-200 dark:border-zinc-700 z-50 py-1 max-h-56 overflow-y-auto">
+                {(!boardLabels || boardLabels.length === 0) ? (
+                  <p className="text-[11px] text-text-tertiary px-3 py-2 text-center">No labels found</p>
+                ) : filteredLabelSuggestions.length === 0 ? (
+                  <p className="text-[11px] text-text-tertiary px-3 py-2 text-center">
+                    {labelSearch ? 'No matching labels' : 'All labels selected'}
+                  </p>
+                ) : (
+                  filteredLabelSuggestions.map(l => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() => { toggleLabel(l.id); setLabelSearch(''); }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-gray-50 dark:hover:bg-zinc-700 text-left"
+                    >
+                      <span
+                        className="w-3 h-3 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: l.color || '#c4c4c4' }}
+                      />
+                      <span className="text-gray-700 dark:text-gray-300 truncate">{l.name}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Toggle expanded */}

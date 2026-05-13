@@ -299,9 +299,14 @@ describe('canGrantPermission (Phase 5b)', () => {
     // so the manager fails the "do you have this permission?" check
     // BEFORE reaching the "admin_settings is admin-only" block. Either
     // refusal is correct; the contract is "denied, with a reason".
+    //
+    // Phase 6 update — message is now "Tier 2 cannot GRANT '<action>' on
+    // '<resource>'. Tier 1 only." because the catalog-based check fires
+    // first. The semantic guarantee (T2 cannot grant admin_settings)
+    // is unchanged.
     const r = await canGrantPermission(t2MgrUser, 'admin_settings', 'manage', 'grant');
     expect(r.allowed).toBe(false);
-    expect(r.reason).toMatch(/cannot grant administrative|do not have/i);
+    expect(r.reason).toMatch(/cannot grant administrative|do not have|Tier 1 only|cannot GRANT/i);
   });
 
   it('manager-role granter cannot grant tasks.delete (T2 base says no, no own perm)', async () => {

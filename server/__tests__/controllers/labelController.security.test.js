@@ -60,6 +60,21 @@ jest.mock('../../utils/tierResponseHelpers', () => ({
   sendIfTierError: jest.fn(() => false),
 }));
 
+// Phase 7 — these tests cover IDOR protections (P0-1..6), not Phase-7
+// granular permission gating. Mock the engine so the new
+// labels.add_to_task / labels.remove_from_task gates never deny in this
+// suite; dedicated grantability tests live in
+// permissionEngine.grantability.test.js.
+jest.mock('../../utils/permissionGate', () => ({
+  denyIfNoPermission: jest.fn(async () => false),
+  checkPermission: jest.fn(async () => true),
+}));
+jest.mock('../../services/permissionEngine', () => ({
+  hasPermission: jest.fn(async () => true),
+  canGrantPermission: jest.fn(async () => ({ allowed: true })),
+  computeEffectivePermissions: jest.fn(async () => ({ permissions: {}, basePermissions: {}, overrides: [], denials: [], grants: [] })),
+}));
+
 jest.mock('../../utils/sanitize', () => ({
   sanitizeInput: jest.fn((v) => v),
 }));

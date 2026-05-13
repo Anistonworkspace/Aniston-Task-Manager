@@ -247,6 +247,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
 
+// Stamp every request with a correlation id (X-Request-ID). Sits before
+// morgan so future log-format changes can include it, and before all body
+// parsers/route handlers so any error log carries the same id we echo to
+// the client in the error response body.
+const requestId = require('./middleware/requestId');
+app.use(requestId);
+
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Capture the raw request buffer so signature-checking middleware (D-3 webhook
@@ -586,28 +593,13 @@ app.use((req, res) => {
 });
 
 // ─── Global error handler ────────────────────────────────────
-const logger = require('./utils/logger');
-app.use((err, _req, res, _next) => {
-  logger.error('Unhandled error', { error: err.message, stack: err.stack, name: err.name });
-
-  // Sequelize validation errors
-  if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
-    const messages = err.errors.map((e) => e.message);
-    return res.status(400).json({
-      success: false,
-      message: 'Validation error.',
-      errors: messages,
-    });
-  }
-
-  const statusCode = err.statusCode || 500;
-  res.status(statusCode).json({
-    success: false,
-    message: process.env.NODE_ENV === 'production'
-      ? 'Internal server error.'
-      : err.message || 'Internal server error.',
-  });
-});
+// Centralized in middleware/errorHandler.js. Classifies the thrown error
+// into a stable code + safe user-facing message, redacts secrets from the
+// server-side log, and never leaks stack traces, SQL fragments, or column
+// names to the client. Response shape is backward-compatible (top-level
+// `message`/`errors`/`code` preserved) with an additive `error` envelope
+// carrying { code, message, requestId, details? } for new frontend code.
+app.use(require('./middleware/errorHandler'));
 
 // ─── Start server ────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT, 10) || 5000;
@@ -2180,12 +2172,16 @@ const start = async () => {
   }
 };
 
-// Global handlers to prevent silent crashes in production
+// Global handlers to prevent silent crashes in production. Routed through
+// safeLogger so any Axios/JWT-shaped tokens that show up in the reason
+// (e.g. an unhandled rejection from an outbound HTTP call) are scrubbed
+// before they hit the log file.
+const _safeLogger = require('./utils/safeLogger');
 process.on('unhandledRejection', (reason) => {
-  console.error('[Server] Unhandled Promise Rejection:', reason);
+  _safeLogger.error('[Server] Unhandled Promise Rejection', { reason });
 });
 process.on('uncaughtException', (err) => {
-  console.error('[Server] Uncaught Exception:', err);
+  _safeLogger.error('[Server] Uncaught Exception', { err });
 });
 
 // Graceful shutdown on SIGTERM/SIGINT — closes the HTTP server (so in-flight

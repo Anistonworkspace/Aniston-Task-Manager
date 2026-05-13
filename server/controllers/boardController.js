@@ -250,14 +250,27 @@ const getBoards = async (req, res) => {
       distinct: true,
     });
 
-    // Attach task counts for this page of boards only
+    // Attach task counts for this page of boards only.
+    //
+    // Phase 6 — task-count leak fix. Previously this counted EVERY task on
+    // each board regardless of viewer visibility, so a Tier 4 user saw
+    // "15 tasks" on a board where they could only see 3. The new aggregation
+    // applies the same taskVisibilityService.buildTaskVisibilityWhere
+    // predicate used by the task list endpoints so the count matches what
+    // the viewer will actually see when they open the board.
     const boardIds = boards.map((b) => b.id);
     const taskCountMap = {};
 
     if (boardIds.length > 0) {
+      const taskCountWhere = { boardId: { [Op.in]: boardIds }, isArchived: false };
+      const visibilityFragment = await taskVisibility.buildTaskVisibilityWhere(req.user);
+      if (visibilityFragment && visibilityFragment[Op.and]) {
+        if (!taskCountWhere[Op.and]) taskCountWhere[Op.and] = [];
+        for (const frag of visibilityFragment[Op.and]) taskCountWhere[Op.and].push(frag);
+      }
       const taskCounts = await Task.findAll({
         attributes: ['boardId', [sequelize.fn('COUNT', sequelize.col('id')), 'taskCount']],
-        where: { boardId: { [Op.in]: boardIds }, isArchived: false },
+        where: taskCountWhere,
         group: ['boardId'],
         raw: true,
       });
@@ -407,13 +420,11 @@ const getBoard = async (req, res) => {
 
     res.json({ success: true, data: responseData });
   } catch (error) {
-    console.error('[Board] GetBoard error:', {
-      message: error.message,
-      name: error.name,
-      sql: error.sql || error.parent?.sql || undefined,
-      original: error.original?.message || error.parent?.message || undefined,
-      stack: error.stack?.split('\n').slice(0, 5).join('\n'),
-    });
+    // safeLogger captures the full error (incl. Sequelize sql/original) but
+    // runs them through the redaction pass so secrets in a wrapped Axios
+    // error or a stringified URL with a token never reach the log file.
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.error('[Board] GetBoard error', { err: error });
     res.status(500).json({ success: false, message: 'Server error fetching board.' });
   }
 };
@@ -585,6 +596,73 @@ const updateBoard = async (req, res) => {
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'board', { isOwnResource: false }))) return;
     }
 
+    // Phase B — granular boards.archive / boards.restore / boards.delete_group
+    // gates. The legacy boards.edit / boards.delete umbrellas continue to
+    // apply via fallback; these are additional deny-override hooks.
+    {
+      const { hasPermission: enginePermissionBoard } = require('../services/permissionEngine');
+      if (updates.isArchived === true && board.isArchived !== true) {
+        const can = await enginePermissionBoard(req.user, 'boards', 'archive');
+        if (!can) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'boards.archive',
+            message: 'You do not have permission to archive boards.',
+          });
+        }
+      }
+      if (updates.isArchived === false && board.isArchived === true) {
+        const can = await enginePermissionBoard(req.user, 'boards', 'restore');
+        if (!can) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'boards.restore',
+            message: 'You do not have permission to restore archived boards.',
+          });
+        }
+      }
+      // delete_group: detect a shrinkage in the groups array (one or more
+      // group ids in the prior list are missing from the new one). This
+      // catches the PUT-with-groups-array path, which is the only way the
+      // legacy frontend deletes groups today.
+      if (Array.isArray(updates.groups) && Array.isArray(board.groups)) {
+        const prevIds = new Set(board.groups.map((g) => g?.id).filter(Boolean));
+        const nextIds = new Set(updates.groups.map((g) => g?.id).filter(Boolean));
+        const removedAny = [...prevIds].some((id) => !nextIds.has(id));
+        if (removedAny) {
+          const can = await enginePermissionBoard(req.user, 'boards', 'delete_group');
+          if (!can) {
+            return res.status(403).json({
+              success: false,
+              code: 'PERMISSION_DENIED',
+              permission: 'boards.delete_group',
+              message: 'You do not have permission to delete groups from boards.',
+            });
+          }
+        }
+        // reorder_group: same array, different order, no shrinkage (or
+        // additions only) → reorder gesture.
+        const sameSet = prevIds.size === nextIds.size && [...prevIds].every((id) => nextIds.has(id));
+        if (sameSet) {
+          const prevOrder = board.groups.map((g) => g?.id).filter(Boolean).join(',');
+          const nextOrder = updates.groups.map((g) => g?.id).filter(Boolean).join(',');
+          if (prevOrder !== nextOrder) {
+            const can = await enginePermissionBoard(req.user, 'boards', 'reorder_group');
+            if (!can) {
+              return res.status(403).json({
+                success: false,
+                code: 'PERMISSION_DENIED',
+                permission: 'boards.reorder_group',
+                message: 'You do not have permission to reorder board groups.',
+              });
+            }
+          }
+        }
+      }
+    }
+
     await board.update(updates);
 
     const fullBoard = await Board.findByPk(board.id, {
@@ -716,6 +794,14 @@ const addMember = async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
 
+    // Phase 7 — granular boards.add_member gate. Umbrella → boards.manage_members
+    // preserves backward compat for any existing rows on the broader key.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'boards', 'add_member',
+          'You do not have permission to add board members.')) return;
+    }
+
     const alreadyMember = board.members.some((m) => m.id === userId);
     if (alreadyMember) {
       // Even if already a member, upgrade to explicit (non-auto) so cleanup doesn't remove them
@@ -810,6 +896,13 @@ const removeMember = async (req, res) => {
       const { assertCanDelete } = require('../services/tierEnforcement');
       const { sendIfTierError } = require('../utils/tierResponseHelpers');
       if (sendIfTierError(res, () => assertCanDelete(req.user, 'board_member', { isOwnResource: false }))) return;
+    }
+
+    // Phase 7 — granular boards.remove_member gate.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'boards', 'remove_member',
+          'You do not have permission to remove board members.')) return;
     }
 
     const removedUser = await User.findByPk(userId, { attributes: ['id', 'name'] });
@@ -912,6 +1005,13 @@ const addGroup = async (req, res) => {
       });
     }
 
+    // Phase 7 — granular boards.create_group gate (umbrella → boards.edit).
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'boards', 'create_group',
+          'You do not have permission to create groups on this board.')) return;
+    }
+
     const { title, color } = req.body;
     const existing = Array.isArray(board.groups) ? board.groups : [];
     const palette = ['#e2445c', '#fdab3d', '#00c875', '#579bfc', '#a25ddc', '#ff642e'];
@@ -993,6 +1093,13 @@ const renameGroup = async (req, res) => {
         success: false,
         message: 'Access denied. You do not have access to this board.',
       });
+    }
+
+    // Phase 7 — granular boards.edit_group gate (umbrella → boards.edit).
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'boards', 'edit_group',
+          'You do not have permission to rename or recolor groups.')) return;
     }
 
     const groupId = req.params.groupId;
@@ -1105,6 +1212,13 @@ const reorderGroups = async (req, res) => {
         success: false,
         message: 'Access denied. You do not have access to this board.',
       });
+    }
+
+    // Phase B — granular boards.reorder_group gate. Umbrella → boards.edit.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'boards', 'reorder_group',
+          'You do not have permission to reorder board groups.')) return;
     }
 
     const incoming = req.body && req.body.groups;

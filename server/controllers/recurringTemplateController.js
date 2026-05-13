@@ -32,6 +32,7 @@ const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const logger = require('../utils/logger');
 const socketService = require('../services/socketService');
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 // F-9 — emit template lifecycle events to all viewers authorized to see this
 // template (assignee, creator, ancestors of each, admins). Mirrors the
@@ -144,7 +145,9 @@ async function canTargetAssignee(actor, assigneeId) {
  */
 async function canManageTemplate(actor, template, mode = 'view') {
   if (!template) return { allowed: false, reason: 'Template not found.', status: 404 };
-  if (actor.isSuperAdmin || actor.role === 'admin' || actor.role === 'manager') {
+  // Phase 6 — replaced legacy role-string dual-gate with canonical tier
+  // helper. T1+T2 (super admin / admin / manager) get unrestricted manage.
+  if (hasTierAtLeast(actor, TIER_2)) {
     return { allowed: true };
   }
   if (actor.role === 'assistant_manager') {

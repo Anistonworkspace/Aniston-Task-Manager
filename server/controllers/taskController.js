@@ -59,9 +59,21 @@ async function checkAssignmentAuthority(user, targetUserIds = []) {
   const isSelfOnly = targets.every((id) => id === user.id);
 
   if (isSelfOnly) {
-    const canAssignSelf = await enginePermission(user, 'tasks', 'assign');
+    // Phase 7 — check the NEW granular `tasks.assign_self` action. The
+    // permission engine's umbrella fallback ensures existing `tasks.assign`
+    // grant/deny rows still apply (they cover this granular case unless
+    // a more specific override exists). Admins can now deny `assign_self`
+    // for a user (e.g. Sunny Mehta) without breaking task CREATION, which
+    // uses a different code path (`tasks.create`).
+    const canAssignSelf = await enginePermission(user, 'tasks', 'assign_self');
     if (!canAssignSelf) {
-      return { allowed: false, status: 403, message: 'You do not have permission to self-assign tasks.' };
+      return {
+        allowed: false,
+        status: 403,
+        code: 'PERMISSION_DENIED',
+        permission: 'tasks.assign_self',
+        message: 'You do not have permission to assign tasks to yourself.',
+      };
     }
     return { allowed: true };
   }
@@ -71,6 +83,8 @@ async function checkAssignmentAuthority(user, targetUserIds = []) {
     return {
       allowed: false,
       status: 403,
+      code: 'PERMISSION_DENIED',
+      permission: 'tasks.assign_others',
       message: 'You do not have permission to assign tasks to other users.',
     };
   }
@@ -482,11 +496,28 @@ const createTask = async (req, res) => {
       if (assigneeIds.length === 0 && dueDate) assigneeIds = [req.user.id];
     }
 
-    // Cross-target authorization: assign + hierarchy subtree check.
+    // Cross-target authorization. Phase 7 — the SELF case is intentionally
+    // skipped at create time. tasks.create governs "can create a task"; the
+    // initial self-assign is part of creation, not a separate "assign self
+    // to existing task" gesture. A user who has tasks.assign_self DENIED
+    // can still create + auto-self-assign a brand-new task, matching the
+    // product decision (a separate future `tasks.create_for_self` action
+    // will be wired later if you want to gate this case specifically).
+    //
+    // Only the OTHER targets (non-self assignees / supervisors / owners)
+    // are checked here via tasks.assign_others.
     const allTargets = [...new Set([...assigneeIds, ...supervisorIds])];
-    const authCheck = await checkAssignmentAuthority(req.user, allTargets);
-    if (!authCheck.allowed) {
-      return res.status(authCheck.status).json({ success: false, message: authCheck.message });
+    const otherTargets = allTargets.filter((id) => id !== req.user.id);
+    if (otherTargets.length > 0) {
+      const authCheck = await checkAssignmentAuthority(req.user, otherTargets);
+      if (!authCheck.allowed) {
+        return res.status(authCheck.status).json({
+          success: false,
+          code: authCheck.code || 'PERMISSION_DENIED',
+          permission: authCheck.permission,
+          message: authCheck.message,
+        });
+      }
     }
 
     // Due-date gate. Fires whenever the resulting task would have any
@@ -854,12 +885,34 @@ const getTasks = async (req, res) => {
 
     if (search) {
       if (!where[Op.and]) where[Op.and] = [];
-      where[Op.and].push({
-        [Op.or]: [
-          { title: { [Op.iLike]: `%${search}%` } },
-          { description: { [Op.iLike]: `%${search}%` } },
-        ],
-      });
+      // Title + description ILIKE — original two-field search.
+      const orFilter = [
+        { title: { [Op.iLike]: `%${search}%` } },
+        { description: { [Op.iLike]: `%${search}%` } },
+      ];
+      // Label-name search. Tasks have a many-to-many Label association via
+      // task_labels; we want typing "pink" / "mark" in the board search box
+      // to surface tasks tagged with those labels — a frequent ask now that
+      // the Labels column is in every board view. Implemented as an IN
+      // subquery rather than a JOIN so it composes cleanly with the
+      // existing `where` shape (which has assignee / visibility / status
+      // filters layered as Op.and fragments) and doesn't risk duplicating
+      // rows when a task has multiple labels matching the term.
+      //
+      // SQL safety: we use sequelize.escape() to quote the LIKE pattern.
+      // Sequelize.literal does NOT auto-parametrize embedded strings, so
+      // .escape() is what prevents injection here. The schema check via
+      // hasTaskLabelsTable() keeps boots safe when the table doesn't exist
+      // yet (early dev DBs, fresh provisioning).
+      if (await hasTaskLabelsTable()) {
+        const likeLiteral = sequelize.escape(`%${search}%`);
+        orFilter.push(
+          sequelize.literal(
+            `"Task"."id" IN (SELECT tl."taskId" FROM task_labels tl INNER JOIN labels l ON l.id = tl."labelId" WHERE l.name ILIKE ${likeLiteral})`
+          )
+        );
+      }
+      where[Op.and].push({ [Op.or]: orFilter });
     }
 
     const ALLOWED_SORT_FIELDS = ['title', 'status', 'priority', 'dueDate', 'position', 'createdAt', 'progress', 'startDate', 'updatedAt'];
@@ -963,14 +1016,10 @@ const getTasks = async (req, res) => {
 
     res.json({ success: true, data: { tasks: tasksWithCounts } });
   } catch (error) {
-    // Log full error chain for production debugging
-    logger.error('[Task] GetTasks error:', {
-      message: error.message,
-      name: error.name,
-      sql: error.sql || error.parent?.sql || undefined,
-      original: error.original?.message || error.parent?.message || undefined,
-      stack: error.stack?.split('\n').slice(0, 5).join('\n'),
-    });
+    // safeLogger redacts Bearer tokens, JWT-shaped strings, and Axios-error
+    // config headers before the log line is serialized to disk.
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.error('[Task] GetTasks error', { err: error });
     res.status(500).json({ success: false, message: 'Server error fetching tasks.' });
   }
 };
@@ -1127,6 +1176,10 @@ const updateTask = async (req, res) => {
     // include `title` in PATCH-style payloads don't 403 on harmless
     // replays. Title creation happens in POST /tasks (createTask), which
     // is unaffected by this gate.
+    //
+    // Phase B (Phase 7 continuation) — also honour a deny override on the
+    // granular `tasks.edit_title` action so an admin can revoke title-edit
+    // for a specific Tier 1/2 user. The tier check above stays as the floor.
     if (req.body.title !== undefined) {
       const incomingTitle = typeof req.body.title === 'string' ? req.body.title : '';
       const sameAsExisting = incomingTitle === task.title;
@@ -1137,6 +1190,71 @@ const updateTask = async (req, res) => {
             success: false,
             message: 'Task title can only be edited by Tier 1 or Tier 2 users after creation.',
             code: 'title_locked',
+          });
+        }
+        // Granular deny-override hook.
+        const canEditTitle = await enginePermission(req.user, 'tasks', 'edit_title');
+        if (!canEditTitle) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'tasks.edit_title',
+            message: 'You do not have permission to edit task titles.',
+          });
+        }
+      }
+    }
+
+    // Phase B — granular tasks.edit_description gate. Description is set-once
+    // for Tier 3/4 (handled by allowedFields filter + edit_locked_description
+    // override). This gate adds a deny-override hook for anyone editing the
+    // description, so an admin can revoke description-edit selectively.
+    if (req.body.description !== undefined && req.body.description !== task.description) {
+      const canEditDesc = await enginePermission(req.user, 'tasks', 'edit_description');
+      if (!canEditDesc) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.edit_description',
+          message: 'You do not have permission to edit task descriptions.',
+        });
+      }
+    }
+
+    // Phase B — granular tasks.edit_timeline gate. Fires when BOTH startDate
+    // and dueDate change in the same request (a "timeline edit" gesture).
+    // Individual edits still go through tasks.edit_start_date / edit_due_date
+    // above; this is an additive umbrella for atomic timeline changes.
+    if (req.body.startDate !== undefined && req.body.dueDate !== undefined) {
+      const canEditTimeline = await enginePermission(req.user, 'tasks', 'edit_timeline');
+      if (!canEditTimeline) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.edit_timeline',
+          message: 'You do not have permission to change task timelines.',
+        });
+      }
+    }
+
+    // Phase B — granular tasks.edit_assignee gate. Fires when the assigned-to
+    // value is being mutated (any direction: set, change, clear). Composes
+    // ON TOP OF the existing assign_self / assign_others / unassign_*
+    // gates so admins can revoke the "edit the assignee field" capability
+    // without revoking assign authority.
+    if (req.body.assignedTo !== undefined) {
+      const currentAssignedTo = task.assignedTo;
+      const incomingAssignedTo = Array.isArray(req.body.assignedTo)
+        ? req.body.assignedTo[0] || null
+        : req.body.assignedTo;
+      if (String(incomingAssignedTo || '') !== String(currentAssignedTo || '')) {
+        const canEditAssignee = await enginePermission(req.user, 'tasks', 'edit_assignee');
+        if (!canEditAssignee) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'tasks.edit_assignee',
+            message: 'You do not have permission to change task assignees.',
           });
         }
       }
@@ -1519,6 +1637,18 @@ const updateTask = async (req, res) => {
 
     // Centralized assignment authority check — covers role default, grant
     // override, deny override, and hierarchy subtree (where applicable).
+    //
+    // Phase 7 — assignment auth has been split into 4 granular actions:
+    //   tasks.assign_self   — add yourself as an assignee
+    //   tasks.assign_others — add another user
+    //   tasks.unassign_self — remove yourself from a task's assignees
+    //   tasks.unassign_others — remove someone else
+    //
+    // The umbrella mapping in permissionMatrix means existing tasks.assign /
+    // tasks.assign_others overrides still resolve. A specific deny on
+    // tasks.assign_self (the headline Sunny Mehta example) is honoured here
+    // and elsewhere in this controller (createTask, bulkUpdateTasks,
+    // manageTaskMembers) so the user is blocked across every surface.
     const allAssignmentTargets = [
       ...(Array.isArray(req.body.assignedTo) ? req.body.assignedTo : (updates.assignedTo && typeof updates.assignedTo === 'string' ? [updates.assignedTo] : [])),
       ...(Array.isArray(req.body.ownerIds) ? req.body.ownerIds : []),
@@ -1527,7 +1657,183 @@ const updateTask = async (req, res) => {
     if (allAssignmentTargets.length > 0) {
       const auth = await checkAssignmentAuthority(req.user, allAssignmentTargets);
       if (!auth.allowed) {
-        return res.status(auth.status).json({ success: false, message: auth.message });
+        return res.status(auth.status).json({
+          success: false,
+          code: auth.code || 'PERMISSION_DENIED',
+          permission: auth.permission,
+          message: auth.message,
+        });
+      }
+    }
+
+    // ─── Unassignment authority (Phase 7) ─────────────────────────────
+    // Compute who is being REMOVED from the assignee/owner/supervisor lists
+    // by comparing the request body against the existing task state. If only
+    // the actor is being removed → tasks.unassign_self. If others are being
+    // removed → tasks.unassign_others. The umbrella fallback covers
+    // pre-Phase-7 callers that only knew about tasks.assign / assign_others.
+    {
+      const existingTaskAssignees = task.taskAssignees || [];
+      const previousAssigneeIds = existingTaskAssignees
+        .filter((ta) => ta.role === 'assignee')
+        .map((ta) => ta.userId);
+      const previousSupervisorIds = existingTaskAssignees
+        .filter((ta) => ta.role === 'supervisor')
+        .map((ta) => ta.userId);
+      const previousAllIds = [
+        ...previousAssigneeIds,
+        ...previousSupervisorIds,
+        ...(task.assignedTo ? [task.assignedTo] : []),
+      ].filter(Boolean);
+
+      // Resolve the NEW desired list from the request body. If the caller
+      // didn't touch assignedTo / supervisors / ownerIds, there are no
+      // removals to check (only the dueDate / status / etc. fields are
+      // being edited).
+      const requestTouchesAssignees =
+        req.body.assignedTo !== undefined
+        || Array.isArray(req.body.supervisors)
+        || Array.isArray(req.body.ownerIds);
+
+      if (requestTouchesAssignees) {
+        const nextAllIds = new Set(allAssignmentTargets);
+        const removedIds = previousAllIds.filter((id) => !nextAllIds.has(id));
+        if (removedIds.length > 0) {
+          const removingSelfOnly = removedIds.every((id) => id === req.user.id);
+          const action = removingSelfOnly ? 'unassign_self' : 'unassign_others';
+          const canUnassign = await enginePermission(req.user, 'tasks', action);
+          if (!canUnassign) {
+            return res.status(403).json({
+              success: false,
+              code: 'PERMISSION_DENIED',
+              permission: `tasks.${action}`,
+              message: removingSelfOnly
+                ? 'You do not have permission to unassign yourself from tasks.'
+                : 'You do not have permission to unassign other users from tasks.',
+            });
+          }
+        }
+      }
+    }
+
+    // ─── Granular field-edit gates (Phase 7) ──────────────────────────
+    // Each gate fires only when the request actually mutates the field
+    // (incoming !== existing). Umbrella fallbacks ensure pre-Phase-7
+    // tasks.edit / tasks.change_status grants/denies still apply.
+    if (updates.status !== undefined && updates.status !== task.status) {
+      const goingToDone = updates.status === 'done';
+      const wasDone = task.status === 'done';
+      // Choose the most specific action for the transition.
+      let statusAction = 'edit_status';
+      if (goingToDone && !wasDone) statusAction = 'complete';
+      else if (!goingToDone && wasDone) statusAction = 'reopen';
+      const canChange = await enginePermission(req.user, 'tasks', statusAction);
+      if (!canChange) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: `tasks.${statusAction}`,
+          message: `You do not have permission to ${statusAction.replace('_', ' ')} this task.`,
+        });
+      }
+    }
+
+    // Granular due-date gate. The DUE_DATE_LOCKED check above (for Tier 3/4
+    // on existing-due-date) still runs; this is an additional deny-aware
+    // hook so admins can revoke the change-due-date capability for any
+    // user. Skip when value is unchanged.
+    if (req.body.dueDate !== undefined) {
+      const normalize = (v) => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'string') return v.length >= 10 ? v.slice(0, 10) : v;
+        try { return new Date(v).toISOString().slice(0, 10); } catch { return null; }
+      };
+      const incoming = normalize(req.body.dueDate);
+      const existing = normalize(task.dueDate);
+      if (incoming !== existing) {
+        const canEdit = await enginePermission(req.user, 'tasks', 'edit_due_date');
+        if (!canEdit) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'tasks.edit_due_date',
+            message: 'You do not have permission to change task due dates.',
+          });
+        }
+      }
+    }
+    if (req.body.startDate !== undefined) {
+      const normalize = (v) => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'string') return v.length >= 10 ? v.slice(0, 10) : v;
+        try { return new Date(v).toISOString().slice(0, 10); } catch { return null; }
+      };
+      const incoming = normalize(req.body.startDate);
+      const existing = normalize(task.startDate);
+      if (incoming !== existing) {
+        const canEdit = await enginePermission(req.user, 'tasks', 'edit_start_date');
+        if (!canEdit) {
+          return res.status(403).json({
+            success: false,
+            code: 'PERMISSION_DENIED',
+            permission: 'tasks.edit_start_date',
+            message: 'You do not have permission to change task start dates.',
+          });
+        }
+      }
+    }
+    // Granular priority gate (in addition to the existing set_priority check
+    // below). Umbrella maps edit_priority → set_priority so existing rows
+    // continue to work; this is the savable granular action.
+    if (req.body.priority !== undefined && req.body.priority !== task.priority) {
+      const canEdit = await enginePermission(req.user, 'tasks', 'edit_priority');
+      if (!canEdit) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.edit_priority',
+          message: 'You do not have permission to change task priority.',
+        });
+      }
+    }
+    // Group move
+    if (req.body.groupId !== undefined && req.body.groupId !== task.groupId) {
+      const canMove = await enginePermission(req.user, 'tasks', 'move_between_groups');
+      if (!canMove) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.move_between_groups',
+          message: 'You do not have permission to move tasks between groups.',
+        });
+      }
+    }
+    // Board move
+    if (req.body.boardId !== undefined && req.body.boardId !== task.boardId) {
+      const canMove = await enginePermission(req.user, 'tasks', 'move_between_boards');
+      if (!canMove) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.move_between_boards',
+          message: 'You do not have permission to move tasks between boards.',
+        });
+      }
+    }
+    // Archive / restore — distinct from delete (existing archive gate above
+    // handles tier visibility; this is the deny-override hook).
+    if (req.body.isArchived !== undefined && req.body.isArchived !== task.isArchived) {
+      const action = req.body.isArchived ? 'archive' : 'restore';
+      const canArchive = await enginePermission(req.user, 'tasks', action);
+      if (!canArchive) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: `tasks.${action}`,
+          message: action === 'archive'
+            ? 'You do not have permission to archive tasks.'
+            : 'You do not have permission to restore archived tasks.',
+        });
       }
     }
 
@@ -2358,6 +2664,21 @@ const moveTask = async (req, res) => {
     const targetGroupId = groupId || task.groupId;
     const targetPosition = position !== undefined ? position : task.position;
 
+    // Phase B — granular tasks.reorder gate. Fires when a move endpoint is
+    // hit and the request mutates groupId or position. The umbrella is
+    // tasks.edit so legacy edit denies still apply.
+    if (groupId !== undefined || position !== undefined) {
+      const canReorder = await enginePermission(req.user, 'tasks', 'reorder');
+      if (!canReorder) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.reorder',
+          message: 'You do not have permission to reorder tasks.',
+        });
+      }
+    }
+
     // Shift positions of other tasks in the target group
     await Task.increment('position', {
       by: 1,
@@ -2406,6 +2727,35 @@ const bulkUpdateTasks = async (req, res) => {
 
     if (!Array.isArray(taskIds) || taskIds.length === 0) {
       return res.status(400).json({ success: false, message: 'taskIds array is required.' });
+    }
+
+    // Phase 7 — granular `tasks.bulk_edit` gate. Falls back to `tasks.edit`
+    // via the umbrella mapping so existing tasks.edit deny/grant rows still
+    // apply. An admin can now revoke just bulk-edit while leaving
+    // single-task edit intact (useful for limiting blast radius).
+    const canBulkEdit = await enginePermission(req.user, 'tasks', 'bulk_edit');
+    if (!canBulkEdit) {
+      return res.status(403).json({
+        success: false,
+        code: 'PERMISSION_DENIED',
+        permission: 'tasks.bulk_edit',
+        message: 'You do not have permission to bulk-edit tasks.',
+      });
+    }
+
+    // Phase B — granular tasks.bulk_delete gate. Fires when bulk update
+    // archives tasks (which is the soft-delete path; permanent delete still
+    // goes through deleteTask). The umbrella is tasks.delete.
+    if (req.body.updates?.isArchived === true) {
+      const canBulkDelete = await enginePermission(req.user, 'tasks', 'bulk_delete');
+      if (!canBulkDelete) {
+        return res.status(403).json({
+          success: false,
+          code: 'PERMISSION_DENIED',
+          permission: 'tasks.bulk_delete',
+          message: 'You do not have permission to bulk-archive (bulk-delete) tasks.',
+        });
+      }
     }
 
     const allowedFields = [
@@ -2482,16 +2832,22 @@ const bulkUpdateTasks = async (req, res) => {
       }
     }
 
-    // Bulk assignment authority. If the bulk update changes assignees and the
-    // target is anyone other than the requester, the requester must hold
-    // tasks.assign_others (and pass the hierarchy check for managers/asst-mgrs).
+    // Bulk assignment authority. Phase 7 — checkAssignmentAuthority now
+    // returns structured { code, permission } for the front-end. Self vs
+    // others is routed to tasks.assign_self / tasks.assign_others (with
+    // umbrella fallback to tasks.assign).
     if (safeUpdates.assignedTo !== undefined && safeUpdates.assignedTo !== null) {
       const targets = Array.isArray(safeUpdates.assignedTo)
         ? safeUpdates.assignedTo
         : [safeUpdates.assignedTo];
       const auth = await checkAssignmentAuthority(req.user, targets);
       if (!auth.allowed) {
-        return res.status(auth.status).json({ success: false, message: auth.message });
+        return res.status(auth.status).json({
+          success: false,
+          code: auth.code || 'PERMISSION_DENIED',
+          permission: auth.permission,
+          message: auth.message,
+        });
       }
     }
 

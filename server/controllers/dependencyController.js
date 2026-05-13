@@ -134,6 +134,14 @@ const createDependency = async (req, res) => {
       });
     }
 
+    // Phase 7 — granular dependencies.create gate. Admins can revoke a
+    // user's ability to create dependencies without revoking task view/edit.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'dependencies', 'create',
+          'You do not have permission to create task dependencies.')) return;
+    }
+
     const dep = await depService.createDependency({
       taskId,
       dependsOnTaskId,
@@ -168,10 +176,26 @@ const createDependency = async (req, res) => {
       data: { dependency: fullDep },
     });
   } catch (error) {
-    if (error.message.includes('circular') || error.message.includes('already exists')) {
-      return res.status(400).json({ success: false, message: error.message });
+    // Two known business-rule throws from dependencyService — translate to
+    // canonical client messages rather than forwarding the raw error text,
+    // so any future detail added to the thrown message (paths, ids, debug
+    // context) can't leak.
+    if (error.message?.includes('circular')) {
+      return res.status(400).json({
+        success: false,
+        code: 'DEPENDENCY_CIRCULAR',
+        message: 'This would create a circular dependency between the selected tasks.',
+      });
     }
-    console.error('[Dependency] Create error:', error);
+    if (error.message?.includes('already exists')) {
+      return res.status(400).json({
+        success: false,
+        code: 'DEPENDENCY_DUPLICATE',
+        message: 'This dependency already exists for these tasks.',
+      });
+    }
+    const safeLogger = require('../utils/safeLogger');
+    safeLogger.error('[Dependency] Create error', { err: error });
     res.status(500).json({ success: false, message: 'Server error creating dependency.' });
   }
 };
@@ -253,6 +277,13 @@ const delegateTask = async (req, res) => {
     // Only current assignee or admin can delegate
     if (task.assignedTo !== req.user.id && !['admin', 'manager'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only the assigned user or admin can delegate this task.' });
+    }
+
+    // Phase B — granular dependencies.delegate gate. Umbrella → dependencies.create.
+    {
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'dependencies', 'delegate',
+          'You do not have permission to delegate tasks.')) return;
     }
 
     // Mirror the global "no assignment without a due date" rule. Delegation

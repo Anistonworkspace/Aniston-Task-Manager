@@ -25,7 +25,9 @@ import SortDropdown from '../components/board/SortDropdown';
 import CSVImportModal from '../components/board/CSVImportModal';
 import DueDateExtensionModal from '../components/board/DueDateExtensionModal';
 import TimelineView from '../components/board/TimelineView';
+import ErrorBoundary from '../components/common/ErrorBoundary';
 import { SkeletonBoard } from '../components/common/Skeleton';
+import safeLog from '../utils/safeLog';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 import { canUser as canUserFn } from '../utils/permissions';
@@ -219,7 +221,7 @@ export default function BoardPage() {
   const [selectedTask, setSelectedTask] = useState(null);
   const [viewTab, setViewTab] = useState('table');
   const [searchQuery, setSearchQuery] = useState('');
-  const [advFilters, setAdvFilters] = useState({ status: [], priority: [], person: '' });
+  const [advFilters, setAdvFilters] = useState({ status: [], priority: [], person: '', labels: [] });
   const [showFilters, setShowFilters] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
@@ -316,7 +318,7 @@ export default function BoardPage() {
       setMembers(allUsers.length > 0 ? allUsers : data.members || data.Users || []);
       setLoadError(null);
     } catch (err) {
-      console.error('[BoardPage] loadBoard error:', err);
+      safeLog.error('[BoardPage] loadBoard error', err);
       // If access denied (403), redirect to home instead of showing broken board
       if (err?.response?.status === 403) {
         toastError('You do not have access to this board.');
@@ -351,6 +353,17 @@ export default function BoardPage() {
       if (advFilters.priority.length > 0) {
         fetched = fetched.filter(t => advFilters.priority.includes(t.priority));
       }
+      // Label filter — task.labels is the M2M-attached array of
+      // {id, name, color} objects (see LabelCell). Match any selected
+      // label so multiple chips behave as OR within the Labels facet
+      // (intersection across facets via the other filters above).
+      if (Array.isArray(advFilters.labels) && advFilters.labels.length > 0) {
+        const selected = new Set(advFilters.labels);
+        fetched = fetched.filter(t => {
+          const arr = Array.isArray(t.labels) ? t.labels : [];
+          return arr.some(l => l && selected.has(l.id));
+        });
+      }
       // Filter out archived tasks
       fetched = fetched.filter(t => !t.isArchived);
       setTasks(fetched);
@@ -358,7 +371,7 @@ export default function BoardPage() {
       // 'board' error in place so the empty-state replacement still wins.
       setLoadError((cur) => (cur === 'tasks' ? null : cur));
     } catch (err) {
-      console.error('[BoardPage] loadTasks error:', err);
+      safeLog.error('[BoardPage] loadTasks error', err);
       // If loadBoard already surfaced a toast for the same incident, the
       // dedup window in Toast.jsx will swallow this one. We still set the
       // error flag so the empty-state copy is replaced regardless.
@@ -626,7 +639,7 @@ export default function BoardPage() {
       setTasks(prev => [...prev, newTask]);
       return newTask;
     } catch (err) {
-      console.error('[BoardPage] handleAddTask error:', err);
+      safeLog.error('[BoardPage] handleAddTask error', err);
       // Prefer the server-supplied message (we now ALWAYS return a `message`
       // field — see taskController.createTask). Fall through to the
       // validator-error array if a legacy/older deploy is still returning
@@ -651,7 +664,7 @@ export default function BoardPage() {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...mergeData } : t));
       if (selectedTask?.id === taskId) setSelectedTask(prev => ({ ...prev, ...mergeData }));
     } catch (err) {
-      console.error('[BoardPage] handleTaskUpdate error:', err);
+      safeLog.error('[BoardPage] handleTaskUpdate error', err);
       // 4xx responses already surface their specific server messages via
       // the global api-error → toast pipeline (e.g. "Dependency owners
       // cannot complete the parent task..."). Showing a generic "Failed to
@@ -670,7 +683,7 @@ export default function BoardPage() {
       await api.put(`/tasks/${taskId}`, { isArchived: true });
       setTasks(prev => prev.filter(t => t.id !== taskId));
     } catch (err) {
-      console.error('[BoardPage] handleArchiveTask error:', err);
+      safeLog.error('[BoardPage] handleArchiveTask error', err);
       toastError('Failed to archive task. Please try again.');
     }
   }
@@ -697,7 +710,7 @@ export default function BoardPage() {
       setTasks(prev => prev.filter(t => t.groupId !== groupId));
       toastSuccess('Group archived');
     } catch (err) {
-      console.error('[BoardPage] handleArchiveGroup error:', err);
+      safeLog.error('[BoardPage] handleArchiveGroup error', err);
       toastError('Failed to archive group. Please try again.');
     }
   }
@@ -724,7 +737,7 @@ export default function BoardPage() {
       setBoard(prev => ({ ...prev, groups: serverGroups }));
       toastSuccess('Group renamed');
     } catch (err) {
-      console.error('[BoardPage] handleRenameGroup error:', err);
+      safeLog.error('[BoardPage] handleRenameGroup error', err);
       const msg = err?.response?.data?.message || 'Failed to rename group. Please try again.';
       toastError(msg);
     }
@@ -754,7 +767,7 @@ export default function BoardPage() {
       }
       return true;
     } catch (err) {
-      console.error('[BoardPage] saveCustomColumns error:', err);
+      safeLog.error('[BoardPage] saveCustomColumns error', err);
       setBoard(prev => ({ ...prev, customColumns: prevCols }));
       // The axios interceptor already surfaces 403/5xx toasts. Only add a
       // local toast for cases it wouldn't cover (network error, etc.).
@@ -1016,15 +1029,45 @@ export default function BoardPage() {
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       saveAs(blob, `${board?.name || 'Board'}_export.xlsx`);
     } catch (err) {
-      console.error('[BoardPage] handleExportCSV error:', err);
+      safeLog.error('[BoardPage] handleExportCSV error', err);
       toastError('Export failed. Please try again.');
     }
   }
 
-  // Sort tasks: user-selected sort wins, otherwise default to pending priority
+  // Sort tasks: user-selected sort wins, otherwise default to pending priority.
+  //
+  // Labels sort logic: tasks expose `labels` as an array of {id, name, color}
+  // objects (from the Label M2M include). We sort by the comma-joined
+  // lowercased label names so the order is deterministic and matches what
+  // the user sees in the Labels column. Tasks with no labels sort last in
+  // ascending order (and first in descending), which keeps the sorted view
+  // readable when many tasks are unlabeled.
   const sortedTasks = useMemo(() => {
     if (sortConfig) {
+      const direction = sortConfig.direction === 'asc' ? 1 : -1;
+      const labelKey = (task) => {
+        const arr = Array.isArray(task.labels) ? task.labels : [];
+        if (arr.length === 0) return '';
+        return arr
+          .map(l => (typeof l === 'string' ? l : (l?.name || '')))
+          .filter(Boolean)
+          .map(s => s.toLowerCase())
+          .sort()
+          .join(',');
+      };
       return [...tasks].sort((a, b) => {
+        if (sortConfig.key === 'labels') {
+          const aK = labelKey(a);
+          const bK = labelKey(b);
+          // Empty-labels last (asc) / first (desc) so the unlabeled bucket
+          // doesn't dominate the top of the list.
+          if (!aK && !bK) return 0;
+          if (!aK) return 1;
+          if (!bK) return -1;
+          if (aK < bK) return -1 * direction;
+          if (aK > bK) return 1 * direction;
+          return 0;
+        }
         let aVal = a[sortConfig.key];
         let bVal = b[sortConfig.key];
         if (sortConfig.key === 'dueDate' || sortConfig.key === 'createdAt' || sortConfig.key === 'updatedAt') {
@@ -1147,14 +1190,12 @@ export default function BoardPage() {
           document.querySelector('[data-search-input]')?.focus();
         }
       }
-      // 1: Switch to Table view
+      // Tab keyboard shortcuts — order matches the visible tab order:
+      //   1 = Main table, 2 = Gantt, 3 = Calendar, 4 = Kanban
       if (e.key === '1') { e.preventDefault(); setViewTab('table'); }
-      // 2: Switch to Kanban view
-      if (e.key === '2') { e.preventDefault(); setViewTab('kanban'); }
-      // 3: Switch to Calendar view
+      if (e.key === '2') { e.preventDefault(); setViewTab('gantt'); }
       if (e.key === '3') { e.preventDefault(); setViewTab('calendar'); }
-      // 4: Switch to Gantt view
-      if (e.key === '4') { e.preventDefault(); setViewTab('gantt'); }
+      if (e.key === '4') { e.preventDefault(); setViewTab('kanban'); }
       if (e.key === 'Delete') {
         e.preventDefault();
       }
@@ -1162,6 +1203,32 @@ export default function BoardPage() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [board]);
+
+  // Derive a deduped, name-sorted list of labels currently in use on this
+  // board's tasks. We intentionally derive from in-memory `tasks` rather
+  // than a separate /labels?boardId=... fetch: it keeps the filter list
+  // automatically in sync with create / unassign realtime events, avoids
+  // a second network round-trip, and accurately reflects what is
+  // actually filterable (an unassigned label produces zero matches and
+  // would just be noise in the picker).
+  //
+  // IMPORTANT: must be declared BEFORE the `if (loading) return` early
+  // return below — otherwise React sees a different hook count on the
+  // first render (loading=true, hook skipped) vs. subsequent renders
+  // (loading=false, hook invoked) and throws "change in the order of
+  // Hooks called by BoardPage" → ErrorBoundary catches it.
+  const boardLabels = useMemo(() => {
+    const byId = new Map();
+    for (const t of tasks) {
+      const arr = Array.isArray(t.labels) ? t.labels : [];
+      for (const l of arr) {
+        if (l && l.id && !byId.has(l.id)) byId.set(l.id, l);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    );
+  }, [tasks]);
 
   if (loading) return <SkeletonBoard />;
 
@@ -1171,7 +1238,7 @@ export default function BoardPage() {
     { id: 'completed', title: 'Completed', color: '#00c875' },
   ];
 
-  const activeFilterCount = (advFilters.status.length > 0 ? 1 : 0) + (advFilters.priority.length > 0 ? 1 : 0) + (advFilters.person ? 1 : 0);
+  const activeFilterCount = (advFilters.status.length > 0 ? 1 : 0) + (advFilters.priority.length > 0 ? 1 : 0) + (advFilters.person ? 1 : 0) + ((advFilters.labels?.length || 0) > 0 ? 1 : 0);
 
   return (
     <div className="h-full flex flex-col">
@@ -1324,7 +1391,8 @@ export default function BoardPage() {
               onChange={setAdvFilters}
               members={members}
               boardStatuses={getBoardStatuses(board)}
-              onClear={() => setAdvFilters({ status: [], priority: [], person: '' })}
+              boardLabels={boardLabels}
+              onClear={() => setAdvFilters({ status: [], priority: [], person: '', labels: [] })}
             />
           </div>
         )}
@@ -1333,11 +1401,19 @@ export default function BoardPage() {
       {/* Board Content */}
       {viewTab === 'gantt' ? (
         <div className="flex-1 overflow-auto px-6 pb-6">
-          <TimelineView tasks={sortedTasks} members={members} onTaskClick={setSelectedTask} />
+          {/* Per-section boundary: a Gantt render crash should not blank
+              the whole board — the row data, modals and toolbar all
+              still work. resetKeys=[viewTab] also clears the error
+              automatically if the user switches to a different view. */}
+          <ErrorBoundary name="Gantt" variant="section" resetKeys={[viewTab]}>
+            <TimelineView tasks={sortedTasks} members={members} onTaskClick={setSelectedTask} />
+          </ErrorBoundary>
         </div>
       ) : viewTab === 'calendar' ? (
         <div className="flex-1 overflow-auto px-6 pb-6">
-          <CalendarView tasks={sortedTasks} members={members} onTaskClick={setSelectedTask} />
+          <ErrorBoundary name="Calendar" variant="section" resetKeys={[viewTab]}>
+            <CalendarView tasks={sortedTasks} members={members} onTaskClick={setSelectedTask} />
+          </ErrorBoundary>
         </div>
       ) : viewTab === 'kanban' ? (
         <div className="flex-1 overflow-auto px-6 pb-6">
@@ -1469,21 +1545,27 @@ export default function BoardPage() {
         </DragDropContext>
       )}
 
-      {/* Task Modal */}
+      {/* Task Modal — wrapped so a render crash inside the modal (huge
+          tree: comments, files, subtasks, watchers, approvals, recurrence,
+          dependencies) doesn't take down the board behind it. resetKeys
+          carries the open task id so picking a different task auto-clears
+          a prior crash. */}
       {selectedTask && (
-        <TaskModal
-          task={selectedTask}
-          boardId={boardId}
-          board={board}
-          members={members}
-          boardStatuses={getBoardStatuses(board)}
-          onClose={() => setSelectedTask(null)}
-          onUpdate={(updated) => {
-            setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
-            setSelectedTask(updated);
-          }}
-          onDelete={handleTaskDelete}
-        />
+        <ErrorBoundary name="Task details" variant="section" resetKeys={[selectedTask.id]}>
+          <TaskModal
+            task={selectedTask}
+            boardId={boardId}
+            board={board}
+            members={members}
+            boardStatuses={getBoardStatuses(board)}
+            onClose={() => setSelectedTask(null)}
+            onUpdate={(updated) => {
+              setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
+              setSelectedTask(updated);
+            }}
+            onDelete={handleTaskDelete}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Bulk Action Bar */}

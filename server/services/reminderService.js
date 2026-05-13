@@ -24,10 +24,15 @@ function models() {
   return _models;
 }
 
-const { sendNotification } = require('./notificationService');
+const { sendNotification, buildIdempotencyKey } = require('./notificationService');
 const {
   isTaskEligibleForOverdueNotification,
 } = require('../utils/taskOverdueEligibility');
+const { isCompletedStatus } = require('../utils/taskPrioritization');
+const {
+  MAX_REMINDERS_PER_CRON_RUN,
+  createBudget,
+} = require('../config/notificationLimits');
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -521,12 +526,33 @@ async function getReminderSummaryBulk(taskIds) {
  * List the user-set reminder specs for a task, in a shape the frontend
  * Create/Edit modal can render directly. Excludes legacy 2_day/2_hour
  * because those are auto-managed and not user-configurable.
+ *
+ * Returns ONLY active reminders (sentAt IS NULL, cancelled = false).
+ *
+ * Why we hide sent reminders: an earlier version returned them too "for
+ * historical context", but that produced a delete-persistence bug —
+ *
+ *   1. A custom reminder fires at 5:11 PM and `sentAt` is set.
+ *   2. The modal re-opens and shows the 5:11 PM chip (still cancelled=false).
+ *   3. User clicks `×` to remove it. The PUT sends `reminders: [...]`
+ *      without that spec.
+ *   4. `applyReminderSpecs` filters `sentAt: null` when computing the
+ *      "rows to cancel" set, so the sent row is never cancelled.
+ *   5. On the next modal open the row is still there → looks like the
+ *      delete failed.
+ *
+ * Fix: hide sent reminders from the modal entirely. They are not
+ * actionable (they've already fired) and surfacing them invited the
+ * mismatch above. If product later wants to show a "fired" history,
+ * that should be a separate UI surface backed by a dedicated query —
+ * not the active-reminders array the chip UI binds to.
  */
 async function getUserReminderSpecs(taskId) {
   const { TaskReminder } = models();
   const rows = await TaskReminder.findAll({
     where: {
       taskId,
+      sentAt: null,
       cancelled: false,
       reminderType: { [Op.in]: ['offset', 'at_due', 'custom'] },
     },
@@ -538,7 +564,7 @@ async function getUserReminderSpecs(taskId) {
     offsetMinutes: r.offsetMinutes,
     customReminderAt: r.customReminderAt,
     scheduledFor: r.scheduledFor,
-    sent: !!r.sentAt,
+    sent: false,
   }));
 }
 
@@ -574,16 +600,30 @@ async function processReminders() {
 
   // Find pending reminders that are due. We don't try to lock here — the
   // per-row conditional UPDATE below is the actual mutex.
+  //
+  // Hard cap: MAX_REMINDERS_PER_CRON_RUN (default 100, was 200). Ordered by
+  // scheduledFor ASC so the oldest due reminders fire first and any overflow
+  // drains on the next minute tick — that's effectively immediate from the
+  // user's perspective.
   const pendingReminders = await TaskReminder.findAll({
     where: {
       scheduledFor: { [Op.lte]: now },
       sentAt: null,
       cancelled: false,
     },
-    limit: 200, // process in batches
+    order: [['scheduledFor', 'ASC']],
+    limit: MAX_REMINDERS_PER_CRON_RUN,
   });
 
   if (pendingReminders.length === 0) return;
+
+  // Per-tick budget — caps user-level notification flooding for tasks with
+  // many assignees/supervisors AND for an unlucky reviewer who's a recipient
+  // on many tasks whose reminders all fired in the same minute.
+  const budget = createBudget();
+  let sent = 0;
+  let userLimited = 0;
+  let skipped = 0;
 
   console.log(`[DeadlineReminder] Processing ${pendingReminders.length} pending reminder(s)...`);
 
@@ -600,25 +640,65 @@ async function processReminders() {
         continue;
       }
 
-      // Task is no longer actionable by the assignee — done/completed,
-      // archived, submitted for review, or awaiting approval. Cancel the
-      // reminder so we never re-pick it on a later tick (eligibility is a
-      // monotonic transition for these states — once a task is done or
-      // approved, it stays that way; `changes_requested` is the only path
-      // back to actionable, and that creates a fresh reminder row via the
-      // taskController, not this one).
-      const eligibility = isTaskEligibleForOverdueNotification(task);
-      if (!eligibility.eligible) {
-        logger.info('[DeadlineReminder] skip + cancel reminder', {
+      // Archived tasks: always skip + cancel. Whether the reminder is
+      // auto-generated or user-set, an archived task is dead — firing a
+      // ping for it is noise.
+      if (task.isArchived === true) {
+        logger.info('[DeadlineReminder] skip + cancel reminder (archived)', {
           reminderId: reminder.id,
           taskId: task.id,
           reminderType: reminder.reminderType,
-          status: task.status,
-          approvalStatus: task.approvalStatus,
-          reason: eligibility.reason,
         });
         await reminder.update({ cancelled: true });
         continue;
+      }
+
+      // Eligibility gate — applies ONLY to the legacy auto reminders
+      // (2_day / 2_hour). Those exist to nudge an assignee about an
+      // upcoming deadline; if the task is already done, archived, or
+      // sitting with a reviewer, the nudge is wrong and we cancel.
+      //
+      // User-set reminders (offset / at_due / custom) are deliberately
+      // exempt: the user EXPLICITLY chose to be pinged at this moment.
+      // A task that's currently "waiting_for_review" might still warrant
+      // the ping ("check whether the reviewer got back to me"), and a
+      // `pending_approval` state can flip to `changes_requested` — at
+      // which point the user is back on the hook and grateful for the
+      // reminder they themselves set. The prior code unconditionally
+      // CANCELLED these (destructive) on the first non-actionable tick,
+      // silently losing the user's intent.
+      const isAutoLegacyReminder =
+        reminder.reminderType === '2_day' || reminder.reminderType === '2_hour';
+      if (isAutoLegacyReminder) {
+        const eligibility = isTaskEligibleForOverdueNotification(task);
+        if (!eligibility.eligible) {
+          logger.info('[DeadlineReminder] skip + cancel auto reminder', {
+            reminderId: reminder.id,
+            taskId: task.id,
+            reminderType: reminder.reminderType,
+            status: task.status,
+            approvalStatus: task.approvalStatus,
+            reason: eligibility.reason,
+          });
+          await reminder.update({ cancelled: true });
+          continue;
+        }
+      } else {
+        // For user-set reminders, the only additional skip we still respect
+        // is "task is completed". Firing "remind me about X" after X is
+        // already done is noise. We CANCEL here (not just skip) because
+        // `done` is monotonic in practice — re-opening a done task is
+        // rare and going through `changes_requested` for approved tasks.
+        if (isCompletedStatus(task.status)) {
+          logger.info('[DeadlineReminder] skip + cancel user reminder (task done)', {
+            reminderId: reminder.id,
+            taskId: task.id,
+            reminderType: reminder.reminderType,
+            status: task.status,
+          });
+          await reminder.update({ cancelled: true });
+          continue;
+        }
       }
 
       // Verify deadline hasn't changed (guard against stale reminders).
@@ -693,13 +773,31 @@ async function processReminders() {
       const notifType = reminderCopy.type;
 
       for (const [userId, user] of recipientMap) {
+        if (!budget.tryReserve(userId)) {
+          userLimited += 1;
+          // The reminder is already claimed (sentAt set). We log the skip
+          // but do NOT un-claim — un-claiming would risk a duplicate fire
+          // on the next minute tick. Idempotency-key dedup at the DB layer
+          // is the durable defence against duplicates if we ever DO retry.
+          logger.info('[DeadlineReminder] budget-skipped recipient', {
+            reminderId: reminder.id, userId, taskId: task.id,
+          });
+          continue;
+        }
         try {
           const title = reminderCopy.title(user.name);
           const message = reminderCopy.body(user.name);
           await sendNotification(userId, title, message, notifType, task.id, {
             email: user.email,
             userName: user.name,
+            // Stable per-reminder key — reminder row id is already unique,
+            // pair with userId so per-recipient retries collapse. Any
+            // duplicate cron tick (or process restart) that re-loads the
+            // same reminder row before claim succeeds is then a no-op at
+            // the partial unique index.
+            idempotencyKey: buildIdempotencyKey('reminder', reminder.id, userId),
           });
+          sent += 1;
         } catch (err) {
           // Per-recipient isolation — one user's send must not block the others.
           logger.warn(
@@ -710,8 +808,27 @@ async function processReminders() {
 
       console.log(`[DeadlineReminder] Sent ${reminder.reminderType} reminder for task "${task.title}" to ${recipientMap.size} user(s)`);
     } catch (err) {
+      skipped += 1;
       logger.error(`[DeadlineReminder] Error processing reminder ${reminder.id}:`, err);
     }
+  }
+
+  const b = budget.summary();
+  logger.info('[DeadlineReminder] tick', {
+    candidates: pendingReminders.length,
+    sent,
+    skipped,
+    userLimitedCount: b.userLimitedCount,
+    jobLimitedCount: b.jobLimitedCount,
+    uniqueUsers: b.uniqueUsers,
+  });
+  if (userLimited > 0 || pendingReminders.length >= MAX_REMINDERS_PER_CRON_RUN) {
+    logger.warn('[DeadlineReminder] hit caps', {
+      candidates: pendingReminders.length,
+      sent,
+      userLimitedCount: b.userLimitedCount,
+      nextTickWillDrain: true,
+    });
   }
 }
 

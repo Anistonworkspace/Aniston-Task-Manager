@@ -8,7 +8,9 @@
  */
 
 const { getUserTeamsId, sendChatMessage, checkConnection } = require('./teamsGraphClient');
-const logger = require('../utils/logger');
+// safeLogger so Axios errors from Graph adaptive-card POSTs don't leak
+// `config.headers.Authorization` (Graph access token) into the log file.
+const logger = require('../utils/safeLogger');
 
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 

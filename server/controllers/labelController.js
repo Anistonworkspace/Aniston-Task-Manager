@@ -288,6 +288,10 @@ exports.assignLabel = async (req, res) => {
       logger.warn('[labels.assign] view-access denied', { userId: req.user.id, taskId });
       return res.status(403).json({ success: false, message: 'Forbidden.' });
     }
+    // Phase 7 — granular `labels.add_to_task` gate (umbrella → labels.create).
+    const { denyIfNoPermission } = require('../utils/permissionGate');
+    if (await denyIfNoPermission(res, req.user, 'labels', 'add_to_task',
+        'You do not have permission to add labels to tasks.')) return;
     const [tl, created] = await TaskLabel.findOrCreate({ where: { taskId, labelId } });
     emitLabelsUpdated(taskId);
     metrics.observe('labels.assign.latency_ms', Date.now() - started);
@@ -312,6 +316,10 @@ exports.unassignLabel = async (req, res) => {
     if (!(await taskVisibility.canViewTask(req.user, task))) {
       return res.status(403).json({ success: false, message: 'Forbidden.' });
     }
+    // Phase 7 — granular `labels.remove_from_task` gate (umbrella → labels.edit).
+    const { denyIfNoPermission } = require('../utils/permissionGate');
+    if (await denyIfNoPermission(res, req.user, 'labels', 'remove_from_task',
+        'You do not have permission to remove labels from tasks.')) return;
     await TaskLabel.destroy({ where: { taskId, labelId } });
     emitLabelsUpdated(taskId);
     res.json({ success: true, message: 'Label removed from task.' });

@@ -346,6 +346,54 @@ describe('reminderJob — multi-assignee fan-out', () => {
   });
 });
 
+// ─── Phase 5: per-user notification cap ─────────────────────────────────
+// Storm-prevention regression: an unlucky user with many overdue tasks
+// used to get one notification per task in a single tick. The cap
+// (default 5) collapses the rest into "deferred until next tick" — the
+// idempotency-keyed insert guarantees no duplicate when the next tick
+// reconsiders the same row.
+
+describe('checkOverdue — Phase 5 per-user cap', () => {
+  it('caps notifications per user per tick to MAX_NOTIFICATIONS_PER_USER_PER_RUN', async () => {
+    const { MAX_NOTIFICATIONS_PER_USER_PER_RUN } = require('../../config/notificationLimits');
+    // 10 overdue tasks, all assigned to the same user.
+    const tasks = [];
+    for (let i = 0; i < 10; i += 1) {
+      tasks.push(buildTask({ id: `t-${i}`, assignedTo: 'over-user',
+        assignee: { id: 'over-user', name: 'Over' } }));
+    }
+    mockTaskFindAll.mockResolvedValue(tasks);
+
+    await checkOverdue();
+
+    // Only MAX_NOTIFICATIONS_PER_USER_PER_RUN are emitted; the rest are
+    // deferred to the next tick (idempotency keeps them de-duped).
+    expect(mockCreateNotification).toHaveBeenCalledTimes(MAX_NOTIFICATIONS_PER_USER_PER_RUN);
+  });
+
+  it('respects per-user cap independently across distinct users', async () => {
+    const { MAX_NOTIFICATIONS_PER_USER_PER_RUN } = require('../../config/notificationLimits');
+    // Two different users, MAX*2 tasks total. Each user should be capped
+    // separately — total notifications = MAX*2.
+    const tasks = [];
+    for (let i = 0; i < MAX_NOTIFICATIONS_PER_USER_PER_RUN * 2; i += 1) {
+      const uid = i % 2 === 0 ? 'user-a' : 'user-b';
+      tasks.push(buildTask({
+        id: `t-${i}`, assignedTo: uid, assignee: { id: uid, name: uid },
+      }));
+    }
+    mockTaskFindAll.mockResolvedValue(tasks);
+
+    await checkOverdue();
+
+    expect(mockCreateNotification).toHaveBeenCalledTimes(MAX_NOTIFICATIONS_PER_USER_PER_RUN * 2);
+    const a = mockCreateNotification.mock.calls.filter(c => c[0].userId === 'user-a').length;
+    const b = mockCreateNotification.mock.calls.filter(c => c[0].userId === 'user-b').length;
+    expect(a).toBe(MAX_NOTIFICATIONS_PER_USER_PER_RUN);
+    expect(b).toBe(MAX_NOTIFICATIONS_PER_USER_PER_RUN);
+  });
+});
+
 // ─── Mixed batch — sanity check the loop continues correctly ───────────────
 
 describe('checkOverdue — mixed batch', () => {

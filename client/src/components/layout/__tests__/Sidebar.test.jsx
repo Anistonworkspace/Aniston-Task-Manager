@@ -172,9 +172,13 @@ describe('Sidebar component', () => {
 
   // ---- Core navigation items (present for every role) ----
 
-  it('renders the Home navigation item', () => {
+  it('renders the Dashboard (formerly Home) navigation item', () => {
     renderSidebar();
-    expect(screen.getByText('Home')).toBeInTheDocument();
+    // Home was renamed to "Dashboard" — the icon and path (`/`) are
+    // unchanged; only the visible label moved. Two Dashboard rows exist
+    // (the personal one at `/` and Team Dashboard at `/dashboard`),
+    // so we look for at least one occurrence.
+    expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0);
   });
 
   it('renders the My Work navigation item', () => {
@@ -306,9 +310,11 @@ describe('Sidebar component', () => {
 
   // ---- Navigation ----
 
-  it('navigates to / when Home is clicked', () => {
+  it('navigates to / when Dashboard (formerly Home) is clicked', () => {
     renderSidebar();
-    fireEvent.click(screen.getByText('Home'));
+    // The personal Dashboard row is always first in the sidebar nav;
+    // the Team Dashboard entry (when present) lives below the divider.
+    fireEvent.click(screen.getAllByText('Dashboard')[0]);
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 

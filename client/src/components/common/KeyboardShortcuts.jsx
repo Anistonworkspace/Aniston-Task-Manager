@@ -10,10 +10,10 @@ const SHORTCUTS = [
   { section: 'Board', items: [
     { keys: ['N'], desc: 'New task (when on board)' },
     { keys: ['F'], desc: 'Toggle filters' },
-    { keys: ['1'], desc: 'Table view' },
-    { keys: ['2'], desc: 'Kanban view' },
+    { keys: ['1'], desc: 'Main table view' },
+    { keys: ['2'], desc: 'Gantt view' },
     { keys: ['3'], desc: 'Calendar view' },
-    { keys: ['4'], desc: 'Gantt view' },
+    { keys: ['4'], desc: 'Kanban view' },
   ]},
   { section: 'Task', items: [
     { keys: ['Enter'], desc: 'Save / submit' },

@@ -16,6 +16,15 @@
 
 jest.mock('xss', () => (s) => s);
 
+// Phase B — approve/rejectTask now have granular tasks.approve_completion /
+// tasks.reject_completion gates. These tests cover authorization expansion
+// (higher-stage approvers etc.), not the new granular permission. Mock
+// permissionGate to allow.
+jest.mock('../../utils/permissionGate', () => ({
+  denyIfNoPermission: jest.fn(async () => false),
+  checkPermission: jest.fn(async () => true),
+}));
+
 const fakeTransaction = {
   LOCK: { UPDATE: 'UPDATE' },
   commit: jest.fn().mockResolvedValue(),
