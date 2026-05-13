@@ -1,0 +1,169 @@
+name: Read-only SSO Diagnostic
+
+# Manual trigger only. No `push:`, no `schedule:`, no `pull_request:`.
+#
+# Surfaces the real cause of a failing Microsoft SSO login on prod, without
+# any writes, container restarts, or value-leak of secrets.
+#
+# What it does:
+#   1. Container identity check (aph-backend + aph-postgres present and running).
+#   2. DB identity check (same connection on both sides; aniston_project_hub).
+#   3. READ-ONLY SQL: read the integration_configs row for provider='microsoft'
+#      — non-secret columns in full, secret columns as length-only.
+#   4. Backend env presence check (CLIENT_URL printed; ENCRYPTION_KEY /
+#      JWT_SECRET / TEAMS_CLIENT_SECRET only length-or-absent — never values).
+#   5. Last 800 lines of aph-backend logs filtered to SSO-relevant patterns.
+#
+# What it never does: no INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER, no
+# docker restart, no container env change, no secret value printed.
+on:
+  workflow_dispatch:
+
+# Queue, never cancel — two diagnostics in flight would only confuse the log.
+concurrency:
+  group: production-readonly-sso-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only SSO diagnostic
+    runs-on: ubuntu-latest
+    # Same gate as deploy.yml — requires a manual approval on the
+    # `production` environment before this job runs. Without the click,
+    # nothing connects to EC2.
+    environment: production
+
+    steps:
+      - name: SSH to EC2 and run READ-ONLY SSO diagnostic
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -e
+
+            echo "════════════════════════════════════════════════════════════════"
+            echo "  READ-ONLY SSO DIAGNOSTIC"
+            echo "  - No code deploy. No container restart. No file changes."
+            echo "  - No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER."
+            echo "  - integration_configs is read inside SET TRANSACTION READ ONLY + ROLLBACK."
+            echo "  - Secret values are NEVER printed (length-only or boolean presence)."
+            echo "════════════════════════════════════════════════════════════════"
+            echo ""
+
+            # ── [1/5] Container check ──────────────────────────────────────────
+            echo "── [1/5] Container check ──"
+            for c in aph-backend aph-postgres; do
+              if ! docker inspect "$c" >/dev/null 2>&1; then
+                echo "ERROR: container $c not found on this host. Aborting."
+                exit 1
+              fi
+              STATE=$(docker inspect -f '{{.State.Status}}' "$c")
+              IMAGE=$(docker inspect -f '{{.Config.Image}}' "$c")
+              UPSINCE=$(docker inspect -f '{{.State.StartedAt}}' "$c")
+              echo "  $c → status=$STATE image=$IMAGE startedAt=$UPSINCE"
+              if [ "$STATE" != "running" ]; then
+                echo "ERROR: container $c is not running. Aborting (no restart attempted)."
+                exit 1
+              fi
+            done
+            echo ""
+
+            # ── [2/5] DB identity check (both sides agree it's the same Postgres) ─
+            echo "── [2/5] DB identity check ──"
+            BACKEND_IDENTITY=$(docker exec aph-backend sh -c \
+              'node -e "const{sequelize}=require(\"./config/db\");sequelize.query(\"SELECT current_database() AS db, pg_postmaster_start_time()::text AS pg_started\").then(([r])=>{console.log(JSON.stringify(r[0]));process.exit(0)}).catch(e=>{console.error(\"BACKEND_DB_ERR:\"+e.message);process.exit(1)})"')
+            echo "  backend → $BACKEND_IDENTITY"
+            PG_IDENTITY=$(docker exec aph-postgres psql -U postgres -d aniston_project_hub -At -c \
+              "SELECT json_build_object('db', current_database(), 'pg_started', pg_postmaster_start_time()::text);")
+            echo "  postgres → $PG_IDENTITY"
+
+            if ! echo "$BACKEND_IDENTITY" | grep -q '"db":"aniston_project_hub"'; then
+              echo "ABORT: backend is NOT connected to aniston_project_hub."
+              exit 1
+            fi
+            BACKEND_PG_START=$(echo "$BACKEND_IDENTITY" | sed -n 's/.*"pg_started":"\([^"]*\)".*/\1/p')
+            PG_PG_START=$(echo "$PG_IDENTITY"          | sed -n 's/.*"pg_started" *: *"\([^"]*\)".*/\1/p')
+            if [ -z "$BACKEND_PG_START" ] || [ "$BACKEND_PG_START" != "$PG_PG_START" ]; then
+              echo "ABORT: pg_postmaster_start_time differs (or missing) — backend and aph-postgres are NOT the same instance."
+              exit 1
+            fi
+            echo "  Identity match OK — backend and aph-postgres are the same instance."
+            echo ""
+
+            # ── [3/5] READ-ONLY query of integration_configs (microsoft row) ───
+            # Secret columns (clientId, clientSecret) are returned as length-only
+            # — the ciphertext is useless without ENCRYPTION_KEY but we still don't
+            # print it. tenantId, redirectUri, ssoRedirectUri, ssoEnabled, ssoRedirectUri
+            # are non-secret and printed verbatim — those ARE the values we need to see.
+            echo "── [3/5] integration_configs row for provider='microsoft' (READ ONLY) ──"
+            docker exec -i aph-postgres \
+              psql -U postgres -d aniston_project_hub \
+                   -v ON_ERROR_STOP=off \
+                   --no-psqlrc <<'SQL'
+            \pset pager off
+
+            BEGIN;
+            SET TRANSACTION READ ONLY;
+            SHOW transaction_read_only;
+
+            \echo '── microsoft integration row (non-secret fields + length-only for secrets) ──'
+            SELECT
+              provider,
+              "ssoEnabled",
+              "tenantId",
+              "redirectUri",
+              "ssoRedirectUri",
+              CASE WHEN "clientId"     IS NULL OR "clientId"     = '' THEN 'EMPTY' ELSE 'set (len=' || LENGTH("clientId")     || ')' END AS client_id_status,
+              CASE WHEN "clientSecret" IS NULL OR "clientSecret" = '' THEN 'EMPTY' ELSE 'set (len=' || LENGTH("clientSecret") || ')' END AS client_secret_status,
+              "isActive",
+              "createdAt",
+              "updatedAt"
+            FROM integration_configs
+            WHERE provider = 'microsoft';
+
+            \echo '── presence of any other integration_configs rows (provider names only) ──'
+            SELECT provider, "isActive", "ssoEnabled" FROM integration_configs ORDER BY provider;
+
+            ROLLBACK;
+            \echo '── txn rolled back; no rows touched ──'
+            SQL
+            echo ""
+
+            # ── [4/5] Backend env presence check (no secret values printed) ────
+            echo "── [4/5] Backend env presence (length-or-absent for secrets) ──"
+            docker exec aph-backend sh -c '
+              echo "  NODE_ENV=$NODE_ENV"
+              echo "  CLIENT_URL=$CLIENT_URL"
+              echo "  TEAMS_TENANT_ID=$TEAMS_TENANT_ID"
+              echo "  TEAMS_REDIRECT_URI=$TEAMS_REDIRECT_URI"
+              echo "  TEAMS_SSO_REDIRECT_URI=$TEAMS_SSO_REDIRECT_URI"
+              for v in JWT_SECRET ENCRYPTION_KEY TEAMS_CLIENT_ID TEAMS_CLIENT_SECRET; do
+                eval val=\$$v
+                if [ -z "$val" ]; then
+                  echo "  $v=NOT SET"
+                else
+                  echo "  $v=set (len=${#val})"
+                fi
+              done
+            '
+            echo ""
+
+            # ── [5/5] Backend logs filtered to SSO-relevant patterns ───────────
+            echo "── [5/5] Last 800 backend log lines matching SSO patterns ──"
+            echo "(patterns: sso, microsoft, callback, AADSTS, encrypt, TeamsConfig, oauth, redirect_uri)"
+            echo ""
+            docker logs --tail 800 aph-backend 2>&1 \
+              | grep -iE "sso|microsoft|callback|aadsts|encrypt|teamsconfig|oauth|redirect_uri|\[Auth\]" \
+              | tail -200 \
+              || echo "  (no matching log lines in the last 800 — try clicking 'Sign in with Microsoft' BEFORE running this workflow next time)"
+
+            echo ""
+            echo "════════════════════════════════════════════════════════════════"
+            echo "  DIAGNOSTIC COMPLETE — no writes, no restarts, no secret values printed."
+            echo "════════════════════════════════════════════════════════════════"
