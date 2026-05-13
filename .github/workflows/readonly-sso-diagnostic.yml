@@ -12,7 +12,12 @@ name: Read-only SSO Diagnostic
 #      — non-secret columns in full, secret columns as length-only.
 #   4. Backend env presence check (CLIENT_URL printed; ENCRYPTION_KEY /
 #      JWT_SECRET / TEAMS_CLIENT_SECRET only length-or-absent — never values).
-#   5. Last 800 lines of aph-backend logs filtered to SSO-relevant patterns.
+#   5. Last 800 lines of `docker logs aph-backend` filtered to SSO patterns
+#      (morgan access lines — surfaces the HTTP shape of the failure).
+#   6. winston error.log + combined.log inside the container, tailed and
+#      filtered to SSO patterns. winston is configured to skip the console
+#      transport in NODE_ENV=production, so the actual `[Auth] Microsoft
+#      SSO callback error` line + AADSTS code only exist in these files.
 #
 # What it never does: no INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER, no
 # docker restart, no container env change, no secret value printed.
@@ -154,14 +159,54 @@ jobs:
             '
             echo ""
 
-            # ── [5/5] Backend logs filtered to SSO-relevant patterns ───────────
-            echo "── [5/5] Last 800 backend log lines matching SSO patterns ──"
+            # ── [5/6] docker logs (morgan HTTP access lines) ───────────────────
+            echo "── [5/6] Last 800 docker-log lines matching SSO patterns ──"
             echo "(patterns: sso, microsoft, callback, AADSTS, encrypt, TeamsConfig, oauth, redirect_uri)"
             echo ""
             docker logs --tail 800 aph-backend 2>&1 \
               | grep -iE "sso|microsoft|callback|aadsts|encrypt|teamsconfig|oauth|redirect_uri|\[Auth\]" \
               | tail -200 \
-              || echo "  (no matching log lines in the last 800 — try clicking 'Sign in with Microsoft' BEFORE running this workflow next time)"
+              || echo "  (no matching docker-log lines — application-level errors live in [6/6], not here)"
+            echo ""
+
+            # ── [6/6] winston log files (the real error source) ────────────────
+            # winston in NODE_ENV=production writes ONLY to files (utils/logger.js
+            # gates the Console transport on NODE_ENV !== 'production'). The actual
+            # `[Auth] Microsoft SSO callback error` line + the AADSTS code from
+            # Microsoft live in error.log / combined.log. Both files live under
+            # the container's server/logs/ — but the WORKDIR varies per image,
+            # so we locate them with `find` rather than hard-coding a path.
+            echo "── [6/6] winston error.log + combined.log inside aph-backend ──"
+            echo "(filtered to SSO/Auth/AADSTS patterns; tokens redacted at safeLogger level)"
+            echo ""
+            docker exec aph-backend sh -c '
+              found=0
+              for name in error.log combined.log; do
+                # `find` runs once per name to keep output tidy; -prune to skip
+                # mounted volumes that might contain unrelated logs.
+                paths=$(find / -path /proc -prune -o -path /sys -prune -o -type f -name "$name" -print 2>/dev/null | head -3)
+                for f in $paths; do
+                  if [ -f "$f" ]; then
+                    found=1
+                    echo "──── $f ────"
+                    # 800 lines is enough to span ~30 minutes of normal traffic.
+                    # We greedy-match anything SSO/Auth/AADSTS-adjacent, then
+                    # cap at 80 lines so one giant stack trace cant blow past
+                    # the action log size limit.
+                    tail -800 "$f" 2>/dev/null \
+                      | grep -iE "aadsts|microsoft|\[Auth\]|sso|callback|teamsconfig|encrypt|redirect_uri|oauth|TokenExpired|JsonWebToken|UnhandledRejection|UncaughtException" \
+                      | tail -80 \
+                      || echo "  (no matching lines in this file)"
+                    echo ""
+                  fi
+                done
+              done
+              if [ "$found" = "0" ]; then
+                echo "  (no error.log / combined.log files found inside the container)"
+                echo "  hint: check that LOG_LEVEL is not silencing errors and that"
+                echo "  server/logs/ is writable in the container."
+              fi
+            '
 
             echo ""
             echo "════════════════════════════════════════════════════════════════"
