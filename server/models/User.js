@@ -241,4 +241,39 @@ User.prototype.toJSON = function () {
   return values;
 };
 
+// Column allowlist for list / match queries that must NOT pull large or
+// sensitive fields. Pulling `teamsAccessToken` / `teamsRefreshToken` /
+// `passwordResetToken` forces PostgreSQL to materialise out-of-line TOAST
+// chunks; a single corrupt chunk in any row would otherwise fail the entire
+// query (incident 2026-05-14). Add new fields here only after confirming they
+// are safe to expose and small enough to stay inline.
+User.SAFE_USER_ATTRIBUTES = Object.freeze([
+  'id',
+  'name',
+  'email',
+  'authProvider',
+  'avatar',
+  'role',
+  'department',
+  'designation',
+  'teamsUserId',
+  'teamsNotificationsEnabled',
+  'isActive',
+  'localStatusOverride',
+  'isSuperAdmin',
+  'tier',
+  'accountStatus',
+  'hierarchyLevel',
+  'title',
+  'hasLocalPassword',
+  'passwordChangedAt',
+  'fontSizePreference',
+  'language',
+  'createdAt',
+  'updatedAt',
+  'departmentId',
+  'workspaceId',
+  'managerId',
+]);
+
 module.exports = User;

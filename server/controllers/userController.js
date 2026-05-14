@@ -122,9 +122,14 @@ const getAllUsersAdmin = async (req, res) => {
     // Only show approved users in main list (pending shown separately)
     where.accountStatus = 'approved';
 
+    // Use the model's safe allowlist instead of `exclude: ['password']`. The
+    // exclude form still SELECTs every other column including the TOAST-eligible
+    // `teamsAccessToken` / `teamsRefreshToken` / `passwordResetToken`. A single
+    // corrupt TOAST chunk anywhere in the table would fail this entire query
+    // and leave the Admin Settings page showing "Server error fetching users".
     const users = await User.findAll({
       where,
-      attributes: { exclude: ['password'] },
+      attributes: User.SAFE_USER_ATTRIBUTES,
       order: [['createdAt', 'DESC']],
     });
 

@@ -610,8 +610,11 @@ const forceLogin = async (req, res) => {
  */
 const getProfile = async (req, res) => {
   try {
+    // Allowlist projection — same rationale as the authenticate middleware.
+    // `exclude: ['password']` still selects every token column and would 500
+    // the Profile page for any user whose row has corrupt TOAST chunks.
     const user = await User.findByPk(req.user.id, {
-      attributes: { exclude: ['password'] },
+      attributes: User.SAFE_USER_ATTRIBUTES,
     });
 
     if (!user) {
@@ -1366,8 +1369,16 @@ const microsoftCallback = async (req, res) => {
     let matchedBy = null;
 
     // Step 1 — OID lookup (Microsoft object id is the stable, primary identifier).
+    // Use the SAFE_USER_ATTRIBUTES allowlist so this match query never pulls
+    // `teamsAccessToken` / `teamsRefreshToken`. Those are TOAST-eligible TEXT
+    // columns; pulling them here would let a single corrupt row block a user's
+    // login (incident 2026-05-14). The post-match token UPDATE runs separately
+    // below and is wrapped so its failure does not abort the SSO session.
     if (oid) {
-      const oidMatches = await User.findAll({ where: { teamsUserId: oid } });
+      const oidMatches = await User.findAll({
+        where: { teamsUserId: oid },
+        attributes: User.SAFE_USER_ATTRIBUTES,
+      });
       if (oidMatches.length > 1) {
         safeLogger.error('[Auth] SSO security error: multiple users share teamsUserId', {
           count: oidMatches.length,
@@ -1402,8 +1413,12 @@ const microsoftCallback = async (req, res) => {
     }
 
     // Step 2 — Email lookup as a fallback for first-time linking.
+    // Same allowlist rationale as the OID lookup above.
     if (!user) {
-      const emailMatches = await User.findAll({ where: { email } });
+      const emailMatches = await User.findAll({
+        where: { email },
+        attributes: User.SAFE_USER_ATTRIBUTES,
+      });
       if (emailMatches.length > 1) {
         safeLogger.error('[Auth] SSO security error: duplicate emails detected', { email });
         return res.redirect(
@@ -1445,7 +1460,22 @@ const microsoftCallback = async (req, res) => {
       if (oid && !user.teamsUserId) updates.teamsUserId = oid;
       // Only change authProvider if user has no local password set
       if (user.authProvider === 'local' && !user.password) updates.authProvider = 'microsoft';
-      await user.update(updates);
+      // Isolate the token write. Microsoft has already authenticated this user
+      // — the only thing this UPDATE adds is delegated-token persistence for
+      // Teams-API features. If the row has TOAST corruption (incident
+      // 2026-05-14: "unexpected chunk number" / "attempted to delete invisible
+      // tuple"), or if the UPDATE fails for any other infra reason, do NOT
+      // turn that into "Authentication failed" — establish the session
+      // anyway and surface a redacted warning. The user is still asked to
+      // re-link Teams the next time they hit a Teams-dependent feature.
+      try {
+        await user.update(updates);
+      } catch (tokenUpdateErr) {
+        safeLogger.warn('[Auth] SSO token persistence failed; proceeding with session', {
+          userId: user.id,
+          err: tokenUpdateErr,
+        });
+      }
 
       // Check account status
       if (!user.isActive) {
