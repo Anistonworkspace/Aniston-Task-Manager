@@ -35,7 +35,18 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    const user = await User.findByPk(decoded.id);
+    // Load only the SAFE_USER_ATTRIBUTES projection. This middleware fires on
+    // every authenticated request, so a wide SELECT here would force PostgreSQL
+    // to materialise out-of-line TOAST chunks for `teamsAccessToken` /
+    // `teamsRefreshToken` on every API call. A single corrupt TOAST row (see
+    // incident 2026-05-14) would then 500 every page the affected user opens,
+    // not just SSO. The allowlist still contains every column req.user needs
+    // for downstream guards (id, isActive, role, tier, isSuperAdmin,
+    // passwordChangedAt, etc.). Verified via grep: no controller reads
+    // req.user.password / req.user.teamsAccessToken / req.user.teamsRefreshToken.
+    const user = await User.findByPk(decoded.id, {
+      attributes: User.SAFE_USER_ATTRIBUTES,
+    });
 
     if (!user) {
       return res.status(401).json({

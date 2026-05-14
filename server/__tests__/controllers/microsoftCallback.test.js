@@ -30,6 +30,16 @@ jest.mock('../../models', () => ({
     findByPk: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    // Mirror the real model's allowlist so controller code that does
+    // `attributes: User.SAFE_USER_ATTRIBUTES` resolves to a real array.
+    SAFE_USER_ATTRIBUTES: [
+      'id', 'name', 'email', 'authProvider', 'avatar', 'role',
+      'department', 'designation', 'teamsUserId', 'teamsNotificationsEnabled',
+      'isActive', 'localStatusOverride', 'isSuperAdmin', 'tier',
+      'accountStatus', 'hierarchyLevel', 'title', 'hasLocalPassword',
+      'passwordChangedAt', 'fontSizePreference', 'language',
+      'createdAt', 'updatedAt', 'departmentId', 'workspaceId', 'managerId',
+    ],
   },
   RefreshToken: {
     findOne: jest.fn(),
@@ -356,5 +366,73 @@ describe('microsoftCallback — account status gates', () => {
     // authProvider should NOT change because user has a local password
     expect(localUser.update.mock.calls[0][0].authProvider).toBeUndefined();
     expect(res.redirect.mock.calls[0][0]).toMatch(/sso=success/);
+  });
+});
+
+describe('microsoftCallback — column narrowing & token-write isolation (incident 2026-05-14)', () => {
+  it('passes SAFE_USER_ATTRIBUTES to both match queries (never selects token columns)', async () => {
+    axios.post.mockResolvedValue(defaultTokenResponse());
+    // OID miss, then email miss — exercises both match queries.
+    User.findAll
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    User.create.mockResolvedValue({
+      id: 'u-new',
+      email: 'alice@aniston.com',
+      teamsUserId: 'ms-oid-alice',
+      isActive: true,
+      accountStatus: 'approved',
+      update: jest.fn().mockResolvedValue(true),
+    });
+
+    const req = { query: { code: 'c', state: validState() }, headers: {}, ip: '1.1.1.1' };
+    const res = makeRes();
+    await microsoftCallback(req, res);
+
+    expect(User.findAll).toHaveBeenCalledTimes(2);
+    for (const call of User.findAll.mock.calls) {
+      const opts = call[0] || {};
+      expect(Array.isArray(opts.attributes)).toBe(true);
+      // Token columns must NEVER appear in the match-query projection.
+      expect(opts.attributes).not.toContain('teamsAccessToken');
+      expect(opts.attributes).not.toContain('teamsRefreshToken');
+      expect(opts.attributes).not.toContain('password');
+      expect(opts.attributes).not.toContain('passwordResetToken');
+      // The columns needed for the security checks below MUST be present.
+      expect(opts.attributes).toEqual(expect.arrayContaining(['id', 'email', 'teamsUserId', 'isActive', 'accountStatus']));
+    }
+  });
+
+  it('establishes a session even when the post-match token UPDATE fails (TOAST corruption)', async () => {
+    axios.post.mockResolvedValue(defaultTokenResponse());
+    const existingUser = {
+      id: 'u-alice',
+      email: 'alice@aniston.com',
+      teamsUserId: 'ms-oid-alice',
+      isActive: true,
+      accountStatus: 'approved',
+      authProvider: 'microsoft',
+      password: null,
+      // Simulate the exact Postgres error we saw in production: a UPDATE
+      // against a row whose TOAST chunks are damaged.
+      update: jest.fn().mockRejectedValue(
+        Object.assign(new Error('attempted to delete invisible tuple'), {
+          name: 'SequelizeDatabaseError',
+        })
+      ),
+    };
+    User.findAll.mockResolvedValueOnce([existingUser]);
+
+    const req = { query: { code: 'c', state: validState() }, headers: {}, ip: '1.1.1.1' };
+    const res = makeRes();
+    await microsoftCallback(req, res);
+
+    // SSO must still resolve successfully — Microsoft already authenticated
+    // the user; failing to persist the delegated token is a Teams-feature
+    // warning, not an authentication failure.
+    expect(existingUser.update).toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledTimes(1);
+    expect(res.redirect.mock.calls[0][0]).toMatch(/sso=success/);
+    expect(res.redirect.mock.calls[0][0]).not.toMatch(/sso=error/);
   });
 });

@@ -69,7 +69,13 @@ async function syncUsersFromM365() {
       let existing = null;
 
       if (m365User.id) {
-        const oidMatches = await User.findAll({ where: { teamsUserId: m365User.id } });
+        // Allowlist the SELECT so a row with corrupt TOAST in
+        // teamsAccessToken / teamsRefreshToken does not abort the entire
+        // sync pass. The update below only writes small inline columns.
+        const oidMatches = await User.findAll({
+          where: { teamsUserId: m365User.id },
+          attributes: User.SAFE_USER_ATTRIBUTES,
+        });
         if (oidMatches.length > 1) {
           throw new Error(
             `Refusing to sync: ${oidMatches.length} local users share teamsUserId for ${email}. ` +
@@ -89,7 +95,10 @@ async function syncUsersFromM365() {
       }
 
       if (!existing) {
-        const emailMatches = await User.findAll({ where: { email } });
+        const emailMatches = await User.findAll({
+          where: { email },
+          attributes: User.SAFE_USER_ATTRIBUTES,
+        });
         if (emailMatches.length > 1) {
           throw new Error(`Refusing to sync: duplicate local emails for ${email}.`);
         }
