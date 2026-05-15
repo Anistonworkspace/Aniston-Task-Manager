@@ -3,8 +3,9 @@ import { LayoutGrid, Check, Plus, X, Search, Users, Zap } from 'lucide-react';
 import Modal from '../common/Modal';
 import api from '../../services/api';
 import WorkspaceSetupModal from './WorkspaceSetupModal';
+import AnistonLoader from '../common/AnistonLoader';
 
-const COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#037f4c', '#579bfc', '#ff642e'];
+const COLORS = ['#0073ea', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#037f4c', '#579bfc', '#ff642e'];
 
 export default function WorkspaceAssignModal({ user, onClose, onUpdated }) {
   const [workspaces, setWorkspaces] = useState([]);
@@ -106,9 +107,7 @@ export default function WorkspaceAssignModal({ user, onClose, onUpdated }) {
 
         {/* Workspace list */}
         {loading ? (
-          <div className="flex justify-center py-8">
-            <div className="w-6 h-6 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
-          </div>
+          <AnistonLoader variant="section" size="sm" className="py-8" />
         ) : filtered.length === 0 ? (
           <div className="text-center py-8 text-text-tertiary text-sm">
             <LayoutGrid size={32} className="mx-auto mb-2 opacity-30" />

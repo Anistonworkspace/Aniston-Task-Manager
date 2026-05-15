@@ -104,7 +104,7 @@ function CreateGroupDialog({ open, onClose, onCreate }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-group-dialog-title"
-        className="w-full max-w-sm bg-white dark:bg-[#1E1F23] rounded-xl shadow-xl border border-border overflow-hidden"
+        className="w-full max-w-sm bg-[var(--primary-background-color)] rounded-xl shadow-xl border border-border overflow-hidden"
       >
         <form onSubmit={handleSubmit} className="flex flex-col gap-4 p-5">
           <h2
@@ -128,7 +128,7 @@ function CreateGroupDialog({ open, onClose, onCreate }) {
               maxLength={MAX_LEN}
               onChange={(e) => { setName(e.target.value); if (error) setError(''); }}
               placeholder="e.g. Sprint 24"
-              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-white dark:bg-[#1E1F23] text-text-primary dark:text-white placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-[var(--primary-background-color)] text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
               disabled={submitting}
             />
             {error && (
@@ -169,7 +169,7 @@ function NewTaskDropdown({ onNewGroup, onImport, canCreateGroup, canImport, onCl
   }, [onClose]);
 
   return (
-    <div ref={ref} className="absolute left-0 top-full mt-1 w-[200px] bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] z-50 dropdown-enter overflow-hidden py-1">
+    <div ref={ref} className="absolute left-0 top-full mt-1 w-[200px] bg-white rounded-lg shadow-dropdown border border-[#d0d4e4] z-50 dropdown-enter overflow-hidden py-1">
       {canCreateGroup && (
         <button onClick={onNewGroup}
           className="w-full flex items-center gap-2.5 px-4 py-[8px] text-[13px] text-[#323338] hover:bg-[#f5f6f8] transition-colors">
@@ -898,7 +898,7 @@ export default function BoardPage() {
   }
 
   async function createGroupWithName(title) {
-    const palette = ['#e2445c', '#fdab3d', '#00c875', '#579bfc', '#a25ddc', '#ff642e'];
+    const palette = ['#df2f4a', '#fdab3d', '#00c875', '#579bfc', '#9d50dd', '#ff642e'];
     const color = palette[(board?.groups?.length || 0) % palette.length];
     // The dialog catches errors itself so it can keep the modal open and
     // surface inline validation. Don't swallow here — re-throw so it can.
@@ -1258,7 +1258,7 @@ export default function BoardPage() {
         </div>
 
         {/* View Tabs — Monday.com style: Main table ... Gantt Calendar Kanban + */}
-        <div className="flex items-center gap-0 mb-3 border-b border-[#e6e9ef]">
+        <div className="flex items-center gap-0 mb-3 border-b border-[#d0d4e4]">
           {[
             { id: 'table', label: t('board.tabs.mainTable') },
             { id: 'gantt', label: t('board.tabs.gantt') },
@@ -1350,7 +1350,7 @@ export default function BoardPage() {
                 {hiddenColumns.length > 0 && <span className="text-[11px] font-bold">/ {hiddenColumns.length}</span>}
               </button>
               {showHideColumns && (
-                <div className="absolute top-full left-0 mt-1 w-52 bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] z-50 dropdown-enter p-2">
+                <div className="absolute top-full left-0 mt-1 w-52 bg-white rounded-lg shadow-dropdown border border-[#d0d4e4] z-50 dropdown-enter p-2">
                   <p className="text-[11px] font-medium text-[#676879] px-2 pb-1.5">{t('board.toolbar.toggleColumns')}</p>
                   {allColumns.map(col => (
                     <label key={col.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[#f5f6f8] cursor-pointer transition-colors">

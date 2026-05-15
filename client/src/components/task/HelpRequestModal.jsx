@@ -8,7 +8,7 @@ import { resolveTier, tierLabel } from '../../utils/tiers';
 const URGENCY_CONFIG = {
   low: { label: 'Low', color: '#579bfc' },
   medium: { label: 'Medium', color: '#fdab3d' },
-  high: { label: 'High', color: '#e2445c' },
+  high: { label: 'High', color: '#df2f4a' },
   critical: { label: 'Critical', color: '#333' },
 };
 

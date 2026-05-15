@@ -9,12 +9,12 @@ export const WORKSPACE_TEMPLATES = [
     name: 'Campaign Management',
     description: 'Plan and deliver winning campaigns',
     icon: 'Megaphone',
-    color: '#e2445c',
+    color: '#df2f4a',
     category: 'Marketing',
     boards: [
       {
         name: 'Campaign Pipeline',
-        color: '#e2445c',
+        color: '#df2f4a',
         groups: [
           { id: 'planning', title: 'Planning', color: '#579bfc', position: 0 },
           { id: 'in_progress', title: 'In Progress', color: '#fdab3d', position: 1 },
@@ -51,16 +51,16 @@ export const WORKSPACE_TEMPLATES = [
     name: 'Event Management',
     description: 'Organize events from start to finish',
     icon: 'Calendar',
-    color: '#a25ddc',
+    color: '#9d50dd',
     category: 'Operations',
     boards: [
       {
         name: 'Event Planning',
-        color: '#a25ddc',
+        color: '#9d50dd',
         groups: [
           { id: 'pre_event', title: 'Pre-Event', color: '#579bfc', position: 0 },
           { id: 'logistics', title: 'Logistics', color: '#fdab3d', position: 1 },
-          { id: 'day_of', title: 'Day-of Tasks', color: '#e2445c', position: 2 },
+          { id: 'day_of', title: 'Day-of Tasks', color: '#df2f4a', position: 2 },
           { id: 'post_event', title: 'Post-Event', color: '#00c875', position: 3 },
         ],
         columns: [
@@ -76,7 +76,7 @@ export const WORKSPACE_TEMPLATES = [
         groups: [
           { id: 'vendors', title: 'Vendors', color: '#579bfc', position: 0 },
           { id: 'budget', title: 'Budget Items', color: '#fdab3d', position: 1 },
-          { id: 'contracts', title: 'Contracts', color: '#e2445c', position: 2 },
+          { id: 'contracts', title: 'Contracts', color: '#df2f4a', position: 2 },
         ],
         columns: [
           { id: 'status', title: 'Status', type: 'status', width: 140 },
@@ -102,7 +102,7 @@ export const WORKSPACE_TEMPLATES = [
           { id: 'backlog', title: 'Backlog', color: '#c4c4c4', position: 0 },
           { id: 'sprint', title: 'Current Sprint', color: '#579bfc', position: 1 },
           { id: 'in_dev', title: 'In Development', color: '#fdab3d', position: 2 },
-          { id: 'testing', title: 'Testing', color: '#a25ddc', position: 3 },
+          { id: 'testing', title: 'Testing', color: '#9d50dd', position: 3 },
           { id: 'done', title: 'Done', color: '#00c875', position: 4 },
         ],
         columns: [
@@ -114,9 +114,9 @@ export const WORKSPACE_TEMPLATES = [
       },
       {
         name: 'Bug Tracker',
-        color: '#e2445c',
+        color: '#df2f4a',
         groups: [
-          { id: 'reported', title: 'Reported', color: '#e2445c', position: 0 },
+          { id: 'reported', title: 'Reported', color: '#df2f4a', position: 0 },
           { id: 'investigating', title: 'Investigating', color: '#fdab3d', position: 1 },
           { id: 'fixing', title: 'Fixing', color: '#579bfc', position: 2 },
           { id: 'resolved', title: 'Resolved', color: '#00c875', position: 3 },
@@ -170,7 +170,7 @@ export const WORKSPACE_TEMPLATES = [
         groups: [
           { id: 'in_stock', title: 'In Stock', color: '#00c875', position: 0 },
           { id: 'low_stock', title: 'Low Stock', color: '#fdab3d', position: 1 },
-          { id: 'out_of_stock', title: 'Out of Stock', color: '#e2445c', position: 2 },
+          { id: 'out_of_stock', title: 'Out of Stock', color: '#df2f4a', position: 2 },
           { id: 'ordered', title: 'Ordered', color: '#579bfc', position: 3 },
         ],
         columns: [
@@ -213,9 +213,9 @@ export const WORKSPACE_TEMPLATES = [
           { id: 'lead', title: 'New Leads', color: '#c4c4c4', position: 0 },
           { id: 'contacted', title: 'Contacted', color: '#579bfc', position: 1 },
           { id: 'proposal', title: 'Proposal Sent', color: '#fdab3d', position: 2 },
-          { id: 'negotiation', title: 'Negotiation', color: '#a25ddc', position: 3 },
+          { id: 'negotiation', title: 'Negotiation', color: '#9d50dd', position: 3 },
           { id: 'closed_won', title: 'Closed Won', color: '#00c875', position: 4 },
-          { id: 'closed_lost', title: 'Closed Lost', color: '#e2445c', position: 5 },
+          { id: 'closed_lost', title: 'Closed Lost', color: '#df2f4a', position: 5 },
         ],
         columns: [
           { id: 'status', title: 'Status', type: 'status', width: 140 },
@@ -230,7 +230,7 @@ export const WORKSPACE_TEMPLATES = [
         groups: [
           { id: 'active', title: 'Active Clients', color: '#00c875', position: 0 },
           { id: 'onboarding', title: 'Onboarding', color: '#579bfc', position: 1 },
-          { id: 'at_risk', title: 'At Risk', color: '#e2445c', position: 2 },
+          { id: 'at_risk', title: 'At Risk', color: '#df2f4a', position: 2 },
         ],
         columns: [
           { id: 'status', title: 'Status', type: 'status', width: 140 },
@@ -256,7 +256,7 @@ export const WORKSPACE_TEMPLATES = [
           { id: 'sourcing', title: 'Sourcing', color: '#c4c4c4', position: 0 },
           { id: 'screening', title: 'Screening', color: '#579bfc', position: 1 },
           { id: 'interview', title: 'Interview', color: '#fdab3d', position: 2 },
-          { id: 'offer', title: 'Offer Sent', color: '#a25ddc', position: 3 },
+          { id: 'offer', title: 'Offer Sent', color: '#9d50dd', position: 3 },
           { id: 'hired', title: 'Hired', color: '#00c875', position: 4 },
         ],
         columns: [
@@ -270,7 +270,7 @@ export const WORKSPACE_TEMPLATES = [
         name: 'Onboarding Checklist',
         color: '#00c875',
         groups: [
-          { id: 'day1', title: 'Day 1', color: '#e2445c', position: 0 },
+          { id: 'day1', title: 'Day 1', color: '#df2f4a', position: 0 },
           { id: 'week1', title: 'Week 1', color: '#fdab3d', position: 1 },
           { id: 'month1', title: 'Month 1', color: '#579bfc', position: 2 },
           { id: 'ongoing', title: 'Ongoing', color: '#00c875', position: 3 },
@@ -296,7 +296,7 @@ export const WORKSPACE_TEMPLATES = [
         name: 'OKR Dashboard',
         color: '#fdab3d',
         groups: [
-          { id: 'company', title: 'Company Goals', color: '#e2445c', position: 0 },
+          { id: 'company', title: 'Company Goals', color: '#df2f4a', position: 0 },
           { id: 'team', title: 'Team Goals', color: '#579bfc', position: 1 },
           { id: 'individual', title: 'Individual Goals', color: '#00c875', position: 2 },
         ],
@@ -323,7 +323,7 @@ export const WORKSPACE_TEMPLATES = [
         groups: [
           { id: 'not_started', title: 'Not Started', color: '#c4c4c4', position: 0 },
           { id: 'in_progress', title: 'In Progress', color: '#fdab3d', position: 1 },
-          { id: 'review', title: 'Review', color: '#a25ddc', position: 2 },
+          { id: 'review', title: 'Review', color: '#9d50dd', position: 2 },
           { id: 'done', title: 'Done', color: '#00c875', position: 3 },
         ],
         columns: [
@@ -349,7 +349,7 @@ export const WORKSPACE_TEMPLATES = [
         groups: [
           { id: 'standup', title: 'Standup', color: '#579bfc', position: 0 },
           { id: 'planning', title: 'Planning', color: '#fdab3d', position: 1 },
-          { id: 'review', title: 'Review', color: '#a25ddc', position: 2 },
+          { id: 'review', title: 'Review', color: '#9d50dd', position: 2 },
           { id: 'one_on_one', title: '1:1s', color: '#00c875', position: 3 },
         ],
         columns: [
@@ -376,7 +376,7 @@ export const WORKSPACE_TEMPLATES = [
           { id: 'q1', title: 'Q1 Priorities', color: '#0073ea', position: 0 },
           { id: 'q2', title: 'Q2 Priorities', color: '#00c875', position: 1 },
           { id: 'ongoing', title: 'Ongoing', color: '#fdab3d', position: 2 },
-          { id: 'blocked', title: 'Blocked', color: '#e2445c', position: 3 },
+          { id: 'blocked', title: 'Blocked', color: '#df2f4a', position: 3 },
         ],
         columns: [
           { id: 'status', title: 'Status', type: 'status', width: 140 },
@@ -387,11 +387,11 @@ export const WORKSPACE_TEMPLATES = [
       },
       {
         name: 'Executive Reviews',
-        color: '#a25ddc',
+        color: '#9d50dd',
         groups: [
           { id: 'pending', title: 'Pending Review', color: '#fdab3d', position: 0 },
           { id: 'reviewed', title: 'Reviewed', color: '#00c875', position: 1 },
-          { id: 'action_needed', title: 'Action Needed', color: '#e2445c', position: 2 },
+          { id: 'action_needed', title: 'Action Needed', color: '#df2f4a', position: 2 },
         ],
         columns: [
           { id: 'status', title: 'Status', type: 'status', width: 140 },

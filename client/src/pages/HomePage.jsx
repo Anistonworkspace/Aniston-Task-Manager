@@ -245,7 +245,7 @@ export default function HomePage() {
           className="col-span-1 sm:col-span-6 lg:col-span-12 relative overflow-hidden rounded-lg px-3.5 py-1.5 sm:px-4 sm:py-2"
           style={{
             background:
-              'radial-gradient(ellipse at top right, rgba(79, 70, 229, 0.06), transparent 60%)',
+              'radial-gradient(ellipse at top right, rgba(0, 115, 234, 0.06), transparent 60%)',
           }}
         >
           <h1 className="font-neu-machina text-base sm:text-lg font-semibold text-text-primary flex items-center gap-2 leading-tight tracking-tight">
@@ -278,8 +278,8 @@ export default function HomePage() {
               <span
                 className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ${
                   trendUp
-                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400'
-                    : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+                    ? 'bg-success-light text-success-dark dark:bg-success/15 dark:text-success'
+                    : 'bg-danger-light text-danger-dark dark:bg-danger/15 dark:text-danger'
                 }`}
               >
                 {trendUp ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
@@ -321,7 +321,7 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Completed</TileLabel>
-            <TileIconChip icon={CheckCircle2} color="#10b981" />
+            <TileIconChip icon={CheckCircle2} color="#00854d" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
             {completedCount}
@@ -338,7 +338,7 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Due Today</TileLabel>
-            <TileIconChip icon={Target} color="#f59e0b" />
+            <TileIconChip icon={Target} color="#eaaa15" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
             {dueTodayCount}
@@ -347,7 +347,7 @@ export default function HomePage() {
             <p className="text-[11px] text-text-tertiary">
               {dueTodayCount > 0 ? 'Focus on these' : 'No deadlines today'}
             </p>
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border border-[rgba(15,15,25,0.08)] text-text-secondary">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border border-border text-text-secondary">
               {todayLabel}
             </span>
           </div>
@@ -361,18 +361,18 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Overdue</TileLabel>
-            <TileIconChip icon={AlertTriangle} color="#ef4444" />
+            <TileIconChip icon={AlertTriangle} color="#d83a52" />
           </div>
           <p
             className={`text-3xl font-semibold tabular-nums leading-none ${
-              overdueCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-text-primary'
+              overdueCount > 0 ? 'text-danger dark:text-danger' : 'text-text-primary'
             }`}
           >
             {overdueCount}
           </p>
           <div className="flex items-center gap-1.5 mt-1.5">
             {overdueCount === 0 && (
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
+              <span className="inline-block w-2 h-2 rounded-full bg-success" aria-hidden="true" />
             )}
             <p className="text-[11px] text-text-tertiary">
               {overdueCount > 0 ? 'Needs attention' : 'All on track'}
@@ -387,7 +387,7 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>In Progress</TileLabel>
-            <TileIconChip icon={TrendingUp} color="#3b82f6" />
+            <TileIconChip icon={TrendingUp} color="#0073ea" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
             {inProgressCount}
@@ -414,7 +414,7 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Total Tasks</TileLabel>
-            <TileIconChip icon={ListTodo} color="#4f46e5" />
+            <TileIconChip icon={ListTodo} color="#0073ea" />
           </div>
           <p className="text-3xl font-semibold tabular-nums text-text-primary leading-none">
             {totalCount}
@@ -432,11 +432,11 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between mb-2">
             <TileLabel>Stuck / Blocked</TileLabel>
-            <TileIconChip icon={Flame} color="#f43f5e" />
+            <TileIconChip icon={Flame} color="#d83a52" />
           </div>
           <p
             className={`text-3xl font-semibold tabular-nums leading-none ${
-              stuckCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-text-primary'
+              stuckCount > 0 ? 'text-danger dark:text-danger' : 'text-text-primary'
             }`}
           >
             {stuckCount}
@@ -465,7 +465,7 @@ export default function HomePage() {
                 </span>
               )}
             </div>
-            <TileIconChip icon={Bell} color="#0ea5e9" />
+            <TileIconChip icon={Bell} color="#0073ea" />
           </div>
           {notifications.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-4">
@@ -589,7 +589,7 @@ export default function HomePage() {
                     >
                       <span
                         className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: statusConf.color || '#94a3b8' }}
+                        style={{ backgroundColor: statusConf.color || 'var(--ui-border-color)' }}
                         aria-hidden="true"
                       />
                       <span
@@ -604,8 +604,8 @@ export default function HomePage() {
                       <span
                         className="text-[10px] font-medium px-2 py-0.5 rounded-md hidden sm:inline"
                         style={{
-                          backgroundColor: `${priorityConf.color || '#94a3b8'}15`,
-                          color: priorityConf.color || '#666',
+                          backgroundColor: `${priorityConf.color || '#c3c6d4'}15`,
+                          color: priorityConf.color || 'var(--secondary-text-color)',
                         }}
                       >
                         {translatePriority(task.priority, t, priorityConf.label || task.priority)}

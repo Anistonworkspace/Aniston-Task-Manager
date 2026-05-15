@@ -500,7 +500,26 @@ export default function TaskModal({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task?.title || '');
   const [titleSaving, setTitleSaving] = useState(false);
-  const [description, setDescription] = useState(task?.description || '');
+  // Description is no longer auto-saved on blur. The textarea writes to a
+  // local draft buffer; the user must explicitly press Save (or Cancel to
+  // revert). Two buffers + refs (state for re-render, refs for reads that
+  // happen across awaits where state would be stale):
+  //   lastSavedDescription — what the server confirmed last
+  //   draftDescription     — current textarea value
+  // isDescriptionDirty = draft !== lastSaved. Save is disabled when not dirty.
+  const [draftDescription, setDraftDescription] = useState(task?.description || '');
+  const [lastSavedDescription, setLastSavedDescription] = useState(task?.description || '');
+  const [isDescFocused, setIsDescFocused] = useState(false);
+  const [isSavingDescription, setIsSavingDescription] = useState(false);
+  const [descSaveError, setDescSaveError] = useState('');
+  const draftDescriptionRef = useRef(task?.description || '');
+  const lastSavedDescriptionRef = useRef(task?.description || '');
+  // Resolver bag for the "unsaved description" confirmation dialog. `null`
+  // when not open. Holds { resolve } so all close paths converge on one
+  // pending Promise and we never have two prompts open at once.
+  const [unsavedDescPrompt, setUnsavedDescPrompt] = useState(null);
+  const unsavedDescPromptRef = useRef(null);
+  const isDescriptionDirty = draftDescription !== lastSavedDescription;
   const [status, setStatus] = useState(task?.status || 'not_started');
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [priority, setPriority] = useState(task?.priority || 'medium');
@@ -519,6 +538,43 @@ export default function TaskModal({
   const [assigneeSearch, setAssigneeSearch] = useState('');
   const [dueDate, setDueDate] = useState(task?.dueDate ? task.dueDate.slice(0, 10) : '');
   const [startDate, setStartDate] = useState(task?.startDate ? task.startDate.slice(0, 10) : '');
+
+  // Switching to a different task — wipe the description draft state so
+  // the previous task's edit doesn't leak across.
+  useEffect(() => {
+    const next = typeof task?.description === 'string' ? task.description : '';
+    setLastSavedDescription(next);
+    setDraftDescription(next);
+    lastSavedDescriptionRef.current = next;
+    draftDescriptionRef.current = next;
+    setIsDescFocused(false);
+    setDescSaveError('');
+    setIsSavingDescription(false);
+    if (unsavedDescPromptRef.current) {
+      // Force-close any open prompt — the task it referred to is gone.
+      const stale = unsavedDescPromptRef.current;
+      unsavedDescPromptRef.current = null;
+      setUnsavedDescPrompt(null);
+      try { stale.resolve?.('cancel'); } catch { /* ignore */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.id]);
+
+  // External description change on the SAME task (e.g. another user edited
+  // and the socket layer pushed a fresh task object via onUpdate). If the
+  // local user has no unsaved edits we silently follow the new value; if
+  // they're mid-edit we preserve their draft to avoid losing keystrokes.
+  useEffect(() => {
+    const incoming = typeof task?.description === 'string' ? task.description : '';
+    if (incoming === lastSavedDescriptionRef.current) return;
+    const wasClean = draftDescriptionRef.current === lastSavedDescriptionRef.current;
+    setLastSavedDescription(incoming);
+    lastSavedDescriptionRef.current = incoming;
+    if (wasClean) {
+      setDraftDescription(incoming);
+      draftDescriptionRef.current = incoming;
+    }
+  }, [task?.description]);
 
   const [reminders, setReminders] = useState(() => normalizeReminderProps(task?.reminders));
   useEffect(() => {
@@ -594,7 +650,7 @@ export default function TaskModal({
   const [taskStatusConfig, setTaskStatusConfig] = useState(task?.statusConfig || null);
   const [showStatusConfig, setShowStatusConfig] = useState(false);
   const [newStatusLabel, setNewStatusLabel] = useState('');
-  const [newStatusColor, setNewStatusColor] = useState('#3b82f6');
+  const [newStatusColor, setNewStatusColor] = useState('#579bfc');
   const [editingStatusKey, setEditingStatusKey] = useState(null);
   const [editStatusLabel, setEditStatusLabel] = useState('');
 
@@ -830,7 +886,14 @@ export default function TaskModal({
       }
 
       if (approvalCode === 'description_locked') {
-        setDescription(task.description || '');
+        // Description is now saved via handleDescriptionSave, but a stale
+        // call into save({ description }) (e.g. from older code paths)
+        // would still land here. Resync both buffers to the server's value.
+        const locked = task?.description || '';
+        setDraftDescription(locked);
+        setLastSavedDescription(locked);
+        draftDescriptionRef.current = locked;
+        lastSavedDescriptionRef.current = locked;
         if (toastError) toastError(msg || 'Task description cannot be edited after it has been added.');
         setSaveStatus('error');
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -930,7 +993,160 @@ export default function TaskModal({
       cancelTitleEdit();
     }
   }
-  function handleDescBlur() { if (description !== task.description) save({ description }); }
+  // ── Description: explicit Save / Cancel (no autosave-on-blur) ──────────
+  //
+  // The textarea writes to draftDescription. Save persists to the server
+  // via the same /api/tasks/:id update endpoint used elsewhere, but only
+  // ships the `description` field so other in-flight edits are untouched.
+  // Cancel reverts to lastSavedDescription without hitting the network.
+  //
+  // We also keep two refs in sync with state so close-guard logic that
+  // awaits the user's prompt choice can read the *current* values rather
+  // than the closure values captured before the await.
+  async function handleDescriptionSave() {
+    if (!canEditDescription) return false;
+    if (isSavingDescription) return false;
+    if (draftDescriptionRef.current === lastSavedDescriptionRef.current) {
+      // Nothing to save — just exit edit mode quietly.
+      setIsDescFocused(false);
+      return true;
+    }
+    const inFlightValue = draftDescriptionRef.current;
+    setIsSavingDescription(true);
+    setDescSaveError('');
+    setSaveStatus('saving');
+    try {
+      const res = await api.put(`/tasks/${task.id}`, { description: inFlightValue });
+      const echoed = res?.data?.task || res?.data?.data?.task || null;
+      const merged = echoed
+        ? { ...task, description: inFlightValue, ...echoed }
+        : { ...task, description: inFlightValue };
+      if (onUpdate) onUpdate(merged);
+      setLastSavedDescription(inFlightValue);
+      lastSavedDescriptionRef.current = inFlightValue;
+      // Only collapse the draft if the user did NOT keep typing while the
+      // save was in flight. Otherwise preserve their newer edit so we
+      // never silently overwrite unsaved keystrokes with the older value.
+      setDraftDescription((curr) => {
+        if (curr === inFlightValue) {
+          draftDescriptionRef.current = inFlightValue;
+          return inFlightValue;
+        }
+        return curr;
+      });
+      setIsDescFocused(false);
+      setSaveStatus('saved');
+      setSavedAt(new Date());
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => setSaveStatus(null), 2000);
+      if (toastSuccess) toastSuccess('Description saved');
+      return true;
+    } catch (err) {
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      const backendMsg = err?.response?.data?.message;
+      if (code === 'description_locked') {
+        const locked = task?.description || '';
+        setDraftDescription(locked);
+        setLastSavedDescription(locked);
+        draftDescriptionRef.current = locked;
+        lastSavedDescriptionRef.current = locked;
+        toastError?.('Task description cannot be edited after it has been added.');
+      } else if (status === 403) {
+        toastError?.('You do not have permission to edit this description.');
+      } else if (status === 404) {
+        toastError?.('This task is no longer available.');
+      } else {
+        // Never surface the raw backend message — it can leak Sequelize
+        // column names or third-party error strings.
+        toastError?.(backendMsg || 'Could not save description. Please try again.');
+      }
+      setDescSaveError('Save failed. Your text is still here — try again.');
+      setSaveStatus('error');
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => setSaveStatus(null), 3000);
+      return false;
+    } finally {
+      setIsSavingDescription(false);
+    }
+  }
+
+  function handleDescriptionCancel() {
+    setDraftDescription(lastSavedDescriptionRef.current);
+    draftDescriptionRef.current = lastSavedDescriptionRef.current;
+    setIsDescFocused(false);
+    setDescSaveError('');
+    if (typeof dismissDescGrammar === 'function') dismissDescGrammar();
+  }
+
+  // 3-way prompt: returns 'save' | 'discard' | 'cancel'. Rendered inline
+  // below; resolves the stored Promise when the user picks an option.
+  function promptUnsavedDescription() {
+    // If a prompt is already open (e.g. rapid double-X) — re-use it.
+    if (unsavedDescPromptRef.current) return unsavedDescPromptRef.current.promise;
+    let resolve;
+    const promise = new Promise((res) => { resolve = res; });
+    const bag = { resolve, promise };
+    unsavedDescPromptRef.current = bag;
+    setUnsavedDescPrompt(bag);
+    return promise;
+  }
+
+  function resolveUnsavedDescPrompt(choice) {
+    const bag = unsavedDescPromptRef.current;
+    unsavedDescPromptRef.current = null;
+    setUnsavedDescPrompt(null);
+    if (bag && typeof bag.resolve === 'function') bag.resolve(choice);
+  }
+
+  // Called by DetailModalShell before Escape / backdrop / programmatic
+  // closes. Returning false aborts the close (panel stays open). Also
+  // called by handleClose (X button) and by Prev/Next navigation guards.
+  async function guardCloseForUnsavedDescription() {
+    // Read via refs so a freshly-typed character that hasn't committed
+    // through render yet is still respected.
+    if (draftDescriptionRef.current === lastSavedDescriptionRef.current) return true;
+    const choice = await promptUnsavedDescription();
+    if (choice === 'save') {
+      const ok = await handleDescriptionSave();
+      if (!ok) return false;
+      // The user may have typed more during the save — guard against
+      // silently dropping those newer keystrokes.
+      if (draftDescriptionRef.current !== lastSavedDescriptionRef.current) return false;
+      return true;
+    }
+    if (choice === 'discard') {
+      setDraftDescription(lastSavedDescriptionRef.current);
+      draftDescriptionRef.current = lastSavedDescriptionRef.current;
+      return true;
+    }
+    return false;
+  }
+
+  // Wrapped close handlers — the X button and Prev/Next chevrons use these.
+  // Escape and backdrop go through DetailModalShell.onBeforeClose instead.
+  const requestModalClose = useCallback(async () => {
+    const proceed = await guardCloseForUnsavedDescription();
+    if (!proceed) return;
+    if (shellCloseRef.current) shellCloseRef.current(); else onClose?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onClose]);
+
+  const requestPrev = useCallback(async () => {
+    if (!onPrev) return;
+    const proceed = await guardCloseForUnsavedDescription();
+    if (!proceed) return;
+    onPrev();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onPrev]);
+
+  const requestNext = useCallback(async () => {
+    if (!onNext) return;
+    const proceed = await guardCloseForUnsavedDescription();
+    if (!proceed) return;
+    onNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNext]);
 
   const isTaskOwner = !!user?.id && (
     task?.assignedTo === user.id
@@ -1223,7 +1439,14 @@ export default function TaskModal({
 
   return (
     <>
-      <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabelledBy={titleElementId} size="sheet" placement="bottom-sheet">
+      <DetailModalShell
+        onClose={onClose}
+        onBeforeClose={guardCloseForUnsavedDescription}
+        closeRef={shellCloseRef}
+        ariaLabelledBy={titleElementId}
+        size="sheet"
+        placement="bottom-sheet"
+      >
         {/* Row 1: Project color stripe */}
         <div
           className="v3-project-stripe"
@@ -1240,7 +1463,7 @@ export default function TaskModal({
         )}
 
         {/* Row 2: Header top */}
-        <div className="flex items-center justify-between px-5 h-[42px] border-b border-border bg-white/95 dark:bg-[#1E1F23]/95 backdrop-blur flex-shrink-0">
+        <div className="flex items-center justify-between px-5 h-[42px] border-b border-border bg-[var(--primary-background-color)] backdrop-blur flex-shrink-0" style={{ backgroundColor: 'color-mix(in srgb, var(--primary-background-color) 95%, transparent)' }}>
           <div className="flex items-center gap-1.5 text-[12px] min-w-0 flex-1">
             <span className="text-text-tertiary">Task</span>
             {boardLabel && (<>
@@ -1263,7 +1486,7 @@ export default function TaskModal({
               <button
                 type="button"
                 onClick={() => { window.location.href = '/recurring-work'; }}
-                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/30 transition-colors flex-shrink-0 v3-lift"
+                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-100 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-900/30 transition-colors flex-shrink-0 v3-lift"
                 title={`Generated for ${task.occurrenceDate || task.dueDate}`}
               >
                 <RefreshCw size={9} className="v3-recur-spin" />
@@ -1274,11 +1497,11 @@ export default function TaskModal({
           <div className="flex items-center gap-0.5 flex-shrink-0">
             {(onPrev || onNext) && (
               <>
-                <button type="button" onClick={() => onPrev?.()} disabled={!onPrev}
+                <button type="button" onClick={requestPrev} disabled={!onPrev}
                   className="p-1.5 rounded-md text-text-secondary hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed v3-lift" title="Previous task" aria-label="Previous task">
                   <ChevronUp size={14} />
                 </button>
-                <button type="button" onClick={() => onNext?.()} disabled={!onNext}
+                <button type="button" onClick={requestNext} disabled={!onNext}
                   className="p-1.5 rounded-md text-text-secondary hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed v3-lift" title="Next task" aria-label="Next task">
                   <ChevronDown size={14} />
                 </button>
@@ -1295,7 +1518,7 @@ export default function TaskModal({
                 <Calendar size={12} /> Extend
               </button>
             )}
-            <button onClick={handleClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary v3-lift"><X size={16} /></button>
+            <button onClick={requestModalClose} aria-label="Close task" className="p-1.5 rounded-md hover:bg-surface text-text-secondary v3-lift"><X size={16} /></button>
           </div>
         </div>
 
@@ -1312,7 +1535,7 @@ export default function TaskModal({
             `items-start` + small vertical padding so the row grows
             downward when the title wraps. Action buttons keep their
             `flex-shrink-0` lane on the right and stay top-aligned. */}
-        <div className="flex items-start gap-2 px-5 min-h-[56px] py-2 border-b border-border bg-white dark:bg-[#1E1F23] flex-shrink-0">
+        <div className="flex items-start gap-2 px-5 min-h-[56px] py-2 border-b border-border bg-[var(--primary-background-color)] flex-shrink-0">
           <div className="flex-1 min-w-0">
             {editingTitle && canEditTitle ? (
               // Edit mode — input + explicit Save / Cancel. No onBlur save.
@@ -1408,7 +1631,7 @@ export default function TaskModal({
 
         {/* Row 4: Body — bento grid + content below */}
         <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-4 pb-2 relative">
-          <div className="v3-aurora" aria-hidden="true" />
+          {/* (Aurora gradient wash removed in Phase B — Monday-spec alignment.) */}
 
           {/* ===== Asymmetric bento (Approval-led, compact heights) =====
               Layout per UX request:
@@ -2167,8 +2390,13 @@ export default function TaskModal({
                   // taskVisibility.canViewTask check on POST /api/labels and
                   // /labels/{assign,unassign} is the security boundary.
                   // We still honour explicit DENY grants on tasks.edit
-                  // since that's an admin-set "no edits at all" override.
-                  canEdit={!denyEdit}
+                  // (admin-set "no edits at all" override) OR on the
+                  // specific labels.add_to_task action.
+                  canEdit={!denyEdit && granularPermissions?.['labels.add_to_task'] !== false}
+                  // canManage exposes per-label delete (trash) controls in
+                  // the picker — T1 / T2 only. Backend's canManageBoard is
+                  // still the authoritative gate.
+                  canManage={isSuperAdmin || isTier1 || isTier2}
                   // Propagate the new label list back into the parent
                   // task object so the board row's LabelCell (mounted
                   // simultaneously when the modal is open over the
@@ -2261,7 +2489,7 @@ export default function TaskModal({
               {/* ApprovalSummaryCard removed from Overview — approval data
                   now lives exclusively in the Approval bento tile above. */}
 
-              {/* Description */}
+              {/* Description — explicit Save / Cancel. No autosave on blur. */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-[10px] font-bold text-text-secondary uppercase tracking-[0.08em] inline-flex items-center gap-1.5">
@@ -2279,18 +2507,68 @@ export default function TaskModal({
                 {canEditDescription ? (
                   <>
                     <textarea
-                      value={description}
-                      onChange={(e) => { setDescription(e.target.value); checkDescGrammar(e.target.value); }}
-                      onBlur={handleDescBlur}
+                      value={draftDescription}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setDraftDescription(next);
+                        draftDescriptionRef.current = next;
+                        checkDescGrammar(next);
+                      }}
+                      onFocus={() => setIsDescFocused(true)}
+                      // No onBlur — autosave is intentionally removed.
                       placeholder="Add details, paste a link, or @mention someone…"
-                      className="w-full text-sm border border-border rounded-lg px-3 py-2.5 bg-surface/30 focus:outline-none focus:border-primary focus:bg-white dark:focus:bg-zinc-900 resize-none min-h-[64px] placeholder:text-text-tertiary"
+                      disabled={isSavingDescription}
+                      aria-label="Task description"
+                      className="w-full text-sm border border-border rounded-lg px-3 py-2.5 bg-surface/30 focus:outline-none focus:border-primary focus:bg-white dark:focus:bg-zinc-900 resize-none min-h-[64px] placeholder:text-text-tertiary disabled:opacity-60"
                     />
                     <GrammarSuggestion
                       suggestion={descGrammarSuggestion}
                       isChecking={isCheckingDescGrammar}
-                      onApply={() => { const corrected = applyDescGrammar(); if (corrected) { setDescription(corrected); save({ description: corrected }); } }}
+                      onApply={() => {
+                        const corrected = applyDescGrammar();
+                        if (corrected) {
+                          // Update the draft only — explicit Save is still
+                          // required, matching the new no-autosave contract.
+                          setDraftDescription(corrected);
+                          draftDescriptionRef.current = corrected;
+                          setIsDescFocused(true);
+                        }
+                      }}
                       onDismiss={dismissDescGrammar}
                     />
+                    {(isDescFocused || isDescriptionDirty || isSavingDescription) && (
+                      <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
+                        <div className="text-[11px] text-text-tertiary min-h-[14px]">
+                          {descSaveError
+                            ? <span className="text-red-500">{descSaveError}</span>
+                            : isDescriptionDirty
+                              ? <span>Unsaved changes</span>
+                              : null}
+                        </div>
+                        <div className="flex items-center gap-2 ml-auto">
+                          <button
+                            type="button"
+                            onClick={handleDescriptionCancel}
+                            disabled={isSavingDescription}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] font-medium text-text-secondary border border-border hover:bg-surface/40 disabled:opacity-50"
+                            title="Discard changes to description"
+                            aria-label="Cancel description edit"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDescriptionSave}
+                            disabled={isSavingDescription || !isDescriptionDirty}
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[12px] font-semibold bg-[#6D5CE7] text-white hover:bg-[#5B4BD4] disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed"
+                            title="Save description"
+                            aria-label="Save description"
+                          >
+                            {isSavingDescription ? 'Saving…' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : isDescriptionLocked ? (
                   <div aria-readonly="true" className="text-sm text-text-secondary px-3 py-2.5 border border-border rounded-lg min-h-[64px] bg-surface/30 whitespace-pre-wrap select-text">
@@ -2612,6 +2890,63 @@ export default function TaskModal({
             if (updated && onUpdate) onUpdate(updated);
           }}
         />
+      )}
+
+      {/* Unsaved description prompt. Three buttons — Save, Discard, Stay —
+          and dismissing via Escape / backdrop counts as "Stay" so we never
+          silently lose unsaved keystrokes. z-[120] keeps it above the
+          bottom-sheet (z-[100]). */}
+      {unsavedDescPrompt && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) resolveUnsavedDescPrompt('cancel');
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { e.preventDefault(); resolveUnsavedDescPrompt('cancel'); }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unsaved-desc-title"
+            className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-full max-w-sm border border-border"
+          >
+            <div className="px-5 pt-5 pb-2">
+              <h3 id="unsaved-desc-title" className="text-[14px] font-bold text-text-primary leading-tight">
+                Unsaved description changes
+              </h3>
+              <p className="text-[12px] text-text-secondary leading-relaxed mt-1.5">
+                You have unsaved description changes. Save before leaving?
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 pb-4 pt-3 flex-wrap">
+              <button
+                type="button"
+                onClick={() => resolveUnsavedDescPrompt('cancel')}
+                className="px-3 py-1.5 text-[12px] font-medium text-text-secondary hover:bg-surface/40 rounded-md transition-colors"
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveUnsavedDescPrompt('discard')}
+                className="px-3 py-1.5 text-[12px] font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveUnsavedDescPrompt('save')}
+                autoFocus
+                className="px-3.5 py-1.5 text-[12px] font-semibold text-white bg-[#6D5CE7] hover:bg-[#5B4BD4] rounded-md shadow-sm transition-colors"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

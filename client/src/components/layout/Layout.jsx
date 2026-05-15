@@ -16,6 +16,11 @@ export default function Layout() {
   const [aiOpen, setAiOpen] = useState(false);
   const location = useLocation();
 
+  // App shell: floating-card framing (.app-shell + .floating-card--stuck)
+  // gives the app warmth and depth — a tan-tinted base layer with a
+  // detached white content card. This is a deliberate divergence from the
+  // skill's §4.2 flat shell (the team prefers the polish here). All other
+  // Phase A token migrations are unaffected.
   return (
     <div className="app-shell flex h-screen w-screen overflow-hidden">
       {/* Skip to main content link for accessibility */}

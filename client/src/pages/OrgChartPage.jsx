@@ -39,9 +39,9 @@ function hasPrimaryManager(employee) {
 // no hierarchyLevel set). hierarchyLevel remains the primary classification —
 // tier is shown only as a fallback so cards never render an old role name.
 const TIER_COLORS = {
-  [TIER_1]: { color: '#e2445c', bg: '#fef2f2' },
+  [TIER_1]: { color: '#df2f4a', bg: '#fef2f2' },
   [TIER_2]: { color: '#0073ea', bg: '#eff6ff' },
-  [TIER_3]: { color: '#f59e0b', bg: '#fffbeb' },
+  [TIER_3]: { color: '#fdab3d', bg: '#fffbeb' },
   [TIER_4]: { color: '#00c875', bg: '#f0fdf4' },
 };
 
@@ -373,9 +373,9 @@ function HierarchyManager({ levels, onClose, onRefresh }) {
   const [editLevels, setEditLevels] = useState([]);
   const [newName, setNewName] = useState('');
   const [newLabel, setNewLabel] = useState('');
-  const [newColor, setNewColor] = useState('#6366f1');
+  const [newColor, setNewColor] = useState('#5559df');
   useEffect(() => { setEditLevels([...levels]); }, [levels]);
-  const COLORS = ['#e2445c', '#ff642e', '#f59e0b', '#00c875', '#0ea5e9', '#0073ea', '#8b5cf6', '#6366f1', '#94a3b8', '#1e293b'];
+  const COLORS = ['#df2f4a', '#ff642e', '#fdab3d', '#00c875', '#0ea5e9', '#0073ea', '#9d50dd', '#5559df', '#9aadbd', '#1e293b'];
 
   async function handleAdd() {
     if (!newName.trim() || !newLabel.trim()) return;
@@ -488,7 +488,7 @@ function EmployeeDetailsPanel({ employee, allUsers, hierarchyLevels, canManage, 
   // Multi-manager: get all manager relations for this employee
   const relations = employee.managerRelations || [];
   const RELATION_LABELS = { primary: 'Primary', functional: 'Functional', project: 'Project', dotted_line: 'Dotted Line' };
-  const RELATION_COLORS = { primary: '#0073ea', functional: '#00c875', project: '#f59e0b', dotted_line: '#8b5cf6' };
+  const RELATION_COLORS = { primary: '#0073ea', functional: '#00c875', project: '#fdab3d', dotted_line: '#9d50dd' };
 
   return (
     <motion.div

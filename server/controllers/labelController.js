@@ -20,15 +20,20 @@ function normalizeColor(input, fallback = '#579bfc') {
   return COLOR_HEX.test(v) ? v : fallback;
 }
 
-// S-H6 — Board management check. Mirrors the pattern in automationController:
-// admin / super admin pass unconditionally; everyone else (including Tier 2
-// managers) must be the board creator. Intentional: the audit decision was
-// to keep managers scoped to their own boards for label/automation surfaces
-// so cross-board admin actions are explicitly admin-only.
+// Board-library management check (used by UPDATE, DELETE, and the no-task
+// board-library CREATE path). Label management is now a Tier-1 / Tier-2
+// surface across any board they can see — managers no longer need to be the
+// board creator to mint/rename/delete a label. (Earlier S-H6 boundary kept
+// managers scoped to their own boards; product feedback widened this so
+// any T1/T2 can curate the board's label library.) Lower tiers still hit
+// 403 here — they create labels exclusively through the task-scoped path,
+// which is authorised by `taskVisibility.canViewTask` further down. The
+// board-creator fallback is preserved so a T3/T4 user who personally
+// created a board can still manage its labels.
 function canManageBoard(user, board) {
   if (!user || !board) return false;
   if (user.isSuperAdmin) return true;
-  if (user.role === 'admin') return true;
+  if (user.role === 'admin' || user.role === 'manager') return true;
   if (board.createdBy === user.id) return true;
   return false;
 }
@@ -225,11 +230,13 @@ exports.updateLabel = async (req, res) => {
 // failure no longer leaves an orphan Label row in the DB.
 exports.deleteLabel = async (req, res) => {
   try {
-    // Phase 7 — Tier-2 destructive guard.
-    const { assertCanDelete } = require('../services/tierEnforcement');
-    const { sendIfTierError } = require('../utils/tierResponseHelpers');
-    if (sendIfTierError(res, () => assertCanDelete(req.user, 'label', { isOwnResource: false }))) return;
-
+    // Labels are explicitly admitted to Tier 2 destructive scope per product
+    // decision (May 2026): they are easily-recreatable metadata and a manager
+    // curating their team's board library should not need to escalate to a
+    // Tier-1 admin to delete a stale label. `canManageBoard` below is the
+    // authoritative gate — Tier 3/4 still get 403 there. The tier-enforcement
+    // service's strict-T2 rule continues to protect every other destructive
+    // surface (tasks, boards, users, etc.).
     const labelId = req.params.id;
     const label = await Label.findByPk(labelId);
     if (!label) return res.status(404).json({ success: false, message: 'Label not found.' });

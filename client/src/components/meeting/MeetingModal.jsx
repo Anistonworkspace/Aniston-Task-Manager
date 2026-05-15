@@ -7,7 +7,7 @@ import { resolveTier, tierLabel } from '../../utils/tiers';
 const TYPES = [
   { value: 'meeting', label: 'Meeting', color: '#0073ea' },
   { value: 'reminder', label: 'Reminder', color: '#fdab3d' },
-  { value: 'follow_up', label: 'Follow-up', color: '#a25ddc' },
+  { value: 'follow_up', label: 'Follow-up', color: '#9d50dd' },
 ];
 
 export default function MeetingModal({ meeting, onClose, onSave }) {

@@ -8,7 +8,7 @@ import Avatar from '../common/Avatar';
 const SUBTASK_STATUS = {
   not_started: { label: 'Not Started', color: '#c4c4c4', icon: Circle },
   working_on_it: { label: 'Working', color: '#fdab3d', icon: Clock },
-  stuck: { label: 'Stuck', color: '#e2445c', icon: AlertCircle },
+  stuck: { label: 'Stuck', color: '#df2f4a', icon: AlertCircle },
   done: { label: 'Done', color: '#00c875', icon: CheckCircle2 },
 };
 

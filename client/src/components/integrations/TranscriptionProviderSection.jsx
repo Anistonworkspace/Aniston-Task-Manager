@@ -4,6 +4,7 @@ import {
   Trash2, Save, Power, Sparkles, Eye, EyeOff, Users, X,
 } from 'lucide-react';
 import api from '../../services/api';
+import AnistonLoader from '../common/AnistonLoader';
 
 const PROVIDER_TYPES = [
   { value: 'deepgram', label: 'Deepgram', color: '#13EF93', icon: 'D', defaultModel: 'nova-3' },
@@ -195,7 +196,7 @@ export default function TranscriptionProviderSection({ onError, onSuccess }) {
               </span>
             )}
             <button onClick={() => { setShowAdd(true); setEditingId(null); setForm(EMPTY_FORM); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary rounded-lg hover:bg-primary-600 transition-colors shadow-sm">
               <Plus size={13} /> Add Provider
             </button>
           </div>
@@ -203,9 +204,7 @@ export default function TranscriptionProviderSection({ onError, onSuccess }) {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="animate-spin rounded-full h-6 w-6 border-2 border-emerald-500/20 border-t-emerald-500" />
-        </div>
+        <AnistonLoader variant="section" size="sm" className="py-8" />
       ) : (
         <>
           <div className="space-y-4">
@@ -315,7 +314,7 @@ export default function TranscriptionProviderSection({ onError, onSuccess }) {
                 <p className="text-sm font-medium text-text-primary mb-1">No transcription providers configured</p>
                 <p className="text-xs text-text-tertiary mb-4">Add Deepgram to enable High Accuracy Meeting Mode with speaker diarization.</p>
                 <button onClick={() => { setShowAdd(true); setForm(EMPTY_FORM); }}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm">
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary rounded-lg hover:bg-primary-600 transition-colors shadow-sm">
                   <Plus size={14} /> Add Your First Provider
                 </button>
               </div>
@@ -465,7 +464,7 @@ function ProviderForm({
 
       <div className="flex items-center gap-2 mt-5 flex-wrap">
         <button onClick={onSave} disabled={saving}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-60">
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary rounded-lg hover:bg-primary-600 transition-colors shadow-sm disabled:opacity-60">
           {saving ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Save size={14} />}
           {isNew ? 'Save Configuration' : 'Save Changes'}
         </button>

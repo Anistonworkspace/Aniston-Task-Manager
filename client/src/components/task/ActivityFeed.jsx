@@ -7,7 +7,7 @@ import Avatar from '../common/Avatar';
 const ACTION_ICONS = {
   task_created: { icon: PlusCircle, color: '#0073ea' },
   task_updated: { icon: Edit3, color: '#fdab3d' },
-  task_deleted: { icon: Trash2, color: '#e2445c' },
+  task_deleted: { icon: Trash2, color: '#df2f4a' },
   status_changed: { icon: ArrowRight, color: '#00c875' },
   subtask_added: { icon: ListChecks, color: '#0073ea' },
   subtask_status_changed: { icon: CheckCircle2, color: '#00c875' },

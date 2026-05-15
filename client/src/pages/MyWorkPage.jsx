@@ -24,11 +24,15 @@ import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 // on a pre-narrowed view. RBAC stays intact because the underlying data
 // source (/tasks?assignedTo=me) is already personal-scoped server-side —
 // the filter only narrows what the user already sees, never widens it.
+//
+// Colors are drawn from skill §1.6 content swatches:
+//   stuck-red = #df2f4a · primary = #0073ea · bright-blue = #579bfc
+//   working_orange = #fdab3d · done-green = #00c875
 const FILTER_META = {
-  overdue:     { label: 'Overdue',     color: '#e2445c' },
+  overdue:     { label: 'Overdue',     color: '#df2f4a' },
   today:       { label: 'Due today',   color: '#0073ea' },
-  in_progress: { label: 'In progress', color: '#3b82f6' },
-  stuck:       { label: 'Stuck / blocked', color: '#f43f5e' },
+  in_progress: { label: 'In progress', color: '#579bfc' },
+  stuck:       { label: 'Stuck / blocked', color: '#df2f4a' },
   done:        { label: 'Completed',   color: '#00c875' },
 };
 
@@ -116,7 +120,7 @@ export default function MyWorkPage() {
     });
 
     return [
-      { label: 'Overdue', tasks: sortTasksByPendingPriority(overdue), color: '#e2445c', icon: AlertTriangle },
+      { label: 'Overdue', tasks: sortTasksByPendingPriority(overdue), color: '#df2f4a', icon: AlertTriangle },
       { label: 'Today', tasks: sortTasksByPendingPriority(todayTasks), color: '#0073ea', icon: Clock },
       { label: 'This Week', tasks: sortTasksByPendingPriority(thisWeek), color: '#fdab3d', icon: CalIcon },
       { label: 'Upcoming', tasks: sortTasksByPendingPriority(later), color: '#c4c4c4', icon: CircleDot },
@@ -199,9 +203,9 @@ export default function MyWorkPage() {
         <div className="grid grid-cols-4 gap-2 mb-3">
           {[
             { label: 'Active', value: stats.total, color: '#0073ea' },
-            { label: 'Overdue', value: stats.overdue, color: '#e2445c' },
+            { label: 'Overdue', value: stats.overdue, color: '#df2f4a' },
             { label: 'Completed', value: stats.done, color: '#00c875' },
-            { label: 'Auto-assigned', value: stats.autoAssigned, color: '#a25ddc' },
+            { label: 'Auto-assigned', value: stats.autoAssigned, color: '#9d50dd' },
           ].map(s => (
             <div key={s.label} className="bg-white rounded-lg border border-border px-3 py-2">
               <p className="text-[10px] text-text-tertiary font-medium">{s.label}</p>
@@ -288,7 +292,7 @@ export default function MyWorkPage() {
                             </div>
                             {/* Priority */}
                             <div className="px-1 py-1.5 flex items-center justify-center">
-                              <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ backgroundColor: `${priorityCfg.color || '#c4c4c4'}20`, color: priorityCfg.color || '#666' }}>
+                              <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ backgroundColor: `${priorityCfg.color || '#c4c4c4'}20`, color: priorityCfg.color || 'var(--secondary-text-color)' }}>
                                 {translatePriority(task.priority, tr, priorityCfg.label || task.priority)}
                               </span>
                             </div>

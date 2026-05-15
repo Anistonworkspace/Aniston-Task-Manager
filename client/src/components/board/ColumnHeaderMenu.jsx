@@ -26,8 +26,8 @@ export default function ColumnHeaderMenu({
     { type: 'date', label: 'Date', icon: Calendar, color: '#579bfc' },
     { type: 'status', label: 'Status', icon: Columns3, color: '#00c875' },
     { type: 'person', label: 'Person', icon: User, color: '#0073ea' },
-    { type: 'priority', label: 'Priority', icon: Flag, color: '#e2445c' },
-    { type: 'label', label: 'Label', icon: Tag, color: '#a25ddc' },
+    { type: 'priority', label: 'Priority', icon: Flag, color: '#df2f4a' },
+    { type: 'label', label: 'Label', icon: Tag, color: '#9d50dd' },
     { type: 'progress', label: 'Progress', icon: BarChart, color: '#cab641' },
     { type: 'checkbox', label: 'Checkbox', icon: CheckSquare, color: '#00c875' },
     { type: 'link', label: 'Link/URL', icon: Link, color: '#579bfc' },
@@ -36,9 +36,9 @@ export default function ColumnHeaderMenu({
   const MenuItem = ({ icon: Icon, label, arrow, danger, disabled, badge, onClick: itemClick }) => (
     <button onClick={itemClick} disabled={disabled}
       className={`w-full flex items-center gap-2.5 px-4 py-[7px] text-[13px] transition-colors ${
-        disabled ? 'text-[#c5c7d0] cursor-default' : danger ? 'text-[#e2445c] hover:bg-[#f5f6f8]' : 'text-[#323338] hover:bg-[#f5f6f8]'
+        disabled ? 'text-[#c5c7d0] cursor-default' : danger ? 'text-[#df2f4a] hover:bg-[#f5f6f8]' : 'text-[#323338] hover:bg-[#f5f6f8]'
       }`}>
-      <Icon size={15} className={disabled ? 'text-[#c5c7d0]' : danger ? 'text-[#e2445c]' : 'text-[#676879]'} />
+      <Icon size={15} className={disabled ? 'text-[#c5c7d0]' : danger ? 'text-[#df2f4a]' : 'text-[#676879]'} />
       <span className="flex-1 text-left">{label}</span>
       {arrow && <ChevronRight size={12} className="text-[#c5c7d0]" />}
       {badge && <span className="text-[10px] font-medium text-[#0073ea] border border-[#0073ea]/30 px-1.5 py-0.5 rounded">{badge}</span>}
@@ -54,23 +54,23 @@ export default function ColumnHeaderMenu({
       </button>
 
       <PortalDropdown anchorRef={btnRef} open={open} onClose={close} width={activeSubmenu ? 520 : 260} align="left">
-        <div className="flex bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] overflow-hidden max-h-[70vh]">
+        <div className="flex bg-white rounded-lg shadow-dropdown border border-[#d0d4e4] overflow-hidden max-h-[70vh]">
           {/* Main Menu */}
           <div className="w-[260px] flex-shrink-0 overflow-y-auto">
             {/* Actions */}
-            <div className="py-1 border-b border-[#e6e9ef]">
+            <div className="py-1 border-b border-[#d0d4e4]">
               <MenuItem icon={Filter} label="Filter" onClick={() => { if (onFilter) onFilter(column); close(); }} />
               <MenuItem icon={ArrowUpDown} label="Sort" arrow onClick={() => setActiveSubmenu(activeSubmenu === 'sort' ? null : 'sort')} />
             </div>
 
             {/* Column operations */}
-            <div className="py-1 border-b border-[#e6e9ef]">
+            <div className="py-1 border-b border-[#d0d4e4]">
               <MenuItem icon={Copy} label="Duplicate column" onClick={() => { if (onDuplicate) onDuplicate(column); close(); }} />
               <MenuItem icon={Plus} label="Add column to the right" onClick={() => { if (onAddColumnRight) onAddColumnRight(); close(); }} />
             </div>
 
             {/* Hide */}
-            <div className="py-1 border-b border-[#e6e9ef]">
+            <div className="py-1 border-b border-[#d0d4e4]">
               <MenuItem icon={EyeOff} label="Hide column" onClick={() => { if (onHide) onHide(column.id); close(); }} />
             </div>
 
@@ -83,7 +83,7 @@ export default function ColumnHeaderMenu({
 
           {/* Submenu Panel */}
           {activeSubmenu && (
-            <div className="w-[260px] border-l border-[#e6e9ef] bg-white overflow-y-auto">
+            <div className="w-[260px] border-l border-[#d0d4e4] bg-white overflow-y-auto">
               {activeSubmenu === 'sort' && (
                 <div className="py-2 px-3">
                   <p className="text-[12px] text-[#676879] mb-2 px-1">Sort by <strong>{column.title}</strong></p>

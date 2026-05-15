@@ -59,9 +59,9 @@ function legacyFromTier(tier) {
 const LEGACY_RESOURCE_TYPES = ['workspace', 'board', 'team', 'dashboard'];
 const LEGACY_PERMISSION_LEVELS = ['view', 'edit', 'assign', 'manage', 'admin'];
 const LEVEL_COLORS = {
-  view: '#579bfc', edit: '#fdab3d', assign: '#a25ddc', manage: '#00c875', admin: '#e2445c',
-  create: '#00c875', delete: '#e2445c', approve: '#a25ddc', export: '#579bfc',
-  manage_members: '#00c875', manage_settings: '#e2445c', change_status: '#fdab3d',
+  view: '#579bfc', edit: '#fdab3d', assign: '#9d50dd', manage: '#00c875', admin: '#df2f4a',
+  create: '#00c875', delete: '#df2f4a', approve: '#9d50dd', export: '#579bfc',
+  manage_members: '#00c875', manage_settings: '#df2f4a', change_status: '#fdab3d',
   comment: '#579bfc', upload: '#fdab3d',
 };
 
@@ -265,10 +265,10 @@ function UsersTab() {
       <div className="grid grid-cols-5 gap-3 mb-4">
         {[
           { label: 'Total',  count: stats.total,     color: '#0073ea' },
-          { label: 'Tier 1', count: stats[TIER_1],   color: '#dc2626' },
-          { label: 'Tier 2', count: stats[TIER_2],   color: '#8b5cf6' },
-          { label: 'Tier 3', count: stats[TIER_3],   color: '#0891b2' },
-          { label: 'Tier 4', count: stats[TIER_4],   color: '#16a34a' },
+          { label: 'Tier 1', count: stats[TIER_1],   color: '#bb3354' },
+          { label: 'Tier 2', count: stats[TIER_2],   color: '#9d50dd' },
+          { label: 'Tier 3', count: stats[TIER_3],   color: '#175a63' },
+          { label: 'Tier 4', count: stats[TIER_4],   color: '#00854d' },
         ].map(s => (
           <div key={s.label} className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 px-4 py-3">
             <p className="text-2xl font-bold" style={{ color: s.color }}>{s.count}</p>

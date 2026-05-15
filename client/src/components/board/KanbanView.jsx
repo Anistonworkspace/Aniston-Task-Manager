@@ -11,11 +11,11 @@ import Avatar from '../common/Avatar';
 const FALLBACK_KANBAN_COLUMNS = [
   { id: 'not_started', label: 'Not Started', color: '#c4c4c4', emoji: '' },
   { id: 'working_on_it', label: 'Working on it', color: '#fdab3d', emoji: '' },
-  { id: 'stuck', label: 'Stuck', color: '#e2445c', emoji: '' },
+  { id: 'stuck', label: 'Stuck', color: '#df2f4a', emoji: '' },
   { id: 'done', label: 'Done', color: '#00c875', emoji: '' },
 ];
 
-const PRIORITY_BORDER = { critical: '#e2445c', high: '#ff642e', medium: '#fdab3d', low: '#579bfc' };
+const PRIORITY_BORDER = { critical: '#df2f4a', high: '#ff642e', medium: '#fdab3d', low: '#579bfc' };
 
 export default function KanbanView({ tasks = [], members = [], onTaskClick, onTaskUpdate, onAddTask, groups, boardStatuses }) {
   const INITIAL_CARD_LIMIT = 50;
@@ -37,7 +37,7 @@ export default function KanbanView({ tasks = [], members = [], onTaskClick, onTa
       extraColumns.push({
         id: t.status,
         label: taskCfg?.label || t.status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-        color: taskCfg?.color || '#94a3b8',
+        color: taskCfg?.color || '#9aadbd',
         emoji: '',
       });
     }

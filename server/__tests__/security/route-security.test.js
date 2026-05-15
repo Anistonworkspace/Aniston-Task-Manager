@@ -435,18 +435,20 @@ describe('Label CRUD role restriction (labels.js)', () => {
     expect(res.status).not.toBe(403);
   });
 
-  it('rejects manager from creating labels on a board they do not own', async () => {
-    // S-H6 — the second line of defence: a manager passes the
-    // managerOrAdmin route gate but the controller-level canManageBoard
-    // check denies because they aren't the board creator.
+  it('allows manager to create labels on a board they did not create (May 2026 policy widening)', async () => {
+    // Previously asserted 403 — the original S-H6 boundary scoped managers
+    // to boards they personally created. Product feedback widened
+    // canManageBoard so any T1/T2 manages labels on any board they can
+    // see. Tier 3/4 still get 403 (separate test below).
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
     mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: 'someone-else' });
+    mockModels.Label.create = jest.fn().mockResolvedValue({ id: 'lbl-1', name: 'Bug' });
     const token = generateToken(USER_ID, 'manager');
     const res = await request(app)
       .post('/api/labels')
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'Bug', color: '#ff0000', boardId: BOARD_ID });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 });
 

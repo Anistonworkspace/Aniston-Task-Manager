@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExternalLink, Unplug, CheckCircle2, AlertCircle, RefreshCw, Calendar } from 'lucide-react';
 import api from '../../services/api';
+import AnistonLoader from '../common/AnistonLoader';
 
 export default function TeamsIntegrationSettings() {
   const [status, setStatus] = useState(null);
@@ -61,7 +62,7 @@ export default function TeamsIntegrationSettings() {
     return (
       <div className="widget-card">
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+          <AnistonLoader variant="inline" size="xs" label="Checking Teams status" />
           <span className="text-sm text-text-tertiary">Checking Teams status...</span>
         </div>
       </div>

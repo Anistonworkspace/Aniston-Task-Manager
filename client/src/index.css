@@ -1,100 +1,209 @@
-@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Poppins:wght@500;600;700&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ===== CSS Variables ===== */
+/* =====================================================================
+   DESIGN SYSTEM TOKENS  —  per .claude/skills/generic_monday_ui.md §10
+   Single source of truth for color, spacing, radius, typography, shadows
+   and motion. Theme dark applies via `.theme-dark` (spec) OR `.dark`
+   (Tailwind darkMode='class', kept for back-compat).
+   ===================================================================== */
 :root {
+  /* Motion */
+  --motion-productive-short: 70ms;
+  --motion-productive-medium: 100ms;
+  --motion-productive-long: 150ms;
+  --motion-expressive-short: 250ms;
+  --motion-expressive-long: 400ms;
+  --motion-timing-enter: cubic-bezier(0, 0, 0.35, 1);
+  --motion-timing-exit: cubic-bezier(0.4, 0, 1, 1);
+  --motion-timing-transition: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-timing-emphasize: cubic-bezier(0, 0, 0.2, 1.4);
+
+  /* Spacing (4px grid) */
+  --space-2: 2px;  --space-4: 4px;  --space-8: 8px;  --space-12: 12px;
+  --space-16: 16px; --space-20: 20px; --space-24: 24px; --space-32: 32px;
+  --space-40: 40px; --space-48: 48px; --space-64: 64px; --space-80: 80px;
+
+  /* Border */
+  --border-width: 1px;
+  --border-style: solid;
+  --border-radius-small: 4px;
+  --border-radius-medium: 8px;
+  --border-radius-big: 16px;
+  --disabled-component-opacity: 0.38;
+
+  /* Z-index */
+  --modal-z-index: 10000;
+
+  /* Typography */
+  --font-family: Figtree, Roboto, "Noto Sans Hebrew", "Noto Kufi Arabic", "Noto Sans JP", sans-serif;
+  --title-font-family: Poppins, Roboto, "Noto Sans Hebrew", "Noto Kufi Arabic", "Noto Sans JP", sans-serif;
+  --font-weight-very-light: 200;
+  --font-weight-light: 300;
+  --font-weight-normal: 400;
+  --font-weight-bold: 500;
+  --font-h1: 700 32px/40px var(--title-font-family);
+  --font-h2: 700 24px/30px var(--title-font-family);
+  --font-h3: 700 18px/24px var(--title-font-family);
+  --font-text1-normal: 400 16px/22px var(--font-family);
+  --font-text1-medium: 600 16px/22px var(--font-family);
+  --font-text1-bold:   700 16px/22px var(--font-family);
+  --font-text2-normal: 400 14px/20px var(--font-family);
+  --font-text2-medium: 600 14px/20px var(--font-family);
+  --font-text2-bold:   700 14px/20px var(--font-family);
+  --font-text3-normal: 400 12px/16px var(--font-family);
+  --font-text3-medium: 600 12px/16px var(--font-family);
+  --font-text3-bold:   700 12px/16px var(--font-family);
+
+  /* Primary / brand — Monday blue */
+  --primary-color: #0073ea;
+  --primary-hover-color: #0060b9;
+  --primary-selected-color: #cce5ff;
+  --primary-selected-hover-color: #aed4fc;
+  --primary-highlighted-color: #f0f7ff;
+  --primary-surface-color: #eceff8;
+  --brand-color: #0073ea;
+  --brand-hover-color: #0060b9;
+  --link-color: #1f76c2;
+
+  /* Text */
+  --primary-text-color: #323338;
+  --secondary-text-color: #676879;
+  --text-color-on-primary: #ffffff;
+  --text-color-on-inverted: #ffffff;
+  --disabled-text-color: rgba(50, 51, 56, var(--disabled-component-opacity));
+  --placeholder-color: #676879;
+  --icon-color: #676879;
+
+  /* Backgrounds & surfaces */
+  --primary-background-color: #ffffff;
+  --secondary-background-color: #ffffff;
+  --allgrey-background-color: #f6f7fb;
+  --grey-background-color: #f6f7fb;
+  --primary-background-hover-color: rgba(103, 104, 121, 0.1);
+  --disabled-background-color: #ecedf5;
+  --modal-background-color: #ffffff;
+  --dialog-background-color: #ffffff;
+  --backdrop-color: rgba(41, 47, 76, 0.7);
+  --inverted-color-background: #323338;
+
+  /* Borders */
+  --ui-border-color: #c3c6d4;
+  --layout-border-color: #d0d4e4;
+  --ui-background-color: #e7e9ef;
+  --ui-background-hover-color: #d8d9e0;
+
+  /* Status */
+  --positive-color: #00854d;
+  --positive-color-hover: #007038;
+  --positive-color-selected: #bbdbc9;
+  --negative-color: #d83a52;
+  --negative-color-hover: #b63546;
+  --negative-color-selected: #f4c3cb;
+  --warning-color: #ffcb00;
+  --warning-color-hover: #eaaa15;
+  --warning-color-selected: #fceba1;
+
+  /* Elevation */
+  --box-shadow-xs: 0px 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --box-shadow-small: 0px 4px 8px rgba(0, 0, 0, 0.2);
+  --box-shadow-medium: 0px 6px 20px rgba(0, 0, 0, 0.2);
+  --box-shadow-large: 0px 15px 50px rgba(0, 0, 0, 0.3);
+
+  /* ── Legacy aliases (kept so existing components don't break) ──
+     These were the previous app token names; they now point at the
+     canonical spec tokens above. Removing call sites that use them
+     can happen incrementally without breaking the UI today. */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-out: cubic-bezier(0, 0, 0.2, 1);
-  --duration-fast: 150ms;
-  --duration-normal: 250ms;
-  --duration-slow: 400ms;
-
-  /* ── Typography scale ─────────────────────────────────────────────
-     The whole app's text + spacing is rem-based via Tailwind. By driving
-     `html { font-size }` from a single CSS variable we can rescale the
-     entire UI proportionally without touching individual components.
-
-     --app-font-base is the root size in pixels. Default = 15px (≈0.9375x
-     of the browser's standard 16px) — this is what gives the app its new
-     slightly compact, Monday.com-style baseline. The data-font-size
-     attribute on <html> overrides this per user preference.
-
-     --app-font-scale is exposed for components that want a unitless
-     multiplier (e.g. inline styles or fixed-px sizes that opt in).
-
-     --font-xs … --font-xl mirror the Tailwind text-* sizes in rem so
-     custom CSS can stay in lockstep with the utility classes. */
+  --ease-out: var(--motion-timing-enter);
+  --duration-fast: var(--motion-productive-long);
+  --duration-normal: var(--motion-expressive-short);
+  --duration-slow: var(--motion-expressive-long);
   --app-font-base: 15px;
   --app-font-scale: 0.9375;
-  --font-xxs: 0.625rem;   /* 10px */
-  --font-xs:  0.75rem;    /* 12px */
-  --font-sm:  0.8125rem;  /* 13px */
-  --font-base: 0.875rem;  /* 14px */
-  --font-md:  0.9375rem;  /* 15px */
-  --font-lg:  1.0625rem;  /* 17px */
-  --font-xl:  1.25rem;    /* 20px */
+  --font-xxs: 0.625rem;
+  --font-xs:  0.75rem;
+  --font-sm:  0.8125rem;
+  --font-base: 0.875rem;
+  --font-md:  0.9375rem;
+  --font-lg:  1.0625rem;
+  --font-xl:  1.25rem;
 
-  /* --- Theme Tokens: Light Mode --- */
-  --sidebar-bg: #f6f7fb;
-  --sidebar-hover: #dcdfec;
-  --sidebar-active: #cce5ff;
+  --sidebar-bg: var(--grey-background-color);
+  --sidebar-hover: var(--ui-background-color);
+  --sidebar-active: var(--primary-selected-color);
   --sidebar-text: 103 104 121;
-  --sidebar-text-active: #323338;
-  --sidebar-border: #e6e9ef;
+  --sidebar-text-active: var(--primary-text-color);
+  --sidebar-border: var(--layout-border-color);
   --sidebar-accent: 0 115 234;
 
-  --surface: #f8fafc;
-  --surface-50: #f8fafc;
-  --surface-100: #f1f5f9;
-  --surface-200: #e2e8f0;
-  --surface-300: #cbd5e1;
+  --surface: var(--grey-background-color);
+  --surface-50: var(--grey-background-color);
+  --surface-100: var(--ui-background-color);
+  --surface-200: var(--ui-border-color);
+  --surface-300: var(--layout-border-color);
 
-  --border-color: #e2e8f0;
-  --border-light: #f1f5f9;
-  --border-dark: #cbd5e1;
+  --border-color: var(--layout-border-color);
+  --border-light: var(--ui-background-color);
+  --border-dark: var(--ui-border-color);
 
-  --text-primary: #323338;
-  --text-secondary: #676879;
+  --text-primary: var(--primary-text-color);
+  --text-secondary: var(--secondary-text-color);
   --text-tertiary: #c5c7d0;
   --text-muted: #c4c4c4;
 
-  --bg-primary: #ffffff;
-  --bg-elevated: #ffffff;
+  --bg-primary: var(--primary-background-color);
+  --bg-elevated: var(--primary-background-color);
 }
 
-/* --- Theme Tokens: Dark Mode --- */
-/* Neutral charcoal palette — no purple tint */
-/* Page bg #0F1112 · Sidebar #1A1B1F · Cards #1E1F23 */
-.dark {
-  --sidebar-bg: #1A1B1F;
-  --sidebar-hover: #252629;
-  --sidebar-active: #1C2C3C;
+/* Dark theme — applies via `.dark` (Tailwind) OR `.theme-dark` (skill) */
+.dark,
+.theme-dark {
+  /* Spec tokens */
+  --primary-selected-color: #133774;
+  --primary-selected-hover-color: #0d2e65;
+  --primary-highlighted-color: #0d2753;
+  --primary-surface-color: #181b34;
+  --primary-text-color: #d5d8df;
+  --secondary-text-color: #9699a6;
+  --text-color-on-inverted: #323338;
+  --inverted-color-background: #ffffff;
+  --primary-background-color: #181b34;
+  --secondary-background-color: #30324e;
+  --allgrey-background-color: #30324e;
+  --grey-background-color: #181b34;
+  --primary-background-hover-color: rgba(103, 104, 121, 0.3);
+  --disabled-background-color: #3c3f59;
+  --modal-background-color: #181b34;
+  --dialog-background-color: #30324e;
+  --ui-border-color: #797e93;
+  --layout-border-color: #4b4e69;
+  --ui-background-color: #434660;
+  --placeholder-color: #c3c6d4;
+  --icon-color: #c3c6d4;
+  --link-color: #69a7ef;
+  --box-shadow-xs: 0px 4px 6px -4px rgba(9, 11, 25, 0.5);
+  --box-shadow-small: 0px 4px 8px rgba(9, 11, 25, 0.5);
+  --box-shadow-medium: 0px 6px 20px rgba(9, 11, 25, 0.5);
+  --box-shadow-large: 0px 15px 50px rgba(9, 11, 25, 0.5);
+
+  /* Legacy aliases — dark overrides */
   --sidebar-text: 156 163 175;
-  --sidebar-text-active: #E5E7EB;
-  --sidebar-border: #222327;
-  --sidebar-accent: 96 165 250;
+  --sidebar-accent: 105 167 239;
 
-  --surface: #131416;
-  --surface-50: #17181C;
-  --surface-100: #222327;
-  --surface-200: #2A2B30;
-  --surface-300: #333439;
+  --surface-50: #1f2240;
+  --surface-100: var(--secondary-background-color);
+  --surface-200: var(--ui-background-color);
+  --surface-300: var(--ui-border-color);
 
-  --border-color: #222327;
-  --border-light: #1C1D21;
-  --border-dark: #2A2B30;
-
-  --text-primary: #E5E7EB;
-  --text-secondary: #9CA3AF;
   --text-tertiary: #6B7280;
   --text-muted: #4B5563;
 
-  --bg-primary: #0F1112;
-  --bg-elevated: #1E1F23;
+  --bg-elevated: var(--secondary-background-color);
 }
 
 /* ===== Base Reset ===== */
@@ -134,11 +243,11 @@ body {
   }
 }
 
-/* ===== Focus Visible ===== */
+/* ===== Focus Visible (skill §9) ===== */
 :focus-visible {
-  outline: 2px solid #0073ea;
-  outline-offset: 2px;
-  border-radius: 4px;
+  outline: none;
+  box-shadow: 0 0 0 3px hsla(209, 100%, 50%, 0.5);
+  border-radius: var(--border-radius-small);
 }
 :focus:not(:focus-visible) { outline: none; }
 
@@ -388,11 +497,203 @@ body {
     @apply inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-md;
   }
   .badge-primary { @apply bg-primary-50 text-primary-700; }
-  .badge-success { @apply bg-emerald-50 text-emerald-700; }
+  .badge-success { @apply bg-success-light/40 text-success-dark; }
   .badge-warning { @apply bg-amber-50 text-amber-700; }
   .badge-danger { @apply bg-red-50 text-red-700; }
   .badge-purple { @apply bg-violet-50 text-violet-700; }
   .badge-neutral { @apply bg-slate-100 text-slate-600; }
+
+  /* ===== Skill Button system (§5) =====
+     Backs the `btn`, `btn--<kind>`, `btn--<size>` API emitted by
+     client/src/components/common/Button.jsx. Sizes / kinds / states
+     follow the spec exactly so the dead-class defect is closed without
+     rewriting every call site. */
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-8);
+    border: 1px solid transparent;
+    border-radius: var(--border-radius-small);
+    font: var(--font-text1-normal);
+    height: 40px;
+    padding: var(--space-8) var(--space-16);
+    color: var(--primary-text-color);
+    background: transparent;
+    cursor: pointer;
+    transition:
+      background-color var(--motion-productive-medium) var(--motion-timing-transition),
+      color var(--motion-productive-medium) var(--motion-timing-transition),
+      border-color var(--motion-productive-medium) var(--motion-timing-transition),
+      transform var(--motion-productive-short) var(--motion-timing-transition);
+    user-select: none;
+    white-space: nowrap;
+  }
+  .btn:active { transform: scale(0.95); }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px hsla(209, 100%, 50%, 0.5),
+                0 0 0 1px var(--primary-hover-color) inset;
+  }
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    cursor: not-allowed;
+    pointer-events: none;
+    background: var(--disabled-background-color);
+    color: var(--disabled-text-color);
+    border-color: transparent;
+  }
+
+  /* Sizes — heights enforced per spec */
+  .btn--xxs   { height: 16px; padding: var(--space-2) var(--space-4);  font: var(--font-text2-normal); }
+  .btn--xs    { height: 24px; padding: var(--space-4) var(--space-8);  font: var(--font-text2-normal); }
+  .btn--sm    { height: 32px; padding: var(--space-4) var(--space-8);  font: var(--font-text2-normal); }
+  .btn--md    { height: 40px; padding: var(--space-8) var(--space-16); font: var(--font-text1-normal); }
+  .btn--lg    { height: 48px; padding: var(--space-12) var(--space-24); font: var(--font-text1-normal); }
+
+  .btn--full  { width: 100%; }
+  .btn--icon  { padding-left: 0; padding-right: 0; width: 40px; }
+  .btn--icon.btn--xxs { width: 16px; }
+  .btn--icon.btn--xs  { width: 24px; }
+  .btn--icon.btn--sm  { width: 32px; }
+  .btn--icon.btn--lg  { width: 48px; }
+
+  /* Kinds */
+  .btn--primary {
+    background: var(--primary-color);
+    color: var(--text-color-on-primary);
+    border-color: var(--primary-color);
+  }
+  .btn--primary:hover { background: var(--primary-hover-color); border-color: var(--primary-hover-color); }
+
+  .btn--secondary {
+    background: transparent;
+    color: var(--primary-text-color);
+    border-color: var(--ui-border-color);
+  }
+  .btn--secondary:hover {
+    background: var(--primary-background-hover-color);
+    border-color: var(--primary-text-color);
+  }
+
+  .btn--tertiary,
+  .btn--ghost {
+    background: transparent;
+    color: var(--primary-text-color);
+    border-color: transparent;
+  }
+  .btn--tertiary:hover,
+  .btn--ghost:hover { background: var(--primary-background-hover-color); }
+
+  /* Color variants */
+  .btn--positive  { background: var(--positive-color); color: var(--text-color-on-primary); border-color: var(--positive-color); }
+  .btn--positive:hover { background: var(--positive-color-hover); border-color: var(--positive-color-hover); }
+  .btn--negative  { background: var(--negative-color); color: var(--text-color-on-primary); border-color: var(--negative-color); }
+  .btn--negative:hover { background: var(--negative-color-hover); border-color: var(--negative-color-hover); }
+  .btn--brand     { background: var(--brand-color); color: var(--text-color-on-primary); border-color: var(--brand-color); }
+  .btn--brand:hover { background: var(--brand-hover-color); border-color: var(--brand-hover-color); }
+  .btn--inverted  { background: var(--inverted-color-background); color: var(--text-color-on-inverted); border-color: var(--inverted-color-background); }
+
+  /* Active / selected toggle */
+  .btn--active,
+  .btn[aria-pressed="true"] {
+    background: var(--primary-selected-color);
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+  }
+
+  /* Grouped buttons (split / segmented) */
+  .btn--leftFlat  { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .btn--rightFlat { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+
+  /* ===== Headings (§2) — Poppins via --title-font-family ===== */
+  .text-h1 { font: var(--font-h1); letter-spacing: -0.5px; color: var(--primary-text-color); }
+  .text-h2 { font: var(--font-h2); letter-spacing: -0.1px; color: var(--primary-text-color); }
+  .text-h3 { font: var(--font-h3); letter-spacing: -0.1px; color: var(--primary-text-color); }
+
+  /* ===== Skill Tabs system (§6) =====
+     Backs the <Tabs> React primitive at common/Tabs.jsx. Inactive rail is
+     a 2px --ui-background-color border; active rail is a 2px --primary-color
+     ::after bar animated scaleX(0→1) via --motion-productive-medium. */
+
+  .ds-tab-list {
+    display: flex;
+    flex-direction: row;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    align-items: stretch;
+    /* The shared inactive rail under all tabs lives on the list, so a tab
+       with a gap between it and the next still shows the underline. */
+    border-bottom: 2px solid var(--ui-background-color);
+  }
+  .ds-tab-list--stretched           { width: 100%; }
+  .ds-tab-list--stretched .ds-tab   { flex: 1 1 0; }
+
+  /* Sizes (§6.1) */
+  .ds-tab-list--sm .ds-tab { height: 32px; }
+  .ds-tab-list--md .ds-tab,
+  .ds-tab-list      .ds-tab { height: 40px; }     /* md is the default */
+  .ds-tab-list--lg .ds-tab { height: 48px; }
+
+  .ds-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-8);
+    padding: var(--space-4) var(--space-16);
+    background: transparent;
+    border: 0;
+    border-top: 1px solid transparent;       /* balance to match the list's 2px bottom rail */
+    margin-bottom: -2px;                     /* sit on top of the rail so ::after can replace it */
+    color: var(--primary-text-color);
+    font: var(--font-text1-normal);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      color var(--motion-productive-medium) var(--motion-timing-transition),
+      background-color var(--motion-productive-medium) var(--motion-timing-transition);
+  }
+
+  .ds-tab__icon { color: var(--icon-color); display: inline-flex; align-items: center; }
+
+  .ds-tab:hover:not([aria-disabled="true"]) {
+    background-color: var(--primary-background-hover-color);
+    border-radius: var(--border-radius-small);
+  }
+
+  .ds-tab:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 3px hsla(209, 100%, 50%, 0.5) inset,
+      0 0 0 1px var(--primary-hover-color) inset;
+    border-radius: 3px;
+  }
+
+  .ds-tab[aria-disabled="true"] {
+    color: var(--disabled-text-color);
+    cursor: not-allowed;
+  }
+
+  .ds-tab[aria-selected="true"]::after {
+    content: '';
+    position: absolute;
+    left: var(--space-8);
+    right: var(--space-8);
+    bottom: 0;
+    height: 2px;
+    background: var(--primary-color);
+    transform-origin: center;
+    animation: dsTabIn var(--motion-productive-medium) var(--motion-timing-enter);
+  }
+  @keyframes dsTabIn {
+    from { transform: scaleX(0); }
+    to   { transform: scaleX(1); }
+  }
+
+  .ds-tab-panel { color: var(--primary-text-color); }
 
   /* ===== Compact enterprise modal / form / tabs primitives =====
      One source of truth for popover/modal/tab density across the app.
@@ -429,10 +730,10 @@ body {
     @apply text-[10px] text-zinc-400 dark:text-zinc-500;
   }
   .form-input-compact {
-    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 disabled:opacity-60;
+    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60;
   }
   .form-textarea-compact {
-    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none disabled:opacity-60;
+    @apply w-full px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-none disabled:opacity-60;
     min-height: 64px;
     max-height: 180px;
   }
@@ -442,7 +743,7 @@ body {
   }
 
   .compact-upload {
-    @apply w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 text-[12px] text-zinc-600 dark:text-zinc-300 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors disabled:opacity-50;
+    @apply w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 text-[12px] text-zinc-600 dark:text-zinc-300 hover:border-primary hover:text-primary dark:hover:text-primary-400 transition-colors disabled:opacity-50;
   }
   .compact-upload-row {
     @apply flex items-center justify-between gap-2 px-3 py-1.5 rounded-md bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700;
@@ -455,7 +756,10 @@ body {
     @apply btn-compact text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40;
   }
   .btn-compact-primary {
-    @apply btn-compact text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500;
+    /* Phase C: primary action color aligned to Monday-blue per skill §5.
+       The old emerald was semantically wrong for "primary" — green reads
+       as success/approval, blue reads as primary action. */
+    @apply btn-compact text-white bg-primary hover:bg-primary-600 disabled:bg-[var(--disabled-background-color)] disabled:text-[var(--disabled-text-color)];
   }
 
   .tabs-compact {
@@ -468,7 +772,10 @@ body {
   }
   .tab-trigger-compact[aria-selected="true"],
   .tab-trigger-compact.is-active {
-    @apply text-emerald-600 dark:text-emerald-400 border-emerald-500;
+    /* Active-tab accent aligned to Monday-blue (§6) — replaces emerald.
+       Used by every compact-tab modal in the app (settings, integrations
+       config, board settings, etc.). */
+    @apply text-primary dark:text-primary-400 border-primary;
   }
 }
 
@@ -609,15 +916,15 @@ body {
 }
 
 /* ===== Smooth Global Transitions ===== */
-button, a { transition: all 0.15s ease; }
+button, a { transition: all var(--motion-productive-long) var(--motion-timing-transition); }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-  border-color: #818cf8;
+  box-shadow: 0 0 0 3px hsla(209, 100%, 50%, 0.25);
+  border-color: var(--primary-color);
 }
 
 /* ===== Selection ===== */
-::selection { background-color: rgba(79, 70, 229, 0.15); }
+::selection { background-color: hsla(209, 100%, 50%, 0.18); color: var(--primary-text-color); }
 
 /* ===== Placeholders ===== */
 textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
@@ -632,12 +939,14 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 
 /* =====================================================================
-   FLOATING-CARD SHELL THEME  (visual-only, rollback-safe)
+   FLOATING-CARD SHELL THEME  (restored — deliberate divergence from §4.2)
    ---------------------------------------------------------------------
    Activated by adding the `.app-shell` class to the Layout root and
-   wrapping the main content area in `.floating-card`.
-   To roll back: remove `.app-shell` / `.floating-card` from Layout.jsx
-   and (optionally) delete this block. No logic depends on it.
+   wrapping the main content area in `.floating-card`. The tan-tinted
+   base layer + detached white content card give the app warmth and depth
+   that the skill's flat §4.2 shell loses. Kept on purpose; the rest of
+   the Phase A token migration (Monday-blue primary, Header tokens,
+   sidebar dropdowns, Tabs primitive) is unaffected.
    ===================================================================== */
 :root {
   --base-tint: #f1ece3;          /* tinted base layer behind sidebar/header */
@@ -650,7 +959,8 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
     0 2px 6px rgba(0, 0, 0, 0.08),
     0 8px 18px rgba(0, 0, 0, 0.06);
 }
-.dark {
+.dark,
+.theme-dark {
   --base-tint: #231f1a;
   --card-bg: #2a2a2e;
   --card-border-color: rgba(255, 255, 255, 0.05);
@@ -662,7 +972,8 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 
 /* App shell — paint the tinted base layer behind everything */
 .app-shell,
-.dark .app-shell {
+.dark .app-shell,
+.theme-dark .app-shell {
   background-color: var(--base-tint) !important;
 }
 
@@ -670,9 +981,6 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .app-shell .bg-sidebar-bg {
   background-color: var(--base-tint) !important;
   border-right-color: transparent !important;
-}
-.dark .app-shell [class*="bg-\[\#1A1B1F\]"] {
-  background-color: var(--base-tint) !important;
 }
 .app-shell .border-sidebar-border {
   border-color: transparent !important;
@@ -683,9 +991,6 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   background-color: transparent !important;
   border-bottom-color: transparent !important;
 }
-.dark .app-shell > div > header {
-  background-color: transparent !important;
-}
 
 /* Floating content card — detached, rounded, layered shadow */
 .floating-card {
@@ -693,11 +998,6 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   border-radius: var(--card-radius);
   box-shadow: var(--card-shadow);
   border: 1px solid var(--card-border-color);
-}
-.dark .floating-card {
-  background-color: var(--card-bg);
-  border-color: var(--card-border-color);
-  box-shadow: var(--card-shadow);
 }
 
 /* Stuck variant — flush to right and bottom bezels.
@@ -709,52 +1009,37 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   border-bottom: none;
 }
 
-/* Sidebar — kill horizontal scroll, force ellipsis on overflowing labels.
-   Scoped under .app-shell so login/register layouts are untouched. */
-.app-shell .bg-sidebar-bg {
-  overflow-x: hidden;
-}
-.app-shell .bg-sidebar-bg .overflow-y-auto {
-  overflow-x: hidden;
-}
+/* =====================================================================
+   SIDEBAR SCROLLBAR + OVERFLOW POLISH
+   Scoped to .app-shell so login/register layouts (which never render the
+   sidebar) are untouched.
+   ===================================================================== */
+.app-shell .bg-sidebar-bg { overflow-x: hidden; }
+.app-shell .bg-sidebar-bg .overflow-y-auto { overflow-x: hidden; }
 
-/* Sidebar vertical scrollbar — hidden by default, polished thin scrollbar
-   appears on sidebar hover. Uses the standard `scrollbar-color` property so
-   modern Chromium honours our custom colors instead of falling back to its
-   native thin scrollbar (which is what made it look default before). */
 .app-shell .scrollbar-sidebar {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  transition: scrollbar-color 200ms ease;
+  transition: scrollbar-color var(--motion-expressive-short) var(--motion-timing-transition);
 }
 .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar {
-  scrollbar-color: #c5c7d0 transparent;
-}
-.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar {
-  scrollbar-color: #3a3b40 transparent;
+  scrollbar-color: var(--ui-border-color) transparent;
 }
 
-/* WebKit fallback for older browsers that don't yet support scrollbar-color.
-   Also overrides the always-visible thumb declared earlier in this file. */
 .app-shell .scrollbar-sidebar::-webkit-scrollbar { width: 6px; }
 .app-shell .scrollbar-sidebar::-webkit-scrollbar-track { background: transparent !important; }
 .app-shell .scrollbar-sidebar::-webkit-scrollbar-thumb {
   background-color: transparent !important;
   border-radius: 99px;
-  transition: background-color 200ms ease;
+  transition: background-color var(--motion-expressive-short) var(--motion-timing-transition);
 }
 .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb {
-  background-color: #c5c7d0 !important;
+  background-color: var(--ui-border-color) !important;
 }
 .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
-  background-color: #a1a3ab !important;
+  background-color: var(--secondary-text-color) !important;
 }
-.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb {
-  background-color: #3a3b40 !important;
-}
-.dark .app-shell [data-tour="sidebar"]:hover .scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
-  background-color: #4a4b52 !important;
-}
+
 /* Make every flex child inside the sidebar respect its parent width
    so `truncate` on labels actually truncates instead of pushing wider. */
 .app-shell .bg-sidebar-bg .sidebar-item,
@@ -765,92 +1050,104 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   min-width: 0;
 }
 
-/* ===== v3 Task Modal — animated stripe, sticky purple tabs, colored cards ===== */
+/* =====================================================================
+   v3 TASK MODAL  —  Phase B: Monday-spec primary + tokenized values
+   ---------------------------------------------------------------------
+   Class names kept (TaskModal.jsx still emits .v3-* / .bento-*); colors
+   and sizes rewritten to skill §1/§6/§3 tokens. The purple identity
+   (#6D5CE7 / #A78BFA) is replaced by Monday blue (--primary-color).
+   `--proj-color` / `--proj-light` / `--card-accent` inline-style hooks
+   on TaskModal still work — they fall back to the primary token now.
+   ===================================================================== */
+
+/* Project stripe — Monday-blue shimmer */
 .v3-project-stripe {
   height: 3px;
   width: 100%;
-  background: linear-gradient(90deg, var(--proj-color, #6D5CE7) 0%, var(--proj-light, #A78BFA) 50%, var(--proj-color, #6D5CE7) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--proj-color, var(--primary-color)) 0%,
+    var(--proj-light, #3d99f0) 50%,
+    var(--proj-color, var(--primary-color)) 100%
+  );
   background-size: 200% 100%;
   animation: v3Shimmer 8s ease-in-out infinite;
   flex-shrink: 0;
 }
 @keyframes v3Shimmer {
   0%, 100% { background-position: 0% 0; }
-  50% { background-position: 200% 0; }
+  50%      { background-position: 200% 0; }
 }
 
+/* Tabs — skill §6: 14px (text2), 40px height, --primary-color underline */
 .v3-tabs {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  border-bottom: 1px solid #E4E4E7;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--layout-border-color);
   overflow-x: auto;
   scrollbar-width: none;
 }
-.dark .v3-tabs { border-bottom-color: #27272a; }
 .v3-tabs::-webkit-scrollbar { display: none; }
 .v3-tab {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.75rem;
-  height: 2.25rem;
-  font-size: 13px;
-  font-weight: 500;
-  color: #52525B;
+  gap: var(--space-8);
+  padding: 0 var(--space-12);
+  height: 40px;
+  font: var(--font-text2-medium);
+  color: var(--secondary-text-color);
   white-space: nowrap;
-  transition: color 0.15s ease;
+  transition: color var(--motion-productive-medium) var(--motion-timing-transition);
   font-feature-settings: 'tnum';
   background: transparent;
   border: 0;
   cursor: pointer;
 }
-.dark .v3-tab { color: #A1A1AA; }
-.v3-tab:hover { color: #18181B; }
-.dark .v3-tab:hover { color: #FAFAFA; }
-.v3-tab[aria-selected="true"] { color: #6D5CE7; }
-.dark .v3-tab[aria-selected="true"] { color: #A78BFA; }
+.v3-tab:hover { color: var(--primary-text-color); }
+.v3-tab[aria-selected="true"] { color: var(--primary-color); }
 .v3-tab[aria-selected="true"]::after {
   content: '';
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: var(--space-8);
+  right: var(--space-8);
   bottom: -1px;
   height: 2px;
-  background: linear-gradient(90deg, #6D5CE7, #A78BFA);
+  background: var(--primary-color);
   border-radius: 2px;
-  animation: v3TabIn 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: v3TabIn var(--motion-productive-medium) var(--motion-timing-enter);
 }
 @keyframes v3TabIn {
   from { transform: scaleX(0.4); opacity: 0; }
-  to { transform: scaleX(1); opacity: 1; }
+  to   { transform: scaleX(1);   opacity: 1; }
 }
 .v3-tab-count {
   display: inline-flex;
   align-items: center;
   min-width: 1.25rem;
-  padding: 0 0.375rem;
+  padding: 0 var(--space-4);
   height: 1rem;
   border-radius: 999px;
-  background: #F4F4F5;
-  color: #52525B;
-  font-size: 10px;
-  font-weight: 600;
+  background: var(--ui-background-color);
+  color: var(--secondary-text-color);
+  font: var(--font-text3-bold);
   font-feature-settings: 'tnum';
 }
-.dark .v3-tab-count { background: #27272a; color: #A1A1AA; }
-.v3-tab[aria-selected="true"] .v3-tab-count { background: rgba(109, 92, 231, 0.12); color: #6D5CE7; }
+.v3-tab[aria-selected="true"] .v3-tab-count {
+  background: var(--primary-selected-color);
+  color: var(--primary-color);
+}
 
+/* Section card with accent rail — accent is Monday blue (or per-task tint) */
 .v3-card {
   position: relative;
-  background: #FFFFFF;
-  border: 1px solid #EFEFF1;
+  background: var(--primary-background-color);
+  border: 1px solid var(--layout-border-color);
   border-radius: 12px;
   padding: 12px 14px;
   overflow: hidden;
 }
-.dark .v3-card { background: #1f2025; border-color: #27272a; }
 .v3-card::before {
   content: '';
   position: absolute;
@@ -858,30 +1155,26 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   top: 0;
   bottom: 0;
   width: 2px;
-  background: var(--card-accent, #6D5CE7);
+  background: var(--card-accent, var(--primary-color));
 }
-.v3-card-divider {
-  border-top: 1px dashed #E4E4E7;
-}
-.dark .v3-card-divider { border-top-color: #27272a; }
+.v3-card-divider { border-top: 1px dashed var(--layout-border-color); }
 
 /* Sticky tabs container — keeps tabs visible while content scrolls below */
 .v3-tabs-sticky {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #FFFFFF;
+  background: var(--primary-background-color);
   margin-left: -1.5rem;
   margin-right: -1.5rem;
-  padding: 0.5rem 1.5rem 0;
+  padding: var(--space-8) 1.5rem 0;
 }
-.dark .v3-tabs-sticky { background: #1E1F23; }
 
 /* Activity ribbon scroll */
 .v3-ribbon {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-8);
   overflow-x: auto;
   scrollbar-width: none;
   white-space: nowrap;
@@ -896,14 +1189,14 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .v3-pulse-dot { animation: v3SoftPulse 2.4s ease-in-out infinite; }
 @keyframes v3SoftPulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
+  50%      { opacity: 0.55; }
 }
 
-/* Urgent countdown chip pulse — for "Due in Xh" / "Overdue" */
+/* Urgent countdown chip pulse — uses negative status token */
 .v3-urgent-pulse { animation: v3UrgentPulse 1.8s ease-in-out infinite; }
 @keyframes v3UrgentPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.30); }
-  50% { box-shadow: 0 0 0 4px rgba(225, 29, 72, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(216, 58, 82, 0.30); }
+  50%      { box-shadow: 0 0 0 4px rgba(216, 58, 82, 0); }
 }
 
 /* Section/card slide-up stagger on first mount */
@@ -915,24 +1208,16 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .v3-stagger > *:nth-child(5) { animation-delay: 0.28s; }
 @keyframes v3SlideUp {
   from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Subtle aurora gradient at top of body for premium polish */
-.v3-aurora {
-  position: absolute;
-  top: 3px;
-  left: 0;
-  right: 0;
-  height: 80px;
-  pointer-events: none;
-  background: radial-gradient(70% 100% at 30% 0%, rgba(109, 92, 231, 0.05) 0%, transparent 60%),
-              radial-gradient(60% 100% at 80% 0%, rgba(167, 139, 250, 0.04) 0%, transparent 60%);
-  z-index: 0;
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Button hover lift micro-interaction */
-.v3-lift { transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.15s ease; }
+.v3-lift {
+  transition:
+    transform var(--motion-productive-medium) var(--motion-timing-transition),
+    box-shadow var(--motion-productive-medium) var(--motion-timing-transition),
+    background-color var(--motion-productive-long) var(--motion-timing-transition);
+}
 .v3-lift:hover { transform: translateY(-1px); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -963,53 +1248,43 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 .bento-tile {
   position: relative;
-  background: #FFFFFF;
-  border: 1px solid #EFEFF1;
-  border-radius: 14px;
+  background: var(--primary-background-color);
+  border: 1px solid var(--layout-border-color);
+  /* Tile radius standardised to 12px — between spec medium (8) and big
+     (16). Matches .v3-card so cards and tiles share a visual rhythm. */
+  border-radius: 12px;
   padding: 10px 12px;
   /* overflow MUST be visible — dropdowns positioned absolutely inside
-     tiles get clipped otherwise. Visual clipping for backgrounds is
-     handled by the rounded border + background-clip:padding-box. */
+     tiles get clipped otherwise. */
   overflow: visible;
   min-width: 0;
   display: flex;
   flex-direction: column;
   cursor: default;
-  /* Only animate non-layout props — no transform on hover (avoids the
-     1px lift that fights with cursor entry/exit at tile boundaries and
-     causes the flicker users were reporting). */
-  transition: border-color 0.15s ease-out, background-color 0.15s ease-out, box-shadow 0.15s ease-out;
-}
-.dark .bento-tile {
-  background: #1f2025;
-  border-color: #27272a;
+  transition:
+    border-color var(--motion-productive-long) var(--motion-timing-transition),
+    background-color var(--motion-productive-long) var(--motion-timing-transition),
+    box-shadow var(--motion-productive-long) var(--motion-timing-transition);
 }
 .bento-tile:hover {
-  border-color: #E4E4E7;
-  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
-}
-.dark .bento-tile:hover {
-  border-color: #3f3f46;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  border-color: var(--ui-border-color);
+  box-shadow: var(--box-shadow-xs);
 }
 .bento-tile-tall { grid-row: span 2; }
 .bento-tile-wide { grid-column: span 2; }
 
-/* Tiles meant to be entirely clickable (e.g. the Approval summary —
-   clicking opens the Approval tab). Only these get pointer cursor;
-   everything else uses default. */
+/* Tiles meant to be entirely clickable (e.g. Approval summary opens the
+   Approval tab). Only these get pointer cursor; everything else default. */
 .bento-tile-clickable { cursor: pointer; }
-.bento-tile-clickable:hover { background-color: rgba(0, 0, 0, 0.015); }
-.dark .bento-tile-clickable:hover { background-color: rgba(255, 255, 255, 0.02); }
+.bento-tile-clickable:hover { background-color: var(--primary-background-hover-color); }
 
-/* Tile typography — slightly compacted per spec */
+/* Tile typography — token-driven sizes */
 .tile-label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #A1A1AA;
+  gap: var(--space-4);
+  font: var(--font-text3-bold);
+  color: var(--secondary-text-color);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   margin-bottom: 6px;
@@ -1023,73 +1298,68 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 .tile-headline {
   font-size: 22px;
+  line-height: 1.1;
   font-weight: 500;
   letter-spacing: -0.025em;
-  color: #18181B;
-  line-height: 1.1;
+  color: var(--primary-text-color);
   font-variant-numeric: tabular-nums;
 }
-.dark .tile-headline { color: #FAFAFA; }
 .tile-headline-sm {
-  font-size: 18px;
+  font: var(--font-h3);
   font-weight: 500;
   letter-spacing: -0.02em;
-  color: #18181B;
-  line-height: 1.15;
+  color: var(--primary-text-color);
   font-variant-numeric: tabular-nums;
 }
-.dark .tile-headline-sm { color: #FAFAFA; }
 .tile-sub {
-  font-size: 11px;
-  color: #52525B;
-  margin-top: 4px;
+  font: var(--font-text3-normal);
+  color: var(--secondary-text-color);
+  margin-top: var(--space-4);
 }
-.dark .tile-sub { color: #A1A1AA; }
 .tile-micro {
-  font-size: 10px;
-  color: #A1A1AA;
+  font: var(--font-text3-normal);
+  color: var(--secondary-text-color);
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: var(--space-4);
   font-feature-settings: 'tnum';
 }
-.dark .tile-micro { color: #71717A; }
 
-/* Pastel tinted tile variants — premium color polish without neon */
-.bento-tile-approval-pending  { background: linear-gradient(135deg, #FFFBEB 0%, #FFFFFF 60%); border-color: rgba(217, 119, 6, 0.16); }
-.bento-tile-approval-approved { background: linear-gradient(135deg, #ECFDF5 0%, #FFFFFF 60%); border-color: rgba(16, 185, 129, 0.16); }
-.bento-tile-approval-rejected { background: linear-gradient(135deg, #FEF2F2 0%, #FFFFFF 60%); border-color: rgba(225, 29, 72, 0.18); }
-.bento-tile-approval-changes  { background: linear-gradient(135deg, #FFF7ED 0%, #FFFFFF 60%); border-color: rgba(234, 88, 12, 0.18); }
-.bento-tile-approval-none     { background: linear-gradient(135deg, #F4F4F5 0%, #FFFFFF 60%); border-color: rgba(161, 161, 170, 0.20); }
-.dark .bento-tile-approval-pending  { background: linear-gradient(135deg, rgba(217, 119, 6, 0.10) 0%, #1f2025 60%); border-color: rgba(217, 119, 6, 0.30); }
-.dark .bento-tile-approval-approved { background: linear-gradient(135deg, rgba(16, 185, 129, 0.10) 0%, #1f2025 60%); border-color: rgba(16, 185, 129, 0.30); }
-.dark .bento-tile-approval-rejected { background: linear-gradient(135deg, rgba(225, 29, 72, 0.10) 0%, #1f2025 60%); border-color: rgba(225, 29, 72, 0.30); }
-.dark .bento-tile-approval-changes  { background: linear-gradient(135deg, rgba(234, 88, 12, 0.10) 0%, #1f2025 60%); border-color: rgba(234, 88, 12, 0.30); }
-.dark .bento-tile-approval-none     { background: linear-gradient(135deg, rgba(161, 161, 170, 0.08) 0%, #1f2025 60%); border-color: rgba(161, 161, 170, 0.22); }
+/* Pastel tinted tile variants — status-driven washes, recolored to align
+   with skill §1.5 status tokens (positive / negative / warning) and §1.1
+   primary. The "people" and "recurrence" tiles flipped from purple to
+   Monday-blue wash so the modal reads consistently blue overall. */
+.bento-tile-approval-pending  { background: linear-gradient(135deg, #FFFBEB 0%, var(--primary-background-color) 60%); border-color: rgba(234, 170, 21, 0.22); }
+.bento-tile-approval-approved { background: linear-gradient(135deg, #E6F4EC 0%, var(--primary-background-color) 60%); border-color: rgba(0, 133, 77, 0.22); }
+.bento-tile-approval-rejected { background: linear-gradient(135deg, #FBE6EA 0%, var(--primary-background-color) 60%); border-color: rgba(216, 58, 82, 0.24); }
+.bento-tile-approval-changes  { background: linear-gradient(135deg, #FFF4E6 0%, var(--primary-background-color) 60%); border-color: rgba(253, 171, 61, 0.26); }
+.bento-tile-approval-none     { background: linear-gradient(135deg, #F4F4F5 0%, var(--primary-background-color) 60%); border-color: rgba(118, 130, 153, 0.22); }
+.dark .bento-tile-approval-pending  { background: linear-gradient(135deg, rgba(234, 170, 21, 0.10) 0%, var(--secondary-background-color) 60%); border-color: rgba(234, 170, 21, 0.34); }
+.dark .bento-tile-approval-approved { background: linear-gradient(135deg, rgba(0, 133, 77, 0.10) 0%, var(--secondary-background-color) 60%); border-color: rgba(0, 133, 77, 0.34); }
+.dark .bento-tile-approval-rejected { background: linear-gradient(135deg, rgba(216, 58, 82, 0.10) 0%, var(--secondary-background-color) 60%); border-color: rgba(216, 58, 82, 0.34); }
+.dark .bento-tile-approval-changes  { background: linear-gradient(135deg, rgba(253, 171, 61, 0.10) 0%, var(--secondary-background-color) 60%); border-color: rgba(253, 171, 61, 0.34); }
+.dark .bento-tile-approval-none     { background: linear-gradient(135deg, rgba(118, 130, 153, 0.10) 0%, var(--secondary-background-color) 60%); border-color: rgba(118, 130, 153, 0.28); }
 
-.bento-tile-due       { background: linear-gradient(135deg, #FFFBEB 0%, #FFFFFF 80%); }
-.bento-tile-due-overdue { background: linear-gradient(135deg, #FEF2F2 0%, #FFFFFF 80%); border-color: rgba(225, 29, 72, 0.16); }
-.bento-tile-reminders { background: linear-gradient(135deg, #F0FDFA 0%, #FFFFFF 80%); }
-.bento-tile-people    { background: linear-gradient(135deg, #FAF5FF 0%, #FFFFFF 80%); }
-.dark .bento-tile-due         { background: linear-gradient(135deg, rgba(217, 119, 6, 0.07) 0%, #1f2025 80%); }
-.dark .bento-tile-due-overdue { background: linear-gradient(135deg, rgba(225, 29, 72, 0.10) 0%, #1f2025 80%); border-color: rgba(225, 29, 72, 0.28); }
-.dark .bento-tile-reminders   { background: linear-gradient(135deg, rgba(13, 148, 136, 0.08) 0%, #1f2025 80%); }
-.dark .bento-tile-people      { background: linear-gradient(135deg, rgba(124, 58, 237, 0.08) 0%, #1f2025 80%); }
+.bento-tile-due         { background: linear-gradient(135deg, #FFFBEB 0%, var(--primary-background-color) 80%); }
+.bento-tile-due-overdue { background: linear-gradient(135deg, #FBE6EA 0%, var(--primary-background-color) 80%); border-color: rgba(216, 58, 82, 0.22); }
+.bento-tile-reminders   { background: linear-gradient(135deg, #E6F4EC 0%, var(--primary-background-color) 80%); }
+.bento-tile-people      { background: linear-gradient(135deg, var(--primary-highlighted-color) 0%, var(--primary-background-color) 80%); }
+.dark .bento-tile-due         { background: linear-gradient(135deg, rgba(234, 170, 21, 0.10) 0%, var(--secondary-background-color) 80%); }
+.dark .bento-tile-due-overdue { background: linear-gradient(135deg, rgba(216, 58, 82, 0.10) 0%, var(--secondary-background-color) 80%); border-color: rgba(216, 58, 82, 0.32); }
+.dark .bento-tile-reminders   { background: linear-gradient(135deg, rgba(0, 133, 77, 0.10) 0%, var(--secondary-background-color) 80%); }
+.dark .bento-tile-people      { background: linear-gradient(135deg, rgba(0, 115, 234, 0.12) 0%, var(--secondary-background-color) 80%); }
 
-/* Recurrence tile — soft purple gradient */
+/* Recurrence tile — Monday-blue wash (was soft purple) */
 .bento-tile-recurrence {
-  background: linear-gradient(135deg, #F5F3FF 0%, #FAFAFA 100%);
-  border-color: rgba(124, 58, 237, 0.12);
+  background: linear-gradient(135deg, var(--primary-highlighted-color) 0%, var(--primary-background-color) 100%);
+  border-color: rgba(0, 115, 234, 0.18);
 }
 .dark .bento-tile-recurrence {
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.10) 0%, #1f2025 100%);
-  border-color: rgba(124, 58, 237, 0.22);
+  background: linear-gradient(135deg, rgba(0, 115, 234, 0.12) 0%, var(--secondary-background-color) 100%);
+  border-color: rgba(0, 115, 234, 0.30);
 }
 
 /* Dashed inner divider for the People tile two-up split */
-.tile-divider-v {
-  border-left: 1px dashed #E4E4E7;
-}
-.dark .tile-divider-v { border-left-color: #27272a; }
+.tile-divider-v { border-left: 1px dashed var(--layout-border-color); }
 
 /* Subtask checkbox pop animation */
 .v3-check-pop {

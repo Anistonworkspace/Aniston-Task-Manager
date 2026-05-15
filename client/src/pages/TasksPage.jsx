@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ClipboardCheck, Clock, HelpCircle, Check, X,
   Calendar, MessageSquare, ExternalLink, Filter, Inbox, Shield, Search,
+  SlidersHorizontal, ChevronDown,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import api from '../services/api';
@@ -20,7 +21,7 @@ import { roleLabelFor } from '../utils/approvalStages';
 
 // ── Soft Neumorphic design tokens (scoped to this page) ─────────
 // Tuned to the app's actual palette: neutral slate surfaces + indigo
-// accent (`primary` = #4f46e5). The pink/purple gradients from the
+// accent (`primary` = #0073ea). The pink/purple gradients from the
 // first redesign pass were too candy-coloured for the rest of the
 // dashboard — replaced with subtle indigo/neutral/mint hints that
 // read as a professional admin surface.
@@ -33,7 +34,7 @@ const TONE = {
   textSecondary: '#676879',
   textMuted:     '#94A3B8',
   onDark:        '#FAFAFA',
-  indigo:        '#4F46E5', // tailwind `primary` (#4f46e5)
+  indigo:        '#4F46E5', // tailwind `primary` (#0073ea)
   indigoDeep:    '#4338CA',
   indigoSoft:    '#EEF2FF',
   mint:          '#10B981',
@@ -174,6 +175,113 @@ function matchesQuery(query, ...fields) {
   return fields.some(f => String(f ?? '').toLowerCase().includes(q));
 }
 
+// ── Advanced filters: per-tab facet extraction ─────────────────────
+// Each tab's item shape is different, so a tiny adapter pulls out the
+// (workspace, board, users[]) the filter UI needs. The extractor always
+// returns a normalized shape so the combine step doesn't need to know
+// which tab it's running on. Missing fields are returned as null/[] so
+// the predicate skips rather than crashes.
+//
+// IMPORTANT: derivation here is the ONLY thing that decides which
+// workspaces/boards/users appear as filter options. We derive only from
+// already-loaded data (which has already been authorization-filtered by
+// the backend), so we cannot accidentally expose anything the user is
+// not permitted to see.
+function extractFacets(activeTab, item) {
+  if (!item) return { workspace: null, board: null, users: [] };
+  switch (activeTab) {
+    case 'approvals': {
+      const board = item.board || null;
+      return {
+        workspace: board?.workspace || (board?.workspaceId ? { id: board.workspaceId, name: null } : null),
+        board: board ? { id: board.id, name: board.name, color: board.color } : null,
+        users: [item.assignee, item.creator].filter(Boolean),
+      };
+    }
+    case 'myFeedback': {
+      const board = item.task?.board || null;
+      const stageApprovers = item.currentStage?.approvers || [];
+      return {
+        workspace: board?.workspace || (board?.workspaceId ? { id: board.workspaceId, name: null } : null),
+        board: board ? { id: board.id, name: board.name, color: board.color } : null,
+        users: [item.submittedBy, item.currentApprover, ...stageApprovers]
+          .filter(Boolean)
+          // Normalize submitter/approver shapes to { id, name } — currentApprover and
+          // stageApprovers use `userId`, while submittedBy uses `id`.
+          .map(u => ({ id: u.id || u.userId, name: u.name, avatar: u.avatar }))
+          .filter(u => u.id),
+      };
+    }
+    case 'extensions': {
+      const board = item.task?.board || null;
+      return {
+        workspace: board?.workspace || (board?.workspaceId ? { id: board.workspaceId, name: null } : null),
+        board: board ? { id: board.id, name: board.name, color: board.color } : null,
+        users: [item.requester, item.reviewer].filter(Boolean),
+      };
+    }
+    case 'help': {
+      const board = item.task?.board || null;
+      return {
+        workspace: board?.workspace || (board?.workspaceId ? { id: board.workspaceId, name: null } : null),
+        board: board ? { id: board.id, name: board.name, color: board.color } : null,
+        users: [item.requester, item.helper].filter(Boolean),
+      };
+    }
+    default:
+      return { workspace: null, board: null, users: [] };
+  }
+}
+
+// Build the dropdown option lists for a tab. De-duplicates by id and sorts
+// alphabetically so the lists stay stable across renders. We tolerate missing
+// names (e.g. workspaces whose name we didn't include yet for some reason) by
+// falling back to a short id stub — this keeps the option clickable.
+function deriveFilterOptions(activeTab, items) {
+  const workspaces = new Map();
+  const boards = new Map();
+  const users = new Map();
+  for (const item of items || []) {
+    const { workspace, board, users: itemUsers } = extractFacets(activeTab, item);
+    if (workspace?.id && !workspaces.has(workspace.id)) {
+      workspaces.set(workspace.id, { id: workspace.id, name: workspace.name || `Workspace ${String(workspace.id).slice(0, 6)}` });
+    }
+    if (board?.id && !boards.has(board.id)) {
+      boards.set(board.id, { id: board.id, name: board.name || 'Untitled board', color: board.color || null });
+    }
+    for (const u of itemUsers) {
+      if (u?.id && !users.has(u.id)) users.set(u.id, { id: u.id, name: u.name || '(unknown)', avatar: u.avatar || null });
+    }
+  }
+  const sortByName = (a, b) => (a.name || '').localeCompare(b.name || '');
+  return {
+    workspaces: Array.from(workspaces.values()).sort(sortByName),
+    boards: Array.from(boards.values()).sort(sortByName),
+    users: Array.from(users.values()).sort(sortByName),
+  };
+}
+
+// Predicate: does the item pass the currently selected workspace/board/user
+// filters? Empty selection set means "no constraint on this axis". Selections
+// across axes combine with AND; selections inside one axis combine with OR.
+// Items missing a facet (e.g. orphan task with no board) pass when no filter
+// is set for that axis but are excluded when one is — that's the safe default
+// since we can't prove they match.
+function matchesAdvanced(activeTab, item, sel) {
+  const { workspace, board, users } = extractFacets(activeTab, item);
+  if (sel.workspaceIds?.length) {
+    if (!workspace?.id || !sel.workspaceIds.includes(workspace.id)) return false;
+  }
+  if (sel.boardIds?.length) {
+    if (!board?.id || !sel.boardIds.includes(board.id)) return false;
+  }
+  if (sel.userIds?.length) {
+    const ids = users.map(u => u.id || u.userId).filter(Boolean);
+    if (!ids.some(id => sel.userIds.includes(id))) return false;
+  }
+  return true;
+}
+
 function groupByBoard(items, getBoard) {
   const order = [];
   const map = new Map();
@@ -213,6 +321,14 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
+  // Advanced filters (workspace / board / assignee). Arrays of selected ids;
+  // empty array = no constraint on that axis. Reset on tab switch — options
+  // are tab-specific (My Submissions surfaces approvers, Help Requests
+  // surfaces helpers, etc.) so carrying ids across tabs would mostly produce
+  // empty results that look like a bug.
+  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState([]);
+  const [selectedBoardIds, setSelectedBoardIds] = useState([]);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
   const [actionLoading, setActionLoading] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
   const [selectedBoardId, setSelectedBoardId] = useState(null);
@@ -422,7 +538,31 @@ export default function TasksPage() {
     };
   }, [data]);
 
-  // ── Visible items per tab — pipeline: tab → status → search → group ─
+  // Bundle the advanced-filter selection once so each useMemo below depends
+  // on a stable shape and the predicate has a single argument. Memoized so a
+  // re-render doesn't break referential equality for downstream useMemos.
+  const advancedSelection = useMemo(() => ({
+    workspaceIds: selectedWorkspaceIds,
+    boardIds: selectedBoardIds,
+    userIds: selectedUserIds,
+  }), [selectedWorkspaceIds, selectedBoardIds, selectedUserIds]);
+
+  const advancedFilterCount =
+    selectedWorkspaceIds.length + selectedBoardIds.length + selectedUserIds.length;
+
+  // Filter-option lists per active tab — derived from the FULL tab dataset
+  // (not the already-filtered visible items) so toggling status/search doesn't
+  // make options disappear under the user's cursor. Backend data is already
+  // authorization-filtered, so deriving here never leaks unauthorized rows.
+  const filterOptions = useMemo(() => {
+    const source = activeTab === 'approvals' ? (data.approvals || [])
+      : activeTab === 'myFeedback' ? (myFeedback || [])
+      : activeTab === 'extensions' ? (data.extensions || [])
+      : (data.helpRequests || []);
+    return deriveFilterOptions(activeTab, source);
+  }, [activeTab, data.approvals, data.extensions, data.helpRequests, myFeedback]);
+
+  // ── Visible items per tab — pipeline: tab → status → search → advanced → group ─
   // Computed in useMemo so unrelated state changes (action loading, modal
   // open, etc.) don't re-walk the lists.
   const approvalGroups = useMemo(() => {
@@ -435,8 +575,9 @@ export default function TasksPage() {
       STATUS_BADGES[task.approvalStatus]?.label,
       ...(task.approvalChain || []).flatMap(e => [e.userName, e.comment, e.action]),
     ));
-    return groupByBoard(bySearch, (it) => it.board);
-  }, [data.approvals, statusFilter, search]);
+    const byAdvanced = bySearch.filter((task) => matchesAdvanced('approvals', task, advancedSelection));
+    return groupByBoard(byAdvanced, (it) => it.board);
+  }, [data.approvals, statusFilter, search, advancedSelection]);
 
   const submissionGroups = useMemo(() => {
     const byStatus = statusFilter === 'all'
@@ -452,8 +593,9 @@ export default function TasksPage() {
       item.status,
       item.comment,
     ));
-    return groupByBoard(bySearch, (it) => it.task?.board);
-  }, [myFeedback, statusFilter, search]);
+    const byAdvanced = bySearch.filter((item) => matchesAdvanced('myFeedback', item, advancedSelection));
+    return groupByBoard(byAdvanced, (it) => it.task?.board);
+  }, [myFeedback, statusFilter, search, advancedSelection]);
 
   const extensionGroups = useMemo(() => {
     const byStatus = filterByStatus(data.extensions || []);
@@ -466,8 +608,9 @@ export default function TasksPage() {
       ext.reason,
       ext.reviewNote,
     ));
-    return groupByBoard(bySearch, (it) => it.task?.board);
-  }, [data.extensions, statusFilter, search]);
+    const byAdvanced = bySearch.filter((ext) => matchesAdvanced('extensions', ext, advancedSelection));
+    return groupByBoard(byAdvanced, (it) => it.task?.board);
+  }, [data.extensions, statusFilter, search, advancedSelection]);
 
   const helpGroups = useMemo(() => {
     const byStatus = filterByStatus(data.helpRequests || []);
@@ -481,8 +624,15 @@ export default function TasksPage() {
       hr.description,
       hr.urgency,
     ));
-    return groupByBoard(bySearch, (it) => it.task?.board);
-  }, [data.helpRequests, statusFilter, search]);
+    const byAdvanced = bySearch.filter((hr) => matchesAdvanced('help', hr, advancedSelection));
+    return groupByBoard(byAdvanced, (it) => it.task?.board);
+  }, [data.helpRequests, statusFilter, search, advancedSelection]);
+
+  const clearAdvancedFilters = useCallback(() => {
+    setSelectedWorkspaceIds([]);
+    setSelectedBoardIds([]);
+    setSelectedUserIds([]);
+  }, []);
 
   const visibleCount = useMemo(() => {
     const groups = activeTab === 'approvals' ? approvalGroups
@@ -499,6 +649,7 @@ export default function TasksPage() {
     setActiveTab(id);
     setStatusFilter('all');
     setSearch('');
+    clearAdvancedFilters();
   }
 
   return (
@@ -529,10 +680,37 @@ export default function TasksPage() {
               {t('tasksPage.subtitle')}
             </p>
           </div>
-          <div className="w-full sm:w-auto sm:flex-shrink-0">
+          <div className="w-full sm:w-auto sm:flex-shrink-0 flex items-stretch gap-2">
+            <FilterPanel
+              options={filterOptions}
+              selectedWorkspaceIds={selectedWorkspaceIds}
+              selectedBoardIds={selectedBoardIds}
+              selectedUserIds={selectedUserIds}
+              onChangeWorkspaces={setSelectedWorkspaceIds}
+              onChangeBoards={setSelectedBoardIds}
+              onChangeUsers={setSelectedUserIds}
+              onClear={clearAdvancedFilters}
+              count={advancedFilterCount}
+            />
             <SearchBox value={search} onChange={setSearch} />
           </div>
         </div>
+
+        {/* ── Active advanced-filter chips ─────────────────────────────
+            Lets the user remove a single facet without opening the panel.
+            Only renders when at least one filter is active so it doesn't
+            add vertical noise on the default state. */}
+        {advancedFilterCount > 0 && (
+          <ActiveFilterChips
+            workspaces={filterOptions.workspaces.filter(w => selectedWorkspaceIds.includes(w.id))}
+            boards={filterOptions.boards.filter(b => selectedBoardIds.includes(b.id))}
+            users={filterOptions.users.filter(u => selectedUserIds.includes(u.id))}
+            onRemoveWorkspace={(id) => setSelectedWorkspaceIds(prev => prev.filter(x => x !== id))}
+            onRemoveBoard={(id) => setSelectedBoardIds(prev => prev.filter(x => x !== id))}
+            onRemoveUser={(id) => setSelectedUserIds(prev => prev.filter(x => x !== id))}
+            onClearAll={clearAdvancedFilters}
+          />
+        )}
 
         {/* ── Compact stats row (derived from loaded data only) ───── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -637,9 +815,15 @@ export default function TasksPage() {
             {activeTab === 'approvals' && (
               visibleCount === 0 ? (
                 <EmptyState
-                  icon={search ? Search : ClipboardCheck}
-                  message={search ? 'No approvals found' : getEmptyMessage('approvals', statusFilter)}
-                  hint={search ? 'Try a different search or filter.' : null}
+                  icon={search || advancedFilterCount > 0 ? Search : ClipboardCheck}
+                  message={
+                    advancedFilterCount > 0
+                      ? 'No approvals match the selected filters.'
+                      : search
+                        ? 'No approvals found'
+                        : getEmptyMessage('approvals', statusFilter)
+                  }
+                  hint={search || advancedFilterCount > 0 ? 'Try a different search or adjust your filters.' : null}
                 />
               ) : approvalGroups.map((group) => (
                 <BoardGroup key={group.key} name={group.name} color={group.color} count={group.items.length}>
@@ -805,9 +989,15 @@ export default function TasksPage() {
             {activeTab === 'myFeedback' && (
               visibleCount === 0 ? (
                 <EmptyState
-                  icon={search ? Search : Inbox}
-                  message={search ? 'No submissions found' : getEmptyMessage('myFeedback', statusFilter)}
-                  hint={search ? 'Try a different search or filter.' : null}
+                  icon={search || advancedFilterCount > 0 ? Search : Inbox}
+                  message={
+                    advancedFilterCount > 0
+                      ? 'No submissions match the selected filters.'
+                      : search
+                        ? 'No submissions found'
+                        : getEmptyMessage('myFeedback', statusFilter)
+                  }
+                  hint={search || advancedFilterCount > 0 ? 'Try a different search or adjust your filters.' : null}
                 />
               ) : submissionGroups.map((group) => (
                 <BoardGroup key={group.key} name={group.name} color={group.color} count={group.items.length}>
@@ -952,9 +1142,15 @@ export default function TasksPage() {
             {activeTab === 'extensions' && (
               visibleCount === 0 ? (
                 <EmptyState
-                  icon={search ? Search : Clock}
-                  message={search ? 'No extensions found' : getEmptyMessage('extensions', statusFilter)}
-                  hint={search ? 'Try a different search or filter.' : null}
+                  icon={search || advancedFilterCount > 0 ? Search : Clock}
+                  message={
+                    advancedFilterCount > 0
+                      ? 'No extensions match the selected filters.'
+                      : search
+                        ? 'No extensions found'
+                        : getEmptyMessage('extensions', statusFilter)
+                  }
+                  hint={search || advancedFilterCount > 0 ? 'Try a different search or adjust your filters.' : null}
                 />
               ) : extensionGroups.map((group) => (
                 <BoardGroup key={group.key} name={group.name} color={group.color} count={group.items.length}>
@@ -1062,9 +1258,15 @@ export default function TasksPage() {
             {activeTab === 'help' && (
               visibleCount === 0 ? (
                 <EmptyState
-                  icon={search ? Search : HelpCircle}
-                  message={search ? 'No help requests found' : getEmptyMessage('help', statusFilter)}
-                  hint={search ? 'Try a different search or filter.' : null}
+                  icon={search || advancedFilterCount > 0 ? Search : HelpCircle}
+                  message={
+                    advancedFilterCount > 0
+                      ? 'No help requests match the selected filters.'
+                      : search
+                        ? 'No help requests found'
+                        : getEmptyMessage('help', statusFilter)
+                  }
+                  hint={search || advancedFilterCount > 0 ? 'Try a different search or adjust your filters.' : null}
                 />
               ) : helpGroups.map((group) => (
                 <BoardGroup key={group.key} name={group.name} color={group.color} count={group.items.length}>
@@ -1445,5 +1647,329 @@ function SkeletonGrid() {
         />
       ))}
     </div>
+  );
+}
+
+// ── Advanced filter panel ────────────────────────────────────────
+// A single dropdown anchored to a filter button. Inside, three collapsible
+// (always-open by default) sections — Workspace / Board / Assignee — each
+// with its own search and a scrollable checkbox list.
+//
+// Design notes:
+// - Options are passed in (already derived from authorized data); the panel
+//   never fetches anything on its own.
+// - Multi-select. Click toggles; the parent owns selection state.
+// - Per-section search hides options when the user types — does NOT mutate
+//   the parent's option list, so closing/reopening the panel resets the
+//   in-dropdown search without losing selections.
+// - Closes on outside click and on Escape. Click inside the panel is
+//   stopped from bubbling so checkbox toggles don't close the panel.
+function FilterPanel({
+  options,
+  selectedWorkspaceIds,
+  selectedBoardIds,
+  selectedUserIds,
+  onChangeWorkspaces,
+  onChangeBoards,
+  onChangeUsers,
+  onClear,
+  count,
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDocClick(e) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setOpen(false);
+    }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const toggleId = (list, setter) => (id) => {
+    setter(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  };
+
+  const hasAnyOptions =
+    (options.workspaces?.length || 0) +
+    (options.boards?.length || 0) +
+    (options.users?.length || 0) > 0;
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="Open advanced filters"
+        className="inline-flex items-center gap-2 px-3.5 h-11 text-[13px] font-semibold transition-all"
+        style={{
+          backgroundColor: '#FFFFFF',
+          color: count > 0 ? TONE.indigoDeep : TONE.textPrimary,
+          boxShadow: open ? SHADOW_PRESSED : SHADOW_BUTTON,
+          borderRadius: 12,
+        }}
+      >
+        <SlidersHorizontal size={14} style={{ color: count > 0 ? TONE.indigo : TONE.textSecondary }} />
+        <span>Filter</span>
+        {count > 0 && (
+          <span
+            className="inline-flex items-center justify-center min-w-[20px] h-[20px] px-1.5 text-[11px] font-bold rounded-full"
+            style={{ backgroundColor: TONE.indigoSoft, color: TONE.indigo }}
+            aria-label={`${count} active filter${count > 1 ? 's' : ''}`}
+          >
+            {count}
+          </span>
+        )}
+        <ChevronDown size={13} style={{ color: TONE.textSecondary, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Advanced filters"
+          className="absolute right-0 mt-2 z-30 w-[320px] sm:w-[360px] p-3"
+          style={{
+            backgroundColor: '#FFFFFF',
+            boxShadow: SHADOW_RAISED_LG,
+            borderRadius: 16,
+            border: '1px solid rgba(148, 163, 184, 0.15)',
+          }}
+        >
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-[12px] font-bold uppercase tracking-wide" style={{ color: TONE.textPrimary }}>
+              Filters
+            </span>
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={count === 0}
+              className="text-[11.5px] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ color: TONE.indigo }}
+            >
+              Clear all
+            </button>
+          </div>
+
+          {!hasAnyOptions ? (
+            <p
+              className="text-[12px] text-center py-6 px-2"
+              style={{ color: TONE.textMuted }}
+            >
+              No filter options available for this tab.
+            </p>
+          ) : (
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+              <FilterSection
+                label="Workspace"
+                items={options.workspaces}
+                selected={selectedWorkspaceIds}
+                onToggle={toggleId(selectedWorkspaceIds, onChangeWorkspaces)}
+                renderItem={(w) => (
+                  <span className="text-[12.5px] truncate" style={{ color: TONE.textPrimary }}>{w.name}</span>
+                )}
+              />
+              <FilterSection
+                label="Board"
+                items={options.boards}
+                selected={selectedBoardIds}
+                onToggle={toggleId(selectedBoardIds, onChangeBoards)}
+                renderItem={(b) => (
+                  <span className="inline-flex items-center gap-2 min-w-0">
+                    <span
+                      className="flex-shrink-0"
+                      style={{ width: 8, height: 8, backgroundColor: b.color || '#94A3B8', borderRadius: 2 }}
+                      aria-hidden="true"
+                    />
+                    <span className="text-[12.5px] truncate" style={{ color: TONE.textPrimary }}>{b.name}</span>
+                  </span>
+                )}
+              />
+              <FilterSection
+                label="Assignee"
+                items={options.users}
+                selected={selectedUserIds}
+                onToggle={toggleId(selectedUserIds, onChangeUsers)}
+                renderItem={(u) => (
+                  <span className="inline-flex items-center gap-2 min-w-0">
+                    <Avatar name={u.name} image={u.avatar} size="xs" />
+                    <span className="text-[12.5px] truncate" style={{ color: TONE.textPrimary }}>{u.name}</span>
+                  </span>
+                )}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One section inside the FilterPanel. Owns only its in-dropdown search;
+// selection lives on the parent. The list is capped to ~7 rows tall and
+// scrolls internally so the panel doesn't grow unbounded with long org dirs.
+function FilterSection({ label, items, selected, onToggle, renderItem }) {
+  const [query, setQuery] = useState('');
+  // Always show the section header (even when items is empty) so the layout
+  // doesn't shift while the user toggles between tabs — but skip rendering
+  // the search/list when there's nothing to filter.
+  const filtered = useMemo(() => {
+    if (!query.trim()) return items;
+    const q = query.trim().toLowerCase();
+    return items.filter((it) => String(it.name || '').toLowerCase().includes(q));
+  }, [items, query]);
+
+  if (!items || items.length === 0) {
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-1 px-1">
+          <span className="text-[10.5px] font-bold uppercase tracking-wide" style={{ color: TONE.textMuted }}>
+            {label}
+          </span>
+        </div>
+        <p className="text-[11.5px] px-1.5 py-2" style={{ color: TONE.textMuted }}>None available</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1 px-1">
+        <span className="text-[10.5px] font-bold uppercase tracking-wide" style={{ color: TONE.textMuted }}>
+          {label}
+        </span>
+        {selected.length > 0 && (
+          <span className="text-[10.5px] font-semibold" style={{ color: TONE.indigo }}>
+            {selected.length} selected
+          </span>
+        )}
+      </div>
+      {items.length > 5 && (
+        <div
+          className="flex items-center gap-1.5 px-2 h-7 mb-1"
+          style={{ backgroundColor: TONE.pageBg, boxShadow: SHADOW_PRESSED, borderRadius: 8 }}
+        >
+          <Search size={11} style={{ color: TONE.textMuted }} />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${label.toLowerCase()}…`}
+            aria-label={`Search ${label.toLowerCase()}`}
+            className="flex-1 bg-transparent outline-none text-[11.5px] min-w-0 placeholder:text-[#94A3B8]"
+            style={{ color: TONE.textPrimary }}
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="flex-shrink-0 p-0.5 rounded-full hover:bg-slate-200 transition-colors"
+              style={{ color: TONE.textSecondary }}
+            >
+              <X size={10} />
+            </button>
+          )}
+        </div>
+      )}
+      <ul className="max-h-[176px] overflow-y-auto pr-0.5 space-y-0.5">
+        {filtered.length === 0 ? (
+          <li className="text-[11.5px] px-1.5 py-2" style={{ color: TONE.textMuted }}>
+            No matches.
+          </li>
+        ) : (
+          filtered.map((it) => {
+            const isSelected = selected.includes(it.id);
+            return (
+              <li key={it.id}>
+                <button
+                  type="button"
+                  onClick={() => onToggle(it.id)}
+                  className="w-full flex items-center gap-2 px-1.5 py-1.5 text-left rounded-md transition-colors hover:bg-slate-50"
+                  aria-pressed={isSelected}
+                >
+                  <span
+                    className="inline-flex items-center justify-center flex-shrink-0"
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 4,
+                      backgroundColor: isSelected ? TONE.indigo : '#FFFFFF',
+                      border: `1.5px solid ${isSelected ? TONE.indigo : '#CBD5E1'}`,
+                      transition: 'background-color 0.12s, border-color 0.12s',
+                    }}
+                    aria-hidden="true"
+                  >
+                    {isSelected && <Check size={9} style={{ color: '#FFFFFF' }} strokeWidth={3.5} />}
+                  </span>
+                  <span className="min-w-0 flex-1">{renderItem(it)}</span>
+                </button>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </div>
+  );
+}
+
+// Inline chips that surface active advanced-filter selections beneath the
+// header. Each chip has an X to remove just that filter; the bar also
+// includes a small "Clear all" affordance that mirrors the panel's button.
+function ActiveFilterChips({
+  workspaces, boards, users,
+  onRemoveWorkspace, onRemoveBoard, onRemoveUser, onClearAll,
+}) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <Chip label="Workspace" items={workspaces} onRemove={onRemoveWorkspace} tone="indigo" />
+      <Chip label="Board" items={boards} onRemove={onRemoveBoard} tone="indigo" />
+      <Chip label="Assignee" items={users} onRemove={onRemoveUser} tone="indigo" />
+      <button
+        type="button"
+        onClick={onClearAll}
+        className="text-[11px] font-semibold ml-1 hover:underline"
+        style={{ color: TONE.textSecondary }}
+      >
+        Clear all
+      </button>
+    </div>
+  );
+}
+
+function Chip({ label, items, onRemove }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <>
+      {items.map((it) => (
+        <span
+          key={`${label}-${it.id}`}
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium"
+          style={{
+            backgroundColor: TONE.indigoSoft,
+            color: TONE.indigoDeep,
+            borderRadius: 999,
+          }}
+        >
+          <span className="opacity-75" style={{ fontSize: 10 }}>{label}:</span>
+          <span className="truncate max-w-[140px]">{it.name}</span>
+          <button
+            type="button"
+            onClick={() => onRemove(it.id)}
+            aria-label={`Remove ${label.toLowerCase()} ${it.name}`}
+            className="ml-0.5 hover:bg-white/60 rounded-full p-0.5 transition-colors"
+          >
+            <X size={10} />
+          </button>
+        </span>
+      ))}
+    </>
   );
 }

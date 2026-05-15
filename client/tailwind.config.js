@@ -8,22 +8,28 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Primary brand — deep indigo-blue, not generic flat blue
+        // Primary brand — Monday blue (#0073ea) per generic_monday_ui.md §1.1.
+        // The 50–900 ramp is tuned around that hue so utilities like
+        // `bg-primary-50` and `text-primary-700` stay coherent.
         primary: {
-          DEFAULT: '#4f46e5',
-          50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 300: '#a5b4fc',
-          400: '#818cf8', 500: '#4f46e5', 600: '#4338ca', 700: '#3730a3',
-          800: '#312e81', 900: '#1e1b4b',
+          DEFAULT: '#0073ea',
+          50:  '#f0f7ff',
+          100: '#cce5ff',
+          200: '#aed4fc',
+          300: '#7fbcf8',
+          400: '#3d99f0',
+          500: '#0073ea',
+          600: '#0060b9',
+          700: '#004f99',
+          800: '#003f7a',
+          900: '#002e5c',
         },
-        // Success
-        success: { DEFAULT: '#10b981', light: '#d1fae5', dark: '#059669' },
-        // Warning
-        warning: { DEFAULT: '#f59e0b', light: '#fef3c7', dark: '#d97706' },
-        // Danger
-        danger: { DEFAULT: '#ef4444', light: '#fee2e2', dark: '#dc2626' },
-        // Purple accent
+        // Status — values from skill §1.5
+        success: { DEFAULT: '#00854d', light: '#bbdbc9', dark: '#007038' },
+        warning: { DEFAULT: '#ffcb00', light: '#fceba1', dark: '#eaaa15' },
+        danger:  { DEFAULT: '#d83a52', light: '#f4c3cb', dark: '#b63546' },
+        // Accents kept for legacy call sites; not part of the spec.
         purple: { DEFAULT: '#8b5cf6', light: '#ede9fe', dark: '#7c3aed' },
-        // Teal accent
         teal: { DEFAULT: '#14b8a6', light: '#ccfbf1', dark: '#0d9488' },
 
         // Sidebar — uses CSS variables so light/dark mode auto-adapts
@@ -69,7 +75,10 @@ export default {
       },
 
       fontFamily: {
-        sans: ['Figtree', 'Roboto', 'Noto Sans', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        // Body / UI — skill §2.1 --font-family
+        sans: ['Figtree', 'Roboto', 'Noto Sans Hebrew', 'Noto Kufi Arabic', 'Noto Sans JP', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        // Headings (H1–H4) — skill §2.1 --title-font-family
+        title: ['Poppins', 'Roboto', 'Noto Sans Hebrew', 'Noto Kufi Arabic', 'Noto Sans JP', 'sans-serif'],
       },
 
       fontSize: {
@@ -85,26 +94,31 @@ export default {
       },
 
       borderRadius: {
-        'sm': '4px',
+        // Spec §3.2 — three canonical radii. Tailwind aliases preserved
+        // for back-compat; sm/2xl now map to the spec values.
+        'sm': '4px',          // --border-radius-small
         'DEFAULT': '6px',
-        'md': '8px',
+        'md': '8px',          // --border-radius-medium
         'lg': '10px',
         'xl': '12px',
-        '2xl': '16px',
+        '2xl': '16px',        // --border-radius-big
         '3xl': '20px',
       },
 
       boxShadow: {
-        'xs': '0 1px 2px rgba(0,0,0,0.04)',
-        'sm': '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        'DEFAULT': '0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
-        'md': '0 4px 12px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.05)',
-        'lg': '0 8px 24px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04)',
-        'xl': '0 16px 48px rgba(0,0,0,0.1), 0 4px 12px rgba(0,0,0,0.05)',
-        'card': '0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02)',
-        'card-hover': '0 4px 16px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
-        'dropdown': '0 8px 30px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
-        'modal': '0 20px 60px rgba(0,0,0,0.15), 0 4px 16px rgba(0,0,0,0.08)',
+        // Spec §3.3 — four canonical elevations. Aliases mapped onto them
+        // so `shadow-md`, `shadow-dropdown`, `shadow-modal` etc. produce
+        // skill-consistent depth.
+        'xs': '0 4px 6px -4px rgba(0,0,0,0.1)',                      // --box-shadow-xs
+        'sm': '0 4px 8px rgba(0,0,0,0.2)',                           // --box-shadow-small
+        'DEFAULT': '0 4px 8px rgba(0,0,0,0.2)',
+        'md': '0 6px 20px rgba(0,0,0,0.2)',                          // --box-shadow-medium
+        'lg': '0 15px 50px rgba(0,0,0,0.3)',                         // --box-shadow-large
+        'xl': '0 15px 50px rgba(0,0,0,0.3)',
+        'card': '0 4px 6px -4px rgba(0,0,0,0.1)',
+        'card-hover': '0 4px 8px rgba(0,0,0,0.2)',
+        'dropdown': '0 6px 20px rgba(0,0,0,0.2)',
+        'modal': '0 15px 50px rgba(0,0,0,0.3)',
         'inner-glow': 'inset 0 1px 0 rgba(255,255,255,0.05)',
         'sidebar': '2px 0 8px rgba(0,0,0,0.08)',
       },

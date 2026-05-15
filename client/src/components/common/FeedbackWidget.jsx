@@ -4,11 +4,11 @@ import { useLocation } from 'react-router-dom';
 import api from '../../services/api';
 
 const CATEGORIES = [
-  { value: 'bug', label: 'Bug Report', color: '#e2445c' },
+  { value: 'bug', label: 'Bug Report', color: '#df2f4a' },
   { value: 'feature', label: 'Feature Request', color: '#0073ea' },
   { value: 'improvement', label: 'Improvement', color: '#fdab3d' },
   { value: 'praise', label: 'Praise', color: '#00c875' },
-  { value: 'other', label: 'Other', color: '#a25ddc' },
+  { value: 'other', label: 'Other', color: '#9d50dd' },
 ];
 
 export default function FeedbackWidget({ isOpen, onClose }) {

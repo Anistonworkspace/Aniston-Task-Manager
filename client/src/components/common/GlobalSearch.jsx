@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, X, FileText, FolderKanban, ArrowRight, Command, ChevronDown } from 'lucide-react';
 import api from '../../services/api';
+import AnistonLoader from './AnistonLoader';
 
 const STATUS_COLORS = {
   not_started: '#c4c4c4',
   working_on_it: '#fdab3d',
-  stuck: '#e2445c',
+  stuck: '#df2f4a',
   done: '#00c875',
-  review: '#a25ddc',
+  review: '#9d50dd',
 };
 
 const STATUS_LABELS = {
@@ -108,7 +109,7 @@ export default function GlobalSearch({ onClose }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-start justify-center pt-[15vh] z-50 animate-fade-in" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-full max-w-[580px] mx-4 max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-[var(--primary-background-color)] rounded-xl shadow-2xl w-full max-w-[580px] mx-4 max-h-[60vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Search Input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
           <Search size={18} className="text-text-tertiary flex-shrink-0" />
@@ -133,9 +134,7 @@ export default function GlobalSearch({ onClose }) {
         {/* Results */}
         <div className="flex-1 overflow-y-auto">
           {loading && (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary/20 border-t-primary" />
-            </div>
+            <AnistonLoader variant="section" size="sm" label="Searching" className="py-8" />
           )}
 
           {!loading && !hasQuery && (

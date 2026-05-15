@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, X, Search, Tag } from 'lucide-react';
+import { Plus, X, Search, Tag, Trash2 } from 'lucide-react';
 import PortalDropdown from '../common/PortalDropdown';
 import api from '../../services/api';
 
@@ -21,10 +21,19 @@ import api from '../../services/api';
 //      caller-supplied `canEdit` flag so the UI renders read-only chips for
 //      lower tiers instead of a clickable button that just fails.
 //
+// Props:
+//   - canEdit  — caller can apply / unassign / create labels on this task
+//                (gated upstream by explicit DENY on labels.add_to_task; the
+//                backend's taskVisibility.canViewTask check is the security
+//                boundary, so default-true is intentional).
+//   - canManage — caller can permanently delete a label from the board's
+//                 library (T1 / T2 only). Hides the trash icon for everyone
+//                 else; the API still 403s if a caller forges the request.
+//
 // `labels` prop is the array of {id, name, color} attached to a task (via
 // task.labels in the GET response). Local state mirrors it for optimistic
 // updates; the parent eventually refetches on the next socket-driven reload.
-export default function LabelCell({ taskId, boardId, labels: initialLabels = [], canEdit = true, onLabelsChange }) {
+export default function LabelCell({ taskId, boardId, labels: initialLabels = [], canEdit = true, canManage = false, onLabelsChange }) {
   const [open, setOpen] = useState(false);
   const [labels, setLabels] = useState(initialLabels);
   const [allLabels, setAllLabels] = useState([]);
@@ -122,6 +131,37 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
     }
   }
 
+  // Permanently delete a label from the board's library (NOT just unassign
+  // it from this task). Only rendered when canManage is true (T1 / T2).
+  // The backend transactionally removes the TaskLabel join rows for every
+  // task on the board, so the label disappears from sibling rows as well —
+  // we rely on the `task:labels_updated` socket fan-out to refresh those.
+  // For THIS task we shrink the local labels state immediately so the chip
+  // disappears without waiting for the socket round-trip.
+  async function deleteLabelFromLibrary(label) {
+    if (!canManage || busy) return;
+    if (typeof window !== 'undefined' && !window.confirm(`Delete label "${label.name}" from this board? This removes it from every task.`)) return;
+    setBusy(true); setError('');
+    pendingMutation.current = true;
+    try {
+      await api.delete(`/labels/${label.id}`);
+      if (isMounted.current) {
+        setAllLabels(prev => prev.filter(l => l.id !== label.id));
+        const next = labels.filter(l => l.id !== label.id);
+        setLabels(next);
+        if (typeof onLabelsChange === 'function') onLabelsChange(next);
+      }
+    } catch (err) {
+      const data = err?.response?.data;
+      let msg = data?.message || 'Failed to delete label';
+      if (data?.detail && data.detail !== data.message) msg = `${msg} — ${data.detail}`;
+      safeSet(setError, msg);
+    } finally {
+      safeSet(setBusy, false);
+      scheduleLatchRelease();
+    }
+  }
+
   async function createLabel() {
     if (!canEdit) return;
     if (!newName.trim()) return;
@@ -167,7 +207,7 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
   }
 
   const filtered = allLabels.filter(l => !search || l.name.toLowerCase().includes(search.toLowerCase()));
-  const COLORS = ['#579bfc', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#ff642e', '#cab641', '#ff158a', '#66ccff', '#333'];
+  const COLORS = ['#579bfc', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#ff642e', '#cab641', '#ff158a', '#66ccff', '#333'];
 
   // Read-only render: no button, just the chips (or em-dash). Keeps the
   // column consistent without dangling an inert "Add" hint that misleads
@@ -188,10 +228,16 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
       >
         {labels.length > 0 ? (
           <>
+            {/* Pill UI — bumped from 9px/px-1.5 to 11px/px-2.5/py-1 so the
+                tag is actually readable in the row. max-w increased from
+                80px to 120px; long names truncate with an ellipsis and the
+                full name is shown in the native title tooltip. Row height
+                stays bounded because the cell is fixed-height — pills
+                shrink/wrap-suppressed within. */}
             {labels.slice(0, 3).map(l => (
               <span
                 key={l.id}
-                className="text-[9px] font-medium px-1.5 py-0.5 rounded-full text-white truncate max-w-[80px]"
+                className="inline-flex items-center text-[11px] leading-none font-medium px-2.5 py-1 rounded-full text-white truncate max-w-[120px] shadow-sm"
                 style={{ backgroundColor: l.color }}
                 title={l.name}
               >
@@ -199,103 +245,131 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
               </span>
             ))}
             {labels.length > 3 && (
-              <span className="text-[9px] text-gray-500 font-semibold">+{labels.length - 3}</span>
+              <span className="text-[11px] text-gray-500 dark:text-gray-400 font-semibold ml-0.5">+{labels.length - 3}</span>
             )}
           </>
         ) : (
-          <span className="text-[11px] text-gray-400 flex items-center gap-0.5">
-            <Tag size={10} /> Add
+          <span className="text-[12px] text-gray-400 flex items-center gap-1">
+            <Tag size={12} /> Add
           </span>
         )}
       </button>
 
-      <PortalDropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} align="left" width={220}>
-        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-gray-200 dark:border-zinc-700 w-[220px]">
+      <PortalDropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} align="left" width={260}>
+        <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-gray-200 dark:border-zinc-700 w-[260px]">
           <div className="p-2">
             <div className="relative mb-2">
-              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+              <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search labels…"
-                className="w-full pl-7 pr-2 py-1 text-xs border border-gray-200 dark:border-zinc-600 rounded focus:outline-none focus:border-primary bg-white dark:bg-zinc-700"
+                className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 dark:border-zinc-600 rounded focus:outline-none focus:border-primary bg-white dark:bg-zinc-700"
               />
             </div>
-            <div className="max-h-36 overflow-y-auto space-y-0.5">
+            <div className="max-h-44 overflow-y-auto space-y-0.5">
               {filtered.map(l => {
                 const isActive = labels.some(lb => lb.id === l.id);
                 return (
-                  <button
+                  <div
                     key={l.id}
-                    type="button"
-                    onClick={() => toggleLabel(l)}
-                    disabled={busy}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-gray-50 dark:hover:bg-zinc-700 ${isActive ? 'bg-gray-50 dark:bg-zinc-700' : ''} disabled:opacity-60`}
+                    className={`group flex items-center rounded text-xs hover:bg-gray-50 dark:hover:bg-zinc-700 ${isActive ? 'bg-gray-50 dark:bg-zinc-700' : ''}`}
                   >
-                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: l.color }} />
-                    <span className="flex-1 text-left text-gray-700 dark:text-gray-300 truncate">{l.name}</span>
-                    {isActive && <span className="text-primary text-[10px] font-bold">✓</span>}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleLabel(l)}
+                      disabled={busy || !canEdit}
+                      className="flex-1 flex items-center gap-2 px-2 py-1.5 text-left disabled:opacity-60 min-w-0"
+                      title={l.name}
+                    >
+                      <span
+                        className="inline-flex items-center text-[11px] leading-none font-medium px-2 py-1 rounded-full text-white truncate max-w-[150px] shadow-sm flex-shrink-0"
+                        style={{ backgroundColor: l.color }}
+                      >
+                        {l.name}
+                      </span>
+                      {isActive && <span className="text-primary text-[11px] font-bold ml-auto pl-1">✓</span>}
+                    </button>
+                    {canManage && (
+                      <button
+                        type="button"
+                        onClick={() => deleteLabelFromLibrary(l)}
+                        disabled={busy}
+                        className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1.5 mr-1 text-gray-400 hover:text-rose-500 rounded transition-opacity disabled:opacity-30"
+                        title={`Delete label "${l.name}" from this board`}
+                        aria-label={`Delete label ${l.name}`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
                 );
               })}
               {filtered.length === 0 && (
-                <p className="text-[10px] text-gray-400 py-2 text-center">No labels found</p>
+                <p className="text-[11px] text-gray-400 py-2 text-center">No labels found</p>
               )}
             </div>
           </div>
-          <div className="border-t border-gray-100 dark:border-zinc-700 p-2">
-            {showCreate ? (
-              <div className="space-y-1.5">
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  placeholder="Label name"
-                  maxLength={100}
-                  className="w-full text-xs border border-gray-200 dark:border-zinc-600 rounded px-2 py-1 focus:outline-none focus:border-primary bg-white dark:bg-zinc-700"
-                  onKeyDown={e => { if (e.key === 'Enter') createLabel(); }}
-                  autoFocus
-                />
-                <div className="flex gap-1 flex-wrap">
-                  {COLORS.map(c => (
+          {canEdit && (
+            <div className="border-t border-gray-100 dark:border-zinc-700 p-2">
+              {showCreate ? (
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder="Label name"
+                    maxLength={100}
+                    className="w-full text-xs border border-gray-200 dark:border-zinc-600 rounded px-2 py-1.5 focus:outline-none focus:border-primary bg-white dark:bg-zinc-700"
+                    onKeyDown={e => { if (e.key === 'Enter') createLabel(); }}
+                    autoFocus
+                  />
+                  <div className="flex gap-1 flex-wrap">
+                    {COLORS.map(c => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setNewColor(c)}
+                        className={`w-4 h-4 rounded-full ${newColor === c ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
+                        style={{ backgroundColor: c }}
+                        aria-label={`Pick color ${c}`}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
                     <button
-                      key={c}
                       type="button"
-                      onClick={() => setNewColor(c)}
-                      className={`w-3.5 h-3.5 rounded-full ${newColor === c ? 'ring-2 ring-offset-1 ring-gray-400' : ''}`}
-                      style={{ backgroundColor: c }}
-                      aria-label={`Pick color ${c}`}
-                    />
-                  ))}
+                      onClick={createLabel}
+                      disabled={busy || !newName.trim()}
+                      className="flex-1 text-[11px] bg-primary text-white rounded py-1.5 disabled:opacity-50 font-medium"
+                    >
+                      {busy ? '…' : 'Create'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowCreate(false); setNewName(''); }}
+                      className="text-[11px] text-gray-400 px-2"
+                    >Cancel</button>
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={createLabel}
-                    disabled={busy || !newName.trim()}
-                    className="flex-1 text-[10px] bg-primary text-white rounded py-1 disabled:opacity-50"
-                  >
-                    {busy ? '…' : 'Create'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setShowCreate(false); setNewName(''); }}
-                    className="text-[10px] text-gray-400 px-2"
-                  >Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowCreate(true)}
-                className="flex items-center gap-1 w-full text-xs text-gray-500 hover:text-primary px-1 py-1 rounded hover:bg-gray-50 dark:hover:bg-zinc-700"
-              >
-                <Plus size={11} /> Create label
-              </button>
-            )}
-            {error && <p className="text-[10px] text-rose-500 mt-1">{error}</p>}
-          </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-1.5 w-full text-xs text-gray-600 dark:text-gray-300 hover:text-primary px-1.5 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-zinc-700"
+                >
+                  <Plus size={13} /> Create label
+                </button>
+              )}
+              {error && <p className="text-[11px] text-rose-500 mt-1">{error}</p>}
+            </div>
+          )}
+          {!canEdit && error && (
+            <div className="border-t border-gray-100 dark:border-zinc-700 p-2">
+              <p className="text-[11px] text-rose-500">{error}</p>
+            </div>
+          )}
         </div>
       </PortalDropdown>
     </>

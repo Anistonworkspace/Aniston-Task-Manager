@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { FolderKanban, Mail, Lock, ArrowRight, Eye, EyeOff, ShieldAlert, Monitor } from 'lucide-react';
 import api from '../../services/api';
 import { getErrorMessage, getErrorCode } from '../../utils/errorMap';
+import AnistonLoader from '../common/AnistonLoader';
 
 // Pretty-printer for the device hint surfaced in the conflict banner.
 // We deliberately keep this compact and best-effort — the user-agent
@@ -233,11 +234,9 @@ export default function Login() {
 
   if (ssoLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-10 w-10 border-2 border-primary/20 border-t-primary mx-auto mb-4" />
-          <p className="text-sm text-text-secondary">Signing in with Microsoft...</p>
-        </div>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface gap-3">
+        <AnistonLoader variant="inline" size="lg" label="Signing in with Microsoft" />
+        <p className="text-sm text-text-secondary">Signing in with Microsoft...</p>
       </div>
     );
   }

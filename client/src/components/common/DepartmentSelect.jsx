@@ -116,7 +116,7 @@ export default function DepartmentSelect({
   })();
 
   const baseTriggerCls =
-    'w-full flex items-center justify-between gap-2 px-3 py-2 border border-border rounded-lg text-sm bg-white dark:bg-[#1E1F23] text-text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed';
+    'w-full flex items-center justify-between gap-2 px-3 py-2 border border-border rounded-lg text-sm bg-[var(--primary-background-color)] text-text-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed';
 
   return (
     <div className={className}>
@@ -162,8 +162,8 @@ export default function DepartmentSelect({
       </button>
 
       <PortalDropdown anchorRef={triggerRef} open={open} onClose={close} width={320} align="left">
-        <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-border dark:border-[#222327]">
+        <div className="bg-[var(--primary-background-color)] rounded-xl shadow-dropdown border border-border overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
             <Search size={13} className="text-text-tertiary flex-shrink-0" />
             <input
               ref={searchRef}
@@ -212,7 +212,7 @@ export default function DepartmentSelect({
             })}
           </div>
 
-          <div className="border-t border-border dark:border-[#222327] py-1">
+          <div className="border-t border-border py-1">
             <button
               type="button"
               role="option"

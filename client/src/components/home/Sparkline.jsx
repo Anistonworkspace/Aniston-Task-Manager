@@ -14,7 +14,7 @@ export default function Sparkline({
   empty = false,
   width = 220,
   height = 32,
-  color = '#4f46e5',
+  color = '#0073ea',
   strokeWidth = 1.6,
   fill = true,
   delay = 0.2,

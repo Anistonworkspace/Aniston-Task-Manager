@@ -143,7 +143,7 @@ function TeamMemberRow({ member, onSelect }) {
             zIndex: 9999,
             visibility: pos.ready ? 'visible' : 'hidden',
           }}
-          className="rounded-lg border border-border bg-white dark:bg-[#1E1F23] shadow-xl p-2 cursor-default"
+          className="rounded-lg border border-border bg-[var(--primary-background-color)] shadow-xl p-2 cursor-default"
         >
           <p className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider px-1 mb-1.5">
             Direct reports {children.length > 0 && <span className="ml-1 text-text-secondary">({children.length})</span>}
@@ -294,8 +294,8 @@ export default function DashboardPage() {
     { kind: 'total',   label: 'Total Tasks', value: summary.totalTasks, color: '#0073ea', icon: ListChecks },
     { kind: 'done',    label: 'Completed',   value: summary.done,       color: '#00c875', icon: CheckCircle2 },
     { kind: 'working', label: 'In Progress', value: summary.working,    color: '#fdab3d', icon: Clock },
-    { kind: 'stuck',   label: 'Stuck',       value: summary.stuck,      color: '#e2445c', icon: AlertTriangle },
-    { kind: 'overdue', label: 'Overdue',     value: summary.overdue,    color: '#e2445c', icon: AlertTriangle },
+    { kind: 'stuck',   label: 'Stuck',       value: summary.stuck,      color: '#df2f4a', icon: AlertTriangle },
+    { kind: 'overdue', label: 'Overdue',     value: summary.overdue,    color: '#df2f4a', icon: AlertTriangle },
   ];
 
   return (
@@ -378,7 +378,7 @@ export default function DashboardPage() {
           {byPriority.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={byPriority}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ef" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#d0d4e4" />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip />
@@ -462,12 +462,12 @@ export default function DashboardPage() {
         const hasUnassigned = memberStats.some(m => m.id === 'unassigned');
 
         const SMART_VIEWS = [
-          { id: 'overdue',       label: 'Overdue',       icon: AlertTriangle, color: '#e2445c' },
+          { id: 'overdue',       label: 'Overdue',       icon: AlertTriangle, color: '#df2f4a' },
           { id: 'due_today',     label: 'Due Today',     icon: Clock,         color: '#fdab3d' },
           { id: 'my_tasks',      label: 'My Tasks',      icon: UserIcon,      color: '#0073ea' },
           { id: 'this_week',     label: 'This Week',     icon: Calendar,      color: '#00c875' },
-          { id: 'stuck',         label: 'Stuck Tasks',   icon: AlertCircle,   color: '#e2445c' },
-          { id: 'high_priority', label: 'High Priority', icon: Tag,           color: '#e2445c' },
+          { id: 'stuck',         label: 'Stuck Tasks',   icon: AlertCircle,   color: '#df2f4a' },
+          { id: 'high_priority', label: 'High Priority', icon: Tag,           color: '#df2f4a' },
           ...(hasUnassigned ? [{ id: 'unassigned', label: 'Unassigned', icon: Users, color: '#c4c4c4' }] : []),
         ];
         const activeSmart = SMART_VIEWS.find(v => v.id === teamFilters.smartView);
@@ -634,7 +634,7 @@ export default function DashboardPage() {
                       style={{
                         backgroundColor: teamFilters.statuses.includes(key) ? cfg.color : 'transparent',
                         color: teamFilters.statuses.includes(key) ? '#fff' : cfg.color,
-                        borderColor: teamFilters.statuses.includes(key) ? cfg.color : '#e5e7eb',
+                        borderColor: teamFilters.statuses.includes(key) ? cfg.color : '#d0d4e4',
                       }}
                     >
                       {cfg.label}
@@ -651,7 +651,7 @@ export default function DashboardPage() {
                       style={{
                         backgroundColor: teamFilters.priorities.includes(key) ? cfg.color : 'transparent',
                         color: teamFilters.priorities.includes(key) ? '#fff' : cfg.color,
-                        borderColor: teamFilters.priorities.includes(key) ? cfg.color : '#e5e7eb',
+                        borderColor: teamFilters.priorities.includes(key) ? cfg.color : '#d0d4e4',
                       }}
                     >
                       {cfg.label}
@@ -821,7 +821,7 @@ export default function DashboardPage() {
                     <stop offset="95%" stopColor="#00c875" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ef" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#d0d4e4" />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={v => { try { return format(parseISO(v), 'MMM d'); } catch { return v; } }} />
                 <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                 <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} labelFormatter={v => { try { return format(parseISO(v), 'EEE, MMM d'); } catch { return v; } }} />
@@ -845,7 +845,7 @@ export default function DashboardPage() {
               <div className="max-h-[280px] overflow-y-auto pr-1">
                 <ResponsiveContainer width="100%" height={chartHeight}>
                   <BarChart data={workloadData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ef" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#d0d4e4" />
                     <XAxis type="number" tick={{ fontSize: 10 }} allowDecimals={false} />
                     <YAxis
                       dataKey="name"

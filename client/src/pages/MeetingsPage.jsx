@@ -15,11 +15,12 @@ import Avatar from '../components/common/Avatar';
 import MeetingModal from '../components/meeting/MeetingModal';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import { useToast } from '../components/common/Toast';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 const TYPE_CONFIG = {
   meeting: { label: 'Meeting', color: '#0073ea', icon: Video, bg: 'bg-primary/10 text-primary' },
   reminder: { label: 'Reminder', color: '#fdab3d', icon: Bell, bg: 'bg-warning/10 text-warning' },
-  follow_up: { label: 'Follow-up', color: '#a25ddc', icon: GitBranch, bg: 'bg-purple/10 text-purple' },
+  follow_up: { label: 'Follow-up', color: '#9d50dd', icon: GitBranch, bg: 'bg-purple/10 text-purple' },
 };
 
 const STATUS_CONFIG = {
@@ -131,7 +132,7 @@ export default function MeetingsPage() {
           { label: t('meetings.stats.total'), value: meetings.length, color: '#0073ea' },
           { label: t('meetings.stats.upcoming'), value: meetings.filter(m => m.date >= today && m.status === 'scheduled').length, color: '#fdab3d' },
           { label: t('meetings.stats.today'), value: meetings.filter(m => m.date === today).length, color: '#00c875' },
-          { label: t('meetings.stats.completed'), value: meetings.filter(m => m.status === 'completed').length, color: '#a25ddc' },
+          { label: t('meetings.stats.completed'), value: meetings.filter(m => m.status === 'completed').length, color: '#9d50dd' },
         ].map(s => (
           <div key={s.label} className="widget-card">
             <p className="text-xs text-text-secondary font-medium mb-1">{s.label}</p>
@@ -152,9 +153,7 @@ export default function MeetingsPage() {
 
       {/* Meeting List */}
       {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
-        </div>
+        <AnistonLoader variant="section" size="md" label="Loading meetings" />
       ) : filtered.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-xl border border-border">
           <CalendarPlus size={40} className="mx-auto text-text-tertiary mb-3" />

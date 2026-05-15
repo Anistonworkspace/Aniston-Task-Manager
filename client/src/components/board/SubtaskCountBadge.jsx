@@ -21,7 +21,7 @@ export default function SubtaskCountBadge({ count = 0, doneCount = 0, className 
   // Dark-mode variants keep contrast above WCAG AA.
   const palette = allDone
     ? 'bg-[#e9f9ee] text-[#118a4f] border border-[#c8ecd5] dark:bg-[#0f3a25] dark:text-[#7adfa6] dark:border-[#1f5538]'
-    : 'bg-[#f0f1f5] text-[#676879] border border-[#e6e9ef] dark:bg-[#27272a] dark:text-[#a8aab2] dark:border-[#3a3a3f]';
+    : 'bg-[#f0f1f5] text-[#676879] border border-[#d0d4e4] dark:bg-[#27272a] dark:text-[#a8aab2] dark:border-[#3a3a3f]';
 
   return (
     <span

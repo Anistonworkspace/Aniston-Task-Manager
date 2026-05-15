@@ -12,7 +12,7 @@ const ICON_MAP = {
   FolderKanban, FileText, Lightbulb, Crown, Briefcase, LayoutGrid,
 };
 
-const PRESET_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc', '#ff642e', '#333333', '#9cd326', '#ff158a', '#66ccff', '#037f4c'];
+const PRESET_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#579bfc', '#ff642e', '#333333', '#9cd326', '#ff158a', '#66ccff', '#037f4c'];
 
 // Mirror of CreateBoardModal#pickRandomColor — pick a colour the user hasn't
 // already used on another workspace they can see. Comparison is

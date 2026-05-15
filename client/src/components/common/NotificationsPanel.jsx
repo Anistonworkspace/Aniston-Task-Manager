@@ -6,6 +6,7 @@ import api from '../../services/api';
 import { openTaskFromAnywhere } from '../../utils/taskNavigation';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import { useAuth } from '../../context/AuthContext';
+import AnistonLoader from './AnistonLoader';
 
 const PAGE_SIZE = 50;
 
@@ -231,7 +232,7 @@ export default function NotificationsPanel({ onClose }) {
     >
       <div
         ref={drawerRef}
-        className="absolute right-0 top-0 h-full w-[380px] max-w-full bg-white dark:bg-[#1E1F23] shadow-xl border-l border-border animate-slide-in-right flex flex-col"
+        className="absolute right-0 top-0 h-full w-[380px] max-w-full bg-[var(--primary-background-color)] shadow-xl border-l border-border animate-slide-in-right flex flex-col"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -294,10 +295,7 @@ export default function NotificationsPanel({ onClose }) {
           aria-labelledby={`tab-${tab}`}
         >
           {loading ? (
-            <div className="flex items-center justify-center py-12" role="status" aria-live="polite">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary/20 border-t-primary" />
-              <span className="sr-only">Loading notifications…</span>
-            </div>
+            <AnistonLoader variant="section" size="sm" label="Loading notifications" className="py-12" />
           ) : errored ? (
             // Distinct error state — never show "login to view" or any login
             // language while the user is actually logged in. Surface a retry

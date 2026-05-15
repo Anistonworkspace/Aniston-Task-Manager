@@ -726,7 +726,7 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
-    labels:           { view: true, create: false, edit: false, delete: false },
+    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
@@ -768,7 +768,7 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: false, edit: false, delete: false },
+    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: false, delete: false },
     dashboard:        { view: false, export: false },
@@ -869,7 +869,10 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: true, edit: true, delete: false },
+    // Label management — Tier 2 is admitted to delete per product decision
+    // (May 2026). Carved out from the otherwise-strict T2 no-destructive rule
+    // because labels are easily-recreatable metadata, not work product.
+    labels:           { view: true, create: true, edit: true, delete: true, add_to_task: true, remove_from_task: true },
     automations:      { view: true, create: true, edit: true, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: true },
@@ -908,7 +911,12 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: false, edit: false, delete: false },
+    // Labels — Tier 3 can apply / remove labels on any task they can see
+    // (visibility is enforced by taskVisibilityService at the controller).
+    // Library mutations (create/edit/delete) remain T1/T2-only via
+    // canManageBoard; the granular add_to_task / remove_from_task gates
+    // are the right level for per-task surfaces.
+    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
@@ -950,7 +958,7 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: false, edit: false, delete: false },
+    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: false, delete: false },
     dashboard:        { view: false, export: false },
@@ -1174,7 +1182,11 @@ const GRANTABILITY = {
   subtasks:      { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
   task_comments: { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
   task_files:    { view: T1_T2, upload: T1_T2, delete: NON_GRANTABLE },
-  labels:        { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
+  // labels.delete is now T1_T2 (was NON_GRANTABLE). Aligned with the May 2026
+  // product decision: managers may curate their team's label library end-to-
+  // end, including deletion. The destructive operation is still confined to
+  // T1+T2 base — T3/T4 cannot be granted delete via PermissionGrant.
+  labels:        { view: T1_T2, create: T1_T2, edit: T1_T2, delete: T1_T2 },
   automations:   { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
   dependencies:  { view: T1_T2, create: T1_T2, delete: NON_GRANTABLE },
 

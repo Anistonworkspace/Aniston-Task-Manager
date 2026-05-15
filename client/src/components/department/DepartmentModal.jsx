@@ -4,7 +4,7 @@ import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import { resolveTier, tierLabel, hasTierAtLeast, TIER_3 } from '../../utils/tiers';
 
-const DEPT_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc', '#ff642e', '#037f4c', '#9cd326', '#cab641', '#ff158a', '#66ccff'];
+const DEPT_COLORS = ['#0073ea', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#579bfc', '#ff642e', '#037f4c', '#9cd326', '#cab641', '#ff158a', '#66ccff'];
 
 export default function DepartmentModal({ department, onClose, onSave }) {
   const [name, setName] = useState(department?.name || '');

@@ -230,7 +230,7 @@ export default function CreateBoardModal({
             <select
               value={selectedWorkspaceId}
               onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-              className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-white dark:bg-[#1E1F23]"
+              className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-[var(--primary-background-color)]"
             >
               <option value="">Select a workspace…</option>
               {availableWorkspaces.map(ws => (
@@ -283,7 +283,7 @@ export default function CreateBoardModal({
           <select
             value={templateId}
             onChange={(e) => applyTemplate(e.target.value)}
-            className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-white dark:bg-[#1E1F23]"
+            className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary bg-[var(--primary-background-color)]"
           >
             {BOARD_GROUP_TEMPLATES.map(t => (
               <option key={t.id} value={t.id}>{t.label}</option>

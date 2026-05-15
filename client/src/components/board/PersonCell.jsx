@@ -184,10 +184,10 @@ export default function PersonCell({
 
   function renderDropdownContent() {
     return (
-      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
+      <div className="bg-[var(--primary-background-color)] rounded-xl shadow-dropdown border border-border overflow-hidden">
         {/* Header with mode toggle (hidden when locked to self) */}
         {onOwnersChange && !assignSelfOnly && (
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border dark:border-[#222327] bg-surface-50 dark:bg-[#17181C]">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-[var(--allgrey-background-color)]">
             <button
               onClick={(e) => { e.stopPropagation(); setMultiMode(false); }}
               className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${!multiMode ? 'bg-primary-500 text-white' : 'text-text-tertiary hover:text-text-secondary'}`}
@@ -199,7 +199,7 @@ export default function PersonCell({
           </div>
         )}
         {assignSelfOnly && (
-          <div className="px-3 py-1.5 border-b border-border dark:border-[#222327] bg-amber-50 dark:bg-amber-900/20">
+          <div className="px-3 py-1.5 border-b border-border bg-amber-50 dark:bg-amber-900/20">
             <div className="flex items-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-400">
               <AlertTriangle size={10} />
               <span>You can only assign tasks to yourself.</span>
@@ -207,7 +207,7 @@ export default function PersonCell({
           </div>
         )}
         {/* Search */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border dark:border-[#222327]">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
           <Search size={13} className="text-text-tertiary flex-shrink-0" />
           <input ref={inputRef} type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search people..." className="bg-transparent border-none outline-none text-xs w-full placeholder:text-text-tertiary shadow-none ring-0 focus:ring-0"
@@ -274,7 +274,7 @@ export default function PersonCell({
         </div>
         {/* Multi-mode save button */}
         {multiMode && (
-          <div className="px-3 py-2 border-t border-border dark:border-[#222327]">
+          <div className="px-3 py-2 border-t border-border">
             <button onClick={(e) => { e.stopPropagation(); handleMultiSave(); }}
               className="w-full py-1.5 bg-primary-500 text-white text-xs rounded-lg hover:bg-primary-600 transition-colors font-medium">
               Save {selectedOwnerIds.length > 0 ? `(${selectedOwnerIds.length})` : ''}

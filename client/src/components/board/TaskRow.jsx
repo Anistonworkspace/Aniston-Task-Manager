@@ -239,11 +239,18 @@ const TaskRow = React.memo(function TaskRow({
       // Labels are task metadata, not a board-management surface. Any user
       // who can see this row can add/remove labels; backend enforces
       // canViewTask on POST /api/labels and /labels/{assign,unassign} so a
-      // hidden task is still blocked server-side. Passing canEdit={true}
-      // is intentional — gating this on `canEditAllFields` previously
-      // hid the Labels column entirely for Tier 3 + Tier 4 even on tasks
-      // they owned, which the May 12 RBAC ticket flagged as too strict.
-      case 'label': return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={true} />;
+      // hidden task is still blocked server-side. canEdit only drops to
+      // false on an explicit admin DENY (granular labels.add_to_task ===
+      // false) — that's the same predicate the backend checks before
+      // executing the assign / unassign. canManage exposes the per-label
+      // trash control inside the picker and is restricted to T1 / T2
+      // (backend's canManageBoard is still the security boundary).
+      case 'label': {
+        const denyLabelAdd = granularPermissions?.['labels.add_to_task'] === false;
+        const labelsCanEdit = !denyLabelAdd;
+        const labelsCanManage = isSuperAdmin || isTier1 || isTier2;
+        return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={labelsCanEdit} canManage={labelsCanManage} />;
+      }
       case 'references': {
         // Multi-value reference column — backed by the task_references table
         // (NOT customFields). The cell handles its own POST/DELETE against
@@ -284,7 +291,7 @@ const TaskRow = React.memo(function TaskRow({
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className={`flex items-stretch border-b border-[#e6e9ef] cursor-pointer transition-all duration-150 group/row relative isolate ${rowBg}`}
+      className={`flex items-stretch border-b border-[#d0d4e4] cursor-pointer transition-all duration-150 group/row relative isolate ${rowBg}`}
       onClick={onClick}>
 
       {/* Sticky left: color bar + checkbox + task name.
@@ -311,7 +318,7 @@ const TaskRow = React.memo(function TaskRow({
         </div>
 
         {/* Task Name — Monday.com style */}
-        <div style={{ width: taskColWidth }} className="flex-shrink-0 px-3 py-2.5 text-[14px] text-[#323338] border-r border-[#e6e9ef] flex items-center gap-2">
+        <div style={{ width: taskColWidth }} className="flex-shrink-0 px-3 py-2.5 text-[14px] text-[#323338] border-r border-[#d0d4e4] flex items-center gap-2">
           {/* Subtask expand chevron — appears on hover when the row has no
               subtasks; stays visible when subtasks exist (so the count badge
               acts as the visual cue too). Keyboard accessible: Enter / Space
@@ -322,7 +329,7 @@ const TaskRow = React.memo(function TaskRow({
               type="button"
               onClick={(e) => { e.stopPropagation(); onToggleSubtasks(); }}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggleSubtasks(); } }}
-              className={`flex-shrink-0 -ml-1 w-4 h-4 flex items-center justify-center rounded text-[#9aa1ad] hover:bg-[#eef0f4] hover:text-[#0073ea] transition-all ${
+              className={`flex-shrink-0 -ml-1 w-4 h-4 flex items-center justify-center rounded text-[#9aa1ad] hover:bg-[#d0d4e4] hover:text-[#0073ea] transition-all ${
                 expanded || subtaskTotal > 0 ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'
               }`}
               aria-label={expanded ? 'Collapse subitems' : 'Expand subitems'}
@@ -393,7 +400,7 @@ const TaskRow = React.memo(function TaskRow({
               </span>
             )}
             {isOverdue && daysOverdue > 3 && (
-              <span className="text-[10px] font-semibold text-[#e2445c] bg-[#fde8ec] dark:text-[#fda4af] dark:bg-[#4a2330] px-1.5 py-0.5 rounded">{daysOverdue}d</span>
+              <span className="text-[10px] font-semibold text-[#df2f4a] bg-[#fde8ec] dark:text-[#fda4af] dark:bg-[#4a2330] px-1.5 py-0.5 rounded">{daysOverdue}d</span>
             )}
           </div>
         </div>
@@ -401,7 +408,7 @@ const TaskRow = React.memo(function TaskRow({
 
       {/* Scrollable columns */}
       {columns.map(col => (
-        <div key={col.id} className="flex-shrink-0 border-r border-[#e6e9ef] flex items-center justify-center"
+        <div key={col.id} className="flex-shrink-0 border-r border-[#d0d4e4] flex items-center justify-center"
           style={{ width: col.width || 140 }} onClick={e => e.stopPropagation()}>
           {renderCell(col)}
         </div>

@@ -6,20 +6,21 @@ import { useAuth } from '../context/AuthContext';
 import { useT } from '../context/LanguageContext';
 import { translatePriority, translateStatus } from '../utils/i18nLabels';
 import Avatar from '../components/common/Avatar';
+import AnistonLoader from '../components/common/AnistonLoader';
 import { resolveTier, tierLabel } from '../utils/tiers';
 
 const STATUS_LABELS = {
   not_started: { label: 'Not Started', color: '#c4c4c4' },
   working_on_it: { label: 'Working', color: '#fdab3d' },
-  stuck: { label: 'Stuck', color: '#e2445c' },
+  stuck: { label: 'Stuck', color: '#df2f4a' },
   done: { label: 'Done', color: '#00c875' },
-  review: { label: 'Review', color: '#a25ddc' },
+  review: { label: 'Review', color: '#9d50dd' },
 };
 
 const PRIORITY_LABELS = {
   low: { label: 'Low', color: '#579bfc' },
   medium: { label: 'Medium', color: '#fdab3d' },
-  high: { label: 'High', color: '#e2445c' },
+  high: { label: 'High', color: '#df2f4a' },
   critical: { label: 'Urgent', color: '#333333' },
 };
 
@@ -154,9 +155,7 @@ export default function ReviewPage() {
 
       {/* Content */}
       {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
-        </div>
+        <AnistonLoader variant="section" size="md" label="Loading review" />
       ) : !data ? (
         <div className="widget-card text-center py-16">
           <FileText size={40} className="mx-auto text-text-tertiary mb-3" />
@@ -189,7 +188,7 @@ export default function ReviewPage() {
                 { label: 'Total', value: data.summary.total, color: '#0073ea', icon: ListChecks },
                 { label: 'Completed', value: data.summary.done, color: '#00c875', icon: CheckCircle2 },
                 { label: 'Working', value: data.summary.working, color: '#fdab3d', icon: Clock },
-                { label: 'Stuck', value: data.summary.stuck, color: '#e2445c', icon: AlertTriangle },
+                { label: 'Stuck', value: data.summary.stuck, color: '#df2f4a', icon: AlertTriangle },
                 { label: 'Not Started', value: data.summary.notStarted, color: '#c4c4c4', icon: ListChecks },
               ].map(s => {
                 const Icon = s.icon;

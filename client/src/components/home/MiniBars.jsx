@@ -13,7 +13,7 @@ export default function MiniBars({
   empty = false,
   height = 28,
   gap = 3,
-  color = '#10b981',
+  color = '#00854d',
   delay = 0.25,
 }) {
   const prefersReducedMotion = useReducedMotion();

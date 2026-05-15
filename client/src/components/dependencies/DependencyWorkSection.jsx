@@ -24,7 +24,7 @@ const PRIORITY_COLORS = {
   low:      '#9aa6b8',
   medium:   '#fdab3d',
   high:     '#ff7575',
-  critical: '#e2445c',
+  critical: '#df2f4a',
 };
 
 const ACTIVE_STATUSES = ['pending', 'accepted', 'working_on_it'];
@@ -281,8 +281,8 @@ function DependencyRow({
                 <button key={b.key} onClick={b.onClick}
                   className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded transition-colors ${
                     b.primary
-                      ? 'bg-emerald-500 text-white hover:bg-emerald-600'
-                      : 'bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100'
+                      ? 'bg-primary text-white hover:bg-primary-600'
+                      : 'bg-primary-50 text-primary-700 hover:bg-primary-100 border border-primary-200'
                   }`}>
                   <Icon size={10} /> {b.label}
                 </button>

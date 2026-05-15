@@ -7,6 +7,7 @@ const {
   HelpRequest,
   Board,
   Activity,
+  Workspace,
 } = require('../models');
 const { Op } = require('sequelize');
 const xss = require('xss');
@@ -1195,7 +1196,12 @@ exports.getMyFeedback = async (req, res) => {
           as: 'task',
           required: false, // tolerate task deletion (FK is CASCADE so usually rows are gone, but guard anyway)
           attributes: ['id', 'title', 'boardId', 'approvalStatus', 'isArchived', 'status'],
-          include: [{ model: Board, as: 'board', attributes: ['id', 'name', 'color'] }],
+          include: [{
+            model: Board,
+            as: 'board',
+            attributes: ['id', 'name', 'color', 'workspaceId'],
+            include: [{ model: Workspace, as: 'workspace', attributes: ['id', 'name'], required: false }],
+          }],
         },
       ],
       order: [['updatedAt', 'DESC']],
@@ -1359,6 +1365,13 @@ exports.getMyFeedback = async (req, res) => {
                     id: submitterRow.task.board.id,
                     name: submitterRow.task.board.name,
                     color: submitterRow.task.board.color,
+                    workspaceId: submitterRow.task.board.workspaceId || null,
+                    workspace: submitterRow.task.board.workspace
+                      ? {
+                          id: submitterRow.task.board.workspace.id,
+                          name: submitterRow.task.board.workspace.name,
+                        }
+                      : null,
                   }
                 : null,
             }
@@ -1497,7 +1510,12 @@ exports.getWorkflowItems = async (req, res) => {
       include: [
         { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
         { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
+        {
+          model: Board,
+          as: 'board',
+          attributes: ['id', 'name', 'color', 'workspaceId'],
+          include: [{ model: Workspace, as: 'workspace', attributes: ['id', 'name'], required: false }],
+        },
         { model: TaskApprovalFlow, as: 'approvalFlows', separate: true, order: [['level', 'ASC']] },
       ],
       order: [['updatedAt', 'DESC']],
@@ -1525,7 +1543,17 @@ exports.getWorkflowItems = async (req, res) => {
       include: [
         { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'avatar'] },
         { model: User, as: 'reviewer', attributes: ['id', 'name'], required: false },
-        { model: Task, as: 'task', attributes: ['id', 'title', 'boardId'], include: [{ model: Board, as: 'board', attributes: ['id', 'name', 'color'] }] },
+        {
+          model: Task,
+          as: 'task',
+          attributes: ['id', 'title', 'boardId'],
+          include: [{
+            model: Board,
+            as: 'board',
+            attributes: ['id', 'name', 'color', 'workspaceId'],
+            include: [{ model: Workspace, as: 'workspace', attributes: ['id', 'name'], required: false }],
+          }],
+        },
       ],
       order: [['createdAt', 'DESC']],
       limit: 100,
@@ -1550,7 +1578,17 @@ exports.getWorkflowItems = async (req, res) => {
       include: [
         { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'avatar'] },
         { model: User, as: 'helper', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: Task, as: 'task', attributes: ['id', 'title', 'boardId'], include: [{ model: Board, as: 'board', attributes: ['id', 'name', 'color'] }] },
+        {
+          model: Task,
+          as: 'task',
+          attributes: ['id', 'title', 'boardId'],
+          include: [{
+            model: Board,
+            as: 'board',
+            attributes: ['id', 'name', 'color', 'workspaceId'],
+            include: [{ model: Workspace, as: 'workspace', attributes: ['id', 'name'], required: false }],
+          }],
+        },
       ],
       order: [['createdAt', 'DESC']],
       limit: 100,

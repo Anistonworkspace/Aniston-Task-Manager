@@ -10,7 +10,7 @@ const PRIORITIES = [
   { value: 'low',      label: 'Low',      color: '#9aa6b8' },
   { value: 'medium',   label: 'Medium',   color: '#fdab3d' },
   { value: 'high',     label: 'High',     color: '#ff7575' },
-  { value: 'critical', label: 'Critical', color: '#e2445c' },
+  { value: 'critical', label: 'Critical', color: '#df2f4a' },
 ];
 
 const STATUS_LABELS = {

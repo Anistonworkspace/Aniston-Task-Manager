@@ -11,6 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import { useT } from '../context/LanguageContext';
 import Avatar from '../components/common/Avatar';
 import TranscriptionProviderSection from '../components/integrations/TranscriptionProviderSection';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 // TODO i18n: further strings (form labels, error messages, dialogs) still hardcoded — extend in a future pass
 
@@ -66,9 +67,7 @@ function TeamsNotificationStats() {
   if (loading) {
     return (
       <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-6 p-5">
-        <div className="flex items-center justify-center py-4">
-          <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary/20 border-t-primary" />
-        </div>
+        <AnistonLoader variant="inline" size="sm" className="py-4 w-full" />
       </div>
     );
   }
@@ -626,7 +625,7 @@ export default function IntegrationsPage() {
   }
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>;
+    return <AnistonLoader variant="page" size="lg" label="Loading integrations" />;
   }
 
   const isConfigured = configData?.isConfigured || teamsStatus?.configured;
@@ -713,9 +712,7 @@ export default function IntegrationsPage() {
               </div>
 
               {configLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary/20 border-t-primary" />
-                </div>
+                <AnistonLoader variant="section" size="sm" className="py-8" />
               ) : !configData?.isConfigured || editing ? (
                 /* Configuration Form */
                 <div className="space-y-4" autoComplete="off">
@@ -1008,9 +1005,7 @@ export default function IntegrationsPage() {
           </div>
 
           {aiLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary/20 border-t-primary" />
-            </div>
+            <AnistonLoader variant="section" size="sm" className="py-8" />
           ) : (
             <>
               {/* Provider Cards */}
@@ -1485,7 +1480,7 @@ export default function IntegrationsPage() {
                 <Key size={15} /> API Keys
               </h3>
               <button onClick={() => { setShowNewKeyForm(true); setNewlyCreatedKey(null); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm">
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary rounded-lg hover:bg-primary-600 transition-colors shadow-sm">
                 <Plus size={13} /> Generate New Key
               </button>
             </div>
@@ -1557,7 +1552,7 @@ export default function IntegrationsPage() {
 
                 <div className="flex items-center gap-2 pt-2 border-t border-emerald-200">
                   <button onClick={handleGenerateKey} disabled={generatingKey}
-                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50">
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary rounded-lg hover:bg-primary-600 transition-colors shadow-sm disabled:opacity-50">
                     {generatingKey ? <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Key size={14} />}
                     Generate Connection Kit
                   </button>
@@ -1571,9 +1566,7 @@ export default function IntegrationsPage() {
 
             {/* Keys Table */}
             {apiKeysLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-6 w-6 border-2 border-emerald-500/20 border-t-emerald-500" />
-              </div>
+              <AnistonLoader variant="section" size="sm" className="py-8" />
             ) : apiKeys.length === 0 ? (
               <div className="text-center py-8 text-text-tertiary">
                 <Key size={28} className="mx-auto mb-2 opacity-30" />

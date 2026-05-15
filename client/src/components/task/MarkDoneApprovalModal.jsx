@@ -116,7 +116,7 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
       {/* Header — slim 24px chip + tight px-3.5 py-2 padding */}
       <div className="flex items-center justify-between px-3.5 py-2 border-b border-zinc-200 dark:border-zinc-800">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 bg-emerald-50 dark:bg-emerald-500/15">
+          <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 bg-emerald-50 dark:bg-success/15">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
           </div>
           <div className="min-w-0 leading-tight">
@@ -236,7 +236,7 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
               <div className="flex flex-col gap-0.5">
                 {preview.nextStage.approvers.map((a) => (
                   <div key={a.userId || a.userName} className="flex items-center gap-1.5">
-                    <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
+                    <div className="w-5 h-5 rounded-full bg-success text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
                       {a.userName?.[0]?.toUpperCase() || '?'}
                     </div>
                     <div className="min-w-0 flex-1 flex items-baseline gap-1.5">
@@ -253,7 +253,7 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
             </div>
           ) : preview?.nextApprover && (
             <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
+              <div className="w-5 h-5 rounded-full bg-success text-white flex items-center justify-center text-[10px] font-semibold flex-shrink-0">
                 {preview.nextApprover.userName?.[0]?.toUpperCase() || '?'}
               </div>
               <div className="min-w-0 flex items-baseline gap-1.5">
@@ -283,7 +283,7 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
           type="button"
           onClick={handleSubmit}
           disabled={submitting || !comment.trim()}
-          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 transition-colors disabled:cursor-not-allowed"
+          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-white bg-success hover:bg-success-dark disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 transition-colors disabled:cursor-not-allowed"
         >
           {submitting && <Loader2 className="w-3 h-3 animate-spin" />}
           {submitting ? 'Submitting…' : 'Submit for approval'}

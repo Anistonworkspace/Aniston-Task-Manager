@@ -14,7 +14,7 @@ const RETRY_DELAY_MS = 500;
 
 function dbg(...args) {
   if (typeof window !== 'undefined' && window.__SPEECH_DEBUG__) {
-    console.log('%c[SpeechToText]', 'color:#10b981;font-weight:bold', ...args);
+    console.log('%c[SpeechToText]', 'color:#00c875;font-weight:bold', ...args);
   }
 }
 

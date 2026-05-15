@@ -364,7 +364,7 @@ export default function BoardSubtaskSection({
       onClick={(e) => e.stopPropagation()}
     >
       <div
-        className="relative bg-white dark:bg-[#1f2024] border border-[#e0e3eb] dark:border-[#2a2b30] rounded-[8px] shadow-[0_1px_2px_rgba(15,23,42,0.04)] overflow-hidden"
+        className="relative bg-white dark:bg-[#1f2024] border border-[#d0d4e4] dark:border-[#2a2b30] rounded-[8px] shadow-[0_1px_2px_rgba(15,23,42,0.04)] overflow-hidden"
         role="region"
         aria-label="Subitems"
       >
@@ -377,10 +377,10 @@ export default function BoardSubtaskSection({
                 parent board's column header. The title cell uses the same
                 fixed width as the row title cell below so they always stay
                 in lockstep when the user resizes the parent task column. */}
-            <div className="flex items-stretch text-[10px] uppercase tracking-[0.04em] font-semibold text-[#9aa1ad] bg-[#f8f9fc] dark:bg-[#1a1b1e] border-b border-[#eef0f4] dark:border-[#2a2b30]">
+            <div className="flex items-stretch text-[10px] uppercase tracking-[0.04em] font-semibold text-[#9aa1ad] bg-[#f8f9fc] dark:bg-[#1a1b1e] border-b border-[#d0d4e4] dark:border-[#2a2b30]">
               <div
                 style={{ width: subTitleWidth }}
-                className="flex-shrink-0 pl-5 pr-3 py-2 flex items-center gap-1.5 border-r border-[#eef0f4] dark:border-[#2a2b30] overflow-hidden"
+                className="flex-shrink-0 pl-5 pr-3 py-2 flex items-center gap-1.5 border-r border-[#d0d4e4] dark:border-[#2a2b30] overflow-hidden"
               >
                 <ListChecks size={11} className="text-[#9aa1ad] flex-shrink-0" />
                 <span className="truncate">Subitem</span>
@@ -392,7 +392,7 @@ export default function BoardSubtaskSection({
                 <div
                   key={col.type}
                   style={{ width: col.width }}
-                  className="flex-shrink-0 px-2 py-2 flex items-center justify-center border-r border-[#eef0f4] dark:border-[#2a2b30]"
+                  className="flex-shrink-0 px-2 py-2 flex items-center justify-center border-r border-[#d0d4e4] dark:border-[#2a2b30]"
                 >
                   {col.label}
                 </div>
@@ -437,7 +437,7 @@ export default function BoardSubtaskSection({
               return (
                 <div
                   key={subtask.id}
-                  className="flex items-stretch border-b border-[#eef0f4] dark:border-[#2a2b30] hover:bg-[#f8f9fc] dark:hover:bg-[#1a1b1e] transition-colors group/subrow"
+                  className="flex items-stretch border-b border-[#d0d4e4] dark:border-[#2a2b30] hover:bg-[#f8f9fc] dark:hover:bg-[#1a1b1e] transition-colors group/subrow"
                 >
                   {/* Title col — fixed width matching the parent task title
                       column (via `subTitleWidth`) so subitem rows align under
@@ -446,7 +446,7 @@ export default function BoardSubtaskSection({
                       `min-w-0` on the title element does the real work). */}
                   <div
                     style={{ width: subTitleWidth }}
-                    className="flex-shrink-0 pl-5 pr-3 py-2.5 flex items-center gap-2 border-r border-[#eef0f4] dark:border-[#2a2b30] overflow-hidden"
+                    className="flex-shrink-0 pl-5 pr-3 py-2.5 flex items-center gap-2 border-r border-[#d0d4e4] dark:border-[#2a2b30] overflow-hidden"
                   >
                     <GripVertical size={12} className="text-[#c4c4c4] opacity-0 group-hover/subrow:opacity-100 transition-opacity flex-shrink-0" />
                     <SubtaskTitle
@@ -463,7 +463,7 @@ export default function BoardSubtaskSection({
                     <div
                       key={col.type}
                       style={{ width: col.width }}
-                      className="flex-shrink-0 flex items-center justify-center border-r border-[#eef0f4] dark:border-[#2a2b30]"
+                      className="flex-shrink-0 flex items-center justify-center border-r border-[#d0d4e4] dark:border-[#2a2b30]"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {renderCell(subtask, col)}
@@ -475,7 +475,7 @@ export default function BoardSubtaskSection({
                     {canDelete && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDelete(subtask.id); }}
-                        className="p-1 rounded hover:bg-red-50 text-[#c4c4c4] hover:text-[#e2445c] transition-colors"
+                        className="p-1 rounded hover:bg-red-50 text-[#c4c4c4] hover:text-[#df2f4a] transition-colors"
                         title="Delete subitem"
                         aria-label="Delete subitem"
                       >
@@ -491,7 +491,7 @@ export default function BoardSubtaskSection({
                 button↔input swap happens inside this footer cell ONLY; the
                 wrapper hierarchy and the panel's width are unaffected. */}
             {canMutate && (
-              <div className="pl-5 pr-3 py-2 border-t border-[#eef0f4] dark:border-[#2a2b30] bg-white dark:bg-[#1f2024]">
+              <div className="pl-5 pr-3 py-2 border-t border-[#d0d4e4] dark:border-[#2a2b30] bg-white dark:bg-[#1f2024]">
                 {adding ? (
                   <input
                     ref={addInputRef}

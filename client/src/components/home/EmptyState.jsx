@@ -21,12 +21,12 @@ export default function EmptyState({
         animate={{ scale: 1, opacity: 1 }}
         transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1], delay: 0.1 }}
       >
-        <span className="absolute inset-0 rounded-full bg-emerald-50 dark:bg-emerald-900/20" />
-        <span className="absolute inset-1.5 rounded-full bg-emerald-100/60 dark:bg-emerald-900/30" />
+        <span className="absolute inset-0 rounded-full bg-success-light/60 dark:bg-success/15" />
+        <span className="absolute inset-1.5 rounded-full bg-success-light dark:bg-success/25" />
         <CheckCircle2
           size={28}
           strokeWidth={1.8}
-          className="relative text-emerald-600 dark:text-emerald-400"
+          className="relative text-success dark:text-success"
           aria-hidden="true"
         />
       </motion.div>

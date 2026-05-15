@@ -116,10 +116,10 @@ export default function TaskReceiptIcon({ receipt }) {
           onMouseEnter={openPopover}
           onMouseLeave={scheduleClose}
           style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999 }}
-          className="bg-white rounded-lg shadow-xl border border-[#e6e9ef] text-[12px] text-[#323338] min-w-[220px] max-w-[320px] overflow-hidden"
+          className="bg-white rounded-lg shadow-xl border border-[#d0d4e4] text-[12px] text-[#323338] min-w-[220px] max-w-[320px] overflow-hidden"
           data-testid="task-receipt-popover"
         >
-          <div className="px-3 py-2 border-b border-[#e6e9ef] bg-[#f5f6f8] flex items-center gap-2">
+          <div className="px-3 py-2 border-b border-[#d0d4e4] bg-[#f5f6f8] flex items-center gap-2">
             <span style={{ lineHeight: 0 }}><TickSvg /></span>
             <span className="font-semibold text-[12px]">{labelForState}</span>
             <span className="ml-auto text-[11px] text-[#676879]">

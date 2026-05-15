@@ -3,7 +3,9 @@ import { motion } from 'framer-motion';
 import { FolderKanban, ChevronRight } from 'lucide-react';
 import { staggerItem, pressable } from '../../utils/animations';
 
-const FALLBACK_TINTS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#14b8a6', '#3b82f6'];
+// Fallback palette drawn from skill §1.6 content swatches — these stand
+// in when a board doesn't have a color set. All on-spec.
+const FALLBACK_TINTS = ['#0073ea', '#00854d', '#ffcb00', '#d83a52', '#4eccc6', '#579bfc'];
 
 /**
  * Single-row clickable board card for the Recent list.

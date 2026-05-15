@@ -27,7 +27,7 @@ export default function StatusCell({
   const [open, setOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [newLabel, setNewLabel] = useState('');
-  const [newColor, setNewColor] = useState('#3b82f6');
+  const [newColor, setNewColor] = useState('#579bfc');
   const [editingKey, setEditingKey] = useState(null);
   const [editLabel, setEditLabel] = useState('');
   const btnRef = useRef(null);
@@ -68,7 +68,7 @@ export default function StatusCell({
     const updated = [...current, { key, label: newLabel.trim(), color: newColor }];
     saveConfig(updated);
     setNewLabel('');
-    setNewColor('#3b82f6');
+    setNewColor('#579bfc');
   }
 
   function handleRemove(key) {
@@ -113,7 +113,7 @@ export default function StatusCell({
       </button>
 
       <PortalDropdown anchorRef={btnRef} open={open} onClose={() => { setOpen(false); setEditMode(false); setEditingKey(null); }} width={220} align="center">
-        <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] overflow-hidden">
+        <div className="bg-[var(--primary-background-color)] rounded-xl shadow-dropdown border border-border overflow-hidden">
           {/* Status list */}
           <div className="p-1.5 max-h-[280px] overflow-y-auto">
             {statuses.map(s => {
@@ -134,7 +134,7 @@ export default function StatusCell({
               }
 
               return (
-                <div key={s.key} className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 group/item ${value === s.key ? 'bg-surface-100 dark:bg-[#222327]' : 'hover:bg-surface-50 dark:hover:bg-[#252629]'}`}>
+                <div key={s.key} className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-colors mb-0.5 group/item ${value === s.key ? 'bg-[var(--ui-background-color)]' : 'hover:bg-[var(--primary-background-hover-color)]'}`}>
                   <button className="flex items-center gap-2 flex-1 min-w-0" onClick={(e) => { e.stopPropagation(); if (onChange) onChange(s.key); setOpen(false); setEditMode(false); }}>
                     <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cfg.bgColor || cfg.color }} />
                     <span className="text-text-primary dark:text-white font-medium flex-1 text-left truncate">{translateStatus(s.key, cfg.label, t)}</span>
@@ -155,7 +155,7 @@ export default function StatusCell({
 
           {/* Edit Labels footer — only for authorized users */}
           {canConfigureStatuses && onSaveTaskStatuses && (
-            <div className="border-t border-border dark:border-[#222327] p-2">
+            <div className="border-t border-border p-2">
               {editMode ? (
                 <div className="space-y-2" onClick={e => e.stopPropagation()}>
                   {/* Add from palette */}

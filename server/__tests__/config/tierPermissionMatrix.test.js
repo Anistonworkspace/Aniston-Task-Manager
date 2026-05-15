@@ -112,14 +112,34 @@ describe('Tier 1 — full system access', () => {
 // ── Tier 2: NO destructive ops anywhere ─────────────────────────────────
 
 describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => {
-  it('every `delete` action is FALSE across every resource', () => {
+  // Decision #4 carveouts — documented exceptions to the strict-T2-no-delete
+  // rule. Each entry MUST link to the product decision that authorised it.
+  // Adding to this list is a deliberate policy change, not a bug fix.
+  const TIER_2_DELETE_CARVEOUTS = new Set([
+    // labels — May 2026 product decision: managers may curate their team's
+    // label library end-to-end, including deletion. Labels are easily-
+    // recreatable metadata, not work product. Controller-level
+    // `canManageBoard` and `permissionEngine.hasPermission` still gate per
+    // request; this carveout only widens the base default.
+    'labels',
+  ]);
+
+  it('every `delete` action is FALSE across every resource (except documented carveouts)', () => {
     const violations = [];
     for (const [resource, actions] of Object.entries(TIER_PERMISSIONS[2])) {
+      if (TIER_2_DELETE_CARVEOUTS.has(resource)) continue;
       if ('delete' in actions && actions.delete !== false) {
         violations.push(`Tier 2 must not have ${resource}.delete = true`);
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it('labels.delete is the only T2 destructive carveout (regression guard)', () => {
+    expect(TIER_PERMISSIONS[2].labels.delete).toBe(true);
+    // If you find yourself adding a new entry to TIER_2_DELETE_CARVEOUTS,
+    // make sure you've got an explicit product decision recorded.
+    expect(TIER_2_DELETE_CARVEOUTS.size).toBe(1);
   });
 
   it('archive.manage is FALSE (manage = restore + permanent-delete = destructive)', () => {

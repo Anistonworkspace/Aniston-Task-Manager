@@ -28,7 +28,7 @@ const COLUMN_TYPE_OPTIONS = [
 ];
 
 const GROUP_COLORS = [
-  '#579bfc', '#fdab3d', '#00c875', '#e2445c', '#a25ddc',
+  '#579bfc', '#fdab3d', '#00c875', '#df2f4a', '#9d50dd',
   '#ff642e', '#037f4c', '#cab641', '#66ccff', '#333333',
 ];
 
@@ -58,7 +58,7 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
   const [editingStatusKey, setEditingStatusKey] = useState(null);
   const [editStatusLabel, setEditStatusLabel] = useState('');
   const [newStatusLabel, setNewStatusLabel] = useState('');
-  const [newStatusColor, setNewStatusColor] = useState('#3b82f6');
+  const [newStatusColor, setNewStatusColor] = useState('#579bfc');
   const [showAddStatus, setShowAddStatus] = useState(false);
 
   // Members
@@ -193,7 +193,7 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
     const updated = [...statuses, { key, label: newStatusLabel.trim(), color: newStatusColor }];
     saveStatusesToBoard(updated);
     setNewStatusLabel('');
-    setNewStatusColor('#3b82f6');
+    setNewStatusColor('#579bfc');
     setShowAddStatus(false);
   }
 
@@ -292,7 +292,7 @@ export default function BoardSettingsModal({ board, onClose, onUpdate, onDelete 
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-[2px] flex items-center justify-center z-50 animate-fade-in" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-[700px] max-h-[85vh] flex overflow-hidden border border-border" onClick={e => e.stopPropagation()}>
+      <div className="bg-[var(--primary-background-color)] rounded-xl shadow-2xl w-[700px] max-h-[85vh] flex overflow-hidden border border-border" onClick={e => e.stopPropagation()}>
         {/* Sidebar — narrower, denser tab rows */}
         <div className="w-[160px] bg-surface/60 dark:bg-zinc-900/40 border-r border-border flex flex-col py-3 flex-shrink-0">
           <h2 className="text-[12px] font-semibold uppercase tracking-wide text-text-secondary px-3 mb-2 flex items-center gap-1.5">

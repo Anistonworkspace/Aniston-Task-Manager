@@ -8,6 +8,7 @@ import {
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import WorkspaceSetupModal from './WorkspaceSetupModal';
+import AnistonLoader from '../common/AnistonLoader';
 
 const HIERARCHY_LABELS = {
   member: 'Member', team_lead: 'Team Lead', manager: 'Manager',
@@ -307,7 +308,7 @@ export default function TeamPlannerModal({ onClose }) {
 
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+            <AnistonLoader variant="inline" size="lg" label="Loading team planner" />
           </div>
         ) : (
           <DragDropContext onDragEnd={onDragEnd}>

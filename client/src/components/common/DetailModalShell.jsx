@@ -50,6 +50,7 @@ const FOCUSABLE = [
  */
 export default function DetailModalShell({
   onClose,
+  onBeforeClose,
   ariaLabel,
   ariaLabelledBy,
   size = 'default',
@@ -62,6 +63,7 @@ export default function DetailModalShell({
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
   const onCloseRef = useRef(onClose);
+  const onBeforeCloseRef = useRef(onBeforeClose);
   const [isClosing, setIsClosing] = useState(false);
   const isClosingRef = useRef(false);
   const exitTimerRef = useRef(null);
@@ -71,9 +73,27 @@ export default function DetailModalShell({
   const supportsExitAnimation = placement === 'bottom-sheet';
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => { onBeforeCloseRef.current = onBeforeClose; }, [onBeforeClose]);
 
-  const requestClose = useCallback(() => {
+  // requestClose may be called synchronously (Escape, X button) or via the
+  // exposed closeRef. When an onBeforeClose guard is registered, we consult
+  // it FIRST — before the slide-down animation starts — so an aborted close
+  // leaves the panel untouched. The guard may return a boolean or a
+  // Promise<boolean>; only an explicit `false` aborts.
+  const requestClose = useCallback(async () => {
     if (isClosingRef.current) return;
+    const guard = onBeforeCloseRef.current;
+    if (typeof guard === 'function') {
+      try {
+        const decision = await guard();
+        if (decision === false) return;
+      } catch {
+        // Treat guard errors as "abort" so an unexpected throw never
+        // silently dismisses an unsaved edit.
+        return;
+      }
+      if (isClosingRef.current) return;
+    }
     if (!supportsExitAnimation) {
       onCloseRef.current?.();
       return;
@@ -169,7 +189,7 @@ export default function DetailModalShell({
         aria-label={ariaLabelledBy ? undefined : ariaLabel}
         aria-labelledby={ariaLabelledBy}
         tabIndex={-1}
-        className={`detail-modal-panel relative bg-white dark:bg-[#1E1F23] shadow-2xl border border-border w-full ${sizeClass} ${panelPlacementClass} ${closingClass} flex flex-col overflow-hidden focus:outline-none ${className}`}
+        className={`detail-modal-panel relative bg-[var(--primary-background-color)] shadow-2xl border border-border w-full ${sizeClass} ${panelPlacementClass} ${closingClass} flex flex-col overflow-hidden focus:outline-none ${className}`}
       >
         {children}
       </div>

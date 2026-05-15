@@ -371,7 +371,14 @@ export default function Header({ onToggleSidebar }) {
 
   return (
     <>
-      <header className="h-[52px] bg-white dark:bg-[#1E1F23] border-b border-border dark:border-[#222327] flex items-center justify-between px-5 flex-shrink-0 z-20">
+      <header
+        className="flex items-center justify-between px-5 flex-shrink-0 z-20"
+        style={{
+          height: '48px',
+          backgroundColor: 'var(--primary-background-color)',
+          borderBottom: '1px solid var(--layout-border-color)',
+        }}
+      >
         {/* Left: Hamburger (mobile) + Breadcrumb + Search */}
         <div className="flex items-center gap-4">
           {/* Mobile hamburger */}
@@ -411,7 +418,7 @@ export default function Header({ onToggleSidebar }) {
             <Waypoints size={17} strokeWidth={1.8} aria-hidden="true" />
             {dependenciesBadge && (
               <span
-                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]"
+                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-[var(--primary-background-color)]"
                 aria-live="polite"
                 aria-atomic="true"
               >
@@ -482,7 +489,7 @@ export default function Header({ onToggleSidebar }) {
             <Bell size={17} strokeWidth={1.8} aria-hidden="true" />
             {unreadCount > 0 && (
               <span
-                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-white dark:ring-[#1E1F23]"
+                className="absolute top-1 right-1 bg-danger text-white text-[8px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 ring-2 ring-[var(--primary-background-color)]"
                 aria-live="polite"
                 aria-atomic="true"
               >
@@ -519,8 +526,19 @@ export default function Header({ onToggleSidebar }) {
             </button>
 
             {showUserMenu && (
-              <div className="absolute right-0 top-full mt-1.5 w-60 bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border dark:border-[#222327] py-1 z-50 dropdown-enter overflow-hidden">
-                <div className="px-4 py-3 border-b border-border dark:border-[#222327]">
+              <div
+                className="absolute right-0 top-full mt-1.5 w-60 py-1 z-50 dropdown-enter overflow-hidden"
+                style={{
+                  backgroundColor: 'var(--dialog-background-color)',
+                  borderRadius: 'var(--border-radius-medium)',
+                  boxShadow: 'var(--box-shadow-medium)',
+                  border: '1px solid var(--layout-border-color)',
+                }}
+              >
+                <div
+                  className="px-4 py-3"
+                  style={{ borderBottom: '1px solid var(--layout-border-color)' }}
+                >
                   <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
                   <p className="text-xs text-text-tertiary mt-0.5">{user?.email}</p>
                   <div className="flex items-center gap-1.5 mt-2">
@@ -572,7 +590,7 @@ export default function Header({ onToggleSidebar }) {
                     </button>
                   )}
                 </div>
-                <div className="border-t border-border dark:border-[#222327]" />
+                <div style={{ borderTop: '1px solid var(--layout-border-color)' }} />
                 <button onClick={handleSignOut}
                   className="flex items-center gap-3 px-4 py-2 text-sm text-danger hover:bg-danger/5 w-full transition-colors">
                   <LogOut size={15} strokeWidth={1.8} /> Sign out

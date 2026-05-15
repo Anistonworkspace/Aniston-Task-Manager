@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
 import RecurringTemplateModal from '../components/recurring/RecurringTemplateModal';
 import Avatar from '../components/common/Avatar';
+import AnistonLoader from '../components/common/AnistonLoader';
 import useRealtimeQuery from '../realtime/useRealtimeQuery';
 import {
   listTemplates,
@@ -195,9 +196,7 @@ export default function RecurringWorkPage() {
 
       {/* List */}
       {loading ? (
-        <div className="py-20 flex items-center justify-center">
-          <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-primary" />
-        </div>
+        <AnistonLoader variant="section" size="md" label="Loading templates" />
       ) : templates.length === 0 ? (
         <EmptyState onNew={handleNew} tab={tab} isMember={isMember} />
       ) : (
@@ -255,7 +254,7 @@ function TemplateRow({ tpl, expanded, instances, instancesLoading, onToggleExpan
   return (
     <div className={
       `border rounded-lg transition-colors `
-      + (isArchived ? 'bg-surface-100 dark:bg-[#1c1d20] border-border opacity-75' : 'bg-white dark:bg-[#1E1F23] border-border')
+      + (isArchived ? 'bg-[var(--allgrey-background-color)] border-border opacity-75' : 'bg-[var(--primary-background-color)] border-border')
     }>
       <div className="flex items-center gap-3 p-3">
         <button

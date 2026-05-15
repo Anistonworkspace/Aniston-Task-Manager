@@ -1,15 +1,15 @@
 import React from 'react';
+import AnistonLoader from './AnistonLoader';
 
-export default function LoadingSpinner({ size = 'md' }) {
-  const sizes = { sm: 'h-4 w-4', md: 'h-6 w-6', lg: 'h-8 w-8' };
-  return <div className={`animate-spin rounded-full border-2 border-primary/20 border-t-primary ${sizes[size] || sizes.md}`} />;
+// Map legacy size prop (sm/md/lg) to the branded loader's size scale.
+// `sm` stays compact for inline / button usage; `md` and `lg` scale up
+// for centered page-level loading.
+const SIZE_MAP = { sm: 'xs', md: 'sm', lg: 'md' };
+
+export default function LoadingSpinner({ size = 'md', className = '' }) {
+  return <AnistonLoader variant="inline" size={SIZE_MAP[size] || 'sm'} className={className} />;
 }
 
-export function LoadingPage({ label = 'Loading...' }) {
-  return (
-    <div className="flex flex-col items-center justify-center h-full gap-3">
-      <LoadingSpinner size="lg" />
-      <span className="text-sm text-text-secondary">{label}</span>
-    </div>
-  );
+export function LoadingPage({ label = 'Loading', showLabel = true }) {
+  return <AnistonLoader variant="page" size="lg" label={label} showLabel={showLabel} />;
 }

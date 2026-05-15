@@ -7,6 +7,7 @@ import { useT } from '../../context/LanguageContext';
 import { translatePriority, translateStatus } from '../../utils/i18nLabels';
 import Avatar from '../common/Avatar';
 import DetailModalShell from '../common/DetailModalShell';
+import AnistonLoader from '../common/AnistonLoader';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 
 export default function MemberDrillDown({ userId, boardId, onClose }) {
@@ -64,7 +65,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
     return (
       <DetailModalShell onClose={onClose} closeRef={shellCloseRef} ariaLabel="Member tasks" size="sheet" placement="bottom-sheet">
         <div className="flex items-center justify-center min-h-[260px]">
-          <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
+          <AnistonLoader variant="inline" size="md" label="Loading member tasks" />
         </div>
       </DetailModalShell>
     );
@@ -83,9 +84,9 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
     { id: 'all', label: 'All', count: summary.total },
     { id: 'not_started', label: 'Not Started', count: summary.notStarted, color: '#c4c4c4' },
     { id: 'working_on_it', label: 'Working', count: summary.working, color: '#fdab3d' },
-    { id: 'stuck', label: 'Stuck', count: summary.stuck, color: '#e2445c' },
+    { id: 'stuck', label: 'Stuck', count: summary.stuck, color: '#df2f4a' },
     { id: 'done', label: 'Done', count: summary.done, color: '#00c875' },
-    { id: 'overdue', label: 'Overdue', count: summary.overdue, color: '#e2445c' },
+    { id: 'overdue', label: 'Overdue', count: summary.overdue, color: '#df2f4a' },
   ];
 
   const memberTitleId = `member-drilldown-title-${userId}`;
@@ -121,7 +122,7 @@ export default function MemberDrillDown({ userId, boardId, onClose }) {
               { label: 'Total', value: summary.total, color: '#0073ea', icon: ListChecks },
               { label: 'Done', value: summary.done, color: '#00c875', icon: CheckCircle2 },
               { label: 'Working', value: summary.working, color: '#fdab3d', icon: Clock },
-              { label: 'Stuck', value: summary.stuck, color: '#e2445c', icon: AlertTriangle },
+              { label: 'Stuck', value: summary.stuck, color: '#df2f4a', icon: AlertTriangle },
             ].map(s => {
               const Icon = s.icon;
               return (

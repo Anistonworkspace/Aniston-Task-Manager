@@ -32,7 +32,7 @@ export default function ColumnInfoTooltip({ column }) {
       </button>
 
       <PortalDropdown anchorRef={btnRef} open={open} onClose={() => setOpen(false)} width={260} align="center">
-        <div className="bg-white rounded-lg shadow-dropdown border border-[#e6e9ef] p-4">
+        <div className="bg-white rounded-lg shadow-dropdown border border-[#d0d4e4] p-4">
           <div className="flex items-center gap-2 mb-2">
             {column.type === 'status' && (
               <div className="w-6 h-6 rounded-full bg-[#fdab3d]/10 flex items-center justify-center">

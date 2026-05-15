@@ -15,6 +15,7 @@ import ResetPasswordModal from '../components/user/ResetPasswordModal';
 import DepartmentModal from '../components/department/DepartmentModal';
 import WorkspaceAssignModal from '../components/workspace/WorkspaceAssignModal';
 import TeamPlannerModal from '../components/workspace/TeamPlannerModal';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 // Phase 6 — tier-based badge map. Keyed by numeric tier (1..4); old role
 // names are no longer rendered.
@@ -288,10 +289,10 @@ export default function UserManagementPage() {
             {[
               { label: 'Total Users', value: stats.total, color: '#0073ea' },
               { label: 'Active',      value: stats.active, color: '#00c875' },
-              { label: 'Tier 1',      value: stats.tier1,  color: '#dc2626' },
-              { label: 'Tier 2',      value: stats.tier2,  color: '#a25ddc' },
-              { label: 'Tier 3',      value: stats.tier3,  color: '#0073ea' },
-              { label: 'Tier 4',      value: stats.tier4,  color: '#16a34a' },
+              { label: 'Tier 1',      value: stats.tier1,  color: '#bb3354' },
+              { label: 'Tier 2',      value: stats.tier2,  color: '#9d50dd' },
+              { label: 'Tier 3',      value: stats.tier3,  color: '#175a63' },
+              { label: 'Tier 4',      value: stats.tier4,  color: '#00854d' },
             ].map(card => (
               <div key={card.label} className="widget-card">
                 <p className="text-xs text-text-secondary font-medium mb-1">{card.label}</p>
@@ -329,9 +330,7 @@ export default function UserManagementPage() {
 
           <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
             {loading ? (
-              <div className="flex items-center justify-center py-16">
-                <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
-              </div>
+              <AnistonLoader variant="section" size="md" label="Loading users" />
             ) : users.length === 0 ? (
               <div className="text-center py-16">
                 <UsersIcon size={40} className="mx-auto text-text-tertiary mb-3" />
@@ -661,9 +660,7 @@ export default function UserManagementPage() {
           </div>
 
           {wsLoading ? (
-            <div className="flex justify-center py-16">
-              <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" />
-            </div>
+            <AnistonLoader variant="section" size="md" label="Loading workspaces" />
           ) : filteredWorkspaces.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-border">
               <LayoutGrid size={40} className="mx-auto text-text-tertiary mb-3" />

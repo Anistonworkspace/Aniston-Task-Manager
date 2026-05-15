@@ -7,9 +7,10 @@ import Avatar from '../components/common/Avatar';
 import TimeBlockForm from '../components/timeplan/TimeBlockForm';
 import useRealtimeEvent from '../realtime/useRealtimeEvent';
 import { useToast } from '../components/common/Toast';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8AM - 8PM
-const BLOCK_COLORS = ['#4285f4', '#00c875', '#fdab3d', '#e2445c', '#a855f7', '#0ea5e9', '#f97316', '#06b6d4'];
+const BLOCK_COLORS = ['#4285f4', '#00c875', '#fdab3d', '#df2f4a', '#a855f7', '#0ea5e9', '#f97316', '#06b6d4'];
 const MIN_BLOCK_HEIGHT = 28; // minimum px height so short tasks stay visible
 const COLUMN_GAP = 2; // px gap between side-by-side blocks
 const COLUMN_PADDING = 4; // px padding on left/right edges of day column
@@ -356,7 +357,7 @@ export default function TimePlanPage() {
 
       {/* Content */}
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>
+        <AnistonLoader variant="section" size="md" label="Loading time plan" />
       ) : viewMode === 'my' ? (
         /* WEEKLY TIMELINE VIEW */
         <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
@@ -545,7 +546,7 @@ export default function TimePlanPage() {
                             const barH = dayCount > 0 ? Math.max(dayCount * 8, 4) : 2;
                             return (
                               <div key={i} className="w-3 rounded-t-sm transition-all" title={`${format(day, 'EEE')}: ${dayCount} blocks`}
-                                style={{ height: barH, backgroundColor: dayCount > 0 ? '#0073ea' : '#e6e9ef' }} />
+                                style={{ height: barH, backgroundColor: dayCount > 0 ? '#0073ea' : '#d0d4e4' }} />
                             );
                           })}
                         </div>

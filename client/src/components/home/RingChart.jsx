@@ -10,8 +10,9 @@ export default function RingChart({
   size = 132,
   strokeWidth = 12,
   trackColor = 'rgba(15, 23, 42, 0.06)',
-  gradientFrom = '#4f46e5',
-  gradientTo = '#3b82f6',
+  // Monday-blue gradient: --primary-color → a lighter ramp shade.
+  gradientFrom = '#0073ea',
+  gradientTo = '#3d99f0',
 }) {
   const gradId = useId();
   const radius = (size - strokeWidth) / 2;

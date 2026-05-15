@@ -3,13 +3,13 @@ import { X, Save, BookmarkCheck, ChevronDown, Filter, Clock, AlertCircle, Calend
 import { STATUS_CONFIG, PRIORITY_CONFIG, DEFAULT_STATUSES, buildStatusLookup } from '../../utils/constants';
 
 const SMART_VIEWS = [
-  { id: 'overdue', label: 'Overdue', icon: AlertCircle, color: '#e2445c', filter: { dateFilter: 'overdue' } },
+  { id: 'overdue', label: 'Overdue', icon: AlertCircle, color: '#df2f4a', filter: { dateFilter: 'overdue' } },
   { id: 'due_today', label: 'Due Today', icon: Clock, color: '#fdab3d', filter: { dateFilter: 'today' } },
   { id: 'my_tasks', label: 'My Tasks', icon: User, color: '#0073ea', filter: { assignedToMe: true } },
-  { id: 'pending_approval', label: 'Pending Approval', icon: BookmarkCheck, color: '#a25ddc', filter: { approvalStatus: 'pending_approval' } },
+  { id: 'pending_approval', label: 'Pending Approval', icon: BookmarkCheck, color: '#9d50dd', filter: { approvalStatus: 'pending_approval' } },
   { id: 'this_week', label: 'This Week', icon: Calendar, color: '#00c875', filter: { dateFilter: 'this_week' } },
-  { id: 'stuck', label: 'Stuck Tasks', icon: AlertCircle, color: '#e2445c', filter: { status: ['stuck'] } },
-  { id: 'high_priority', label: 'High Priority', icon: Tag, color: '#e2445c', filter: { priority: ['high', 'critical'] } },
+  { id: 'stuck', label: 'Stuck Tasks', icon: AlertCircle, color: '#df2f4a', filter: { status: ['stuck'] } },
+  { id: 'high_priority', label: 'High Priority', icon: Tag, color: '#df2f4a', filter: { priority: ['high', 'critical'] } },
   { id: 'unassigned', label: 'Unassigned', icon: User, color: '#c4c4c4', filter: { unassigned: true } },
 ];
 

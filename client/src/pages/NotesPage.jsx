@@ -272,8 +272,8 @@ function NoteEditor({ note, onSaved, onCancel }) {
             onClick={toggleMic}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
               isListening
-                ? 'bg-red-500 hover:bg-red-600 text-white'
-                : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                ? 'bg-danger hover:bg-danger-dark text-white'
+                : 'bg-primary hover:bg-primary-600 text-white'
             }`}
           >
             {isListening ? (
@@ -300,7 +300,7 @@ function NoteEditor({ note, onSaved, onCancel }) {
             <p className="text-xs text-red-600 dark:text-red-400 whitespace-pre-line">{speechError}</p>
             <button
               onClick={toggleMic}
-              className="mt-1.5 px-2.5 py-1 bg-red-500 hover:bg-red-600 text-white text-[11px] font-medium rounded transition-colors"
+              className="mt-1.5 px-2.5 py-1 bg-danger hover:bg-danger-dark text-white text-[11px] font-medium rounded transition-colors"
             >
               Try Again
             </button>
@@ -425,7 +425,7 @@ function NoteEditor({ note, onSaved, onCancel }) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="px-5 py-2 bg-primary hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
           >
             <Save size={14} /> {saving ? 'Saving...' : 'Save Note'}
           </button>
@@ -488,7 +488,7 @@ function NotesList({ notes, loading, searchQuery, onSearchChange, onEdit, onDele
         </div>
         <button
           onClick={onNew}
-          className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          className="px-4 py-2 bg-primary hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
         >
           <Plus size={14} /> New Note
         </button>

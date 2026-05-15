@@ -13,10 +13,10 @@ export const STATUS_CONFIG = {
   working_on_it: { label: 'Working on it', color: '#fdab3d', bgColor: '#fdab3d', textColor: '#fff' },
   in_progress: { label: 'In Progress', color: '#0073ea', bgColor: '#0073ea', textColor: '#fff' },
   waiting_for_review: { label: 'Waiting for Review', color: '#fdab3d', bgColor: '#fdab3d', textColor: '#fff' },
-  pending_deploy: { label: 'Pending Deploy', color: '#a25ddc', bgColor: '#a25ddc', textColor: '#fff' },
-  stuck: { label: 'Stuck', color: '#e2445c', bgColor: '#e2445c', textColor: '#fff' },
+  pending_deploy: { label: 'Pending Deploy', color: '#9d50dd', bgColor: '#9d50dd', textColor: '#fff' },
+  stuck: { label: 'Stuck', color: '#df2f4a', bgColor: '#df2f4a', textColor: '#fff' },
   done: { label: 'Done', color: '#00c875', bgColor: '#00c875', textColor: '#fff' },
-  review: { label: 'In Review', color: '#a25ddc', bgColor: '#a25ddc', textColor: '#fff' },
+  review: { label: 'In Review', color: '#9d50dd', bgColor: '#9d50dd', textColor: '#fff' },
 };
 
 export const PRIORITY = {
@@ -26,28 +26,34 @@ export const PRIORITY = {
   CRITICAL: 'critical',
 };
 
+// Priority colors — drawn from skill §1.6 Monday content swatches:
+//   bright-blue (#579bfc) · working_orange (#fdab3d) · sunset (#ff7575)
+//   · dark-red (#bb3354 — critical stays dark/urgent without going pure red,
+//     leaving #df2f4a as the dedicated "stuck" status color).
 export const PRIORITY_CONFIG = {
-  [PRIORITY.LOW]: { label: 'Low', color: '#3b82f6', bgColor: '#3b82f6', textColor: '#fff' },
-  [PRIORITY.MEDIUM]: { label: 'Medium', color: '#f59e0b', bgColor: '#f59e0b', textColor: '#fff' },
-  [PRIORITY.HIGH]: { label: 'High', color: '#ef4444', bgColor: '#ef4444', textColor: '#fff' },
-  [PRIORITY.CRITICAL]: { label: 'Critical', color: '#1e1b4b', bgColor: '#1e1b4b', textColor: '#fff' },
+  [PRIORITY.LOW]: { label: 'Low', color: '#579bfc', bgColor: '#579bfc', textColor: '#fff' },
+  [PRIORITY.MEDIUM]: { label: 'Medium', color: '#fdab3d', bgColor: '#fdab3d', textColor: '#fff' },
+  [PRIORITY.HIGH]: { label: 'High', color: '#ff7575', bgColor: '#ff7575', textColor: '#fff' },
+  [PRIORITY.CRITICAL]: { label: 'Critical', color: '#bb3354', bgColor: '#bb3354', textColor: '#fff' },
 };
 
+// Default board groups — skill §1.6 swatches.
 export const DEFAULT_GROUPS = [
-  { name: 'To Do', color: '#3b82f6' },
-  { name: 'In Progress', color: '#f59e0b' },
-  { name: 'Completed', color: '#10b981' },
+  { name: 'To Do', color: '#579bfc' },
+  { name: 'In Progress', color: '#fdab3d' },
+  { name: 'Completed', color: '#00c875' },
 ];
 
+// Board accent palette — all 12 picks drawn from skill §1.6 swatches.
 export const BOARD_COLORS = [
-  '#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6',
-  '#f97316', '#eab308', '#06b6d4', '#ec4899', '#14b8a6', '#6366f1',
+  '#0073ea', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#579bfc',
+  '#ff6d3b', '#ffcb00', '#66ccff', '#e50073', '#4eccc6', '#5559df',
 ];
 
 // Color palette used to colour group chips inside the create-board modal.
 // We cycle through this rather than asking the user to pick per-group.
 export const GROUP_COLORS = [
-  '#579bfc', '#fdab3d', '#00c875', '#a25ddc', '#0073ea', '#e2445c',
+  '#579bfc', '#fdab3d', '#00c875', '#9d50dd', '#0073ea', '#df2f4a',
   '#ff7575', '#bb3354', '#9aadbd', '#5559df', '#3db085', '#ffcb00',
 ];
 
@@ -117,10 +123,10 @@ export const DEFAULT_STATUSES = [
   { key: 'working_on_it', label: 'Working on it', color: '#fdab3d' },
   { key: 'in_progress', label: 'In Progress', color: '#0073ea' },
   { key: 'waiting_for_review', label: 'Waiting for Review', color: '#fdab3d' },
-  { key: 'pending_deploy', label: 'Pending Deploy', color: '#a25ddc' },
-  { key: 'stuck', label: 'Stuck', color: '#e2445c' },
+  { key: 'pending_deploy', label: 'Pending Deploy', color: '#9d50dd' },
+  { key: 'stuck', label: 'Stuck', color: '#df2f4a' },
   { key: 'done', label: 'Done', color: '#00c875' },
-  { key: 'review', label: 'In Review', color: '#a25ddc' },
+  { key: 'review', label: 'In Review', color: '#9d50dd' },
 ];
 
 /**
@@ -167,17 +173,20 @@ export function buildStatusLookup(statuses) {
   return map;
 }
 
+// Status preset palette — 16 picks from skill §1.6 content swatches so
+// any custom status created from the picker is on-spec by construction.
 export const STATUS_PRESET_COLORS = [
-  '#94a3b8', '#3b82f6', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444',
-  '#f97316', '#06b6d4', '#eab308', '#84cc16', '#ec4899', '#14b8a6',
-  '#6366f1', '#059669', '#1e1b4b', '#0f766e',
+  '#9aadbd', '#579bfc', '#fdab3d', '#9d50dd', '#00c875', '#df2f4a',
+  '#ff6d3b', '#66ccff', '#ffcb00', '#9cd326', '#e50073', '#4eccc6',
+  '#5559df', '#037f4c', '#401694', '#175a63',
 ];
 
+// Progress gradient — skill §1.6 swatches keyed by completion bucket.
 export function getProgressColor(pct) {
-  if (pct <= 25) return '#ef4444';
-  if (pct <= 50) return '#f59e0b';
-  if (pct <= 75) return '#eab308';
-  return '#10b981';
+  if (pct <= 25) return '#df2f4a'; // stuck-red
+  if (pct <= 50) return '#fdab3d'; // working_orange
+  if (pct <= 75) return '#ffcb00'; // egg_yolk
+  return '#00c875';                // done-green
 }
 
 export const HIERARCHY_LEVELS = [

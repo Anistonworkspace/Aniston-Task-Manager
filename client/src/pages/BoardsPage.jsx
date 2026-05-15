@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { canUser } from '../utils/permissions';
 import BoardCard from '../components/board/BoardCard';
 import CreateBoardModal from '../components/board/CreateBoardModal';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 export default function BoardsPage() {
   const navigate = useNavigate();
@@ -64,7 +65,7 @@ export default function BoardsPage() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>
+        <AnistonLoader variant="section" size="md" label="Loading boards" />
       ) : filtered.length === 0 ? (
         <div className="text-center py-20">
           <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4"><LayoutGrid size={28} className="text-primary" /></div>

@@ -339,12 +339,12 @@ export default function ArchivedPage() {
                       const deletable = canDeleteItem(user, task.archivedAt);
                       return (
                         <div key={task.id} className="bg-white rounded-lg border border-gray-100 p-3 hover:shadow-sm transition-shadow flex items-center gap-3">
-                          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: statusCfg.color || '#94a3b8' }} />
+                          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: statusCfg.color || '#9aadbd' }} />
                           <div className="flex-1 min-w-0">
                             <p className="text-[13px] font-medium text-gray-800 truncate">{task.title}</p>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${statusCfg.color || '#94a3b8'}15`, color: statusCfg.color }}>{translateStatus(task.status, statusCfg.label || task.status, t)}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${priorityCfg.color || '#94a3b8'}15`, color: priorityCfg.color }}>{translatePriority(task.priority, t, priorityCfg.label || task.priority)}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${statusCfg.color || '#9aadbd'}15`, color: statusCfg.color }}>{translateStatus(task.status, statusCfg.label || task.status, t)}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-md font-medium" style={{ backgroundColor: `${priorityCfg.color || '#9aadbd'}15`, color: priorityCfg.color }}>{translatePriority(task.priority, t, priorityCfg.label || task.priority)}</span>
                               <ProtectionBadge archivedAt={task.archivedAt} />
                             </div>
                           </div>
@@ -382,8 +382,8 @@ export default function ArchivedPage() {
               const deletable = canDeleteItem(user, board.archivedAt);
               return (
                 <div key={board.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${board.color || '#4f46e5'}12` }}>
-                    <FolderKanban size={18} style={{ color: board.color || '#4f46e5' }} />
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${board.color || '#0073ea'}12` }}>
+                    <FolderKanban size={18} style={{ color: board.color || '#0073ea' }} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-gray-800">{board.name}</p>
@@ -423,7 +423,7 @@ export default function ArchivedPage() {
               return (
                 <div key={ws.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow">
                   <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-bold" style={{ backgroundColor: ws.color || '#6366f1' }}>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-bold" style={{ backgroundColor: ws.color || '#5559df' }}>
                       {ws.name?.charAt(0)?.toUpperCase()}
                     </div>
                     <div className="flex-1 min-w-0">

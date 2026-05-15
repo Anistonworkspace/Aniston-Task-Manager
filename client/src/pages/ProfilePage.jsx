@@ -308,8 +308,8 @@ export default function ProfilePage({ variant = 'page', onClose }) {
     if (saving || savingPassword || creatingPassword || savingFontSize || savingLanguage || togglingTeamsNotif) {
       return <span className="text-[10px] text-blue-500 font-medium animate-pulse">{t('common.saving')}</span>;
     }
-    if (flash?.type === 'success') return <span className="text-[10px] text-green-500 font-medium">{t('common.saved')}</span>;
-    if (flash?.type === 'error') return <span className="text-[10px] text-red-500 font-medium">{t('common.saveFailed')}</span>;
+    if (flash?.type === 'success') return <span className="text-[10px] text-success font-medium">{t('common.saved')}</span>;
+    if (flash?.type === 'error') return <span className="text-[10px] text-danger font-medium">{t('common.saveFailed')}</span>;
     return null;
   })();
 
@@ -365,7 +365,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
                 )}
               </div>
               <span
-                className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-success rounded-full border-[3px] border-white dark:border-[#1E1F23]"
+                className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-success rounded-full border-[3px] border-[var(--primary-background-color)]"
                 title={t('profile.active')}
               />
             </div>
@@ -407,7 +407,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
             scrolling (the parent scroll container differs between page and
             modal modes; both work because `top-0` is relative to whichever
             ancestor scrolls). */}
-        <div className="sticky top-0 z-10 px-4 sm:px-6 bg-white dark:bg-[#1E1F23] border-b border-border">
+        <div className="sticky top-0 z-10 px-4 sm:px-6 bg-[var(--primary-background-color)] border-b border-border">
           <div className="tabs-compact !border-b-0" role="tablist" aria-label={t('profile.title')}>
             {SECTIONS.map(s => {
               const Icon = s.icon;
@@ -735,7 +735,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
               <button
                 onClick={handleToggleTeamsNotif}
                 disabled={togglingTeamsNotif}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 ${teamsNotifEnabled ? 'bg-primary' : 'bg-gray-300 dark:bg-zinc-600'}`}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 ${teamsNotifEnabled ? 'bg-primary' : 'bg-[var(--ui-background-color)]'}`}
                 role="switch"
                 aria-checked={teamsNotifEnabled}
                 aria-label={t('profile.teamsNotifications')}
@@ -777,7 +777,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[1120px] px-3 sm:px-4 lg:px-6 py-4 sm:py-6">
-        <div className="rounded-xl border border-border bg-white dark:bg-[#1E1F23] shadow-2xl overflow-hidden flex flex-col">
+        <div className="rounded-xl border border-border bg-[var(--primary-background-color)] shadow-2xl overflow-hidden flex flex-col">
           {content}
         </div>
       </div>
@@ -856,7 +856,7 @@ function PasswordStrength({ value, getStrength }) {
         {[1, 2, 3, 4, 5].map(i => (
           <div
             key={i}
-            className={`h-1 flex-1 rounded-full transition-colors ${i <= strength.level ? strength.color : 'bg-gray-200 dark:bg-zinc-700'}`}
+            className={`h-1 flex-1 rounded-full transition-colors ${i <= strength.level ? strength.color : 'bg-[var(--ui-background-color)]'}`}
           />
         ))}
       </div>

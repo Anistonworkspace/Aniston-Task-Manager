@@ -37,7 +37,7 @@ const ICONS = {
   info:    { icon: Info,          color: 'text-primary', bg: 'bg-primary/10 border-primary/30' },
   // 'notification' style differs from 'info' visually — used by the bell-driven
   // toasts to feel more like a Teams card and less like a status banner.
-  notification: { icon: Bell, color: 'text-primary', bg: 'bg-white dark:bg-[#1F2024] border-border' },
+  notification: { icon: Bell, color: 'text-primary', bg: 'bg-[var(--primary-background-color)] border-border' },
 };
 
 /**

@@ -12,12 +12,12 @@ import {
 
 // Status -> Tailwind classes for the segment fill.
 const SEGMENT_STYLES = {
-  approved:           'bg-emerald-500',
+  approved:           'bg-success',
   pending:            'bg-amber-400 animate-pulse',
-  rejected:           'bg-red-500',
+  rejected:           'bg-danger',
   changes_requested:  'bg-orange-400',
   awaiting:           'bg-zinc-300 dark:bg-zinc-700',
-  submitted:          'bg-emerald-500',
+  submitted:          'bg-success',
 };
 
 const STATUS_ICON = {

@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext';
 import Layout from './components/layout/Layout';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import AccessDenied from './components/common/AccessDenied';
+import AnistonLoader, { AnistonFullScreenLoader } from './components/common/AnistonLoader';
 import { isExplicitlyDenied } from './utils/permissions';
 import ProfileModalRoute from './components/profile/ProfileModalRoute';
 
@@ -38,48 +39,26 @@ const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
 const RecurringWorkPage = lazy(() => import('./pages/RecurringWorkPage'));
 
 function PageLoader() {
-  return (
-    <div className="h-full w-full flex items-center justify-center py-20">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-    </div>
-  );
+  return <AnistonLoader variant="page" size="lg" />;
 }
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 function PublicRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (user) return <Navigate to="/" replace />;
   return children;
 }
 
 function ManagerRoute({ children, requiredPermission }) {
   const { user, loading, canManage, isSuperAdmin, granularPermissions } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
   // Allow if user has manager+ role OR has a specific granular permission override
   const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
@@ -89,13 +68,7 @@ function ManagerRoute({ children, requiredPermission }) {
 
 function AdminRoute({ children, requiredPermission }) {
   const { user, loading, isAdmin, isSuperAdmin, granularPermissions } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
   // Allow if user is admin OR has a specific granular permission override
   const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
@@ -105,13 +78,7 @@ function AdminRoute({ children, requiredPermission }) {
 
 function StrictAdminRoute({ children, requiredPermission }) {
   const { user, loading, isStrictAdmin, isSuperAdmin, granularPermissions } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
   // Strict admin only (not manager) — for Admin Settings, Integrations, Feedback
   const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
@@ -133,13 +100,7 @@ function StrictAdminRoute({ children, requiredPermission }) {
  */
 function PermissionRoute({ children, requiredPermission, resourceLabel = 'this page', action = 'view' }) {
   const { user, loading, isSuperAdmin, granularPermissions } = useAuth();
-  if (loading) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-surface">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+  if (loading) return <AnistonFullScreenLoader />;
   if (!user) return <Navigate to="/login" replace />;
   if (requiredPermission && !isSuperAdmin) {
     const [resource, act] = requiredPermission.split('.');

@@ -69,8 +69,18 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, o
   if (!open) return null;
 
   return createPortal(
-    <div ref={menuRef} className="fixed w-56 bg-white dark:bg-[#1E1F23] rounded-xl shadow-dropdown border border-border z-[100] dropdown-enter overflow-hidden py-1"
-      style={{ top: pos.top, left: pos.left }}>
+    <div
+      ref={menuRef}
+      className="fixed w-56 z-[100] dropdown-enter overflow-hidden py-1"
+      style={{
+        top: pos.top,
+        left: pos.left,
+        backgroundColor: 'var(--dialog-background-color)',
+        borderRadius: 'var(--border-radius-medium)',
+        boxShadow: 'var(--box-shadow-medium)',
+        border: '1px solid var(--layout-border-color)',
+      }}
+    >
       {canCreateWorkspace && (
         <button onClick={() => { onClose(); onAddWorkspace(); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
@@ -433,7 +443,15 @@ export default function Sidebar({ collapsed, onToggle }) {
             {menuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setBoardActionMenu(null)} />
-                <div className="absolute right-2 top-full mt-0.5 z-50 w-32 bg-white dark:bg-[#1E1F23] rounded-lg shadow-dropdown border border-border py-1 dropdown-enter">
+                <div
+                  className="absolute right-2 top-full mt-0.5 z-50 w-32 py-1 dropdown-enter"
+                  style={{
+                    backgroundColor: 'var(--dialog-background-color)',
+                    borderRadius: 'var(--border-radius-medium)',
+                    boxShadow: 'var(--box-shadow-medium)',
+                    border: '1px solid var(--layout-border-color)',
+                  }}
+                >
                   <button
                     onClick={(e) => { e.stopPropagation(); setBoardActionMenu(null); startRename(board); }}
                     className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-text-secondary hover:bg-surface-100 transition-colors">
@@ -501,7 +519,7 @@ export default function Sidebar({ collapsed, onToggle }) {
         onClick={onToggle}
       />
       <div data-tour="sidebar" style={{ width: collapsed ? 52 : sidebarWidth, transition: resizing.current ? 'none' : 'width 280ms cubic-bezier(0.4, 0, 0.2, 1)' }}
-        className={`bg-sidebar-bg dark:bg-[#1A1B1F] flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none overflow-hidden
+        className={`bg-sidebar-bg flex flex-col flex-shrink-0 h-full border-r border-sidebar-border relative select-none overflow-hidden
           ${collapsed ? 'items-center py-3 gap-1' : ''}
           max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:shadow-2xl
           ${collapsed ? 'max-md:-translate-x-full' : 'max-md:translate-x-0'}
@@ -711,8 +729,16 @@ export default function Sidebar({ collapsed, onToggle }) {
                         <MoreHorizontal size={13} />
                       </button>
                       {wsActionMenu === ws.id && (
-                        <div className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-[#1E1F23] rounded-lg shadow-lg border border-border py-1 z-50"
-                          onMouseLeave={() => setWsActionMenu(null)}>
+                        <div
+                          className="absolute right-0 top-full mt-1 w-48 py-1 z-50"
+                          style={{
+                            backgroundColor: 'var(--dialog-background-color)',
+                            borderRadius: 'var(--border-radius-medium)',
+                            boxShadow: 'var(--box-shadow-medium)',
+                            border: '1px solid var(--layout-border-color)',
+                          }}
+                          onMouseLeave={() => setWsActionMenu(null)}
+                        >
                           {/* Personal pin — available to every role since it
                               only writes to localStorage. Pinned workspaces
                               float to the top of the sidebar list. */}

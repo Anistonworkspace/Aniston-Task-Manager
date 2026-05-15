@@ -314,7 +314,7 @@ export default function TaskGroup({
       })}
       {provided?.placeholder}
       {hasMoreTasks && (
-        <div className="flex items-center justify-center py-2 border-t border-[#e6e9ef]">
+        <div className="flex items-center justify-center py-2 border-t border-[#d0d4e4]">
           <button onClick={() => setShowAllTasks(true)} className="text-[11px] font-medium text-[#0073ea] hover:underline">
             Show all {tasks.length} tasks ({tasks.length - TASK_DISPLAY_LIMIT} more hidden)
           </button>
@@ -382,10 +382,10 @@ export default function TaskGroup({
       {!collapsed && (
         <div className="min-w-fit">
         {/* Table container — no individual scroll, parent BoardPage scrolls */}
-        <div className="border border-[#e6e9ef] rounded-lg bg-white">
+        <div className="border border-[#d0d4e4] rounded-lg bg-white">
           <div>
             {/* Column Headers */}
-            <div className="flex items-center border-b border-[#e6e9ef] text-[13px] font-medium text-[#676879] sticky top-0 bg-white z-[5]">
+            <div className="flex items-center border-b border-[#d0d4e4] text-[13px] font-medium text-[#676879] sticky top-0 bg-white z-[5]">
               {/* Sticky left: color bar + checkbox + task name.
                   z-[21] keeps the header's frozen column above the row
                   sticky titles (z-[20]) where the two intersect during
@@ -393,7 +393,7 @@ export default function TaskGroup({
               <div className="flex items-center sticky left-0 z-[21] bg-white">
                 <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color }} />
                 <div className="w-10 flex-shrink-0 py-2.5" />
-                <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#e6e9ef] relative">
+                <div style={{ width: taskColWidth }} className=" flex-shrink-0 px-3 py-2.5 border-r border-[#d0d4e4] relative">
                   {t('board.columns.task')}
                   {/* Task column resize handle (mouse + touch) */}
                   <div onMouseDown={handleTaskColResize} onTouchStart={handleTaskColResize}
@@ -417,7 +417,7 @@ export default function TaskGroup({
                     setDragOverColId(null);
                   }}
                   onDragEnd={() => { setDragColId(null); setDragOverColId(null); }}
-                  className={`flex-shrink-0 py-2.5 px-2 border-r border-[#e6e9ef] group/col relative cursor-grab active:cursor-grabbing transition-all ${dragOverColId === col.id ? 'bg-[#e6f0ff] border-l-2 border-l-[#0073ea]' : ''} ${dragColId === col.id ? 'opacity-40' : ''}`}
+                  className={`flex-shrink-0 py-2.5 px-2 border-r border-[#d0d4e4] group/col relative cursor-grab active:cursor-grabbing transition-all ${dragOverColId === col.id ? 'bg-[#e6f0ff] border-l-2 border-l-[#0073ea]' : ''} ${dragColId === col.id ? 'opacity-40' : ''}`}
                   style={{ width: col.width || 140 }}>
                   {editingColId === col.id ? (
                     <div className="flex items-center gap-1">
@@ -425,13 +425,13 @@ export default function TaskGroup({
                         onKeyDown={e => { if (e.key === 'Enter') saveColumnEdit(); if (e.key === 'Escape') setEditingColId(null); }}
                         className="w-full text-xs bg-white border border-[#0073ea] rounded px-2 py-0.5 outline-none text-center" autoFocus />
                       <button onClick={saveColumnEdit} className="text-[#00c875]"><Check size={12} /></button>
-                      <button onClick={() => setEditingColId(null)} className="text-[#e2445c]"><X size={12} /></button>
+                      <button onClick={() => setEditingColId(null)} className="text-[#df2f4a]"><X size={12} /></button>
                     </div>
                   ) : (
                     <div className="flex items-center justify-center gap-1">
                       <span className="truncate cursor-default" onDoubleClick={() => startEditColumn(col)}>
                         {translateDefaultColumnTitle(col, t)}
-                        {col.required && <span className="text-[#e2445c] ml-0.5" title="Required">*</span>}
+                        {col.required && <span className="text-[#df2f4a] ml-0.5" title="Required">*</span>}
                       </span>
                       <ColumnInfoTooltip column={col} />
                       <ColumnHeaderMenu
@@ -484,7 +484,7 @@ export default function TaskGroup({
 
             {/* + Add task — only for users who can create tasks */}
             {canCreateTask && (
-              <div className="flex items-center border-t border-[#e6e9ef] relative isolate">
+              <div className="flex items-center border-t border-[#d0d4e4] relative isolate">
                 <div className="flex items-stretch sticky left-0 z-[20] bg-white">
                   <div className="w-[6px] flex-shrink-0 self-stretch" style={{ backgroundColor: color, opacity: 0.3 }} />
                   <div className="w-10 flex-shrink-0" />
@@ -523,7 +523,7 @@ export default function TaskGroup({
                           title={newTaskTitle.trim() ? t('board.addTaskTitle') : t('board.addTaskTitle')}
                           className={`flex-shrink-0 self-start mt-0.5 inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-md text-[12px] font-medium transition-colors ${
                             submittingTask || !newTaskTitle.trim()
-                              ? 'bg-[#e6e9ef] text-[#c4c4c4] cursor-not-allowed'
+                              ? 'bg-[#d0d4e4] text-[#c4c4c4] cursor-not-allowed'
                               : 'bg-[#0073ea] text-white hover:bg-[#0060c0] active:bg-[#0052a3] shadow-sm'
                           }`}
                         >
@@ -574,7 +574,7 @@ export default function TaskGroup({
             ))}
           </div>
           {/* Data columns summary — border starts here (under Status) */}
-          <div className="flex items-center border-t border-b border-r border-[#e6e9ef] rounded-b-lg" style={{ borderLeft: `3px solid ${color}` }}>
+          <div className="flex items-center border-t border-b border-r border-[#d0d4e4] rounded-b-lg" style={{ borderLeft: `3px solid ${color}` }}>
             {rightCols.map(col => {
               const cellWidth = col.width || 140;
               return (
@@ -588,7 +588,7 @@ export default function TaskGroup({
                   ) : col.type === 'priority' && tasks.length > 0 ? (
                     <div className="flex h-[24px] w-full rounded-[4px] overflow-hidden bg-[#c4c4c4]">
                       {Object.entries(tasks.reduce((a, t) => { a[t.priority || 'medium'] = (a[t.priority || 'medium'] || 0) + 1; return a; }, {})).map(([p, c], i) => {
-                        const cls = { low: '#579bfc', medium: '#fdab3d', high: '#e2445c', critical: '#333' };
+                        const cls = { low: '#579bfc', medium: '#fdab3d', high: '#df2f4a', critical: '#333' };
                         return <div key={i} className="h-full transition-all" style={{ width: `${(c / tasks.length) * 100}%`, backgroundColor: cls[p] || '#c4c4c4' }} />;
                       })}
                     </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 function getProgressColor(val) {
-  if (val <= 25) return '#e2445c';
+  if (val <= 25) return '#df2f4a';
   if (val <= 50) return '#fdab3d';
   if (val <= 75) return '#cab641';
   return '#00c875';

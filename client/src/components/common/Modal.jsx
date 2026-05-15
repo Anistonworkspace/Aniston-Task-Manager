@@ -50,13 +50,14 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     return () => { document.removeEventListener('keydown', handleKey); document.body.style.overflow = ''; };
   }, [isOpen, handleKey]);
 
-  // Compact enterprise sizing — matches the audit targets (sm 420–480, md
-   // 520–600, lg 680–760). The previous max-w-md/lg/2xl values overshot.
+  // Sizes per skill §7.1 — base widths grow at ≥1280 and ≥1440.
+  // `panel` is a non-spec right-rail variant kept for back-compat.
   const sizes = {
-    sm: 'max-w-[460px]',
-    md: 'max-w-[560px]',
-    lg: 'max-w-[720px]',
-    xl: 'max-w-[960px]',
+    sm:    'max-w-[460px] xl:max-w-[480px] 2xl:max-w-[520px] max-h-[50vh]',
+    md:    'max-w-[540px] xl:max-w-[580px] 2xl:max-w-[620px] max-h-[80vh]',
+    lg:    'max-w-[800px] xl:max-w-[840px] 2xl:max-w-[900px] max-h-[80vh]',
+    xl:    'max-w-[960px] max-h-[90vh]',
+    fullView: 'w-full mx-6 mt-10 max-h-[calc(100vh-40px)]',
     panel: 'max-w-[600px] ml-auto h-full rounded-none',
   };
 
@@ -64,45 +65,84 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center"
+          className="fixed inset-0 flex items-center justify-center"
+          style={{ zIndex: 'var(--modal-z-index, 10000)' }}
           onClick={(e) => e.target === e.currentTarget && onClose()}
           {...modalOverlay}
         >
-          {/* Backdrop */}
+          {/* Backdrop — spec §1.3 --backdrop-color (rgba(41,47,76,0.7)) */}
           <motion.div
-            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+            className="absolute inset-0"
+            style={{ backgroundColor: 'var(--backdrop-color)' }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={{ duration: 0.1 }}
           />
 
-          {/* Content */}
+          {/* Content — radius --border-radius-big (16px), shadow --box-shadow-large */}
           <motion.div
             ref={modalRef}
             role="dialog"
             aria-modal="true"
             aria-label={title || 'Modal'}
-            className={`relative bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl w-full ${sizes[size] || sizes.md} max-h-[90vh] flex flex-col border border-border ${className}`}
+            className={`relative w-full ${sizes[size] || sizes.md} flex flex-col overflow-hidden ${className}`}
+            style={{
+              backgroundColor: 'var(--modal-background-color)',
+              borderRadius: 'var(--border-radius-big)',
+              boxShadow: 'var(--box-shadow-large)',
+            }}
             {...modalContent}
           >
             {title && (
-              <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-                <h2 className="text-[13px] font-semibold text-text-primary leading-tight">{title}</h2>
+              <div
+                className="flex items-center justify-between"
+                style={{
+                  padding: 'var(--space-24) var(--space-32)',
+                  borderBottom: '1px solid var(--layout-border-color)',
+                }}
+              >
+                <h2
+                  className="leading-tight"
+                  style={{ font: 'var(--font-text1-medium)', color: 'var(--primary-text-color)' }}
+                >
+                  {title}
+                </h2>
                 <motion.button
                   onClick={onClose}
-                  className="p-1 rounded-md hover:bg-surface-100 transition-colors text-text-tertiary hover:text-text-secondary"
-                  whileHover={{ rotate: 90 }}
+                  className="rounded-sm transition-colors"
+                  style={{
+                    padding: 'var(--space-4)',
+                    color: 'var(--icon-color)',
+                  }}
+                  whileHover={{ rotate: 90, backgroundColor: 'var(--primary-background-hover-color)' }}
                   whileTap={{ scale: 0.9 }}
-                  transition={{ duration: 0.2 }}
+                  transition={{ duration: 0.15 }}
                   aria-label="Close"
                 >
-                  <X size={15} />
+                  <X size={16} />
                 </motion.button>
               </div>
             )}
-            <div className="flex-1 overflow-auto px-5 py-3.5">{children}</div>
-            {footer && <div className="flex items-center justify-end gap-2 px-5 py-2.5 border-t border-border bg-surface-50/60 dark:bg-zinc-900/40">{footer}</div>}
+            <div
+              className="flex-1 overflow-auto"
+              style={{ padding: 'var(--space-24) var(--space-32)' }}
+            >
+              {children}
+            </div>
+            {footer && (
+              <div
+                className="flex items-center justify-end flex-shrink-0"
+                style={{
+                  gap: 'var(--space-8)',
+                  padding: 'var(--space-20) var(--space-24)',
+                  borderTop: '1px solid var(--layout-border-color)',
+                  backgroundColor: 'var(--primary-background-color)',
+                }}
+              >
+                {footer}
+              </div>
+            )}
           </motion.div>
         </motion.div>
       )}

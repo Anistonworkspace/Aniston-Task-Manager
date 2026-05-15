@@ -4,17 +4,17 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const CATEGORIES = [
-  { value: 'bug', label: 'Bug Report', color: '#e2445c' },
+  { value: 'bug', label: 'Bug Report', color: '#df2f4a' },
   { value: 'feature', label: 'Feature Request', color: '#0073ea' },
   { value: 'improvement', label: 'Improvement', color: '#fdab3d' },
   { value: 'praise', label: 'Praise', color: '#00c875' },
-  { value: 'other', label: 'Other', color: '#a25ddc' },
+  { value: 'other', label: 'Other', color: '#9d50dd' },
 ];
 
 const STATUSES = [
   { value: 'new', label: 'New', color: '#0073ea' },
   { value: 'reviewed', label: 'Reviewed', color: '#fdab3d' },
-  { value: 'in_progress', label: 'In Progress', color: '#a25ddc' },
+  { value: 'in_progress', label: 'In Progress', color: '#9d50dd' },
   { value: 'resolved', label: 'Resolved', color: '#00c875' },
   { value: 'dismissed', label: 'Dismissed', color: '#c4c4c4' },
 ];

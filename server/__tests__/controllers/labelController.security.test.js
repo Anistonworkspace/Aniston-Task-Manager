@@ -296,16 +296,22 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
-  test('role=manager who is NOT the board creator: 403 (audit S-H6 boundary preserved)', async () => {
+  test('role=manager who is NOT the board creator: passes (T1+T2 manage labels on any board, May 2026 policy widening)', async () => {
+    // Previously asserted 403 — the original S-H6 boundary scoped managers
+    // to boards they personally created. Product feedback (May 2026)
+    // widened canManageBoard so any T1/T2 actor can curate the label
+    // library on any board they can see. Tier 3/4 still hit 403 on this
+    // path (see "Tier 4 member" test below).
     Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
+    Label.create.mockResolvedValue({ id: 'l-new', name: 'mgr-label', color: '#579bfc', boardId: 'b1', createdBy: 'u-mgr' });
     const req = {
       user: { id: 'u-mgr', isSuperAdmin: false, role: 'manager', tier: 2 },
       body: { name: 'mgr-label', color: '#579bfc', boardId: 'b1' },
     };
     const res = mockRes();
     await labelCtrl.createLabel(req, res);
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(Label.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(Label.create).toHaveBeenCalled();
   });
 
   test('Tier 4 member: BOARD-LIBRARY create (no assignToTaskId) is blocked by canManageBoard', async () => {

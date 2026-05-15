@@ -84,7 +84,7 @@ const BLOCK_COLORS = [
   { bg: '#e8f0fe', border: '#4285f4', text: '#1a56db' },
   { bg: '#fef3e2', border: '#fdab3d', text: '#b45309' },
   { bg: '#e6f9ed', border: '#00c875', text: '#047857' },
-  { bg: '#fce8ec', border: '#e2445c', text: '#be123c' },
+  { bg: '#fce8ec', border: '#df2f4a', text: '#be123c' },
   { bg: '#f3e8ff', border: '#a855f7', text: '#7c3aed' },
 ];
 

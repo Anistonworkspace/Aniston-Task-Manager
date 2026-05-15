@@ -3,6 +3,7 @@ import { addDays, subDays, format, differenceInDays, parseISO, startOfWeek, endO
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
 import api from '../services/api';
 import { STATUS_CONFIG } from '../utils/constants';
+import AnistonLoader from '../components/common/AnistonLoader';
 
 export default function TimelinePage() {
   const [tasks, setTasks] = useState([]);
@@ -45,7 +46,7 @@ export default function TimelinePage() {
   }
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full"><div className="animate-spin rounded-full h-8 w-8 border-2 border-primary/20 border-t-primary" /></div>;
+    return <AnistonLoader variant="page" size="lg" label="Loading timeline" />;
   }
 
   return (

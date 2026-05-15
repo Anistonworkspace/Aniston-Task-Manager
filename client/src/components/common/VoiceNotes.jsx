@@ -890,7 +890,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
                 {saveError && <div className="flex items-center gap-2 text-xs text-red-500"><AlertTriangle size={12} /><span>{saveError}</span></div>}
 
                 <div className="flex gap-2">
-                  <button onClick={() => saveNote()} disabled={saving} className="flex-1 flex items-center justify-center gap-2 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
+                  <button onClick={() => saveNote()} disabled={saving} className="flex-1 flex items-center justify-center gap-2 py-2 bg-primary hover:bg-primary-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
                     <Save size={14} /> {saving ? 'Saving...' : 'Save Raw'}
                   </button>
                   <button onClick={discardAll} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 rounded-lg text-sm transition-colors">
@@ -931,7 +931,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
                   </span>
                 </div>
                 <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full" style={{ background: 'linear-gradient(90deg, #8b5cf6, #a78bfa, #8b5cf6)', backgroundSize: '200% 100%', animation: 'shimmer 1.5s ease-in-out infinite', width: '100%' }} />
+                  <div className="h-full rounded-full" style={{ background: 'linear-gradient(90deg, #9d50dd, #a78bfa, #9d50dd)', backgroundSize: '200% 100%', animation: 'shimmer 1.5s ease-in-out infinite', width: '100%' }} />
                 </div>
                 <p className="text-[10px] text-gray-400 text-center">Sending to AI provider...</p>
               </div>
@@ -967,7 +967,7 @@ export default function VoiceNotes({ isOpen, onClose }) {
                   {processedResult}
                 </div>
                 <div className="flex gap-1.5">
-                  <button onClick={() => saveNote(processedResult)} disabled={saving} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                  <button onClick={() => saveNote(processedResult)} disabled={saving} className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-primary hover:bg-primary-600 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
                     <Save size={12} /> {saving ? 'Saving...' : 'Save Processed'}
                   </button>
                   <button onClick={handleUseProcessed} className="flex items-center justify-center gap-1.5 px-2.5 py-2 bg-violet-100 hover:bg-violet-200 dark:bg-violet-900/30 dark:hover:bg-violet-900/50 text-violet-700 dark:text-violet-400 rounded-lg text-xs font-medium transition-colors" title="Replace raw with processed">

@@ -426,7 +426,7 @@ export function AuthProvider({ children }) {
         // Create a visible warning banner
         const banner = document.createElement('div');
         banner.id = 'logout-warning-banner';
-        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#ef4444;color:white;text-align:center;padding:10px;font-size:14px;font-weight:600;';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#df2f4a;color:white;text-align:center;padding:10px;font-size:14px;font-weight:600;';
         banner.textContent = 'You will be logged out in 30 seconds due to inactivity. Move your mouse to stay logged in.';
         if (!document.getElementById('logout-warning-banner')) {
           document.body.appendChild(banner);

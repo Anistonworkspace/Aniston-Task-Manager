@@ -467,7 +467,7 @@ export default function ApprovalSection({ task, onUpdate }) {
                 || ((showActionPanel === 'reject' || showActionPanel === 'request_changes') && !actionComment.trim())
               }
               className={`text-[11px] font-semibold px-3 py-1.5 rounded-md text-white disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed ${
-                showActionPanel === 'approve' ? 'bg-emerald-500 hover:bg-emerald-600' :
+                showActionPanel === 'approve' ? 'bg-success hover:bg-success-dark' :
                 showActionPanel === 'reject' ? 'bg-red-500 hover:bg-red-600' :
                 'bg-orange-500 hover:bg-orange-600'
               }`}
@@ -511,7 +511,7 @@ export default function ApprovalSection({ task, onUpdate }) {
             {canApprove && (
               <button
                 onClick={() => openActionPanel('approve')}
-                className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors"
+                className="inline-flex items-center gap-1 px-3 py-1.5 bg-success hover:bg-success-dark text-white text-[11px] font-semibold rounded-md transition-colors"
               >
                 <Check size={11} />{' '}
                 {isHigherLevelApprover && !isOverrideApprover
@@ -564,7 +564,7 @@ export default function ApprovalSection({ task, onUpdate }) {
       {!isInActiveCycle && canResubmit && (
         <button
           onClick={() => setShowResubmitModal(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold rounded-md transition-colors mt-1"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-success hover:bg-success-dark text-white text-[11px] font-semibold rounded-md transition-colors mt-1"
         >
           {approvalStatus ? <RotateCcw size={11} /> : <Send size={11} />}
           {approvalStatus === 'changes_requested' ? 'Address feedback & resubmit' :
