@@ -91,12 +91,13 @@ describe('Modal component', () => {
 
   // ---- Size classes ----
 
-  // Compact enterprise sizing — pinned to the audit targets:
-  // sm 460px, md 560px, lg 720px, xl 960px.
+  // Design-system v2 (Monday-style, responsive). Assert the base width;
+  // xl:/2xl: variants widen at ≥1280 / ≥1440 (Modal.jsx §7.1).
+  // sm 460px, md 540px, lg 800px, xl 960px.
   it.each([
     ['sm', 'max-w-[460px]'],
-    ['md', 'max-w-[560px]'],
-    ['lg', 'max-w-[720px]'],
+    ['md', 'max-w-[540px]'],
+    ['lg', 'max-w-[800px]'],
     ['xl', 'max-w-[960px]'],
   ])('applies %s size class "%s" to the dialog', (size, expectedClass) => {
     renderModal({ size });
