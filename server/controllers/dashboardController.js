@@ -5,6 +5,7 @@ const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
 const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * Merge the CP-3 task visibility WHERE-fragment into an existing where clause.
@@ -129,7 +130,7 @@ const getDashboardStats = async (req, res) => {
 
     const recentActivity = await Activity.findAll({
       where: activityWhere,
-      include: [{ model: User, as: 'actor', attributes: ['id', 'name', 'avatar'] }],
+      include: [{ model: User, as: 'actor', attributes: [...USER_PILL_ATTRIBUTES] }],
       order: [['createdAt', 'DESC']],
       limit: 20,
     });
@@ -147,7 +148,7 @@ const getDashboardStats = async (req, res) => {
     const recentWorklogs = await WorkLog.findAll({
       where: worklogWhere,
       include: [
-        { model: User, as: 'author', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'author', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title'] },
       ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']],
@@ -231,7 +232,7 @@ const getDashboardStats = async (req, res) => {
     if (realMemberIds.length > 0) {
       const childrenRows = await User.findAll({
         where: { managerId: { [Op.in]: realMemberIds }, isActive: true },
-        attributes: ['id', 'name', 'avatar', 'role', 'designation', 'department', 'managerId'],
+        attributes: [...USER_PILL_ATTRIBUTES, 'designation', 'department', 'managerId'],
       });
       childrenRows.forEach(u => {
         const c = u.toJSON();
@@ -242,6 +243,8 @@ const getDashboardStats = async (req, res) => {
           name: c.name,
           avatar: c.avatar,
           role: c.role,
+          tier: c.tier,
+          isSuperAdmin: c.isSuperAdmin,
           designation: c.designation,
           department: c.department,
         });
@@ -286,7 +289,7 @@ const getMemberTasks = async (req, res) => {
     const { boardId } = req.query;
 
     const member = await User.findByPk(userId, {
-      attributes: ['id', 'name', 'email', 'avatar', 'role', 'department', 'designation'],
+      attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation'],
     });
     if (!member) {
       return res.status(404).json({ success: false, message: 'User not found.' });
@@ -308,7 +311,7 @@ const getMemberTasks = async (req, res) => {
       where: taskWhere,
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Subtask, as: 'subtasks', attributes: ['id', 'title', 'status'] },
       ],
       order: buildPendingPriorityOrder(),
@@ -352,7 +355,7 @@ const getEnterpriseDashboard = async (req, res) => {
     const tasks = await Task.findAll({
       where: taskWhere,
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar', 'email', 'role'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
       ],
     });
@@ -366,7 +369,7 @@ const getEnterpriseDashboard = async (req, res) => {
     }
     const users = await User.findAll({
       where: userWhere,
-      attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'],
+      attributes: [...USER_PILL_ATTRIBUTES, 'designation', 'department'],
     });
 
     const memberGrid = users.map(u => {
@@ -378,6 +381,8 @@ const getEnterpriseDashboard = async (req, res) => {
         email: u.email,
         avatar: u.avatar,
         role: u.role,
+        tier: u.tier,
+        isSuperAdmin: u.isSuperAdmin,
         designation: u.designation,
         totalTasks: userTasks.length,
         doneTasks: userTasks.filter(t => t.status === 'done').length,
@@ -493,7 +498,7 @@ const getEnterpriseDashboard = async (req, res) => {
     try {
       announcements = await Announcement.findAll({
         where: { isActive: true },
-        include: [{ model: User, as: 'author', attributes: ['id', 'name', 'avatar'] }],
+        include: [{ model: User, as: 'author', attributes: [...USER_PILL_ATTRIBUTES] }],
         order: [['isPinned', 'DESC'], ['createdAt', 'DESC']],
         limit: 10,
       });
@@ -651,10 +656,11 @@ const getSuperDashboard = async (req, res) => {
 
     const memberIds = Object.keys(memberMap);
     const memberUsers = memberIds.length > 0
-      ? await User.findAll({ where: { id: { [Op.in]: memberIds } }, attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] })
+      ? await User.findAll({ where: { id: { [Op.in]: memberIds } }, attributes: [...USER_PILL_ATTRIBUTES, 'designation'] })
       : [];
     const memberStats = memberUsers.map(u => ({
-      id: u.id, name: u.name, email: u.email, avatar: u.avatar, role: u.role, designation: u.designation,
+      id: u.id, name: u.name, email: u.email, avatar: u.avatar, role: u.role,
+      tier: u.tier, isSuperAdmin: u.isSuperAdmin, designation: u.designation,
       ...memberMap[u.id],
     }));
 
@@ -664,7 +670,7 @@ const getSuperDashboard = async (req, res) => {
       where: taskWhere,
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'], where: { isArchived: false } },
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: buildPendingPriorityOrder(),
       limit: parseInt(limit),
@@ -804,16 +810,20 @@ const getRoleDashboard = async (req, res) => {
     });
     const memberIds = Object.keys(memberMap);
     const memberUsers = memberIds.length > 0
-      ? await User.findAll({ where: { id: { [Op.in]: memberIds } }, attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] })
+      ? await User.findAll({ where: { id: { [Op.in]: memberIds } }, attributes: [...USER_PILL_ATTRIBUTES, 'designation'] })
       : [];
-    const memberStats = memberUsers.map(u => ({ id: u.id, name: u.name, email: u.email, avatar: u.avatar, role: u.role, designation: u.designation, ...memberMap[u.id] }));
+    const memberStats = memberUsers.map(u => ({
+      id: u.id, name: u.name, email: u.email, avatar: u.avatar, role: u.role,
+      tier: u.tier, isSuperAdmin: u.isSuperAdmin, designation: u.designation,
+      ...memberMap[u.id],
+    }));
 
     // Team members list (for manager's person dropdown)
     let teamMembers = [];
     if (effectiveScope === 'manager') {
       teamMembers = await User.findAll({
         where: { managerId: user.id, isActive: true },
-        attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'],
+        attributes: [...USER_PILL_ATTRIBUTES, 'designation'],
       });
     }
 
@@ -823,8 +833,8 @@ const getRoleDashboard = async (req, res) => {
       where: taskWhere,
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'], where: { isArchived: false }, required: false },
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: buildPendingPriorityOrder(),
       limit: parseInt(limit),

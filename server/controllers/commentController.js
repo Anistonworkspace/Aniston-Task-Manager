@@ -6,6 +6,7 @@ const teamsNotif = require('../services/teamsNotificationService');
 const { sanitizeInput, sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const taskVisibility = require('../services/taskVisibilityService');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * POST /api/comments
@@ -59,7 +60,7 @@ const addComment = async (req, res) => {
 
     const fullComment = await Comment.findByPk(comment.id, {
       include: [
-        { model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
 
@@ -210,7 +211,7 @@ const getComments = async (req, res) => {
     const comments = await Comment.findAll({
       where: { taskId },
       include: [
-        { model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: [['createdAt', 'ASC']],
     });

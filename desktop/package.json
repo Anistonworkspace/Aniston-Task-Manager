@@ -1,0 +1,76 @@
+{
+  "name": "monday-aniston-desktop",
+  "private": true,
+  "version": "1.1.0",
+  "description": "Monday Aniston — Windows desktop wrapper (Electron)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.aniston.monday",
+    "productName": "Monday Aniston",
+    "copyright": "Copyright (c) 2026 Aniston Technologies LLP",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "tray.js",
+      "notifications.js",
+      "runtimeConfig.js",
+      "paths.js",
+      "package.json",
+      "!dist/**",
+      "!build/**",
+      "!*.log",
+      "!README.md",
+      "!.gitignore"
+    ],
+    "extraResources": [
+      {
+        "from": "../client/dist",
+        "to": "client-dist",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../client/public/icons/icon-512.png",
+        "to": "icons/icon-512.png"
+      },
+      {
+        "from": "../client/public/icons/icon-192.png",
+        "to": "icons/icon-192.png"
+      },
+      {
+        "from": "../client/public/icons/anistonlogo.png",
+        "to": "icons/anistonlogo.png"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "../client/public/icons/icon-512.png",
+      "artifactName": "Monday-Aniston-Setup.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Monday Aniston",
+      "runAfterFinish": true,
+      "artifactName": "Monday-Aniston-Setup.exe",
+      "uninstallDisplayName": "Monday Aniston ${version}",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

@@ -46,6 +46,7 @@ const accessRequestRoutes = require('./routes/accessRequests');
 const taskExtrasRoutes = require('./routes/taskExtras');
 const announcementRoutes = require('./routes/announcements');
 const labelRoutes = require('./routes/labels');
+const statusTemplateRoutes = require('./routes/statusTemplates');
 const taskReferenceRoutes = require('./routes/taskReferences');
 const taskLinkRoutes = require('./routes/taskLinks');
 const metricsRoutes = require('./routes/metrics');
@@ -67,6 +68,8 @@ const outboundWebhookRoutes = require('./routes/outboundWebhooks');
 const recurringTaskRoutes = require('./routes/recurringTasks');
 const boardOrderRoutes = require('./routes/boardOrders');
 const systemSettingsRoutes = require('./routes/systemSettings');
+const meetingStreamRoutes = require('./routes/meetingStream');
+const desktopDownloadRoutes = require('./routes/desktopDownload');
 
 // ─── App initialisation ─────────────────────────────────────
 const app = express();
@@ -494,6 +497,12 @@ app.use('/api/announcements', announcementRoutes);
 // P1-7 — mutationLimiter applied BEFORE the route handlers. Reads still
 // fall under the global limiter; writes get the per-route cap.
 app.use('/api/labels', mutationLimiter, labelRoutes);
+// Phase 2 — Status Tile Group (status template) routes. Reads are open to
+// anyone with board visibility (the controller gates); writes are restricted
+// to Tier 1/Tier 2 in the controller (no board-creator carve-out). The
+// mutationLimiter mirrors labels: a small per-route write cap on top of the
+// per-user general limiter, since template writes are board-config changes.
+app.use('/api/status-templates', mutationLimiter, statusTemplateRoutes);
 app.use('/api/task-references', mutationLimiter, taskReferenceRoutes);
 app.use('/api/task-links', mutationLimiter, taskLinkRoutes);
 // Observability endpoint — admin-only operational metrics snapshot.
@@ -517,6 +526,11 @@ app.use('/api/outbound-webhooks', outboundWebhookRoutes);
 app.use('/api/recurring-tasks', recurringTaskRoutes);
 app.use('/api/board-orders', boardOrderRoutes);
 app.use('/api/system-settings', systemSettingsRoutes);
+app.use('/api/meeting-stream', meetingStreamRoutes);
+// Slice 5b: authenticated desktop installer download + version manifest.
+// File payload lives at server/downloads/desktop/Monday-Aniston-Setup.exe,
+// populated by `npm run desktop:publish`.
+app.use('/api/desktop', desktopDownloadRoutes);
 
 // ─── Multi-manager relation routes (inline for reliable loading) ───
 // /api/multi-manager/* — the legacy alias the OrgChartPage actually calls on
@@ -775,6 +789,25 @@ const start = async () => {
       console.log('[Server] task_reminders Phase 5 migration ensured.');
     } catch (e) {
       console.warn('[Server] task_reminders Phase 5 migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: task_reminders recurring types (interval / daily_times) ──
+    // Adds the fields needed for repeat-until-done reminders. The two new
+    // reminderType values store either an `intervalMinutes` period or a
+    // JSONB `timesOfDay` array (in `timezone`). `lastFiredAt` is audit-only.
+    // All ADDs are nullable + idempotent so a re-run is a no-op.
+    try {
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS "intervalMinutes" INTEGER DEFAULT NULL`);
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS "timesOfDay" JSONB DEFAULT NULL`);
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) DEFAULT NULL`);
+      await sequelize.query(`ALTER TABLE task_reminders
+        ADD COLUMN IF NOT EXISTS "lastFiredAt" TIMESTAMP WITH TIME ZONE DEFAULT NULL`);
+      console.log('[Server] task_reminders recurring-types migration ensured.');
+    } catch (e) {
+      console.warn('[Server] task_reminders recurring-types migration warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: notifications.idempotencyKey column + partial unique index ─
@@ -1173,6 +1206,33 @@ const start = async () => {
       console.log('[Server] labels and task_labels tables ensured.');
     } catch (e) {
       console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: status_templates (Phase 2 — board-scoped status
+    // tile groups). Mirrors server/migrations/020_status_templates.sql.
+    // Idempotent so every restart is a no-op once the table is in place.
+    // Cascade on board delete; partial unique index keeps the "one default
+    // per board" invariant at the DB layer even under a race condition.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS status_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "boardId" UUID NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        name VARCHAR(100) NOT NULL,
+        statuses JSONB NOT NULL DEFAULT '[]'::jsonb,
+        "defaultStatusKey" VARCHAR(50) NOT NULL,
+        "isDefault" BOOLEAN NOT NULL DEFAULT false,
+        "createdBy" UUID NOT NULL REFERENCES users(id),
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_status_templates_board
+        ON status_templates("boardId")`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_status_templates_board_default_one
+        ON status_templates("boardId")
+        WHERE "isDefault" = true`);
+      console.log('[Server] status_templates table + indices ensured.');
+    } catch (e) {
+      console.warn('[Server] status_templates migration warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: legacy task_labels.id column repair ──
@@ -1903,6 +1963,91 @@ const start = async () => {
       }
     } catch (e) {
       console.warn('[Server] boards.archivedGroups migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── One-shot backfill: mappedStatus on existing Board.groups ──
+    // Boards created before the status↔group mapping feature have groups
+    // shaped { id, title, color, position } with no mappedStatus. Without
+    // mappedStatus, the auto-move on status change (taskController.updateTask)
+    // falls back to id/title-regex matching, which silently no-ops for boards
+    // whose group titles were renamed to anything domain-specific. Result:
+    // tasks don't move to the matching group when their status changes.
+    //
+    // This block runs once per environment (gated by system_flags) and infers
+    // a mappedStatus for groups whose id or title clearly maps to a known
+    // status. Groups whose titles don't match any status are LEFT alone — that
+    // is the intended freeform-bucket behavior (Sprint 1, Backlog Q3, etc.).
+    //
+    // Idempotent: groups that already have a mappedStatus are not touched.
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS system_flags (
+          flag VARCHAR(100) PRIMARY KEY,
+          completed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          details JSONB DEFAULT '{}'
+        )
+      `);
+      const [mappedFlagRows] = await sequelize.query(
+        `SELECT flag FROM system_flags WHERE flag = 'group_mapped_status_backfill_v1'`
+      );
+      if (mappedFlagRows.length === 0) {
+        const Board = require('./models/Board');
+        // Inverse of STATUS_GROUP_MAP — more specific first so "stuck" doesn't
+        // fall through to "in_progress".
+        const TITLE_TO_STATUS = [
+          { pattern: /done|complet|finish|closed/i,                          status: 'done' },
+          { pattern: /stuck|block/i,                                         status: 'stuck' },
+          { pattern: /review|qa|test|verify/i,                               status: 'review' },
+          { pattern: /progress|working|active|doing|started/i,               status: 'working_on_it' },
+          { pattern: /to.?do|not.?started|new|backlog|pending|todo|ready/i,  status: 'not_started' },
+        ];
+        const ID_TO_STATUS = {
+          not_started: 'not_started', new: 'not_started',
+          working_on_it: 'working_on_it', in_progress: 'working_on_it',
+          stuck: 'stuck', review: 'review',
+          done: 'done', completed: 'done', closed: 'done',
+        };
+        const inferStatus = (g) => {
+          if (!g || typeof g !== 'object') return null;
+          const id = String(g.id || '').toLowerCase().trim();
+          if (ID_TO_STATUS[id]) return ID_TO_STATUS[id];
+          const title = String(g.title || g.name || '');
+          for (const { pattern, status } of TITLE_TO_STATUS) {
+            if (pattern.test(title)) return status;
+          }
+          return null;
+        };
+
+        const boards = await Board.findAll({ attributes: ['id', 'groups'] });
+        let touchedBoards = 0;
+        let touchedGroups = 0;
+        for (const board of boards) {
+          if (!Array.isArray(board.groups) || board.groups.length === 0) continue;
+          let changed = false;
+          const next = board.groups.map((g) => {
+            if (g && g.mappedStatus) return g;
+            const inferred = inferStatus(g);
+            if (!inferred) return g;
+            changed = true;
+            touchedGroups++;
+            return { ...g, mappedStatus: inferred };
+          });
+          if (!changed) continue;
+          board.groups = next;
+          board.changed('groups', true);
+          await board.save();
+          touchedBoards++;
+        }
+        await sequelize.query(
+          `INSERT INTO system_flags (flag, completed_at, details)
+           VALUES ('group_mapped_status_backfill_v1', NOW(), $1)
+           ON CONFLICT (flag) DO NOTHING`,
+          { bind: [JSON.stringify({ touchedBoards, touchedGroups })] }
+        );
+        console.log(`[Server] group_mapped_status backfill v1 complete (boards=${touchedBoards}, groups=${touchedGroups}).`);
+      }
+    } catch (e) {
+      console.warn('[Server] group_mapped_status backfill warning:', e.message?.slice(0, 100));
     }
 
     // ── Auto-migration: Add local_status_override column to users ──

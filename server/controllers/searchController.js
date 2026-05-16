@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * GET /api/search?q=...&limit=20
@@ -44,7 +45,7 @@ const globalSearch = async (req, res) => {
       where: taskWhere,
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       attributes: ['id', 'title', 'status', 'priority', 'progress', 'dueDate', 'groupId', 'boardId', 'updatedAt', 'createdAt'],
       order: buildPendingPriorityOrder(),

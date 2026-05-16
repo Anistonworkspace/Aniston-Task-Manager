@@ -26,6 +26,7 @@ const boardMembershipService = require('../services/boardMembershipService');
 const taskVisibility = require('../services/taskVisibilityService');
 const boardVisibility = require('../services/boardVisibilityService');
 const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // ── Table / column existence cache ──
 const _tblCache = {};
@@ -160,8 +161,8 @@ const createBoard = async (req, res) => {
     // Reload with associations
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -236,11 +237,11 @@ const getBoards = async (req, res) => {
     const { count, rows: boards } = await Board.findAndCountAll({
       where,
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         {
           model: User,
           as: 'members',
-          attributes: ['id', 'name', 'email', 'avatar'],
+          attributes: [...USER_PILL_ATTRIBUTES],
           through: { attributes: [] },
         },
       ],
@@ -307,11 +308,11 @@ const getBoard = async (req, res) => {
   try {
     const board = await Board.findByPk(req.params.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         {
           model: User,
           as: 'members',
-          attributes: ['id', 'name', 'email', 'avatar'],
+          attributes: [...USER_PILL_ATTRIBUTES],
           through: { attributes: [] },
         },
         { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color', 'icon'], required: false },
@@ -321,9 +322,9 @@ const getBoard = async (req, res) => {
           where: { isArchived: false },
           required: false,
           include: [
-            { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-            { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-            { model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } },
+            { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+            { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+            { model: User, as: 'owners', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: ['isPrimary'] } },
             // Eager-load taskAssignees so taskVisibility.filterVisibleTasks
             // can decide visibility in memory without N+1 lookups.
             { model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'], required: false },
@@ -667,8 +668,8 @@ const updateBoard = async (req, res) => {
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -837,8 +838,8 @@ const addMember = async (req, res) => {
     // Reload full board
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -937,8 +938,8 @@ const removeMember = async (req, res) => {
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -1027,8 +1028,8 @@ const addGroup = async (req, res) => {
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -1141,8 +1142,8 @@ const renameGroup = async (req, res) => {
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 
@@ -1273,8 +1274,8 @@ const reorderGroups = async (req, res) => {
 
     const fullBoard = await Board.findByPk(board.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: [] } },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: [] } },
       ],
     });
 

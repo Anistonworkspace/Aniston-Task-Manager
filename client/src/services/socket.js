@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
 import safeLog from '../utils/safeLog';
+import { getSocketUrl } from '../utils/runtime';
 
 let socket = null;
 
@@ -40,7 +41,12 @@ export function connect(token) {
   // payload is still passed when a `token` is supplied — useful for legacy
   // callers and for manual connect attempts in tests — but the production
   // browser flow no longer relies on a JS-readable token.
-  socket = io(window.location.origin, {
+  // Web → window.location.origin (same-origin handshake), desktop →
+  // 'https://monday.anistonav.com' (read from the preload's runtime
+  // config). Under file:// origin, window.location.origin is 'file://'
+  // and socket.io-client cannot connect — so resolving via the runtime
+  // helper is mandatory for the packaged desktop app.
+  socket = io(getSocketUrl(), {
     auth: token ? { token } : {},
     withCredentials: true,
     transports: ['websocket', 'polling'],

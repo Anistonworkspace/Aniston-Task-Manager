@@ -5,6 +5,7 @@ const { getDescendantIds } = require('../services/hierarchyService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const { isTier4 } = require('../config/tiers');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // POST /api/extensions — request due date extension
 exports.requestExtension = async (req, res) => {
@@ -82,7 +83,7 @@ exports.requestExtension = async (req, res) => {
     logActivity({ action: 'extension_requested', description: `${req.user.name} requested due date extension for "${task.title}"`, entityType: 'task', entityId: taskId, taskId, boardId: task.boardId, userId: req.user.id });
 
     const full = await DueDateExtension.findByPk(ext.id, {
-      include: [{ model: User, as: 'requester', attributes: ['id', 'name', 'avatar'] }, { model: Task, as: 'task', attributes: ['id', 'title'] }],
+      include: [{ model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] }, { model: Task, as: 'task', attributes: ['id', 'title'] }],
     });
     res.status(201).json({ success: true, data: { extension: full } });
   } catch (err) {
@@ -113,7 +114,7 @@ exports.getExtensions = async (req, res) => {
     const extensions = await DueDateExtension.findAll({
       where,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: User, as: 'reviewer', attributes: ['id', 'name'] },
         { model: Task, as: 'task', attributes: ['id', 'title', 'dueDate', 'boardId'] },
       ],

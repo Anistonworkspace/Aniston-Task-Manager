@@ -1,12 +1,13 @@
 const { TaskWatcher, User, Task } = require('../models');
 const realtime = require('../services/realtimeService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // GET /api/tasks/:taskId/watchers
 exports.getWatchers = async (req, res) => {
   try {
     const watchers = await TaskWatcher.findAll({
       where: { taskId: req.params.taskId },
-      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] }],
+      include: [{ model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] }],
     });
     res.json({ success: true, data: { watchers } });
   } catch (err) {

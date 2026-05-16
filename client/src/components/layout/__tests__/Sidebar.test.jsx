@@ -407,4 +407,215 @@ describe('Sidebar component', () => {
       expect(screen.getByText('Sprint 1')).toBeInTheDocument();
     });
   });
+
+  // ---- Sidebar search behavior ----
+  // Locks in the fix for the regression where searching a workspace name
+  // showed "No boards match" under it (the inner filter ran even when the
+  // workspace itself matched) and where board-name hits were buried inside
+  // their parent workspace position instead of promoted to the top.
+
+  function mockMultiWorkspace() {
+    mockApiGet.mockImplementation((url) => {
+      if (url === '/boards') {
+        return Promise.resolve({
+          data: {
+            boards: [
+              { id: 'b1', name: 'Roadmap', color: '#579bfc', workspaceId: 'ws1' },
+              { id: 'b2', name: 'Bugs', color: '#ff5ac4', workspaceId: 'ws1' },
+              { id: 'b3', name: 'ALL DAY', color: '#00c875', workspaceId: 'ws3' },
+              { id: 'b4', name: 'Standalone', color: '#fdab3d', workspaceId: null },
+            ],
+          },
+        });
+      }
+      if (url === '/workspaces/mine') {
+        return Promise.resolve({
+          data: {
+            workspaces: [
+              {
+                id: 'ws1',
+                name: 'workspace 1',
+                color: '#0073ea',
+                boards: [
+                  { id: 'b1', name: 'Roadmap', color: '#579bfc' },
+                  { id: 'b2', name: 'Bugs', color: '#ff5ac4' },
+                ],
+              },
+              {
+                id: 'ws2',
+                name: 'workspace 2',
+                color: '#0073ea',
+                boards: [],
+              },
+              {
+                id: 'ws3',
+                name: 'workspace 3',
+                color: '#0073ea',
+                boards: [{ id: 'b3', name: 'ALL DAY', color: '#00c875' }],
+              },
+              {
+                id: 'ws4',
+                name: 'Marketing',
+                color: '#0073ea',
+                boards: [],
+              },
+            ],
+          },
+        });
+      }
+      if (url === '/board-orders/mine') return Promise.resolve({ data: { orders: {} } });
+      if (url === '/workspaces/order') return Promise.resolve({ data: { workspaceIds: [] } });
+      return Promise.resolve({ data: {} });
+    });
+  }
+
+  it('search "work" shows matching workspaces and their boards (no "No boards match")', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'work' } });
+
+    expect(screen.getByText('workspace 1')).toBeInTheDocument();
+    expect(screen.getByText('workspace 2')).toBeInTheDocument();
+    expect(screen.getByText('workspace 3')).toBeInTheDocument();
+    expect(screen.queryByText('Marketing')).not.toBeInTheDocument();
+    // Boards inside matching workspaces appear even though no board contains "work"
+    expect(screen.getByText('Roadmap')).toBeInTheDocument();
+    expect(screen.getByText('Bugs')).toBeInTheDocument();
+    expect(screen.getByText('ALL DAY')).toBeInTheDocument();
+    // The misleading "No boards match" message must NOT render
+    expect(screen.queryByText('No boards match')).not.toBeInTheDocument();
+  });
+
+  it('search "all" promotes the "ALL DAY" board to the top with parent workspace context', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'all' } });
+
+    expect(screen.getByText('Matching boards')).toBeInTheDocument();
+    expect(screen.getAllByText('ALL DAY').length).toBeGreaterThan(0);
+    // Parent workspace context renders as the subtitle on the promoted row
+    expect(screen.getByText('workspace 3')).toBeInTheDocument();
+    // No workspace name contains "all"
+    expect(screen.queryByText('workspace 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('workspace 2')).not.toBeInTheDocument();
+  });
+
+  it('clicking a promoted matching board navigates to /boards/:id', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'all' } });
+
+    const matches = screen.getAllByText('ALL DAY');
+    fireEvent.click(matches[0]);
+    expect(mockNavigate).toHaveBeenCalledWith('/boards/b3');
+  });
+
+  it('search is case-insensitive — "ALL", "all", "All" behave the same', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+
+    for (const q of ['ALL', 'all', 'All']) {
+      fireEvent.change(searchInput, { target: { value: q } });
+      expect(screen.getByText('Matching boards')).toBeInTheDocument();
+      expect(screen.getAllByText('ALL DAY').length).toBeGreaterThan(0);
+    }
+  });
+
+  it('partial board-name search promotes matching boards to the top', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'road' } });
+    expect(screen.getByText('Matching boards')).toBeInTheDocument();
+    expect(screen.getAllByText('Roadmap').length).toBeGreaterThan(0);
+    // Other boards (which only appear via their workspace) must NOT render —
+    // their workspace doesn't match, so the workspace itself is hidden too.
+    expect(screen.queryByText('Bugs')).not.toBeInTheDocument();
+    expect(screen.queryByText('ALL DAY')).not.toBeInTheDocument();
+    expect(screen.queryByText('Marketing')).not.toBeInTheDocument();
+    // "workspace 1" still appears, but only as the subtitle under the
+    // promoted Roadmap row — that's the intentional parent-context.
+  });
+
+  it('clearing the search restores the normal sidebar', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'all' } });
+    // In search mode, only matching workspace 3 is in the workspace section
+    expect(screen.getByText('Matching boards')).toBeInTheDocument();
+    expect(screen.queryByText('workspace 1')).not.toBeInTheDocument();
+
+    fireEvent.change(searchInput, { target: { value: '' } });
+    // After clearing: matching-boards section gone, original workspaces back.
+    // The default cap is 3 workspaces — pre-existing tests confirm Marketing
+    // (the 4th) sits behind a "Show more workspaces" toggle, so we don't
+    // assert on it. workspace 1's return is enough proof that search exited.
+    expect(screen.queryByText('Matching boards')).not.toBeInTheDocument();
+    expect(screen.getByText('workspace 1')).toBeInTheDocument();
+  });
+
+  it('search with no matches shows the "No boards or workspaces match" empty state', async () => {
+    mockMultiWorkspace();
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('workspace 1')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'xyznonexistent' } });
+    expect(screen.getByText('No boards or workspaces match')).toBeInTheDocument();
+    expect(screen.queryByText('Matching boards')).not.toBeInTheDocument();
+  });
+
+  it('dedupes a board match when its parent workspace also matches', async () => {
+    mockApiGet.mockImplementation((url) => {
+      if (url === '/boards') {
+        return Promise.resolve({
+          data: {
+            boards: [{ id: 'b1', name: 'alpha-board', color: '#579bfc', workspaceId: 'ws1' }],
+          },
+        });
+      }
+      if (url === '/workspaces/mine') {
+        return Promise.resolve({
+          data: {
+            workspaces: [
+              {
+                id: 'ws1',
+                name: 'alpha-workspace',
+                color: '#0073ea',
+                boards: [{ id: 'b1', name: 'alpha-board', color: '#579bfc' }],
+              },
+            ],
+          },
+        });
+      }
+      if (url === '/board-orders/mine') return Promise.resolve({ data: { orders: {} } });
+      if (url === '/workspaces/order') return Promise.resolve({ data: { workspaceIds: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText('alpha-workspace')).toBeInTheDocument());
+
+    const searchInput = screen.getByPlaceholderText('Search boards...');
+    fireEvent.change(searchInput, { target: { value: 'alpha' } });
+
+    // Workspace also matched → board only renders under workspace, not at top
+    expect(screen.queryByText('Matching boards')).not.toBeInTheDocument();
+    expect(screen.getAllByText('alpha-board').length).toBe(1);
+  });
 });

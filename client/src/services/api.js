@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getErrorMessage, getErrorCode, getRequestId } from '../utils/errorMap';
+import { getApiBaseUrl, navigateHard } from '../utils/runtime';
 
 // URLs that are part of the auth-probe / login flow. Failures here are
 // already handled by AuthContext (loadUser silently) and Login (inline
@@ -21,8 +22,11 @@ function isAuthProbeUrl(url) {
   return AUTH_PROBE_URL_PATTERNS.some((re) => re.test(url));
 }
 
+// baseURL is resolved at module load: web → '/api' (Vite proxy / nginx),
+// desktop → 'https://monday.anistonav.com/api' (read from the preload's
+// runtime config). See client/src/utils/runtime.js for the resolution order.
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
   // D-1: send the httpOnly auth cookies on every request. The backend now
   // sets aniston_at + aniston_rt on login/refresh/SSO so the user no longer
@@ -118,7 +122,12 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        await axios.post('/api/auth/refresh', {}, { withCredentials: true });
+        // Standalone axios call (not the `api` instance) so this attempt
+        // never triggers the response interceptor that owns it. We rebuild
+        // the absolute refresh URL via the same runtime helper that drives
+        // `api.defaults.baseURL` — on the web that's '/api/auth/refresh',
+        // on the desktop it's 'https://monday.anistonav.com/api/auth/refresh'.
+        await axios.post(`${getApiBaseUrl()}/auth/refresh`, {}, { withCredentials: true });
         // No tokens in body to extract — the new cookies are set on the
         // response and the browser already wrote them. processQueue
         // signals queued callers to retry their requests.
@@ -135,9 +144,12 @@ api.interceptors.response.use(
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         localStorage.removeItem('refreshToken');
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
-        }
+        // navigateHard handles the desktop/web split: under HashRouter it
+        // sets location.hash, under BrowserRouter it does the same href
+        // assignment the previous code did. Without this, packaged Electron
+        // tries `file:///login`, hits ERR_FILE_NOT_FOUND, and the renderer
+        // ends up on a blank white window.
+        navigateHard('/login');
         // Tag the rejection so caller code (AuthContext.loadUser, etc.)
         // can recognise this is a refresh-chain failure rather than an
         // ordinary 4xx — useful for staying silent on the login page

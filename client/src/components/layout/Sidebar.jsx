@@ -646,23 +646,106 @@ export default function Sidebar({ collapsed, onToggle }) {
               return workspaceScore(eb) - workspaceScore(ea);
             });
             const activeWsId = inferCurrentWorkspaceId();
-            const collapse = !showAllWorkspaces && !searchQuery && sortedWorkspaces.length > WS_VISIBLE_LIMIT;
-            let visibleWorkspaces = collapse ? sortedWorkspaces.slice(0, WS_VISIBLE_LIMIT) : sortedWorkspaces;
-            if (collapse && activeWsId && !visibleWorkspaces.some(w => w.id === activeWsId)) {
-              const ws = sortedWorkspaces.find(w => w.id === activeWsId);
-              if (ws) visibleWorkspaces = [...visibleWorkspaces, ws];
+
+            // Search mode splits the render into "promoted board matches" and
+            // "matching workspaces". The old code only filtered boards *inside*
+            // every workspace by name match, which produced the "No boards match"
+            // empty state under workspaces whose own name matched the query but
+            // whose board names didn't. New behavior:
+            //   - Matching boards (across the whole sidebar, including
+            //     unassigned) are listed at the top so they're one click away.
+            //   - Matching workspaces render with ALL their boards visible.
+            //   - To avoid double-rendering a board, a board that already shows
+            //     up under a matching workspace is omitted from the top list.
+            // Both lists only read from `workspaces` / `unassignedBoards`, which
+            // are already permission-filtered server-side — no RBAC bypass.
+            const normalizedQuery = searchQuery.trim().toLowerCase();
+            const isSearching = !!normalizedQuery;
+
+            let visibleWorkspaces;
+            let matchingBoards = [];
+            let hiddenWsCount = 0;
+
+            if (isSearching) {
+              visibleWorkspaces = sortedWorkspaces.filter(ws =>
+                (ws.name || '').toLowerCase().includes(normalizedQuery)
+              );
+              const matchingWsIds = new Set(visibleWorkspaces.map(w => w.id));
+              const allVisibleBoards = [
+                ...workspaces.flatMap(ws =>
+                  (ws.boards || []).map(b => ({
+                    ...b,
+                    parentWorkspaceId: ws.id,
+                    parentWorkspaceName: ws.name,
+                  }))
+                ),
+                ...unassignedBoards.map(b => ({
+                  ...b,
+                  parentWorkspaceId: null,
+                  parentWorkspaceName: null,
+                })),
+              ];
+              matchingBoards = allVisibleBoards.filter(b =>
+                (b.name || '').toLowerCase().includes(normalizedQuery)
+                && !matchingWsIds.has(b.parentWorkspaceId)
+              );
+            } else {
+              const collapse = !showAllWorkspaces && sortedWorkspaces.length > WS_VISIBLE_LIMIT;
+              visibleWorkspaces = collapse ? sortedWorkspaces.slice(0, WS_VISIBLE_LIMIT) : sortedWorkspaces;
+              if (collapse && activeWsId && !visibleWorkspaces.some(w => w.id === activeWsId)) {
+                const ws = sortedWorkspaces.find(w => w.id === activeWsId);
+                if (ws) visibleWorkspaces = [...visibleWorkspaces, ws];
+              }
+              hiddenWsCount = Math.max(0, sortedWorkspaces.length - WS_VISIBLE_LIMIT);
             }
-            const hiddenWsCount = Math.max(0, sortedWorkspaces.length - WS_VISIBLE_LIMIT);
+
+            const noResults = isSearching
+              && matchingBoards.length === 0
+              && visibleWorkspaces.length === 0
+              && (workspaces.length > 0 || boards.length > 0);
+
             return (
           <div className="px-2 pb-2 space-y-1">
+            {/* Promoted "Matching boards" — search mode only. Renders directly
+                below the search input so name hits are one click away instead
+                of buried inside their parent workspace. */}
+            {isSearching && matchingBoards.length > 0 && (
+              <div className="mb-1">
+                <div className="px-3 pt-1 pb-0.5">
+                  <span className="text-[10px] uppercase tracking-wide text-sidebar-text/40 font-semibold">
+                    Matching boards
+                  </span>
+                </div>
+                {matchingBoards.map(board => (
+                  <button
+                    key={`match-${board.id}`}
+                    onClick={() => { bumpWorkspaceUsage(board.parentWorkspaceId); navigate(`/boards/${board.id}`); }}
+                    className={`sidebar-item w-full text-[13px] items-start ${isBoardActive(board.id) ? 'sidebar-item-active' : ''}`}
+                  >
+                    <div className="w-2 h-2 rounded-sm flex-shrink-0 mt-[5px]" style={{ backgroundColor: board.color || '#579bfc' }} />
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="truncate leading-tight">{board.name}</div>
+                      {board.parentWorkspaceName && (
+                        <div className="truncate text-[10px] text-sidebar-text/40 leading-tight mt-0.5">
+                          {board.parentWorkspaceName}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {visibleWorkspaces.map(ws => {
-              const wsBoardsRaw = (ws.boards || []).filter(b =>
-                !searchQuery || b.name.toLowerCase().includes(searchQuery.toLowerCase())
-              );
-              // Apply per-user ordering before the show-more slicing kicks in
-              // so the user's preference is respected at the top of the list.
-              const wsBoards = applyUserOrder(ws.id, wsBoardsRaw);
-              const isOpen = openWorkspaces[ws.id] !== false;
+              // KEY FIX: when the workspace itself matched the search query,
+              // show ALL its boards. The old code unconditionally filtered
+              // boards by name match, producing the "No boards match" empty
+              // state under every matched workspace. Only matching workspaces
+              // appear during search, so `ws.boards` is already the right list.
+              const wsBoards = applyUserOrder(ws.id, ws.boards || []);
+              // Auto-expand workspaces during search so the boards inside
+              // matching workspaces are immediately visible (per UX spec A).
+              const isOpen = isSearching || openWorkspaces[ws.id] !== false;
 
               return (
                 <div key={ws.id}
@@ -788,12 +871,14 @@ export default function Sidebar({ collapsed, onToggle }) {
                   {isOpen && (() => {
                     // Per-workspace "show more / show less" — collapse to the
                     // first 3 boards by default, with a toggle to reveal the
-                    // rest. The active board (if any) is always kept visible
-                    // even when collapsed so the user never loses context.
+                    // rest. During search the cap is suspended so every board
+                    // inside a matching workspace is visible (per UX spec A).
+                    // The active board (if any) is always kept visible even
+                    // when collapsed so the user never loses context.
                     const BOARD_LIMIT = 3;
-                    const showAll = !!showAllByWorkspace[ws.id];
-                    const hasMore = wsBoards.length > BOARD_LIMIT;
-                    let visible = showAll || !hasMore ? wsBoards : wsBoards.slice(0, BOARD_LIMIT);
+                    const showAll = isSearching || !!showAllByWorkspace[ws.id];
+                    const hasMore = !isSearching && wsBoards.length > BOARD_LIMIT;
+                    let visible = (showAll || !hasMore) ? wsBoards : wsBoards.slice(0, BOARD_LIMIT);
                     if (!showAll && hasMore) {
                       const activeBoard = wsBoards.find(b => isBoardActive(b.id));
                       if (activeBoard && !visible.some(b => b.id === activeBoard.id)) {
@@ -812,10 +897,11 @@ export default function Sidebar({ collapsed, onToggle }) {
                             {showAll ? 'Show less' : `Show ${hiddenCount} more`}
                           </button>
                         )}
-                        {wsBoards.length === 0 && searchQuery && (
-                          <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsMatch')}</p>
-                        )}
-                        {wsBoards.length === 0 && !searchQuery && (
+                        {/* Empty state — only fires when the workspace genuinely
+                            has zero boards. The search "No boards match" branch
+                            is no longer reachable because search-mode rendering
+                            shows ALL boards inside matching workspaces. */}
+                        {wsBoards.length === 0 && (
                           <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsYet')}</p>
                         )}
                       </div>
@@ -825,8 +911,10 @@ export default function Sidebar({ collapsed, onToggle }) {
               );
             })}
 
-            {/* Unassigned boards (not in any workspace) */}
-            {filteredUnassigned.length > 0 && (
+            {/* Unassigned boards (not in any workspace). Hidden during search
+                because matching unassigned boards are promoted into the
+                "Matching boards" top section above. */}
+            {!isSearching && filteredUnassigned.length > 0 && (
               <div
                 onDragOver={(e) => { if (dragBoardId) { e.preventDefault(); setDragOverWsId('unassigned'); } }}
                 onDragLeave={() => setDragOverWsId(null)}
@@ -843,6 +931,12 @@ export default function Sidebar({ collapsed, onToggle }) {
               </div>
             )}
 
+            {/* Search-mode no-results — only when there's data to search but
+                nothing matched. Empty-account fallback below stays separate. */}
+            {noResults && (
+              <p className="text-sidebar-text/40 text-[11px] px-3 py-2">No boards or workspaces match</p>
+            )}
+
             {boards.length === 0 && workspaces.length === 0 && (
               <p className="text-sidebar-text/40 text-[11px] px-3 py-2">{t('sidebar.noBoardsYet')}</p>
             )}
@@ -850,7 +944,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             {/* Workspace-level Show More toggle. Only renders when more than
                 WS_VISIBLE_LIMIT workspaces exist and the user isn't searching
                 (search bypasses the cap so all hits are visible). */}
-            {!searchQuery && sortedWorkspaces.length > WS_VISIBLE_LIMIT && (
+            {!isSearching && sortedWorkspaces.length > WS_VISIBLE_LIMIT && (
               <button
                 onClick={() => setShowAllWorkspaces(v => !v)}
                 className="flex items-center gap-1.5 w-full px-3 py-1.5 mt-1 text-[11px] text-sidebar-text/60 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors">

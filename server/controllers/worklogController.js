@@ -6,6 +6,7 @@ const { sanitizeInput } = require('../utils/sanitize');
 const { isHierarchyManager } = require('../middleware/taskPermissions');
 const { getDescendantIds } = require('../services/hierarchyService');
 const { isTier4 } = require('../config/tiers');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * POST /api/worklogs
@@ -54,7 +55,7 @@ const createWorkLog = async (req, res) => {
 
     const fullLog = await WorkLog.findByPk(worklog.id, {
       include: [
-        { model: User, as: 'author', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'author', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
 
@@ -118,7 +119,7 @@ const getWorkLogs = async (req, res) => {
     const worklogs = await WorkLog.findAll({
       where,
       include: [
-        { model: User, as: 'author', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'author', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title', 'boardId'] },
       ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']],
@@ -166,7 +167,7 @@ const updateWorkLog = async (req, res) => {
 
     const fullLog = await WorkLog.findByPk(worklog.id, {
       include: [
-        { model: User, as: 'author', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'author', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
 

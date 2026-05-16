@@ -5,6 +5,7 @@ const realtime = require('../services/realtimeService');
 const { canAssignTo } = require('../services/hierarchyService');
 const taskVisibility = require('../services/taskVisibilityService');
 const { sanitizeInput } = require('../utils/sanitize');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -12,8 +13,8 @@ const SUBTASK_STATUS_VALUES = ['not_started', 'working_on_it', 'stuck', 'done'];
 const SUBTASK_PRIORITY_VALUES = ['low', 'medium', 'high', 'critical'];
 
 const SUBTASK_INCLUDES = () => ([
-  { model: User, as: 'creator', attributes: ['id', 'name', 'avatar'] },
-  { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+  { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
+  { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
 ]);
 
 /**

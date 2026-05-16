@@ -7,9 +7,10 @@ const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
 const { isTier4 } = require('../config/tiers');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 const MEETING_INCLUDES = [
-  { model: User, as: 'organizer', attributes: ['id', 'name', 'email', 'avatar'] },
+  { model: User, as: 'organizer', attributes: [...USER_PILL_ATTRIBUTES] },
   { model: Task, as: 'task', attributes: ['id', 'title'] },
   { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
 ];

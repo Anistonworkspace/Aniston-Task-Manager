@@ -69,7 +69,20 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
 
 export default function ArchivedPage() {
   const t = useT();
-  const { canManage, isAdmin, user } = useAuth();
+  const { canManage, isAdmin, user, granularPermissions, isSuperAdmin } = useAuth();
+  // Phase A.2 follow-up — affordance gates must also honour explicit
+  // PermissionGrant rows, not just tier. Before this, an admin who granted
+  // `archive.permanent_delete` / `archive.restore` to a Tier 4 user (e.g.
+  // Sunny Mehta) saw the user reach the page (route guard checks the
+  // grant) but the Restore / Delete buttons stayed hidden behind canManage.
+  const canRestoreArchived = isSuperAdmin
+    || canManage
+    || granularPermissions?.['archive.restore'] === true
+    || granularPermissions?.['archive.manage'] === true;
+  const canPermanentDelete = isSuperAdmin
+    || canManage
+    || granularPermissions?.['archive.permanent_delete'] === true
+    || granularPermissions?.['archive.manage'] === true;
   const { success: toastSuccess, error: toastError } = useToast();
   const [boards, setBoards] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -352,7 +365,7 @@ export default function ArchivedPage() {
                             <button onClick={() => restoreTask(task.id)} className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 rounded-md border border-blue-200 transition-colors">
                               <RotateCcw size={11} /> Restore
                             </button>
-                            {canManage && (
+                            {canPermanentDelete && (
                               <button onClick={() => { setDeleteItem(task); setDeleteType('task'); }}
                                 disabled={!deletable && !user?.isSuperAdmin}
                                 className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}
@@ -397,7 +410,7 @@ export default function ArchivedPage() {
                     <button onClick={() => restoreBoard(board.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
                       <RotateCcw size={12} /> Restore
                     </button>
-                    {canManage && (
+                    {canPermanentDelete && (
                       <button onClick={() => { setDeleteItem(board); setDeleteType('board'); }}
                         disabled={!deletable && !user?.isSuperAdmin}
                         className={`flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>

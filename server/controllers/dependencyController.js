@@ -8,6 +8,7 @@ const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHel
 const dependencyRequestController = require('./dependencyRequestController');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * GET /api/tasks/:taskId/dependencies
@@ -24,7 +25,7 @@ const getTaskDependencies = async (req, res) => {
           model: Task, as: 'dependsOnTask',
           attributes: ['id', 'title', 'status', 'priority', 'assignedTo', 'boardId'],
           include: [
-            { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+            { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
             { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
           ],
         },
@@ -41,7 +42,7 @@ const getTaskDependencies = async (req, res) => {
           model: Task, as: 'task',
           attributes: ['id', 'title', 'status', 'priority', 'assignedTo', 'boardId'],
           include: [
-            { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+            { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
             { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
           ],
         },
@@ -61,8 +62,8 @@ const getTaskDependencies = async (req, res) => {
     const dependencyRequests = await DependencyRequest.findAll({
       where: { parentTaskId: taskId, archivedAt: null },
       include: [
-        { model: User, as: 'requestedBy', attributes: ['id', 'name', 'avatar', 'role'] },
-        { model: User, as: 'assignedTo',  attributes: ['id', 'name', 'avatar', 'role'] },
+        { model: User, as: 'requestedBy', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'assignedTo',  attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: [['createdAt', 'DESC']],
     });
@@ -377,7 +378,7 @@ const getCrossTeamDependencies = async (req, res) => {
           model: Task, as: 'task', required: false,
           attributes: ['id', 'title', 'description', 'status', 'priority', 'assignedTo', 'boardId', 'dueDate'],
           include: [
-            { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'], required: false },
+            { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES], required: false },
             { model: Board, as: 'board', attributes: ['id', 'name', 'color'], required: false },
           ],
         },
@@ -385,7 +386,7 @@ const getCrossTeamDependencies = async (req, res) => {
           model: Task, as: 'dependsOnTask', required: false,
           attributes: ['id', 'title', 'description', 'status', 'priority', 'assignedTo', 'boardId', 'dueDate'],
           include: [
-            { model: User, as: 'assignee', attributes: ['id', 'name', 'avatar'], required: false },
+            { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES], required: false },
             { model: Board, as: 'board', attributes: ['id', 'name', 'color'], required: false },
           ],
         },

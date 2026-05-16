@@ -155,7 +155,7 @@ describe('getUserReminderSpecs()', () => {
     expect(where.sentAt).toBeNull();
     expect(where.reminderType).toBeDefined();
     expect(where.reminderType[Object.getOwnPropertySymbols(where.reminderType)[0]])
-      .toEqual(['offset', 'at_due', 'custom']);
+      .toEqual(['offset', 'at_due', 'custom', 'interval', 'daily_times']);
   });
 
   it('does NOT surface sent reminders — the active-chip API hides them', async () => {

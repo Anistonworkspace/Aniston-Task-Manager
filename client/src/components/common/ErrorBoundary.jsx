@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import safeLog from '../../utils/safeLog';
+import { navigateHard } from '../../utils/runtime';
 
 // ErrorBoundary — catches render-time crashes in a subtree and shows a
 // safe fallback instead of a white screen.
@@ -79,7 +80,9 @@ class ErrorBoundary extends React.Component {
 
   handleGoHome = () => {
     this.reset();
-    if (typeof window !== 'undefined') window.location.href = '/';
+    // navigateHard: web → href='/', desktop → location.hash='#/' so the
+    // file:// origin doesn't try to load a non-existent filesystem path.
+    if (typeof window !== 'undefined') navigateHard('/');
   };
 
   render() {

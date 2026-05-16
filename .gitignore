@@ -6,6 +6,13 @@ build/
 aws-config.txt
 server/uploads/*
 !server/uploads/.gitkeep
+
+# Slice 5b: desktop installer + generated manifest are large/dynamic and
+# get populated by `npm run desktop:publish` from the build host. Keep the
+# directory tracked via .gitkeep so the controller's existsSync path is
+# valid in a fresh clone, but never commit the EXE or manifest themselves.
+server/downloads/desktop/*
+!server/downloads/desktop/.gitkeep
 .DS_Store
 *.log
 .claude/

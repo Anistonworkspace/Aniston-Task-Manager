@@ -6,6 +6,7 @@ const boardVisibility = require('../services/boardVisibilityService');
 const { getIO } = require('../services/socketService');
 const safeLogger = require('../utils/safeLogger');
 const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // Sidebar refresh: workspace mutations have no per-room concept (workspaces
 // don't have socket rooms), so we broadcast globally and let each receiving
@@ -36,9 +37,9 @@ exports.getMyWorkspaces = async (req, res) => {
       const workspaces = await Workspace.findAll({
         where: { isActive: true },
         include: [
-          { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+          { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
           { model: Board, as: 'boards', attributes: ['id', 'name', 'color'], where: { isArchived: false }, required: false },
-          { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+          { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES] },
         ],
         order: [['createdAt', 'ASC']],
       });
@@ -77,9 +78,9 @@ exports.getMyWorkspaces = async (req, res) => {
     const allWorkspaces = await Workspace.findAll({
       where: { isActive: true },
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', attributes: ['id', 'name', 'color'], where: { isArchived: false }, required: false },
-        { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: [['createdAt', 'ASC']],
     });
@@ -132,9 +133,9 @@ exports.getWorkspaces = async (req, res) => {
     const workspaces = await Workspace.findAll({
       where: { isActive: true },
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', attributes: ['id', 'name', 'color'], where: { isArchived: false }, required: false },
-        { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] },
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES, 'designation'] },
       ],
       order: [['createdAt', 'ASC']],
     });
@@ -160,9 +161,9 @@ exports.getWorkspace = async (req, res) => {
   try {
     const workspace = await Workspace.findByPk(req.params.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', attributes: ['id', 'name', 'color', 'description'], where: { isArchived: false }, required: false },
-        { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'] },
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES, 'designation', 'department'] },
       ],
     });
     if (!workspace) return res.status(404).json({ success: false, message: 'Workspace not found.' });
@@ -232,9 +233,9 @@ exports.createWorkspace = async (req, res) => {
 
     const full = await Workspace.findByPk(workspace.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', required: false },
-        { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
 
@@ -447,9 +448,9 @@ exports.createFromTemplate = async (req, res) => {
 
     const full = await Workspace.findByPk(workspace.id, {
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', attributes: ['id', 'name', 'color'] },
-        { model: User, as: 'workspaceMembers', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
 
@@ -546,7 +547,7 @@ exports.getArchivedWorkspaces = async (req, res) => {
     const workspaces = await Workspace.findAll({
       where: { isActive: false },
       include: [
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Board, as: 'boards', attributes: ['id', 'name', 'color', 'isArchived'], required: false },
       ],
       order: [['updatedAt', 'DESC']],

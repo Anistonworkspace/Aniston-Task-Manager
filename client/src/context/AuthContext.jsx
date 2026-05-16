@@ -3,6 +3,7 @@ import api from '../services/api';
 import { connect, disconnect, disconnectForLogout, subscribe, getSocketId } from '../services/socket';
 import { unsubscribeFromPush } from '../services/pushNotifications';
 import safeLog from '../utils/safeLog';
+import { navigateHard } from '../utils/runtime';
 import {
   TIER_1, TIER_2, TIER_3, TIER_4,
   resolveTier as resolveTierFn,
@@ -314,14 +315,16 @@ export function AuthProvider({ children }) {
       if (e?.data?.type === 'logout') {
         localCleanup();
         // Navigate to login — outside React Router because we're in a context
-        // that may not be inside a Router during teardown.
-        if (window.location.pathname !== '/login') window.location.href = '/login';
+        // that may not be inside a Router during teardown. navigateHard
+        // picks the file://-safe form in packaged desktop mode (#/login)
+        // and the existing href assignment on web.
+        navigateHard('/login');
       }
     };
     const onStorage = (e) => {
       if (e.key === 'aniston:logout-at') {
         localCleanup();
-        if (window.location.pathname !== '/login') window.location.href = '/login';
+        navigateHard('/login');
       }
     };
     if (logoutChannel) logoutChannel.addEventListener('message', onChannelMessage);
@@ -391,9 +394,7 @@ export function AuthProvider({ children }) {
       const reason = payload?.reason || 'forced_other_device';
       try { sessionStorage.setItem('aniston:force_logout_reason', reason); } catch { /* ignore */ }
       localCleanup();
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
+      navigateHard('/login');
     });
     return () => { if (unsubscribe) unsubscribe(); };
   }, [user, localCleanup]);
@@ -444,7 +445,7 @@ export function AuthProvider({ children }) {
         if (el) el.remove();
         console.log('[Auth] Auto-logout due to inactivity');
         logout();
-        window.location.href = '/login';
+        navigateHard('/login');
       }
     }, 10000); // Check every 10 seconds
 

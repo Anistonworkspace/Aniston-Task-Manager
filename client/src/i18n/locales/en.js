@@ -62,6 +62,8 @@ const en = {
     unpinFromTop: 'Unpin from top',
     noBoardsYet: 'No boards yet',
     noBoardsMatch: 'No boards match',
+    matchingBoards: 'Matching boards',
+    noResultsFound: 'No boards or workspaces match',
     accountSettings: 'Account Settings',
   },
   header: {

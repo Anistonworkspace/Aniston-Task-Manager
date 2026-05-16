@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock, Download } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useT } from '../../context/LanguageContext';
 import { isExplicitlyDenied } from '../../utils/permissions';
+import { isDesktopApp } from '../../utils/runtime';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import NotificationsPanel from '../common/NotificationsPanel';
@@ -285,6 +286,13 @@ export default function Header({ onToggleSidebar }) {
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  // Slice 5b: desktop installer manifest. Null until probed; an object once
+  // the server confirms the installer has been published. We keep this in
+  // state (instead of an inline boolean) so the menu item can render the
+  // version + size next to the label. Only meaningful on the web — the
+  // desktop app already has the installer; we suppress the fetch entirely
+  // there to keep the network panel clean.
+  const [desktopManifest, setDesktopManifest] = useState(null);
   // Global header badge — count of active dependency requests assigned to
   // the caller (pending / accepted / working_on_it). Mirrors the
   // "Assigned to Me" tab count on /cross-team. See useDependenciesBadgeCount.
@@ -301,6 +309,28 @@ export default function Header({ onToggleSidebar }) {
   useEffect(() => {
     if (!authReady || !user) return;
     loadUnreadCount();
+  }, [authReady, user]);
+
+  // Slice 5b: probe `/api/desktop/manifest` once per session to decide
+  // whether to surface the "Download Desktop App" item. Skipped entirely
+  // inside the desktop app itself (the user already has it). _silent on
+  // the request so api.js's global toast handler doesn't fire when the
+  // installer hasn't been published yet — a 404 there is a routine
+  // "nothing to show" signal, not an error worth telling the user about.
+  useEffect(() => {
+    if (!authReady || !user) return;
+    if (isDesktopApp()) return;
+    let cancelled = false;
+    api.get('/desktop/manifest', { _silent: true })
+      .then((res) => {
+        if (cancelled) return;
+        // api.js's response interceptor flattens { success, data } onto
+        // res.data, so the manifest fields (version, sizeBytes, ...) live
+        // directly on res.data.
+        if (res?.data?.version) setDesktopManifest(res.data);
+      })
+      .catch(() => { /* 404 = not published yet; stay null, hide item */ });
+    return () => { cancelled = true; };
   }, [authReady, user]);
 
   // Unread count is a derived cache — every notification:new + notification:read
@@ -588,6 +618,28 @@ export default function Header({ onToggleSidebar }) {
                       className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
                       <Archive size={15} strokeWidth={1.8} /> Archive
                     </button>
+                  )}
+                  {/* Slice 5b: Download Desktop App.
+                      Only renders on the web (the desktop app already runs the
+                      installer's output) AND only when `/api/desktop/manifest`
+                      confirmed a published installer. We use a plain <a> with
+                      the cookie-authed download endpoint as its href so the
+                      browser handles streaming + native download progress —
+                      far better UX than buffering 80+ MB through fetch/blob.
+                      `download` attribute is just a filename hint; the server
+                      already sets Content-Disposition: attachment. */}
+                  {!isDesktopApp() && desktopManifest && (
+                    <a
+                      href="/api/desktop/download"
+                      download="Monday-Aniston-Setup.exe"
+                      onClick={() => setShowUserMenu(false)}
+                      className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary"
+                      title={`v${desktopManifest.version}${desktopManifest.sizeBytes ? ` • ${Math.round(desktopManifest.sizeBytes / (1024 * 1024))} MB` : ''}`}
+                    >
+                      <Download size={15} strokeWidth={1.8} />
+                      <span>Download Desktop App</span>
+                      <span className="ml-auto text-xs text-text-tertiary">v{desktopManifest.version}</span>
+                    </a>
                   )}
                 </div>
                 <div style={{ borderTop: '1px solid var(--layout-border-color)' }} />

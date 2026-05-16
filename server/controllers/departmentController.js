@@ -2,6 +2,7 @@ const { Department, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityService');
 const { sanitizeInput } = require('../utils/sanitize');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * POST /api/departments
@@ -28,8 +29,8 @@ const createDepartment = async (req, res) => {
 
     const fullDept = await Department.findByPk(dept.id, {
       include: [
-        { model: User, as: 'headUser', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] },
+        { model: User, as: 'headUser', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES, 'designation'] },
       ],
     });
 
@@ -66,8 +67,8 @@ const getDepartments = async (req, res) => {
     const departments = await Department.findAll({
       where,
       include: [
-        { model: User, as: 'headUser', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] },
+        { model: User, as: 'headUser', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES, 'designation'] },
       ],
       order: [['name', 'ASC']],
     });
@@ -92,8 +93,8 @@ const getDepartment = async (req, res) => {
   try {
     const dept = await Department.findByPk(req.params.id, {
       include: [
-        { model: User, as: 'headUser', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation', 'isActive'] },
+        { model: User, as: 'headUser', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES, 'designation', 'isActive'] },
       ],
     });
 
@@ -139,8 +140,8 @@ const updateDepartment = async (req, res) => {
 
     const fullDept = await Department.findByPk(dept.id, {
       include: [
-        { model: User, as: 'headUser', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] },
+        { model: User, as: 'headUser', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES, 'designation'] },
       ],
     });
 
@@ -224,8 +225,8 @@ const assignUsers = async (req, res) => {
 
     const fullDept = await Department.findByPk(dept.id, {
       include: [
-        { model: User, as: 'headUser', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'members', attributes: ['id', 'name', 'email', 'avatar', 'role', 'designation'] },
+        { model: User, as: 'headUser', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'members', attributes: [...USER_PILL_ATTRIBUTES, 'designation'] },
       ],
     });
 

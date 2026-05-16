@@ -61,6 +61,8 @@ const hi = {
     unpinFromTop: 'पिन हटाएं',
     noBoardsYet: 'अभी कोई बोर्ड नहीं',
     noBoardsMatch: 'कोई बोर्ड नहीं मिला',
+    matchingBoards: 'मिलते बोर्ड',
+    noResultsFound: 'कोई बोर्ड या वर्कस्पेस नहीं मिला',
     accountSettings: 'अकाउंट सेटिंग',
   },
   header: {

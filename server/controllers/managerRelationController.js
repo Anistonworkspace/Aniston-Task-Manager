@@ -3,12 +3,14 @@ const { Op } = require('sequelize');
 const hierarchy = require('../services/hierarchyService');
 const { logActivity } = require('../services/activityService');
 const { broadcastAll } = require('../services/socketService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // Sensitive User columns that must NEVER appear in API responses (mirrors the
 // allowlist in promotionController). The `manager` includes used below were
 // already attribute-restricted, but we keep this constant in scope for future
-// endpoints that need it.
-const USER_SAFE_ATTRS = ['id', 'name', 'email', 'avatar', 'role', 'designation', 'department'];
+// endpoints that need it. Includes `tier` + `isSuperAdmin` so the frontend
+// resolveTier() can correctly render the manager's tier badge.
+const USER_SAFE_ATTRS = [...USER_PILL_ATTRIBUTES, 'designation', 'department'];
 
 /**
  * Emit `org:hierarchy:changed` after any structural mutation. Permission-gated

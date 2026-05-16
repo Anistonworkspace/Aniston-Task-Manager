@@ -1,6 +1,7 @@
 const { User, ManagerRelation } = require('../models');
 const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -465,7 +466,7 @@ async function getAssignableUsers(actor) {
   if (isAdminOrSuperAdmin || legacyManagerGlobal) {
     return User.findAll({
       where: { isActive: true },
-      attributes: ['id', 'name', 'email', 'avatar', 'role', 'department', 'designation'],
+      attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation'],
       order: [['name', 'ASC']],
     });
   }
@@ -475,14 +476,14 @@ async function getAssignableUsers(actor) {
     const allowedIds = [actor.id, ...descendantIds];
     return User.findAll({
       where: { id: { [Op.in]: allowedIds }, isActive: true },
-      attributes: ['id', 'name', 'email', 'avatar', 'role', 'department', 'designation'],
+      attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation'],
       order: [['name', 'ASC']],
     });
   }
 
   return User.findAll({
     where: { id: actor.id, isActive: true },
-    attributes: ['id', 'name', 'email', 'avatar', 'role', 'department', 'designation'],
+    attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation'],
   });
 }
 

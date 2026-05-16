@@ -247,6 +247,15 @@ User.prototype.toJSON = function () {
 // chunks; a single corrupt chunk in any row would otherwise fail the entire
 // query (incident 2026-05-14). Add new fields here only after confirming they
 // are safe to expose and small enough to stay inline.
+// Minimal "user pill" attribute set for any include that renders a user name
+// next to a tier badge (TaskModal People section, assignee pickers, owner
+// chips, approval rows, etc.). The canonical definition lives in
+// `../config/userAttributes` so controllers can use it without depending on
+// the full User model being loaded (matters for unit tests that mock the
+// models layer wholesale). Re-exported here for ergonomic `User.PILL_ATTRIBUTES`
+// reads at call sites that already have a User reference.
+User.PILL_ATTRIBUTES = require('../config/userAttributes').PILL_ATTRIBUTES;
+
 User.SAFE_USER_ATTRIBUTES = Object.freeze([
   'id',
   'name',

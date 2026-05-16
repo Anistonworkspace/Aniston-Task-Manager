@@ -24,6 +24,7 @@ import {
   TIER_1, TIER_2, TIER_3, TIER_4, ALL_TIERS,
   resolveTier, tierLabel, tiersGrantableBy, hasTierAtLeast,
 } from '../utils/tiers';
+import PermissionPill from '../components/permissions/PermissionPill';
 
 const TABS = [
   { id: 'users', label: 'Users', icon: Users },
@@ -726,7 +727,7 @@ function WorkspacesTab() {
   );
 }
 
-function MultiSelectDropdown({ label, options, selected, onChange, groupedOptions, placeholder, renderOption }) {
+function MultiSelectDropdown({ label, options, selected, onChange, groupedOptions, placeholder, renderOption, renderChip }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const ref = React.useRef(null);
@@ -789,19 +790,26 @@ function MultiSelectDropdown({ label, options, selected, onChange, groupedOption
         <ChevronRight size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
 
-      {/* Selected chips */}
+      {/* Selected chips — Phase B: caller can pass renderChip to customise
+          (PermissionPill is used for action chips so category colour + badges
+          surface inline; resource chips default to a neutral PermissionPill). */}
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1.5">
           {selected.map(key => {
             const opt = allOptions.find(o => (typeof o === 'string' ? o : o.key) === key);
             const display = typeof opt === 'string' ? (ACTIONS[opt]?.label || opt) : (opt?.label || key);
+            const remove = () => toggle(key);
+            if (renderChip) {
+              return <React.Fragment key={key}>{renderChip({ key, option: opt, display, onRemove: remove })}</React.Fragment>;
+            }
             return (
-              <span key={key} className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary text-[11px] font-medium rounded-full">
-                {display}
-                <button type="button" onClick={(e) => { e.stopPropagation(); toggle(key); }} className="hover:text-red-500 transition-colors">
-                  <X size={10} />
-                </button>
-              </span>
+              <PermissionPill
+                key={key}
+                category="default"
+                label={display}
+                size="sm"
+                onRemove={remove}
+              />
             );
           })}
         </div>
@@ -1342,6 +1350,15 @@ function PermissionsTab() {
                 }}
                 groupedOptions={resourcesByCategory}
                 placeholder="Select resources..."
+                renderChip={({ key, display, onRemove }) => (
+                  <PermissionPill
+                    category="resource"
+                    label={display}
+                    description={RESOURCES[key]?.category ? `Category: ${RESOURCES[key].category}` : null}
+                    size="sm"
+                    onRemove={onRemove}
+                  />
+                )}
               />
               <MultiSelectDropdown
                 label={`Actions${form.actions.length > 0 ? ` (${form.actions.length})` : ''}`}
@@ -1349,6 +1366,19 @@ function PermissionsTab() {
                 onChange={actions => setForm({ ...form, actions })}
                 options={availableActions}
                 placeholder={form.resources.length > 0 ? 'Select actions...' : 'Select resources first'}
+                renderChip={({ key, option, display, onRemove }) => (
+                  <PermissionPill
+                    action={key}
+                    label={display}
+                    size="sm"
+                    effect={form.effect === 'deny' ? 'deny' : undefined}
+                    badge={typeof option === 'object' ? option?.badge : null}
+                    badgeTone={typeof option === 'object' ? option?.badgeTone : null}
+                    description={typeof option === 'object' ? option?.description : null}
+                    reason={typeof option === 'object' ? option?.reason : null}
+                    onRemove={onRemove}
+                  />
+                )}
               />
             </div>
 
@@ -1385,18 +1415,31 @@ function PermissionsTab() {
             {/* Grant preview */}
             {grantPreview.length > 0 && (
               <div className="mb-4 p-3 bg-gray-50 dark:bg-zinc-700/30 rounded-lg border border-gray-100 dark:border-zinc-700">
-                <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Preview — permissions to grant</p>
+                <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                  Preview — permissions to {form.effect === 'deny' ? 'deny' : 'grant'}
+                </p>
                 <div className="space-y-1.5 max-h-40 overflow-y-auto">
                   {grantPreview.map(entry => (
                     <div key={entry.resource} className="flex items-start gap-2">
                       <span className="text-xs font-medium text-gray-700 dark:text-gray-300 w-32 shrink-0">{entry.label}</span>
                       <div className="flex flex-wrap gap-1">
-                        {entry.actions.map(a => (
-                          <span key={a} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                            style={{ backgroundColor: `${LEVEL_COLORS[a] || '#ccc'}15`, color: LEVEL_COLORS[a] || '#666' }}>
-                            {ACTIONS[a]?.label || a}
-                          </span>
-                        ))}
+                        {entry.actions.map(a => {
+                          const meta = catalog?.meta?.[`${entry.resource}.${a}`] || {};
+                          return (
+                            <PermissionPill
+                              key={a}
+                              action={a}
+                              resource={entry.resource}
+                              label={ACTIONS[a]?.label || a}
+                              size="sm"
+                              effect={form.effect === 'deny' ? 'deny' : undefined}
+                              enforcement={meta.enforcement}
+                              dangerous={meta.dangerous}
+                              warnOnDeny={meta.warnOnDeny}
+                              description={ACTIONS[a]?.description}
+                            />
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
@@ -1602,13 +1645,21 @@ function PermissionsTab() {
                 return (
                 <div key={i} className={`flex items-center gap-3 text-xs p-2 rounded-lg ${h.isActive ? (isDeny ? 'bg-red-50/50 dark:bg-red-900/10' : 'bg-green-50/50 dark:bg-green-900/10') : 'bg-gray-50 dark:bg-zinc-700/30'}`}>
                   <div className={`w-2 h-2 rounded-full ${h.isActive ? (isDeny ? 'bg-red-500' : 'bg-green-500') : h.revokedAt ? 'bg-red-400' : 'bg-gray-400'}`} />
-                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${isDeny ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`}>
-                    {effect}
-                  </span>
+                  <PermissionPill
+                    category={isDeny ? 'destructive' : 'default'}
+                    effect={isDeny ? 'deny' : 'base'}
+                    label={effect}
+                    size="sm"
+                    className="uppercase tracking-wider"
+                  />
                   <span className="font-medium text-gray-700 dark:text-gray-300 w-28 shrink-0 capitalize">{RESOURCES[h.resourceType]?.label || h.resourceType}</span>
-                  <span className="font-semibold px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: `${LEVEL_COLORS[h.action || h.permissionLevel] || '#ccc'}15`, color: LEVEL_COLORS[h.action || h.permissionLevel] || '#666' }}>
-                    {h.action || h.permissionLevel}
-                  </span>
+                  <PermissionPill
+                    action={h.action || h.permissionLevel}
+                    resource={h.resourceType}
+                    label={h.action || h.permissionLevel}
+                    effect={isDeny ? 'deny' : !h.isActive ? 'not_allowed' : undefined}
+                    size="sm"
+                  />
                   <span className="text-gray-400 flex-1">by {h.grantedBy}</span>
                   <span className="text-gray-400">{new Date(h.grantedAt).toLocaleDateString()}</span>
                   {h.revokedAt && <span className="text-red-400 text-[10px]">Revoked {new Date(h.revokedAt).toLocaleDateString()}</span>}
@@ -1668,18 +1719,26 @@ function PermissionsTab() {
                     </div>
                   </td>
                   <td className="px-4 py-2.5">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${isDeny ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`}>
-                      {isDeny ? 'Deny' : 'Grant'}
-                    </span>
+                    <PermissionPill
+                      category={isDeny ? 'destructive' : 'default'}
+                      effect={isDeny ? 'deny' : 'base'}
+                      label={isDeny ? 'Deny' : 'Grant'}
+                      size="sm"
+                      className="uppercase tracking-wider"
+                    />
                   </td>
                   <td className="px-4 py-2.5">
                     <span className="text-xs text-gray-600 dark:text-gray-400">{RESOURCES[p.resourceType]?.label || p.resourceType}</span>
                   </td>
                   <td className="px-4 py-2.5">
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
-                      style={{ backgroundColor: `${LEVEL_COLORS[p.action || p.permissionLevel] || '#ccc'}15`, color: LEVEL_COLORS[p.action || p.permissionLevel] || '#666' }}>
-                      {ACTIONS[p.action]?.label || p.action || p.permissionLevel}
-                    </span>
+                    <PermissionPill
+                      action={p.action || p.permissionLevel}
+                      resource={p.resourceType}
+                      label={ACTIONS[p.action]?.label || p.action || p.permissionLevel}
+                      effect={isDeny ? 'deny' : undefined}
+                      size="sm"
+                      data-testid="permission-pill-action"
+                    />
                   </td>
                   <td className="px-4 py-2.5 text-xs text-gray-500 capitalize">{p.scope || 'global'}</td>
                   <td className="px-4 py-2.5 text-xs text-gray-500">{p.granter?.name}</td>

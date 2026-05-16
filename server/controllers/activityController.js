@@ -2,6 +2,7 @@ const { Activity, User, Task } = require('../models');
 const { Op } = require('sequelize');
 const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 const taskVisibility = require('../services/taskVisibilityService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * GET /api/activities?taskId=...&boardId=...&userId=...&limit=...&offset=...
@@ -77,7 +78,7 @@ const getActivities = async (req, res) => {
     const { rows: activities, count: total } = await Activity.findAndCountAll({
       where,
       include: [
-        { model: User, as: 'actor', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'actor', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: [['createdAt', 'DESC']],
       limit: parseInt(limit, 10),

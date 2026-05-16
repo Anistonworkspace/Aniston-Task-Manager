@@ -22,18 +22,31 @@ import api from '../../services/api';
 //      lower tiers instead of a clickable button that just fails.
 //
 // Props:
-//   - canEdit  — caller can apply / unassign / create labels on this task
-//                (gated upstream by explicit DENY on labels.add_to_task; the
-//                backend's taskVisibility.canViewTask check is the security
-//                boundary, so default-true is intentional).
+//   - canEdit   — caller can apply / unassign EXISTING labels on this task
+//                 (gated upstream by explicit DENY on labels.add_to_task).
+//                 The backend's taskVisibility.canViewTask check is the
+//                 security boundary, so default-true is intentional.
+//   - canCreate — caller can mint a NEW label via the inline Create form.
+//                 Phase A (May 2026) split this out of canEdit because
+//                 the one-click create-and-attach flow now requires BOTH
+//                 labels.create AND labels.add_to_task on the backend.
+//                 Defaults to canEdit for back-compat with older callers
+//                 that haven't been updated yet.
 //   - canManage — caller can permanently delete a label from the board's
-//                 library (T1 / T2 only). Hides the trash icon for everyone
-//                 else; the API still 403s if a caller forges the request.
+//                 library (T1 / T2 only). Hides the trash icon for
+//                 everyone else; the API still 403s if a caller forges
+//                 the request.
 //
 // `labels` prop is the array of {id, name, color} attached to a task (via
 // task.labels in the GET response). Local state mirrors it for optimistic
 // updates; the parent eventually refetches on the next socket-driven reload.
-export default function LabelCell({ taskId, boardId, labels: initialLabels = [], canEdit = true, canManage = false, onLabelsChange }) {
+export default function LabelCell({ taskId, boardId, labels: initialLabels = [], canEdit = true, canCreate, canManage = false, onLabelsChange }) {
+  // Back-compat: callers that haven't been updated to pass canCreate fall
+  // back to canEdit so the existing assign/unassign flow still works. The
+  // server enforces labels.create on the actual write so an out-of-date
+  // caller hits a 403 toast rather than getting away with privilege
+  // escalation through stale frontend code.
+  const canCreateLabel = typeof canCreate === 'boolean' ? canCreate : canEdit;
   const [open, setOpen] = useState(false);
   const [labels, setLabels] = useState(initialLabels);
   const [allLabels, setAllLabels] = useState([]);
@@ -163,7 +176,11 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
   }
 
   async function createLabel() {
-    if (!canEdit) return;
+    // Phase A — Create requires the dedicated create gate (backend
+    // enforces labels.create + labels.add_to_task in a single
+    // transaction). Falls back to canEdit when canCreate prop wasn't
+    // passed, preserving old behaviour while parent components migrate.
+    if (!canCreateLabel) return;
     if (!newName.trim()) return;
     setBusy(true); setError('');
     pendingMutation.current = true;
@@ -311,7 +328,7 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
               )}
             </div>
           </div>
-          {canEdit && (
+          {canCreateLabel && (
             <div className="border-t border-gray-100 dark:border-zinc-700 p-2">
               {showCreate ? (
                 <div className="space-y-1.5">
@@ -365,7 +382,7 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
               {error && <p className="text-[11px] text-rose-500 mt-1">{error}</p>}
             </div>
           )}
-          {!canEdit && error && (
+          {!canCreateLabel && !canEdit && error && (
             <div className="border-t border-gray-100 dark:border-zinc-700 p-2">
               <p className="text-[11px] text-rose-500">{error}</p>
             </div>

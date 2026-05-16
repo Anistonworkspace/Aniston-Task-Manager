@@ -16,6 +16,7 @@ const realtime = require('../services/realtimeService');
 const { deriveApprovalChain, previewNextApprover } = require('../services/approvalChainService');
 const approvalNotif = require('../services/approvalNotificationService');
 const { computeApprovalCapabilities } = require('../services/approvalCapabilityService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 const {
   applyApprovalSubmittedState,
   applyApprovalApprovedState,
@@ -146,7 +147,7 @@ async function loadChainForResponse(taskId, transaction) {
       [sequelize.literal('COALESCE(stage, level)'), 'ASC'],
       ['level', 'ASC'],
     ],
-    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar', 'role', 'isSuperAdmin'] }],
+    include: [{ model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] }],
     transaction,
   });
   return rows.map((r) => ({
@@ -156,7 +157,15 @@ async function loadChainForResponse(taskId, transaction) {
     userId: r.userId,
     userName: r.user?.name || r.userName || '(deleted user)',
     userAvatar: r.user?.avatar || null,
+    // `role` is the audit snapshot captured when the chain was generated. We
+    // ALSO expose the approver's current identity (currentRole / tier /
+    // isSuperAdmin) read from the joined live User row so the frontend
+    // indicator reflects "what tier is this approver right now" — a promotion
+    // after the chain was built must update the badge in the modal, not
+    // preserve the stale snapshot.
     role: r.role,
+    currentRole: r.user?.role || null,
+    tier: r.user?.tier ?? null,
     isSuperAdmin: !!r.user?.isSuperAdmin,
     status: r.status,
     comment: r.comment,
@@ -1100,7 +1109,7 @@ exports.getPendingApprovals = async (req, res) => {
     const tasks = await Task.findAll({
       where: { id: { [Op.in]: taskIds }, isArchived: false },
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: User, as: 'creator', attributes: ['id', 'name'] },
         { model: TaskApprovalFlow, as: 'approvalFlows', separate: true, order: [['level', 'ASC']] },
       ],
@@ -1188,7 +1197,7 @@ exports.getMyFeedback = async (req, res) => {
         {
           model: User,
           as: 'user',
-          attributes: ['id', 'name', 'avatar', 'role'],
+          attributes: [...USER_PILL_ATTRIBUTES],
           required: false,
         },
         {
@@ -1217,7 +1226,7 @@ exports.getMyFeedback = async (req, res) => {
     const taskIds = submitterRows.map((r) => r.taskId);
     const allFlows = await TaskApprovalFlow.findAll({
       where: { taskId: { [Op.in]: taskIds } },
-      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'avatar', 'role'], required: false }],
+      include: [{ model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES], required: false }],
       order: [['taskId', 'ASC'], ['level', 'ASC']],
     });
 
@@ -1508,8 +1517,8 @@ exports.getWorkflowItems = async (req, res) => {
     const approvals = await Task.findAll({
       where: approvalWhere,
       include: [
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         {
           model: Board,
           as: 'board',
@@ -1541,7 +1550,7 @@ exports.getWorkflowItems = async (req, res) => {
     const extensions = await DueDateExtension.findAll({
       where: extWhere,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: User, as: 'reviewer', attributes: ['id', 'name'], required: false },
         {
           model: Task,
@@ -1564,7 +1573,7 @@ exports.getWorkflowItems = async (req, res) => {
     const delegations = await Activity.findAll({
       where: delegationWhere,
       include: [
-        { model: User, as: 'actor', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'actor', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title', 'status', 'assignedTo'], required: false },
       ],
       order: [['createdAt', 'DESC']],
@@ -1576,8 +1585,8 @@ exports.getWorkflowItems = async (req, res) => {
     const helpRequests = await HelpRequest.findAll({
       where: helpWhere,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'avatar'] },
-        { model: User, as: 'helper', attributes: ['id', 'name', 'email', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'helper', attributes: [...USER_PILL_ATTRIBUTES] },
         {
           model: Task,
           as: 'task',

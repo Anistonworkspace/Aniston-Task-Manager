@@ -46,6 +46,19 @@ function normalizeReminderProps(incoming) {
       const d = new Date(at);
       return Number.isNaN(d.getTime()) ? null : { kind: 'custom', at: d.toISOString() };
     }
+    if (r.kind === 'interval' || r.reminderType === 'interval') {
+      const m = Number(r.intervalMinutes);
+      return Number.isFinite(m) ? { kind: 'interval', intervalMinutes: m } : null;
+    }
+    if (r.kind === 'daily_times' || r.reminderType === 'daily_times') {
+      const times = Array.isArray(r.times) ? r.times : r.timesOfDay;
+      if (!Array.isArray(times) || times.length === 0) return null;
+      return {
+        kind: 'daily_times',
+        times: times.filter((t) => typeof t === 'string'),
+        ...(r.timezone ? { timezone: r.timezone } : {}),
+      };
+    }
     return null;
   }).filter(Boolean);
 }
@@ -365,6 +378,26 @@ function CompactRemindersTile({ value, dueDate, disabled, onChange }) {
     if (r.kind === 'custom') {
       try { return format(new Date(r.at), 'MMM d, h:mm a'); } catch { return 'Custom'; }
     }
+    if (r.kind === 'interval') {
+      const m = Number(r.intervalMinutes);
+      if (!Number.isFinite(m)) return 'Repeating';
+      if (m >= 1440 && m % 1440 === 0) {
+        const d = m / 1440;
+        return d === 1 ? 'Every day' : `Every ${d} days`;
+      }
+      if (m >= 60 && m % 60 === 0) {
+        const h = m / 60;
+        return h === 1 ? 'Hourly' : `Every ${h} hours`;
+      }
+      return `Every ${m} min`;
+    }
+    if (r.kind === 'daily_times') {
+      const times = Array.isArray(r.times) ? r.times : [];
+      if (times.length === 0) return 'Daily';
+      if (times.length === 1) return `Daily at ${times[0]}`;
+      if (times.length <= 3) return `Daily at ${times.join(', ')}`;
+      return `Daily (${times.length} times)`;
+    }
     return String(r.kind || '');
   };
 
@@ -393,6 +426,32 @@ function CompactRemindersTile({ value, dueDate, disabled, onChange }) {
       } else if (r.kind === 'custom') {
         const t = new Date(r.at).getTime();
         if (!Number.isNaN(t) && t > now.getTime()) futureTimestamps.push(t);
+      } else if (r.kind === 'interval') {
+        // First fire = now + intervalMinutes (matches the backend's
+        // computeScheduledFor for newly-saved interval reminders). Server
+        // is the source of truth post-save; this is a best-effort hint
+        // while the user is still configuring.
+        const m = Number(r.intervalMinutes);
+        if (Number.isFinite(m) && m > 0) futureTimestamps.push(now.getTime() + m * 60_000);
+      } else if (r.kind === 'daily_times') {
+        // Next clock slot today, or first slot tomorrow. Computed in the
+        // user's local browser TZ (close enough for a label — server's
+        // Asia/Kolkata default takes over once saved).
+        const times = Array.isArray(r.times) ? r.times : [];
+        let best = null;
+        for (const t of times) {
+          if (typeof t !== 'string') continue;
+          const m = t.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+          if (!m) continue;
+          const candidate = new Date(now);
+          candidate.setHours(Number(m[1]), Number(m[2]), 0, 0);
+          if (candidate.getTime() <= now.getTime()) {
+            candidate.setDate(candidate.getDate() + 1);
+          }
+          const ms = candidate.getTime();
+          if (best === null || ms < best) best = ms;
+        }
+        if (best !== null) futureTimestamps.push(best);
       }
     }
     if (futureTimestamps.length === 0) return null;
@@ -2389,10 +2448,20 @@ export default function TaskModal({
                   // modal can attach a label. The backend's
                   // taskVisibility.canViewTask check on POST /api/labels and
                   // /labels/{assign,unassign} is the security boundary.
-                  // We still honour explicit DENY grants on tasks.edit
-                  // (admin-set "no edits at all" override) OR on the
-                  // specific labels.add_to_task action.
+                  //
+                  // Phase A (May 2026) gate split — mirrors backend exactly:
+                  //   canEdit   ← labels.add_to_task    (toggle existing)
+                  //   canCreate ← labels.create + labels.add_to_task
+                  //                                    (one-click Create form)
+                  // canCreate requires BOTH because labelController's
+                  // task-scoped create-and-attach path now enforces both
+                  // permissions in a single transaction.
                   canEdit={!denyEdit && granularPermissions?.['labels.add_to_task'] !== false}
+                  canCreate={
+                    !denyEdit
+                    && granularPermissions?.['labels.add_to_task'] !== false
+                    && granularPermissions?.['labels.create'] !== false
+                  }
                   // canManage exposes per-label delete (trash) controls in
                   // the picker — T1 / T2 only. Backend's canManageBoard is
                   // still the authoritative gate.

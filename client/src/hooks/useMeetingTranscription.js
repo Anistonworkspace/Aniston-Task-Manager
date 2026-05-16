@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import api from '../services/api';
 
 /* ──────────────────────────────────────────────────────────────
  * Deepgram-backed meeting transcription hook.
@@ -12,9 +13,17 @@ import { useState, useRef, useCallback, useEffect } from 'react';
  *   { speaker, text, startMs, endMs }
  *
  * Transport:
- *   WebSocket → /api/meeting-stream/ws?token=<jwt>
+ *   WebSocket → /api/meeting-stream/ws?token=<ticket>
  *   The server proxies PCM frames to Deepgram Streaming API and fans the
  *   JSON transcripts back to us.
+ *
+ * Auth (post-D-1 Phase 2):
+ *   The access JWT lives in an httpOnly cookie that JS cannot read, and in
+ *   dev the WS connects to a different origin than the one the cookie is
+ *   bound to. So we first ask the backend (over an authenticated HTTP
+ *   call that carries the cookie) for a short-lived "meeting-ws" ticket
+ *   and pass it in the query string. Legacy storage-token clients keep
+ *   working via the 404 fallback below.
  * ────────────────────────────────────────────────────────────── */
 
 const WORKLET_URL = '/audio/pcmWorklet.js';
@@ -32,11 +41,11 @@ function resolveWebSocketUrl() {
   return `${apiOrigin.replace(/\/$/, '')}/api/meeting-stream/ws`;
 }
 
-// Match the precedence used by services/api.js and AuthContext — the primary
-// store is sessionStorage; localStorage is the "remember me" fallback. Using
-// only one side here caused the WebSocket upgrade to fire before the token
-// was visible, which the UI reported as "Not authenticated".
-function readToken() {
+// Legacy fallback only — used when the backend ticket endpoint is missing
+// (e.g. transitional deploy where the frontend ships before the backend).
+// New sessions never have a token here because login writes only to the
+// httpOnly cookie; we keep the read so users mid-migration aren't broken.
+function readLegacyStorageToken() {
   try {
     return (
       sessionStorage.getItem('token')
@@ -44,6 +53,53 @@ function readToken() {
       || ''
     );
   } catch { return ''; }
+}
+
+/**
+ * Fetch a short-lived WebSocket ticket from the backend. The HTTP call
+ * carries the auth cookie automatically (api client has withCredentials).
+ *
+ * On success: returns the ticket string.
+ * On 404 (endpoint not yet deployed): returns the legacy storage token
+ *   if present, otherwise empty.
+ * On 401: throws an auth-tagged Error so the caller surfaces the right
+ *   "session expired" copy.
+ * On network / 5xx: throws a network-tagged Error.
+ */
+async function fetchMeetingWsTicket() {
+  try {
+    // Pass {} (not null) — axios serializes a null body to the literal string
+    // "null", which express.json() strict mode rejects with 400.
+    const res = await api.post('/meeting-stream/ticket', {}, { _silent: true });
+    const ticket = res?.data?.data?.ticket || res?.data?.ticket;
+    if (ticket) return ticket;
+    // Shape mismatch — treat as fallback path.
+    const legacy = readLegacyStorageToken();
+    if (legacy) return legacy;
+    const err = new Error('Your session expired. Please sign in again.');
+    err._authFailure = true;
+    throw err;
+  } catch (err) {
+    if (err && err._authFailure) throw err;
+    const status = err?.response?.status;
+    if (status === 404) {
+      // Backend hasn't been deployed with the ticket endpoint yet — fall
+      // back to whatever token still lives in storage (pre-Phase-2 clients).
+      const legacy = readLegacyStorageToken();
+      if (legacy) return legacy;
+      const fail = new Error('Your session expired. Please sign in again.');
+      fail._authFailure = true;
+      throw fail;
+    }
+    if (status === 401 || status === 403) {
+      const fail = new Error('Your session expired. Please sign in again.');
+      fail._authFailure = true;
+      throw fail;
+    }
+    const netErr = new Error('Could not reach the meeting stream service.');
+    netErr._networkFailure = true;
+    throw netErr;
+  }
 }
 
 export default function useMeetingTranscription() {
@@ -103,30 +159,53 @@ export default function useMeetingTranscription() {
   useEffect(() => () => stopAll(), [stopAll]);
 
   const openSocket = useCallback(() => new Promise((resolve, reject) => {
-    const token = readToken();
-    if (!token) { reject(new Error('Not authenticated. Please sign in again.')); return; }
-    const url = `${resolveWebSocketUrl()}?token=${encodeURIComponent(token)}`;
-    let ws;
-    try { ws = new WebSocket(url); }
-    catch (err) { reject(err); return; }
-    wsRef.current = ws;
+    // The ticket fetch is async; wrap the chain so the Promise constructor
+    // still surfaces the eventual rejection / resolution.
+    (async () => {
+      let ticket;
+      try {
+        ticket = await fetchMeetingWsTicket();
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      const url = `${resolveWebSocketUrl()}?token=${encodeURIComponent(ticket)}`;
+      let ws;
+      try { ws = new WebSocket(url); }
+      catch (err) { reject(err); return; }
+      wsRef.current = ws;
 
-    const cleanup = () => {
-      ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null;
-    };
+      const cleanup = () => {
+        ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null;
+      };
 
-    ws.onopen = () => {
-      reconnectAttemptRef.current = 0;
-      cleanup();
-      wireSocket(ws);
-      resolve(ws);
-    };
-    ws.onerror = () => { cleanup(); reject(new Error('Could not reach the meeting stream service.')); };
-    ws.onclose = (ev) => {
-      cleanup();
-      if (ev.code === 4401 || ev.code === 1008) reject(new Error('Authentication failed for meeting stream.'));
-      else reject(new Error(ev.reason || `Meeting stream closed (code ${ev.code}).`));
-    };
+      ws.onopen = () => {
+        reconnectAttemptRef.current = 0;
+        cleanup();
+        wireSocket(ws);
+        resolve(ws);
+      };
+      ws.onerror = () => {
+        cleanup();
+        const netErr = new Error('Could not reach the meeting stream service.');
+        netErr._networkFailure = true;
+        reject(netErr);
+      };
+      ws.onclose = (ev) => {
+        cleanup();
+        if (ev.code === 4401 || ev.code === 1008) {
+          const authErr = new Error('Your session expired. Please sign in again.');
+          authErr._authFailure = true;
+          reject(authErr);
+        } else if (ev.code === 4001 || ev.code === 503) {
+          const provErr = new Error('No active transcription provider configured.');
+          provErr._providerFailure = true;
+          reject(provErr);
+        } else {
+          reject(new Error(ev.reason || `Meeting stream closed (code ${ev.code}).`));
+        }
+      };
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);
 
@@ -195,13 +274,13 @@ export default function useMeetingTranscription() {
     };
     ws.onclose = (ev) => {
       if (stoppingRef.current) return;
-      if (ev.code === 4401) {
-        setError('Authentication failed for meeting stream.');
+      if (ev.code === 4401 || ev.code === 1008) {
+        setError('Your session expired. Please sign in again.');
         stopAll();
         return;
       }
       if (ev.code === 4001 || ev.code === 503) {
-        setError('No active transcription provider configured. Ask an admin to set one up.');
+        setError('No active transcription provider configured.');
         stopAll();
         return;
       }

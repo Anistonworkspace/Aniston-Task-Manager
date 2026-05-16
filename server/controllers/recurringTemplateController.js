@@ -33,6 +33,7 @@ const { sanitizeInput } = require('../utils/sanitize');
 const logger = require('../utils/logger');
 const socketService = require('../services/socketService');
 const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // F-9 — emit template lifecycle events to all viewers authorized to see this
 // template (assignee, creator, ancestors of each, admins). Mirrors the
@@ -223,8 +224,8 @@ async function reloadTemplateForResponse(id) {
   return RecurringTaskTemplate.findByPk(id, {
     include: [
       { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-      { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-      { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+      { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+      { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
     ],
   });
 }
@@ -577,8 +578,8 @@ const listTemplates = async (req, res) => {
       where,
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
       order: [['createdAt', 'DESC']],
     });
@@ -604,8 +605,8 @@ const getTemplate = async (req, res) => {
     const template = await RecurringTaskTemplate.findByPk(req.params.id, {
       include: [
         { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-        { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
-        { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+        { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
       ],
     });
     const auth = await canManageTemplate(req.user, template, 'view');

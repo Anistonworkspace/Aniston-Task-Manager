@@ -4,6 +4,7 @@ const { Task, Board, User, DependencyRequest } = require('../models');
 const depService = require('../services/dependencyService');
 const { logActivity } = require('../services/activityService');
 const perm = require('../middleware/dependencyRequestPermissions');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // State machine for assignee-driven transitions. Cancellation is not in this
 // map because it is reached via DELETE /api/dependencies/:id and uses the
@@ -25,13 +26,13 @@ const DEFAULT_INCLUDE = [
     attributes: ['id', 'title', 'status', 'priority', 'dueDate', 'boardId', 'assignedTo'],
     include: [
       { model: Board, as: 'board', attributes: ['id', 'name', 'color'] },
-      { model: User,  as: 'assignee', attributes: ['id', 'name', 'avatar'] },
+      { model: User,  as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
     ],
   },
-  { model: User, as: 'requestedBy',      attributes: ['id', 'name', 'avatar', 'role'] },
-  { model: User, as: 'assignedTo',       attributes: ['id', 'name', 'avatar', 'role'] },
-  { model: User, as: 'originalAssigner', attributes: ['id', 'name', 'avatar', 'role'] },
-  { model: User, as: 'completedBy',      attributes: ['id', 'name', 'avatar'] },
+  { model: User, as: 'requestedBy',      attributes: [...USER_PILL_ATTRIBUTES] },
+  { model: User, as: 'assignedTo',       attributes: [...USER_PILL_ATTRIBUTES] },
+  { model: User, as: 'originalAssigner', attributes: [...USER_PILL_ATTRIBUTES] },
+  { model: User, as: 'completedBy',      attributes: [...USER_PILL_ATTRIBUTES] },
 ];
 
 /**

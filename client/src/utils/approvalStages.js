@@ -151,17 +151,31 @@ export function currentLogicalStage(stageGroups) {
 // Old role names ('Admin', 'Manager', 'Assistant Manager', 'Member',
 // 'Super Admin') are NEVER shown — tier labels only.
 //
-// Mirrors server/config/tiers.js#tierFromLegacy:
-//   isSuperAdmin → Tier 1
-//   admin/manager → Tier 2
-//   assistant_manager → Tier 3
-//   member/anything else → Tier 4
+// CURRENT vs. SNAPSHOT: TaskApprovalFlow stores a `role` snapshot captured
+// when the chain was generated. For the live indicator we want the
+// approver's CURRENT tier — promoting an approver from Tier 2 to Tier 1
+// mid-approval should update the badge in the modal, not preserve the
+// stale "Tier 2" label. loadChainForResponse now exposes the live identity
+// alongside the snapshot:
+//   row.role         — audit snapshot, captured when chain was generated
+//   row.tier         — current tier from the joined live User row
+//   row.currentRole  — current role string from the joined live User row
+//   row.isSuperAdmin — current super-admin flag from the joined live User
+// Preference order: live `tier` → live `isSuperAdmin` + live role → snapshot.
 export function roleLabelFor(row) {
+  if (!row) return '';
+  if (Number.isInteger(row.tier) && row.tier >= 1 && row.tier <= 4) {
+    return `Tier ${row.tier}`;
+  }
   if (isSuperAdminRow(row)) return 'Tier 1';
-  const r = row?.role;
-  if (r === 'admin' || r === 'manager') return 'Tier 2';
-  if (r === 'assistant_manager') return 'Tier 3';
-  if (r === 'member') return 'Tier 4';
+  const live = row.currentRole || row.user?.role;
+  if (live === 'admin' || live === 'manager') return 'Tier 2';
+  if (live === 'assistant_manager') return 'Tier 3';
+  if (live === 'member') return 'Tier 4';
+  const snap = row.role;
+  if (snap === 'admin' || snap === 'manager') return 'Tier 2';
+  if (snap === 'assistant_manager') return 'Tier 3';
+  if (snap === 'member') return 'Tier 4';
   return '';
 }
 

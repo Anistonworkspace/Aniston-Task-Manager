@@ -246,10 +246,38 @@ const TaskRow = React.memo(function TaskRow({
       // trash control inside the picker and is restricted to T1 / T2
       // (backend's canManageBoard is still the security boundary).
       case 'label': {
-        const denyLabelAdd = granularPermissions?.['labels.add_to_task'] === false;
-        const labelsCanEdit = !denyLabelAdd;
+        // Phase A (May 2026) gate split — mirror backend's split rule:
+        //   canEdit   ← labels.add_to_task    (toggle existing labels)
+        //   canCreate ← labels.create + labels.add_to_task
+        //                                    (one-click create+attach)
+        //   canManage ← T1/T2 base            (per-label trash icon)
+        // canCreate requires BOTH .create and .add_to_task because the
+        // one-click flow runs both backend operations in a single
+        // transaction — granting only one would leave the user with a
+        // Create button that 403s on submit.
+        // Phase A.2 follow-up (May 2026 RBAC hardening — bug report 2026-05-16).
+        // Defensive umbrella check: backend engine propagates a deny on
+        // `labels.create` to `labels.add_to_task` (UMBRELLA_FALLBACKS), and a
+        // deny on `labels.edit` to `labels.remove_from_task`. The same
+        // propagation IS materialised in /auth/me/permissions's effective map
+        // — but a brief window after an admin flips a deny (and before the
+        // socket-driven refresh has landed) the granular key can lag the
+        // umbrella key. Mirroring the umbrella rule here means the picker
+        // hides immediately on the umbrella deny instead of waiting for the
+        // refresh, matching what the backend will enforce.
+        const denyLabelAdd =
+          granularPermissions?.['labels.add_to_task'] === false ||
+          granularPermissions?.['labels.create'] === false;
+        const denyLabelCreate = granularPermissions?.['labels.create'] === false;
+        const denyLabelRemove =
+          granularPermissions?.['labels.remove_from_task'] === false ||
+          granularPermissions?.['labels.edit'] === false;
+        // labelsCanEdit covers both add and remove on the picker; remove-only
+        // surfaces (the per-chip X) inherit the same predicate today.
+        const labelsCanEdit = !denyLabelAdd && !denyLabelRemove;
+        const labelsCanCreate = !denyLabelAdd && !denyLabelCreate;
         const labelsCanManage = isSuperAdmin || isTier1 || isTier2;
-        return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={labelsCanEdit} canManage={labelsCanManage} />;
+        return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={labelsCanEdit} canCreate={labelsCanCreate} canManage={labelsCanManage} />;
       }
       case 'references': {
         // Multi-value reference column — backed by the task_references table

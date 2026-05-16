@@ -422,6 +422,13 @@ const createTask = async (req, res) => {
       // defaults intact for the inline-add, recurring-spawn, automation,
       // CSV-import and webhook callers.
       strict,
+      // Phase 2 — optional board-scoped StatusTemplate id. When provided,
+      // the controller loads the template (must belong to the same board),
+      // copies its `statuses` array into the new task's `statusConfig`, and
+      // — if no explicit `status` was supplied — defaults the task status
+      // to the template's `defaultStatusKey`. Historical tasks are
+      // untouched; templates are a "starting point" only.
+      statusTemplateId,
     } = req.body;
 
     // Strict-mode required-field gate. Fires only when the client opted in
@@ -488,14 +495,55 @@ const createTask = async (req, res) => {
       }
     }
 
+    // Phase 2 — optional StatusTemplate resolution. When the client supplied
+    // `statusTemplateId`, load the template and validate that it belongs to
+    // THIS board. We never resolve a template across boards: a template is
+    // a board-scoped artefact (per Phase 2 product decision) and a cross-
+    // board reference would silently leak status keys between boards.
+    //
+    // On success we snapshot the template's statuses into a local so the
+    // downstream validation + safeStatusConfig assignment can consume it.
+    // The snapshot is what gets persisted to `tasks.statusConfig` — once
+    // saved, the task is self-contained and unaffected by future edits to
+    // (or deletion of) the template.
+    let resolvedTemplate = null;
+    if (statusTemplateId !== undefined && statusTemplateId !== null && statusTemplateId !== '') {
+      const { StatusTemplate } = require('../models');
+      resolvedTemplate = await StatusTemplate.findByPk(statusTemplateId);
+      if (!resolvedTemplate) {
+        return res.status(404).json({
+          success: false,
+          message: 'Status template not found.',
+          code: 'status_template_not_found',
+        });
+      }
+      if (String(resolvedTemplate.boardId) !== String(boardId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Status template does not belong to this board.',
+          code: 'status_template_board_mismatch',
+        });
+      }
+    }
+
     // Validate status against task-level config (if provided), then board config.
     // We tolerate an empty/whitespace-only status string — older clients (and
     // some Excel-import paths) serialize the field as '' when the user didn't
     // pick anything; that should fall through to the model default rather
     // than 400ing on a "missing default status" error. Only a NON-EMPTY status
     // that fails the lookup actually gates the create.
+    //
+    // When a template was supplied, its `statuses` array becomes the source
+    // of truth for "is this status key valid for this task" — the explicit
+    // request statusConfig (rare; comes from Excel-import / older clients)
+    // takes precedence over the template, but the template trumps the
+    // board's default columns.
     if (typeof status === 'string' && status.trim() !== '') {
-      const tempTask = statusConfig ? { statusConfig } : {};
+      const validationStatusConfig =
+        (Array.isArray(statusConfig) && statusConfig.length > 0)
+          ? statusConfig
+          : (resolvedTemplate ? resolvedTemplate.statuses : null);
+      const tempTask = validationStatusConfig ? { statusConfig: validationStatusConfig } : {};
       if (!isValidStatusForTask(status, tempTask, board)) {
         logger.warn('[Task] Create rejected — invalid status', {
           ...safeTaskCreateContext(req),
@@ -524,9 +572,20 @@ const createTask = async (req, res) => {
     // Member-style restriction: cannot configure task-level status options or
     // override priority. (Mirrors the previous behavior; field-level whitelist
     // for full edits is enforced in updateTask via taskPermissions middleware.)
+    //
+    // Phase 2 — when a StatusTemplate was resolved, its `statuses` array is
+    // copied into the task's statusConfig snapshot (this applies to every
+    // tier, since template selection is opt-in by the actor and the template
+    // itself was authored by T1/T2). An explicit `statusConfig` array on the
+    // body still wins for non-member callers — it is the long-standing path
+    // for CSV import / API integrations that supply their own status list.
     const isMemberRole = req.user.role === 'member';
-    const safeStatusConfig = (!isMemberRole && Array.isArray(statusConfig) && statusConfig.length > 0)
-      ? statusConfig : null;
+    let safeStatusConfig = null;
+    if (!isMemberRole && Array.isArray(statusConfig) && statusConfig.length > 0) {
+      safeStatusConfig = statusConfig;
+    } else if (resolvedTemplate) {
+      safeStatusConfig = resolvedTemplate.statuses;
+    }
 
     // Normalize assigneeIds. Anyone restricted to self gets forced to [self];
     // we DO NOT silently drop other IDs — instead we 403 below if the request
@@ -660,12 +719,25 @@ const createTask = async (req, res) => {
     // Keep backward compat: set assignedTo to first assignee
     const primaryAssignee = assigneeIds.length > 0 ? assigneeIds[0] : null;
 
+    // Resolve the final status used for the row. Precedence:
+    //   1. Explicit `status` from the request body (non-empty after trim).
+    //   2. Template's `defaultStatusKey` when a StatusTemplate was supplied.
+    //   3. Global default 'not_started' (legacy lenient behaviour).
+    // We compute this BEFORE the approval gate so a template whose default
+    // key is 'done' cannot quietly bypass the gate when a non-super-admin
+    // omits the explicit status field.
+    const finalStatus = (typeof status === 'string' && status.trim() !== '')
+      ? status
+      : (resolvedTemplate ? resolvedTemplate.defaultStatusKey : 'not_started');
+
     // Approval gate at creation: a non-super-admin cannot create a task that
     // is already status='done'. This closes the secondary bypass where a
     // member could POST { status: 'done', assignedTo: self } and skip the
     // chain. Members must create the task at a non-done status, work on it,
     // then submit for approval. Super Admins are exempt (final authority).
-    if (status === 'done' && !req.user?.isSuperAdmin) {
+    // Phase 2 — checks `finalStatus` (not raw `status`) so a template-default
+    // pointing at 'done' cannot bypass this gate either.
+    if (finalStatus === 'done' && !req.user?.isSuperAdmin) {
       return res.status(403).json({
         success: false,
         message: 'Tasks cannot be created in the Done state. Submit for approval after completing the work.',
@@ -680,8 +752,8 @@ const createTask = async (req, res) => {
 
     // Auto-assign group based on status if no explicit groupId provided
     let effectiveGroupId = groupId || 'new';
-    if (!groupId && status) {
-      const targetGroup = findGroupForStatus(status, board.groups);
+    if (!groupId && finalStatus) {
+      const targetGroup = findGroupForStatus(finalStatus, board.groups);
       if (targetGroup) effectiveGroupId = targetGroup;
     }
 
@@ -704,7 +776,7 @@ const createTask = async (req, res) => {
       const created = await Task.create({
         title: sanitizeInput(title),
         description: sanitizeInput(description) || '',
-        status: status || 'not_started',
+        status: finalStatus,
         statusConfig: safeStatusConfig,
         priority: priority || 'medium',
         groupId: effectiveGroupId,
@@ -713,8 +785,8 @@ const createTask = async (req, res) => {
         plannedStartTime: plannedStartTime || null,
         plannedEndTime: plannedEndTime || null,
         estimatedHours: estimatedHours != null ? estimatedHours : 0,
-        progress: status === 'done' ? 100 : 0,
-        completedAt: status === 'done' ? new Date() : null,
+        progress: finalStatus === 'done' ? 100 : 0,
+        completedAt: finalStatus === 'done' ? new Date() : null,
         position: (maxPosition || 0) + 1,
         tags: tags || [],
         customFields: customFields || {},
@@ -2771,6 +2843,32 @@ const moveTask = async (req, res) => {
       }
     }
 
+    // Reverse sync: when the task lands in a group with an explicit
+    // mappedStatus, also update the task's status to match (Monday.com
+    // Kanban-style). Skipped when the destination group has no mappedStatus
+    // (freeform buckets like "Sprint 1" stay status-independent), and when
+    // groupId isn't actually changing. forward auto-move in updateTask is
+    // not triggered here because we're calling task.update directly, not
+    // routing back through the PUT /tasks/:id handler.
+    const groupChanged = groupId !== undefined && groupId !== task.groupId;
+    const taskFields = { groupId: targetGroupId, position: targetPosition };
+    const changedFields = ['groupId', 'position'];
+    if (groupChanged) {
+      try {
+        const board = await Board.findByPk(task.boardId, { attributes: ['id', 'groups'] });
+        const targetGroup = Array.isArray(board?.groups)
+          ? board.groups.find(g => g && g.id === targetGroupId)
+          : null;
+        const mapped = targetGroup?.mappedStatus;
+        if (mapped && mapped !== task.status) {
+          taskFields.status = mapped;
+          changedFields.push('status');
+        }
+      } catch (err) {
+        logger.warn('[Task] moveTask mapped-status lookup failed:', err.message);
+      }
+    }
+
     // Shift positions of other tasks in the target group
     await Task.increment('position', {
       by: 1,
@@ -2782,19 +2880,20 @@ const moveTask = async (req, res) => {
       },
     });
 
-    await task.update({ groupId: targetGroupId, position: targetPosition });
+    await task.update(taskFields);
 
     const fullTask = await Task.findByPk(task.id, {
       include: [...(await getTaskIncludes())],
     });
 
-    // Move is intra-board (groupId / position change). Frontend has no
-    // 'task:moved' handler — it relied on a generic refetch. Emit
-    // 'task:updated' instead so BoardPage's existing patcher repositions
-    // the row in the new group without a full refetch.
+    // Move is intra-board (groupId / position change, optionally status).
+    // Frontend has no 'task:moved' handler — it relied on a generic refetch.
+    // Emit 'task:updated' instead so BoardPage's existing patcher repositions
+    // the row in the new group (and re-renders the status pill) without a
+    // full refetch.
     realtime.emitTaskUpdated(fullTask, {
       actorId: req.user.id,
-      changedFields: ['groupId', 'position'],
+      changedFields,
     });
 
     res.json({
@@ -3298,13 +3397,48 @@ const reorderTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'boardId and items array are required.' });
     }
 
+    // Reverse sync: when an item lands in a group with mappedStatus, also
+    // update its status to match. Resolve groups → status map ONCE up front
+    // so the inner loop stays O(items). Skipped for groups without
+    // mappedStatus — freeform buckets keep status independent.
+    const groupStatusMap = new Map(); // groupId → mappedStatus (only entries with one)
+    try {
+      const board = await Board.findByPk(boardId, { attributes: ['id', 'groups'] });
+      if (Array.isArray(board?.groups)) {
+        for (const g of board.groups) {
+          if (g && g.id && g.mappedStatus) groupStatusMap.set(g.id, g.mappedStatus);
+        }
+      }
+    } catch (err) {
+      logger.warn('[Task] reorderTasks mapped-status lookup failed:', err.message);
+    }
+
+    // Pre-fetch current (groupId, status) for items whose target group has a
+    // mapping — needed to avoid no-op status writes and to detect cross-group
+    // moves. A single query keeps this cheap even on a large drag batch.
+    const itemIds = items.map(it => it.id).filter(Boolean);
+    const currentRows = (groupStatusMap.size > 0 && itemIds.length > 0)
+      ? await Task.findAll({
+          where: { id: { [Op.in]: itemIds }, boardId },
+          attributes: ['id', 'groupId', 'status'],
+          raw: true,
+        })
+      : [];
+    const currentById = new Map(currentRows.map(r => [r.id, r]));
+
     const transaction = await require('../config/db').sequelize.transaction();
     try {
       for (const item of items) {
-        await Task.update(
-          { groupId: item.groupId, position: item.position },
-          { where: { id: item.id, boardId }, transaction }
-        );
+        const upd = { groupId: item.groupId, position: item.position };
+        const mapped = groupStatusMap.get(item.groupId);
+        const cur = currentById.get(item.id);
+        // Only stamp status when the row actually changed groups (drag-drop
+        // between groups) AND the destination has a mappedStatus AND the new
+        // status would differ. Avoids touching status on intra-group reorders.
+        if (mapped && cur && cur.groupId !== item.groupId && cur.status !== mapped) {
+          upd.status = mapped;
+        }
+        await Task.update(upd, { where: { id: item.id, boardId }, transaction });
       }
       await transaction.commit();
     } catch (err) {

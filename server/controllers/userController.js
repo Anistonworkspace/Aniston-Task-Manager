@@ -12,6 +12,7 @@ const {
   assertNotLastTier1Change,
 } = require('../config/tiers');
 const safeLogger = require('../utils/safeLogger');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * Phase 5c — Last Tier-1 protection helper.
@@ -589,7 +590,7 @@ async function getTeamSubordinates(managerId, depth = 0, maxDepth = 3) {
   if (depth >= maxDepth) return [];
   const directReports = await User.findAll({
     where: { managerId, isActive: true },
-    attributes: ['id', 'name', 'email', 'role', 'department', 'designation', 'avatar', 'hierarchyLevel', 'title', 'workspaceId', 'managerId', 'isActive'],
+    attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation', 'hierarchyLevel', 'title', 'workspaceId', 'managerId', 'isActive'],
   });
   const all = [...directReports];
   for (const report of directReports) {
@@ -605,7 +606,7 @@ const getMyTeam = async (req, res) => {
     if (req.user.role === 'admin') {
       members = await User.findAll({
         where: { isActive: true },
-        attributes: ['id', 'name', 'email', 'role', 'department', 'designation', 'avatar', 'hierarchyLevel', 'title', 'workspaceId', 'managerId', 'isActive'],
+        attributes: [...USER_PILL_ATTRIBUTES, 'department', 'designation', 'hierarchyLevel', 'title', 'workspaceId', 'managerId', 'isActive'],
         order: [['name', 'ASC']],
       });
     } else if (req.user.role === 'manager') {

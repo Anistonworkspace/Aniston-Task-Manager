@@ -6,6 +6,7 @@ const { emitToUser } = require('../services/socketService');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
 const { isTier4 } = require('../config/tiers');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // GET /api/access-requests — list requests (admin sees all, user sees own)
 exports.getAccessRequests = async (req, res) => {
@@ -22,7 +23,7 @@ exports.getAccessRequests = async (req, res) => {
     const requests = await AccessRequest.findAll({
       where,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'email', 'avatar', 'role', 'department'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES, 'department'] },
         { model: User, as: 'reviewer', attributes: ['id', 'name', 'email'] },
       ],
       order: [['createdAt', 'DESC']],

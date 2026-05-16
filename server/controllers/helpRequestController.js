@@ -7,6 +7,7 @@ const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../u
 const taskVisibility = require('../services/taskVisibilityService');
 const { isTier4 } = require('../config/tiers');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // POST /api/help-requests
 exports.createHelpRequest = async (req, res) => {
@@ -56,8 +57,8 @@ exports.createHelpRequest = async (req, res) => {
 
     const full = await HelpRequest.findByPk(hr.id, {
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'avatar'] },
-        { model: User, as: 'helper', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'helper', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title'] },
       ],
     });
@@ -83,8 +84,8 @@ exports.getHelpRequests = async (req, res) => {
     const requests = await HelpRequest.findAll({
       where,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'avatar', 'email'] },
-        { model: User, as: 'helper', attributes: ['id', 'name', 'avatar', 'email'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'helper', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title', 'status', 'boardId'] },
       ],
       order: [['createdAt', 'DESC']],
@@ -146,7 +147,7 @@ exports.getMyPendingHelp = async (req, res) => {
     const requests = await HelpRequest.findAll({
       where: { requestedTo: req.user.id, status: { [Op.in]: ['pending', 'in_review'] }, [Op.or]: [{ isArchived: false }, { isArchived: null }] },
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: Task, as: 'task', attributes: ['id', 'title', 'status', 'boardId'] },
       ],
       order: [
@@ -201,8 +202,8 @@ exports.getArchivedHelpRequests = async (req, res) => {
     const requests = await HelpRequest.findAll({
       where,
       include: [
-        { model: User, as: 'requester', attributes: ['id', 'name', 'avatar'] },
-        { model: User, as: 'helper', attributes: ['id', 'name', 'avatar'] },
+        { model: User, as: 'requester', attributes: [...USER_PILL_ATTRIBUTES] },
+        { model: User, as: 'helper', attributes: [...USER_PILL_ATTRIBUTES] },
         {
           model: Task, as: 'task', attributes: ['id', 'title', 'status', 'boardId'],
           ...(search ? { where: { title: { [Op.iLike]: `%${search}%` } } } : {}),

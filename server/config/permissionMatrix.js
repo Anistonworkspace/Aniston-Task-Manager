@@ -27,6 +27,7 @@ const RESOURCES = {
   task_links:            { label: 'Task Links',            category: 'Task Management' },
   task_references:       { label: 'Task References',       category: 'Task Management' },
   labels:                { label: 'Labels',                category: 'Task Management' },
+  status_templates:      { label: 'Status Templates',      category: 'Task Management' },
   automations:           { label: 'Automations',           category: 'Task Management' },
   dependencies:          { label: 'Dependencies',          category: 'Task Management' },
   comments:              { label: 'Comments',              category: 'Collaboration' },
@@ -240,6 +241,12 @@ const RESOURCE_ACTIONS = {
     'view', 'create', 'edit', 'delete',
     'add_to_task', 'remove_from_task',
   ],
+  // Phase 2 — Status Tile Group (board-scoped). `view` covers reading the
+  // template list for the create-task modal; `create/edit/delete` are the
+  // T1/T2 write surface; `set_default` flags one template per board as the
+  // board default (separate from edit so admins can demote/promote without
+  // re-submitting the whole template).
+  status_templates:      ['view', 'create', 'edit', 'delete', 'set_default'],
   automations:           ['view', 'create', 'edit', 'delete'],
   dependencies:          [
     'view', 'create', 'edit', 'delete',
@@ -658,6 +665,7 @@ const ROLE_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
     labels:           { view: true, create: true, edit: true, delete: true },
+    status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
@@ -689,6 +697,7 @@ const ROLE_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
     labels:           { view: true, create: true, edit: true, delete: true },
+    status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
@@ -727,6 +736,7 @@ const ROLE_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
     labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
@@ -769,6 +779,7 @@ const ROLE_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
     labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: false, delete: false },
     dashboard:        { view: false, export: false },
@@ -835,6 +846,7 @@ const TIER_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
     labels:           { view: true, create: true, edit: true, delete: true },
+    status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
@@ -873,6 +885,7 @@ const TIER_PERMISSIONS = {
     // (May 2026). Carved out from the otherwise-strict T2 no-destructive rule
     // because labels are easily-recreatable metadata, not work product.
     labels:           { view: true, create: true, edit: true, delete: true, add_to_task: true, remove_from_task: true },
+    status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: true },
@@ -917,6 +930,7 @@ const TIER_PERMISSIONS = {
     // canManageBoard; the granular add_to_task / remove_from_task gates
     // are the right level for per-task surfaces.
     labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
@@ -959,6 +973,7 @@ const TIER_PERMISSIONS = {
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
     labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: false, delete: false },
     dashboard:        { view: false, export: false },
@@ -1187,6 +1202,11 @@ const GRANTABILITY = {
   // end, including deletion. The destructive operation is still confined to
   // T1+T2 base — T3/T4 cannot be granted delete via PermissionGrant.
   labels:        { view: T1_T2, create: T1_T2, edit: T1_T2, delete: T1_T2 },
+  // Phase 2 — status_templates mirrors labels' grantability shape: every
+  // action is T1/T2 only (no T3/T4 grant or deny rows). Templates are
+  // board-config metadata, not work product, so admins can curate the
+  // library end-to-end including deletes.
+  status_templates: { view: T1_T2, create: T1_T2, edit: T1_T2, delete: T1_T2, set_default: T1_T2 },
   automations:   { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
   dependencies:  { view: T1_T2, create: T1_T2, delete: NON_GRANTABLE },
 

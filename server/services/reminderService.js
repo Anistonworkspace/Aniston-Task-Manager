@@ -16,6 +16,12 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const logger = require('../utils/logger');
+const {
+  DEFAULT_TIMEZONE,
+  isValidHHMM,
+  normalizeTimezone,
+  nextDailyTimeFire,
+} = require('../utils/timezone');
 
 // Lazy-load models to avoid circular-dependency issues at startup
 let _models = null;
@@ -208,22 +214,46 @@ async function rescheduleReminders(taskId, newDueDate) {
  *  client renders. Anything else gets rejected by `normalizeReminderSpecs`. */
 const ALLOWED_OFFSET_MINUTES = new Set([5, 15, 30, 60, 120, 360, 720, 1440, 2880, 4320, 10080]);
 
+/** Recurring-interval bounds. 15 min ≤ N ≤ 7 days (10080 min). */
+const MIN_INTERVAL_MINUTES = 15;
+const MAX_INTERVAL_MINUTES = 10080;
+/** Max distinct HH:MM slots per `daily_times` reminder. Bounds notification volume. */
+const MAX_DAILY_TIMES = 12;
+
 /**
  * Compute the absolute UTC `scheduledFor` for a reminder spec given a
  * deadline. Returns null if the spec doesn't depend on a deadline (custom
  * type) or if the deadline is missing.
  *
+ * Recurring types (interval / daily_times) are independent of `deadline`:
+ *   - interval: first fire is `now + intervalMinutes` (never immediate, so
+ *               the user isn't pinged the moment they save).
+ *   - daily_times: first fire is the next HH:MM slot in `timezone` after now.
+ *
  * @param {object} reminder Either a TaskReminder row or a normalized spec.
  * @param {Date}   deadline UTC deadline timestamp.
+ * @param {Date}   [now]    Reference instant — defaults to `new Date()`.
+ *                          Injectable for tests.
  */
-function computeScheduledFor(reminder, deadline) {
+function computeScheduledFor(reminder, deadline, now) {
   const type = reminder.reminderType;
+  const ref = now || new Date();
   if (type === 'custom') {
     // For custom type, scheduledFor === customReminderAt — independent
     // of dueDate. Returning null here lets callers detect and skip the
     // recomputation path.
     const at = reminder.customReminderAt;
     return at instanceof Date ? at : (at ? new Date(at) : null);
+  }
+  if (type === 'interval') {
+    const m = Number(reminder.intervalMinutes);
+    if (!Number.isFinite(m) || m < MIN_INTERVAL_MINUTES) return null;
+    return new Date(ref.getTime() + m * 60 * 1000);
+  }
+  if (type === 'daily_times') {
+    const times = Array.isArray(reminder.timesOfDay) ? reminder.timesOfDay : null;
+    if (!times || times.length === 0) return null;
+    return nextDailyTimeFire(times, reminder.timezone || DEFAULT_TIMEZONE, ref);
   }
   if (!deadline) return null;
   if (type === 'at_due') return new Date(deadline.getTime());
@@ -296,6 +326,64 @@ function normalizeReminderSpecs(rawSpecs) {
       if (seen.has(key)) continue;
       seen.add(key);
       specs.push({ reminderType: 'custom', offsetMinutes: null, customReminderAt: d });
+    } else if (kind === 'interval') {
+      const m = Number(raw.intervalMinutes);
+      if (!Number.isInteger(m) || m < MIN_INTERVAL_MINUTES || m > MAX_INTERVAL_MINUTES) {
+        errors.push(
+          `Invalid intervalMinutes: ${raw.intervalMinutes} (must be integer ${MIN_INTERVAL_MINUTES}-${MAX_INTERVAL_MINUTES}).`
+        );
+        continue;
+      }
+      // Only one `interval` spec per task (DB unique constraint enforces too).
+      if (seen.has('interval')) continue;
+      seen.add('interval');
+      specs.push({
+        reminderType: 'interval',
+        offsetMinutes: null,
+        customReminderAt: null,
+        intervalMinutes: m,
+        timesOfDay: null,
+        timezone: null,
+      });
+    } else if (kind === 'daily_times') {
+      const rawTimes = Array.isArray(raw.times) ? raw.times : raw.timesOfDay;
+      if (!Array.isArray(rawTimes) || rawTimes.length === 0) {
+        errors.push('daily_times reminder requires `times` (array of HH:MM strings).');
+        continue;
+      }
+      const cleaned = [];
+      let bad = false;
+      for (const t of rawTimes) {
+        if (!isValidHHMM(t)) {
+          errors.push(`Invalid time-of-day: ${t} (must be HH:MM, 24-hour).`);
+          bad = true;
+          break;
+        }
+        cleaned.push(t);
+      }
+      if (bad) continue;
+      // Dedupe + sort for stable storage / matching.
+      const unique = [...new Set(cleaned)].sort();
+      if (unique.length === 0) {
+        errors.push('daily_times reminder requires at least one valid time.');
+        continue;
+      }
+      if (unique.length > MAX_DAILY_TIMES) {
+        errors.push(`daily_times reminder accepts at most ${MAX_DAILY_TIMES} times (got ${unique.length}).`);
+        continue;
+      }
+      const tz = normalizeTimezone(raw.timezone);
+      // Only one `daily_times` spec per task.
+      if (seen.has('daily_times')) continue;
+      seen.add('daily_times');
+      specs.push({
+        reminderType: 'daily_times',
+        offsetMinutes: null,
+        customReminderAt: null,
+        intervalMinutes: null,
+        timesOfDay: unique,
+        timezone: tz,
+      });
     } else {
       errors.push(`Unknown reminder kind: ${kind}`);
     }
@@ -332,13 +420,17 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
 
   // 1. Cancel any existing user-set rows whose spec is no longer requested.
   //    We do this BEFORE inserting so a race where the row briefly missing
-  //    is acceptable — the cron wakes every 15 min anyway.
+  //    is acceptable — the cron wakes every minute anyway.
+  //
+  //    Recurring rows (interval / daily_times) are included here so toggling
+  //    the recurring section off in the UI cancels the row instead of
+  //    silently leaving it firing forever.
   const existing = await TaskReminder.findAll({
     where: {
       taskId,
       sentAt: null,
       cancelled: false,
-      reminderType: { [Op.in]: ['offset', 'at_due', 'custom'] },
+      reminderType: { [Op.in]: ['offset', 'at_due', 'custom', 'interval', 'daily_times'] },
     },
   });
   const desiredKeys = new Set(safeSpecs.map(specKey));
@@ -382,14 +474,29 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
   //    update it. Same shape as the centralised `notificationService.createNotification`
   //    pattern.
   for (const s of safeSpecs) {
-    const scheduledFor = computeScheduledFor(s, deadline);
+    const scheduledFor = computeScheduledFor(s, deadline, now);
     if (!scheduledFor || scheduledFor <= now) continue;
 
+    // The dedup `where` only uses the columns that participate in the
+    // partial unique index — (taskId, reminderType, offsetMinutes,
+    // customReminderAt). For interval / daily_times both index-coalesced
+    // columns are null, so the index already enforces "one such row per
+    // task" via the COALESCE sentinels. The extra recurring config
+    // (intervalMinutes, timesOfDay, timezone) is written but not part of
+    // the dedup key — re-applying with a new interval value updates the
+    // existing row in the `if (row)` branch below.
     const where = {
       taskId,
       reminderType: s.reminderType,
       offsetMinutes: s.offsetMinutes ?? null,
       customReminderAt: s.customReminderAt ?? null,
+    };
+
+    // Recurring-type extras that need to land on every write.
+    const recurringExtras = {
+      intervalMinutes: s.intervalMinutes ?? null,
+      timesOfDay: s.timesOfDay ?? null,
+      timezone: s.timezone ?? null,
     };
 
     let row = await TaskReminder.findOne({ where });
@@ -398,8 +505,12 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
       // is left alone — once sent, the user's spec re-selection produces a
       // fresh row only after the next dueDate change (legitimate behavior:
       // we don't re-fire historical reminders).
+      //
+      // For recurring rows we also overwrite the schedule config — the
+      // user may have changed "every 2h" → "every 3h", or edited the
+      // HH:MM list. Those edits should take effect on the next fire.
       if (!row.sentAt) {
-        await row.update({ scheduledFor, cancelled: false });
+        await row.update({ scheduledFor, cancelled: false, ...recurringExtras });
       }
       continue;
     }
@@ -407,6 +518,7 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
     try {
       await TaskReminder.create({
         ...where,
+        ...recurringExtras,
         scheduledFor,
         sentAt: null,
         cancelled: false,
@@ -417,7 +529,7 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
         // Lost the race; re-fetch + update.
         row = await TaskReminder.findOne({ where });
         if (row && !row.sentAt) {
-          await row.update({ scheduledFor, cancelled: false });
+          await row.update({ scheduledFor, cancelled: false, ...recurringExtras });
         }
       } else {
         // Surface non-uniqueness errors so the caller can decide. The
@@ -430,7 +542,14 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
 }
 
 /** Stable string key identifying a single reminder spec — same shape for a
- *  TaskReminder row and a normalized spec. Used to diff existing vs desired. */
+ *  TaskReminder row and a normalized spec. Used to diff existing vs desired.
+ *
+ *  For recurring types we deliberately do NOT include the per-row config
+ *  (intervalMinutes / timesOfDay) in the key. Reason: the user updating
+ *  "every 2h" → "every 3h" should be an in-place edit of the same logical
+ *  reminder, not "cancel the old one + insert a new one". The dedup writer
+ *  in applyReminderSpecs handles the config update in the `if (row)` branch.
+ */
 function specKey(rowOrSpec) {
   const t = rowOrSpec.reminderType;
   if (t === 'offset') return `offset:${rowOrSpec.offsetMinutes}`;
@@ -439,7 +558,7 @@ function specKey(rowOrSpec) {
     const iso = at instanceof Date ? at.toISOString() : (at ? new Date(at).toISOString() : 'null');
     return `custom:${iso}`;
   }
-  return t; // at_due, 2_day, 2_hour
+  return t; // at_due, 2_day, 2_hour, interval, daily_times
 }
 
 /**
@@ -552,9 +671,12 @@ async function getUserReminderSpecs(taskId) {
   const rows = await TaskReminder.findAll({
     where: {
       taskId,
+      // Recurring rows can be in the "between fires" state (sentAt=null,
+      // scheduledFor in future). They're still active and the modal needs
+      // to surface them so the user can edit / disable.
       sentAt: null,
       cancelled: false,
-      reminderType: { [Op.in]: ['offset', 'at_due', 'custom'] },
+      reminderType: { [Op.in]: ['offset', 'at_due', 'custom', 'interval', 'daily_times'] },
     },
     order: [['scheduledFor', 'ASC']],
   });
@@ -563,6 +685,9 @@ async function getUserReminderSpecs(taskId) {
     kind: r.reminderType,
     offsetMinutes: r.offsetMinutes,
     customReminderAt: r.customReminderAt,
+    intervalMinutes: r.intervalMinutes,
+    timesOfDay: r.timesOfDay,
+    timezone: r.timezone,
     scheduledFor: r.scheduledFor,
     sent: false,
   }));
@@ -807,6 +932,48 @@ async function processReminders() {
       }
 
       console.log(`[DeadlineReminder] Sent ${reminder.reminderType} reminder for task "${task.title}" to ${recipientMap.size} user(s)`);
+
+      // ── RE-ARM (recurring types only) ─────────────────────────────────
+      // After a successful claim + dispatch on `interval` or `daily_times`,
+      // compute the next fire and reset sentAt to NULL so the row gets
+      // picked up again. Stop re-arming once the task is done or archived.
+      //
+      // Race-safety: re-fetch the task status RIGHT BEFORE the UPDATE.
+      // cancelReminders() filters on `sentAt IS NULL`, so a complete-task
+      // mutation that landed between our claim (sentAt=now) and this point
+      // would NOT have flagged the row cancelled. Without this re-check we
+      // could re-arm a row whose task just got marked done — leading to a
+      // ping the user explicitly silenced.
+      const isRecurring =
+        reminder.reminderType === 'interval' || reminder.reminderType === 'daily_times';
+      if (isRecurring) {
+        const fresh = await Task.findByPk(task.id, {
+          attributes: ['id', 'status', 'isArchived'],
+        });
+        const stopRearm =
+          !fresh ||
+          fresh.isArchived === true ||
+          isCompletedStatus(fresh.status);
+        if (stopRearm) {
+          await reminder.update({ cancelled: true, lastFiredAt: now });
+        } else {
+          const nextFire = computeScheduledFor(reminder, null, now);
+          if (nextFire && nextFire > now) {
+            await reminder.update({
+              scheduledFor: nextFire,
+              sentAt: null,
+              lastFiredAt: now,
+            });
+          } else {
+            // Defensive: nextFire couldn't be computed (e.g. corrupted
+            // timesOfDay). Cancel so we don't fire-loop on a broken row.
+            logger.warn('[DeadlineReminder] recurring re-arm failed; cancelling', {
+              reminderId: reminder.id, taskId: task.id, type: reminder.reminderType,
+            });
+            await reminder.update({ cancelled: true, lastFiredAt: now });
+          }
+        }
+      }
     } catch (err) {
       skipped += 1;
       logger.error(`[DeadlineReminder] Error processing reminder ${reminder.id}:`, err);
@@ -872,6 +1039,39 @@ function buildReminderCopy(reminder, task, boardName, deadlineStr) {
         `Hi ${name}, this is your reminder for the task "${taskTitle}"${board}${due}.`,
     };
   }
+  if (reminder.reminderType === 'interval') {
+    const m = Number(reminder.intervalMinutes);
+    let every = 'a while';
+    if (Number.isFinite(m) && m > 0) {
+      if (m >= 1440 && m % 1440 === 0) {
+        const d = m / 1440;
+        every = `${d} day${d === 1 ? '' : 's'}`;
+      } else if (m >= 60 && m % 60 === 0) {
+        const h = m / 60;
+        every = `${h} hour${h === 1 ? '' : 's'}`;
+      } else {
+        every = `${m} minute${m === 1 ? '' : 's'}`;
+      }
+    }
+    return {
+      type: 'due_date',
+      title: () => `Reminder: ${taskTitle}`,
+      body: (name) =>
+        `Hi ${name}, this is your repeating reminder for "${taskTitle}"${board}. ` +
+        `You'll be reminded every ${every} until the task is marked done.`,
+    };
+  }
+  if (reminder.reminderType === 'daily_times') {
+    const times = Array.isArray(reminder.timesOfDay) ? reminder.timesOfDay : [];
+    const list = times.length > 0 ? times.join(', ') : 'scheduled times';
+    return {
+      type: 'due_date',
+      title: () => `Reminder: ${taskTitle}`,
+      body: (name) =>
+        `Hi ${name}, this is your daily reminder for "${taskTitle}"${board}. ` +
+        `You'll be reminded at ${list} every day until the task is marked done.`,
+    };
+  }
   // offset_minutes (5/15/30/60/120/1440 etc.) — read from offsetMinutes if
   // available, otherwise derive a friendly description from the timestamps.
   const offset = reminder.offsetMinutes;
@@ -909,4 +1109,8 @@ module.exports = {
   getReminderSummary,
   getReminderSummaryBulk,
   ALLOWED_OFFSET_MINUTES,
+  // Recurring-reminder bounds (used by validators + tests).
+  MIN_INTERVAL_MINUTES,
+  MAX_INTERVAL_MINUTES,
+  MAX_DAILY_TIMES,
 };

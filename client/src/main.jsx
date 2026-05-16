@@ -1,7 +1,20 @@
 import React from 'react'; // eslint-disable-line no-unused-vars
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, HashRouter } from 'react-router-dom';
+import { isDesktopApp } from './utils/runtime';
 import App from './App';
+
+// Pick the router that matches the runtime. The web app stays on
+// BrowserRouter (clean URLs like /boards/123, served by nginx/Vite with a
+// catch-all to index.html). The packaged desktop app is loaded via
+// file:///.../index.html — under that origin BrowserRouter's pathname is
+// the absolute filesystem path of the html file, every <Navigate> tries to
+// rewrite location.pathname which Chromium treats as a real filesystem
+// navigation, and any auth redirect ends up at file:///C:/login →
+// ERR_FILE_NOT_FOUND → blank white window. HashRouter sidesteps all of
+// that: routes live in location.hash, the underlying filesystem URL never
+// changes, and navigation is a same-document hashchange.
+const AppRouter = isDesktopApp() ? HashRouter : BrowserRouter;
 import { AuthProvider } from './context/AuthContext';
 import { RealtimeProvider } from './realtime';
 import { ToastProvider } from './components/common/Toast';
@@ -63,7 +76,13 @@ if ('serviceWorker' in navigator) {
 // fetch fallback returns a synthetic 503 when upstream is down). We register
 // only when the production build runs. If a stale dev SW from a prior run
 // is still active we unregister it so the dev session has a clean slate.
-const SW_ENABLED = import.meta.env.PROD;
+// Service-worker registration is skipped in packaged Electron: the renderer
+// is loaded via file://, navigator.serviceWorker.register('/sw.js') resolves
+// to file:///sw.js and throws, and even if it didn't, native Electron
+// notifications + the main-process IPC bridge already replace the SW push
+// path. Leaving the registration as a quiet failure is harmless but noisy
+// in the desktop log.
+const SW_ENABLED = import.meta.env.PROD && !isDesktopApp();
 if ('serviceWorker' in navigator && SW_ENABLED) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
@@ -121,7 +140,7 @@ if ('serviceWorker' in navigator && !SW_ENABLED) {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <AppRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ThemeProvider>
         <AuthProvider>
           <LanguageProvider>
@@ -141,7 +160,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           </LanguageProvider>
         </AuthProvider>
       </ThemeProvider>
-    </BrowserRouter>
+    </AppRouter>
 );
 
 // Render UpdatePrompt in a separate root so it shows even if the main app crashes

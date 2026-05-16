@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { URL } = require('url');
 const { User } = require('../models');
+const { parseCookies, ACCESS_COOKIE } = require('../utils/authCookies');
 const {
   getActiveDefaultProvider,
   buildDeepgramStreamUrl,
@@ -15,20 +16,49 @@ const CLOSE_BAD_AUTH = 4401;
 const CLOSE_UPSTREAM_ERROR = 4500;
 
 /**
- * Verify the JWT that the client sent in the `Authorization` header or the
- * `token` query parameter. Returns the user object or null.
+ * Verify the JWT that the client sent — in order of preference:
+ *   1. The httpOnly access cookie (`aniston_at`). Sent by the browser on
+ *      same-origin WS upgrades (production behind one nginx).
+ *   2. The `?token=` query parameter. Carries a short-lived WS ticket
+ *      minted by `POST /api/meeting-stream/ticket` for cookie-only
+ *      sessions where the cookie cannot reach this endpoint (dev with
+ *      WS pointed direct at :5000, or any cross-origin deployment).
+ *      A legacy long-lived access JWT in this slot is still honoured for
+ *      backward compat with the pre-D-1 client.
+ *   3. `Authorization: Bearer` header — legacy native-client fallback.
+ *
+ * If the token carries a `purpose` claim, only `meeting-ws` is accepted;
+ * other purposes (e.g. sso_state, refresh) are rejected so a token minted
+ * for a different surface cannot be replayed here.
+ *
+ * Returns the user object or null.
  */
 async function authenticateUpgrade(req) {
   try {
     let token = null;
-    const auth = req.headers['authorization'];
-    if (auth && auth.startsWith('Bearer ')) token = auth.slice('Bearer '.length);
+
+    const cookies = parseCookies(req);
+    if (cookies[ACCESS_COOKIE]) token = cookies[ACCESS_COOKIE];
+
     if (!token) {
       const u = new URL(req.url, 'http://localhost');
       token = u.searchParams.get('token');
     }
+
+    if (!token) {
+      const auth = req.headers['authorization'];
+      if (auth && auth.startsWith('Bearer ')) token = auth.slice('Bearer '.length);
+    }
+
     if (!token) return null;
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Refresh tokens and other purpose-tagged tokens (sso_state, etc.) must
+    // never be accepted here. A regular access JWT has no `purpose` claim
+    // and continues to work for backward compat.
+    if (decoded.type === 'refresh') return null;
+    if (decoded.purpose && decoded.purpose !== 'meeting-ws') return null;
+
     const user = await User.findByPk(decoded.id);
     if (!user || !user.isActive) return null;
     return user;

@@ -18,7 +18,18 @@ function swVersionPlugin() {
   };
 }
 
-export default defineConfig({
+// `base` controls the URL prefix Vite bakes into index.html for asset
+// references. On the web (served by nginx at https://monday.anistonav.com/),
+// the default '/' is correct — deep-link visits to /boards/123 still resolve
+// /assets/foo.js to the same absolute path. The packaged Electron app loads
+// index.html via file:///<install>/resources/client-dist/index.html, where
+// '/assets/foo.js' resolves to file:///C:/assets/foo.js (drive root) and
+// 404s. Setting base to './' for the desktop build makes asset paths
+// relative to index.html ('./assets/foo.js' → file:///<dir>/assets/foo.js),
+// which is what the file:// loader can actually read. Trigger the desktop
+// variant with: `vite build --mode desktop`.
+export default defineConfig(({ mode }) => ({
+  base: mode === 'desktop' ? './' : '/',
   plugins: [react(), swVersionPlugin()],
   test: {
     globals: true,
@@ -50,4 +61,4 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
-});
+}));

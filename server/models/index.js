@@ -21,6 +21,7 @@ const TaskWatcher = require('./TaskWatcher');
 const Announcement = require('./Announcement');
 const Label = require('./Label');
 const TaskLabel = require('./TaskLabel');
+const StatusTemplate = require('./StatusTemplate');
 const TaskReference = require('./TaskReference');
 const TaskLink = require('./TaskLink');
 const DueDateExtension = require('./DueDateExtension');
@@ -401,6 +402,7 @@ module.exports = {
   Announcement,
   Label,
   TaskLabel,
+  StatusTemplate,
   TaskReference,
   TaskLink,
   DueDateExtension,
@@ -506,6 +508,17 @@ Board.hasMany(Label, { foreignKey: 'boardId', as: 'labels' });
 // ─── Task <-> Label (many-to-many via TaskLabel) ─────────────
 Task.belongsToMany(Label, { through: TaskLabel, foreignKey: 'taskId', otherKey: 'labelId', as: 'labels' });
 Label.belongsToMany(Task, { through: TaskLabel, foreignKey: 'labelId', otherKey: 'taskId', as: 'tasks' });
+
+// ─── StatusTemplate <-> Board / User (creator) ───────────────
+// Phase 2 — board-scoped reusable status tile groups. Cascade on board delete
+// so removing a board cleans up its template library. Cascade on user delete
+// matches the rest of the project (Labels, Boards, etc.) — deactivating a
+// creator wipes their authored templates. Tasks created from a template are
+// self-contained (statusConfig holds a snapshot of the template's statuses
+// at create time) so deletion never breaks historical task rendering.
+StatusTemplate.belongsTo(Board, { foreignKey: 'boardId', as: 'board', onDelete: 'CASCADE' });
+StatusTemplate.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'CASCADE' });
+Board.hasMany(StatusTemplate, { foreignKey: 'boardId', as: 'statusTemplates' });
 
 // ─── Task <-> TaskReference (1-to-many) ──────────────────────
 // Each task may carry multiple free-form reference entries (ticket IDs,
