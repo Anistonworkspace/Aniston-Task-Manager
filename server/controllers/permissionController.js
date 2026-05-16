@@ -12,6 +12,7 @@ const {
 } = require('../services/permissionEngine');
 const { resolveTier, TIER_1 } = require('../config/tiers');
 const safeLogger = require('../utils/safeLogger');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 // Push a 'permissions:updated' event to a user's personal socket room so
 // that a logged-in target re-fetches their effective permissions immediately
@@ -56,7 +57,7 @@ exports.getPermissions = async (req, res) => {
     const grants = await PermissionGrant.findAll({
       where,
       include: [
-        { model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role', 'isSuperAdmin'] },
+        { model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: User, as: 'granter', attributes: ['id', 'name', 'email'] },
       ],
       order: [['createdAt', 'DESC']],
@@ -200,20 +201,53 @@ exports.grantPermission = async (req, res) => {
       return res.json({ success: true, data: { permission: existing }, updated: true });
     }
 
-    const grant = await PermissionGrant.create({
-      userId,
-      resourceType,
-      resourceId: resourceId || null,
-      action: action || null,
-      permissionLevel: action ? null : permissionLevel,
-      effect: grantEffect,
-      scope: scope || 'global',
-      isOverride: true,
-      grantedBy: req.user.id,
-      expiresAt: expiresAt || null,
-      reason: reason || null,
-      notes: notes || null,
-    });
+    // Phase A — Race-safe insert. If two concurrent requests both pass the
+    // existing-row check above, the partial UNIQUE index added in
+    // migration 017 makes the second INSERT fail with
+    // SequelizeUniqueConstraintError. We catch it, refetch the row that
+    // won the race, and update it in place — making the endpoint
+    // idempotent on the (userId, resourceType, resourceId, action, effect)
+    // tuple regardless of concurrency.
+    let grant;
+    try {
+      grant = await PermissionGrant.create({
+        userId,
+        resourceType,
+        resourceId: resourceId || null,
+        action: action || null,
+        permissionLevel: action ? null : permissionLevel,
+        effect: grantEffect,
+        scope: scope || 'global',
+        isOverride: true,
+        grantedBy: req.user.id,
+        expiresAt: expiresAt || null,
+        reason: reason || null,
+        notes: notes || null,
+      });
+    } catch (insertErr) {
+      if (insertErr?.name === 'SequelizeUniqueConstraintError') {
+        const winner = await PermissionGrant.findOne({ where: existingWhere });
+        if (winner) {
+          await winner.update({
+            expiresAt: expiresAt || null,
+            reason: reason || winner.reason,
+            notes: notes || winner.notes,
+            scope: scope || winner.scope,
+          });
+          logActivity({
+            action: grantEffect === 'deny' ? 'permission_denied_updated' : 'permission_updated',
+            description: `${req.user.name} updated ${grantEffect} of '${grantAction}' on '${resourceType}' for ${targetUser.name} (race-resolved)`,
+            entityType: 'permission',
+            entityId: winner.id,
+            userId: req.user.id,
+            meta: { targetUserId: userId, resourceType, resourceId, action: grantAction, effect: grantEffect, raceResolved: true },
+          });
+          notifyPermissionChange(userId, { resourceType, action: grantAction, effect: grantEffect });
+          return res.json({ success: true, data: { permission: winner }, updated: true });
+        }
+      }
+      throw insertErr;
+    }
 
     logActivity({
       action: grantEffect === 'deny' ? 'permission_denied' : 'permission_granted',
@@ -402,20 +436,44 @@ exports.multiGrant = async (req, res) => {
           continue;
         }
 
-        const grant = await PermissionGrant.create({
-          userId,
-          resourceType: resource,
-          action,
-          permissionLevel: null,
-          effect: grantEffect,
-          scope: scope || 'global',
-          isOverride: true,
-          grantedBy: req.user.id,
-          expiresAt: expiresAt || null,
-          reason: reason || null,
-        }, { transaction: t });
+        // Phase A — Race-safe insert. Per-row try/catch handles
+        // SequelizeUniqueConstraintError from the partial UNIQUE index
+        // added by migration 017. If two concurrent multi-grant requests
+        // arrive for the same tuple, the loser re-reads the winner and
+        // updates it instead of crashing the whole transaction.
+        try {
+          const grant = await PermissionGrant.create({
+            userId,
+            resourceType: resource,
+            action,
+            permissionLevel: null,
+            effect: grantEffect,
+            scope: scope || 'global',
+            isOverride: true,
+            grantedBy: req.user.id,
+            expiresAt: expiresAt || null,
+            reason: reason || null,
+          }, { transaction: t });
 
-        created.push({ resource, action, id: grant.id, effect: grantEffect });
+          created.push({ resource, action, id: grant.id, effect: grantEffect });
+        } catch (insertErr) {
+          if (insertErr?.name === 'SequelizeUniqueConstraintError') {
+            const winner = await PermissionGrant.findOne({
+              where: { userId, resourceType: resource, action, effect: grantEffect, isActive: true },
+              transaction: t,
+            });
+            if (winner) {
+              await winner.update({
+                expiresAt: expiresAt || winner.expiresAt,
+                reason: reason || winner.reason,
+                scope: scope || winner.scope,
+              }, { transaction: t });
+              updated.push({ resource, action, id: winner.id, effect: grantEffect, raceResolved: true });
+              continue;
+            }
+          }
+          throw insertErr;
+        }
       }
     }
 

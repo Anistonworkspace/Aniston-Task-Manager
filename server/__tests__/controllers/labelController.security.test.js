@@ -320,6 +320,14 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
     // library label that affects every task on a board they don't manage —
     // that path still hits canManageBoard and 403s, matching the audit's
     // S-H6 boundary. Same expectation applies to T3.
+    //
+    // Phase A (May 2026) — canManageBoard is now engine-backed and
+    // action-aware. The blanket engine mock at the top of this file
+    // resolves `hasPermission` to true for every action, which would
+    // wrongly let T4 through. Override JUST this call so the engine
+    // returns the matrix truth (labels.create=false for tier 4).
+    const enginePermission = require('../../services/permissionEngine');
+    enginePermission.hasPermission.mockResolvedValueOnce(false);
     Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
     const req = {
       user: { id: 'u-member', isSuperAdmin: false, role: 'member', tier: 4 },

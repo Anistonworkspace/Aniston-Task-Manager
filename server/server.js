@@ -1087,6 +1087,69 @@ const start = async () => {
       console.warn('[Server] permission_grants migration warning:', e.message?.slice(0, 100));
     }
 
+    // ── Auto-migration 017: permission_grants UNIQUE active-override ──
+    //
+    // Phase A (May 2026 RBAC hardening). Adds a partial UNIQUE index that
+    // prevents two ACTIVE rows from sharing the same
+    // (userId, resourceType, resourceId, action, effect) tuple. Without
+    // this, concurrent POST /api/permissions calls can race past the
+    // controller's idempotency check and persist two ACTIVE rows; a
+    // subsequent DELETE only revokes one, leaving the engine flapping
+    // between grant-and-grant or deny-and-deny.
+    //
+    // Safety: skips installation if duplicates already exist. The bundled
+    // dedupe-permission-grants script handles cleanup with soft
+    // deactivation (no hard delete). The index name is namespaced so a
+    // future migration can extend it without colliding with the legacy
+    // non-unique indexes installed above.
+    //
+    // COALESCE handles NULL resourceId (global grants) and NULL action
+    // (legacy permissionLevel-only rows) so two globals don't dodge the
+    // uniqueness constraint via SQL's NULL = NULL = UNKNOWN semantics.
+    try {
+      const [pgTablesUniq] = await sequelize.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'permission_grants'`
+      );
+      if (pgTablesUniq.length > 0) {
+        const [dupRows] = await sequelize.query(`
+          SELECT COUNT(*)::int AS n FROM (
+            SELECT "userId", "resourceType",
+                   COALESCE("resourceId"::text, ''),
+                   COALESCE(action, ''),
+                   effect
+            FROM permission_grants
+            WHERE "isActive" = true
+            GROUP BY 1, 2, 3, 4, 5
+            HAVING COUNT(*) > 1
+          ) d
+        `);
+        const dupCount = Number(dupRows?.[0]?.n || 0);
+        if (dupCount > 0) {
+          console.warn(
+            `[Server] permission_grants UNIQUE active-override index NOT installed: ${dupCount} ` +
+            `duplicate ACTIVE tuple(s) present. Run \`node server/scripts/dedupe-permission-grants.js --apply\` ` +
+            `then restart to apply the constraint. Engine still functions; race-condition duplicates remain ` +
+            `possible until cleaned up.`
+          );
+        } else {
+          await sequelize.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS uniq_permission_grants_active_override
+              ON permission_grants (
+                "userId",
+                "resourceType",
+                COALESCE("resourceId"::text, ''),
+                COALESCE(action, ''),
+                effect
+              )
+              WHERE "isActive" = true
+          `);
+          console.log('[Server] permission_grants UNIQUE active-override index ensured.');
+        }
+      }
+    } catch (e) {
+      console.warn('[Server] permission_grants UNIQUE constraint warning:', e.message?.slice(0, 200));
+    }
+
     // ── Auto-migration: labels and task_labels tables ──
     // These are required by the Label include in task queries.
     // Without them, every task fetch crashes with "relation does not exist".

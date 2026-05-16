@@ -230,6 +230,14 @@ exports.deleteLink = async (req, res) => {
     if (!(await canEditTaskLinks(req.user, task))) {
       return res.status(403).json({ success: false, message: 'You do not have permission to edit links on this task.' });
     }
+    // Phase A — Destructive tier gate. T2 cannot delete shared task links
+    // (decision #4 strict). T3/T4 may delete only links they authored. T1
+    // is unrestricted. link.createdBy mirrors the own-resource semantics
+    // used elsewhere in the codebase (worklog, comment, etc.).
+    const { assertCanDelete } = require('../services/tierEnforcement');
+    const { sendIfTierError } = require('../utils/tierResponseHelpers');
+    const isOwnLink = !!link.createdBy && String(link.createdBy) === String(req.user.id);
+    if (sendIfTierError(res, () => assertCanDelete(req.user, 'task_link', { isOwnResource: isOwnLink }))) return;
     await link.destroy();
 
     // P2-7 — don't echo URL content into activity description.

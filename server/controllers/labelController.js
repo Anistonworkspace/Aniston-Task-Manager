@@ -30,10 +30,18 @@ function normalizeColor(input, fallback = '#579bfc') {
 // which is authorised by `taskVisibility.canViewTask` further down. The
 // board-creator fallback is preserved so a T3/T4 user who personally
 // created a board can still manage its labels.
-function canManageBoard(user, board) {
+// Phase A (May 2026 RBAC hardening) — canManageBoard is now async and
+// engine-backed. The previous role-string gate ignored PermissionGrant
+// overrides entirely: a T2 with an explicit DENY on labels.<action>
+// still passed, and a T3 with an explicit GRANT was blocked. Both cases
+// now flow through the permission engine so DENY > GRANT > base
+// precedence applies. `action` is one of {create,edit,delete}; the
+// engine's umbrella fallback covers any legacy `labels.manage` grants.
+async function canManageBoard(user, board, action = 'edit') {
   if (!user || !board) return false;
   if (user.isSuperAdmin) return true;
-  if (user.role === 'admin' || user.role === 'manager') return true;
+  const { hasPermission } = require('../services/permissionEngine');
+  if (await hasPermission(user, 'labels', action)) return true;
   if (board.createdBy === user.id) return true;
   return false;
 }
@@ -147,6 +155,27 @@ exports.createLabel = async (req, res) => {
       if (!(await taskVisibility.canViewTask(req.user, task))) {
         return res.status(403).json({ success: false, message: 'Forbidden.' });
       }
+      // Phase A (May 2026) — One-click "create new label + attach to this
+      // task" is the union of TWO separate authorities:
+      //   1. labels.create        — minting a new label row in the
+      //                             board's label library (the new label
+      //                             is visible to every user on that
+      //                             board).
+      //   2. labels.add_to_task   — attaching the (now-existing) label
+      //                             to a specific task.
+      // Backend now enforces BOTH so the rule matches the frontend
+      // semantics. Previously this path was authorised by canViewTask
+      // alone, which let a Tier 3/4 user create board-library labels
+      // implicitly by piggy-backing on a task they could see — a quiet
+      // privilege escalation. Each check returns its own precise
+      // machine-readable code in the 403 payload via denyIfNoPermission,
+      // so the UI can surface "granted labels.create but not
+      // labels.add_to_task" vs. the inverse.
+      const { denyIfNoPermission } = require('../utils/permissionGate');
+      if (await denyIfNoPermission(res, req.user, 'labels', 'create',
+          'You do not have permission to create new labels.')) return;
+      if (await denyIfNoPermission(res, req.user, 'labels', 'add_to_task',
+          'You do not have permission to add labels to tasks.')) return;
       label = await sequelize.transaction(async (t) => {
         const created = await Label.create({
           name: sanitizeInput(name),
@@ -163,7 +192,10 @@ exports.createLabel = async (req, res) => {
       if (boardId) {
         const board = await Board.findByPk(boardId);
         if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
-        if (!canManageBoard(req.user, board)) {
+        // canManageBoard is now async + action-aware (Phase A). A T3/T4
+        // user with an explicit `labels.create` grant override now passes
+        // here; a T2 with an explicit DENY on `labels.create` is blocked.
+        if (!(await canManageBoard(req.user, board, 'create'))) {
           return res.status(403).json({
             success: false,
             message: 'You do not have permission to manage labels on this board.',
@@ -198,11 +230,13 @@ exports.updateLabel = async (req, res) => {
     if (!label) return res.status(404).json({ success: false, message: 'Label not found.' });
 
     // S-H6 — board access check. A label tied to a board can only be edited
-    // by someone with management rights on that board.
+    // by someone with management rights on that board. canManageBoard is
+    // now engine-backed (Phase A): a DENY override on labels.edit blocks
+    // even T2; a GRANT promotes T3/T4.
     if (label.boardId) {
       const board = await Board.findByPk(label.boardId);
       if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
-      if (!canManageBoard(req.user, board)) {
+      if (!(await canManageBoard(req.user, board, 'edit'))) {
         return res.status(403).json({
           success: false,
           message: 'You do not have permission to manage labels on this board.',
@@ -241,11 +275,14 @@ exports.deleteLabel = async (req, res) => {
     const label = await Label.findByPk(labelId);
     if (!label) return res.status(404).json({ success: false, message: 'Label not found.' });
 
-    // Board management gate (mirrors update/create).
+    // Board management gate (mirrors update/create). Engine-backed since
+    // Phase A — a DENY override on labels.delete blocks even Tier 2, and
+    // a GRANT promotes T3/T4 (but T3/T4 base remains "cannot delete" per
+    // matrix unless explicitly granted).
     if (label.boardId) {
       const board = await Board.findByPk(label.boardId);
       if (!board) return res.status(404).json({ success: false, message: 'Board not found.' });
-      if (!canManageBoard(req.user, board)) {
+      if (!(await canManageBoard(req.user, board, 'delete'))) {
         return res.status(403).json({ success: false, message: 'You do not have permission to delete labels on this board.' });
       }
     }

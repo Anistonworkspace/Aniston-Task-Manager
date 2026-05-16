@@ -100,6 +100,12 @@ const SHARED_KINDS = new Set([
   'transcription_provider',
   'ai_provider',
   'ai_config',
+  // Phase A (May 2026 RBAC hardening). taskLinkController.deleteLink had
+  // no destructive tier gate; this kind is the prerequisite for the
+  // controller-level assertCanDelete call. T2 is blocked from deleting
+  // task links (decision #4 strict). Own-resource flag still lets T3/T4
+  // delete links they themselves created.
+  'task_link',
 ]);
 
 const KNOWN_KINDS = new Set([...PERSONAL_KINDS, ...SHARED_KINDS]);

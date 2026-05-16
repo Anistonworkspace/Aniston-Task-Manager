@@ -36,6 +36,7 @@ const boardMembershipService = require('../services/boardMembershipService');
 const { hasPermission: enginePermission } = require('../services/permissionEngine');
 const { isSelfOwnedTask, isSelfOwnedCreate } = require('../utils/taskOwnership');
 const recurringTaskService = require('../services/recurringTaskService');
+const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
 /**
  * Centralized check: can this user assign a task to the given target user IDs?
@@ -49,12 +50,59 @@ const recurringTaskService = require('../services/recurringTaskService');
  *   3. For roles whose `assign_others` is hierarchy-scoped (assistant manager,
  *      manager), the additional `hierarchyService.canAssignTo` check still
  *      applies on top.
+ *   4. Phase A (May 2026 hardening) — when `opts.task` is supplied, the
+ *      actor must ALSO have edit authority on the source task. Previously
+ *      a Tier 3/4 user with a granular `tasks.assign_others` grant could
+ *      reassign visible-but-not-editable tasks (the grant only authorised
+ *      the *action verb*, not the *object*). Object check is tier-gated:
+ *      T1/T2 bypass (global edit baseline); T3/T4 need either global
+ *      `tasks.edit` OR be linked to the task (assignee / supervisor /
+ *      owner / creator) AND hold `tasks.edit_own`. Stranger tasks (no
+ *      linkage) are denied even with a wide `tasks.assign_others` grant.
  *
  * Returns { allowed: true } or { allowed: false, status, message }.
  */
-async function checkAssignmentAuthority(user, targetUserIds = []) {
+async function checkAssignmentAuthority(user, targetUserIds = [], opts = {}) {
+  const { task } = opts;
   const targets = (targetUserIds || []).filter(Boolean);
   if (targets.length === 0) return { allowed: true };
+
+  // Phase A — Object authority precheck. Fires when a source task is
+  // provided AND the actor is below T2 and not a super admin. T1/T2 have
+  // global edit baseline; T3/T4 need either umbrella tasks.edit OR
+  // linkage + edit_own.
+  if (task) {
+    const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
+    if (!user?.isSuperAdmin && !hasTierAtLeast(user, TIER_2)) {
+      const hasGlobalEdit = await enginePermission(user, 'tasks', 'edit');
+      if (!hasGlobalEdit) {
+        const assigneeRows = Array.isArray(task.taskAssignees) ? task.taskAssignees : [];
+        const ownerRows = Array.isArray(task.taskOwners) ? task.taskOwners : [];
+        const isLinked = String(task.assignedTo || '') === String(user.id)
+          || String(task.createdBy || '') === String(user.id)
+          || assigneeRows.some((ta) => String(ta.userId || '') === String(user.id))
+          || ownerRows.some((to) => String(to.userId || '') === String(user.id));
+        if (!isLinked) {
+          return {
+            allowed: false,
+            status: 403,
+            code: 'TASK_AUTHORITY_REQUIRED',
+            message: 'You do not have permission to change assignment on this task.',
+          };
+        }
+        const hasEditOwn = await enginePermission(user, 'tasks', 'edit_own');
+        if (!hasEditOwn) {
+          return {
+            allowed: false,
+            status: 403,
+            code: 'PERMISSION_DENIED',
+            permission: 'tasks.edit_own',
+            message: 'You do not have permission to edit assignment on this task.',
+          };
+        }
+      }
+    }
+  }
 
   const isSelfOnly = targets.every((id) => id === user.id);
 
@@ -226,17 +274,17 @@ const hasTaskLinksTable = () => tableExists('task_links');
 
 // Reusable include block — built dynamically to handle missing tables gracefully.
 const TASK_INCLUDES_CORE = [
-  { model: User, as: 'assignee', attributes: ['id', 'name', 'email', 'avatar'] },
-  { model: User, as: 'creator', attributes: ['id', 'name', 'email', 'avatar', 'role'] },
+  { model: User, as: 'assignee', attributes: [...USER_PILL_ATTRIBUTES] },
+  { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
 ];
 
 async function getTaskIncludes() {
   const includes = [...TASK_INCLUDES_CORE];
   if (await hasTaskOwnersTable()) {
-    includes.push({ model: User, as: 'owners', attributes: ['id', 'name', 'email', 'avatar'], through: { attributes: ['isPrimary'] } });
+    includes.push({ model: User, as: 'owners', attributes: [...USER_PILL_ATTRIBUTES], through: { attributes: ['isPrimary'] } });
   }
   if (await hasTaskAssigneesTable()) {
-    includes.push({ model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar', 'role'] }] });
+    includes.push({ model: TaskAssignee, as: 'taskAssignees', include: [{ model: User, as: 'user', attributes: [...USER_PILL_ATTRIBUTES] }] });
   }
   if (await hasTaskApprovalFlowsTable()) {
     // separate:true issues a single grouped query for all task ids — avoids N+1
@@ -253,7 +301,7 @@ async function getTaskIncludes() {
       include: [{
         model: User,
         as: 'user',
-        attributes: ['id', 'name', 'avatar', 'role', 'isSuperAdmin'],
+        attributes: [...USER_PILL_ATTRIBUTES],
         required: false,
       }],
     });
@@ -368,7 +416,47 @@ const createTask = async (req, res) => {
       // Phase 5 — task-level reminder specs from the create modal:
       // [{ kind: 'offset', offsetMinutes: 60 }, { kind: 'custom', at: '<ISO>' }]
       reminders,
+      // Phase 1 — Create Task modal opt-in. When true, every modal-required
+      // field must be supplied; missing ones come back as `missing: [...]`
+      // with code `strict_missing_required`. Absent/false leaves the lenient
+      // defaults intact for the inline-add, recurring-spawn, automation,
+      // CSV-import and webhook callers.
+      strict,
     } = req.body;
+
+    // Strict-mode required-field gate. Fires only when the client opted in
+    // via `strict: true` — every other create path (inline + Add task,
+    // recurring task generator, automation actions, webhooks, CSV import)
+    // keeps the prior lenient behaviour and is unaffected by this block.
+    // The response shape (`code` + `missing[]`) is part of the contract: the
+    // Create Task modal renders inline errors from `missing`.
+    if (strict === true) {
+      const titleTrim = typeof title === 'string' ? title.trim() : title;
+      const statusTrim = typeof status === 'string' ? status.trim() : status;
+      const groupTrim = typeof groupId === 'string' ? groupId.trim() : groupId;
+      const ownerArr = Array.isArray(assignedTo)
+        ? assignedTo.filter(Boolean)
+        : (assignedTo ? [assignedTo] : []);
+      const missing = [];
+      if (!titleTrim) missing.push('title');
+      if (!groupTrim) missing.push('group');
+      if (!statusTrim) missing.push('status');
+      if (!priority) missing.push('priority');
+      if (!dueDate) missing.push('dueDate');
+      if (ownerArr.length === 0) missing.push('owner');
+      if (missing.length > 0) {
+        logger.warn('[Task] Create rejected — strict-mode required field(s) missing', {
+          ...safeTaskCreateContext(req),
+          missing,
+        });
+        return res.status(400).json({
+          success: false,
+          message: `Required field(s) missing: ${missing.join(', ')}`,
+          code: 'strict_missing_required',
+          missing,
+        });
+      }
+    }
 
     // Verify board exists
     const board = await Board.findByPk(boardId);
@@ -1153,7 +1241,7 @@ const updateTask = async (req, res) => {
         // `groups` is needed by the status→group auto-move below; without it the
         // sync silently no-ops because Array.isArray(undefined) is false.
         { model: Board, as: 'board', attributes: ['id', 'name', 'columns', 'groups'] },
-        { model: User, as: 'creator', attributes: ['id', 'role'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRIBUTES] },
         { model: TaskAssignee, as: 'taskAssignees' },
       ],
     });
@@ -1655,7 +1743,11 @@ const updateTask = async (req, res) => {
       ...(Array.isArray(req.body.supervisors) ? req.body.supervisors : []),
     ].filter(Boolean);
     if (allAssignmentTargets.length > 0) {
-      const auth = await checkAssignmentAuthority(req.user, allAssignmentTargets);
+      // Phase A — pass `task` so the helper can verify the actor has
+      // edit authority on the source row, not just the action verb.
+      // attachTaskPermissions already runs an edit check; this is a
+      // defence-in-depth guard against future code paths that bypass it.
+      const auth = await checkAssignmentAuthority(req.user, allAssignmentTargets, { task });
       if (!auth.allowed) {
         return res.status(auth.status).json({
           success: false,
@@ -2797,6 +2889,7 @@ const bulkUpdateTasks = async (req, res) => {
     // task-ID list down to ids the actor can actually see, so a Tier 3/4
     // user with `tasks.edit` cannot mutate stranger tasks via a single
     // bulk request. Tier 1/2 bypass this filter (broad org access).
+    let bulkAuthFilteredCount = 0;
     {
       const { resolveTier, hasTierAtLeast, TIER_2 } = require('../config/tiers');
       if (!hasTierAtLeast(req.user, TIER_2)) {
@@ -2828,6 +2921,47 @@ const bulkUpdateTasks = async (req, res) => {
           // query (assignment auth, completion targets, calendar sync,
           // Task.update) runs against the trimmed set.
           taskIds = visibleIds;
+        }
+
+        // Phase A (May 2026 hardening) — Per-task EDITABILITY filter.
+        // Visibility ≠ editability. A T3/T4 user who has been granted
+        // `tasks.bulk_edit` can land here with visible-but-not-editable
+        // tasks (board members, watchers). Without this filter, the
+        // grant alone authorised mutating stranger rows. We now drop
+        // rows the actor cannot edit per-task — same silent-filter
+        // pattern as visibility above so a mixed batch proceeds for the
+        // editable subset.
+        const hasGlobalEdit = await enginePermission(req.user, 'tasks', 'edit');
+        if (!hasGlobalEdit) {
+          const hasEditOwn = await enginePermission(req.user, 'tasks', 'edit_own');
+          if (!hasEditOwn) {
+            return res.status(403).json({
+              success: false,
+              code: 'PERMISSION_DENIED',
+              permission: 'tasks.edit',
+              message: 'You do not have permission to edit tasks.',
+            });
+          }
+          // Owner-edit semantics — the actor must own each row to edit it.
+          const ownerRows = await Task.findAll({
+            where: { id: { [Op.in]: taskIds } },
+            attributes: ['id', 'createdBy', 'assignedTo'],
+            include: [{ model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'] }],
+          });
+          const editableIds = ownerRows
+            .filter((t) => isSelfOwnedTask(req.user.id, t, t.taskAssignees || []))
+            .map((t) => t.id);
+          if (editableIds.length === 0) {
+            return res.status(403).json({
+              success: false,
+              code: 'TIER_TASK_AUTHORITY_DENIED',
+              message: 'You do not have permission to edit any of the requested tasks.',
+            });
+          }
+          if (editableIds.length !== taskIds.length) {
+            bulkAuthFilteredCount = taskIds.length - editableIds.length;
+            taskIds = editableIds;
+          }
         }
       }
     }
@@ -3650,4 +3784,13 @@ module.exports = {
   autoReschedule,
   scheduleSummary,
   manageTaskMembers,
+};
+
+// Phase A — Exposed for unit-testing the assignment authority precheck.
+// NOT a public API. Production code paths call the helper inline through
+// the request lifecycle; this surface exists so the gate can be pinned
+// with focused tests instead of dragging the entire updateTask handler
+// into every assertion.
+module.exports._test = {
+  checkAssignmentAuthority,
 };

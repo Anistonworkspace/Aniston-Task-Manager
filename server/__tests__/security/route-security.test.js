@@ -365,6 +365,16 @@ describe('Label CRUD role restriction (labels.js)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Phase A — canManageBoard is now engine-backed, which means
+    // permissionEngine.hasPermission is consulted on every label-write
+    // request. jest.clearAllMocks() clears call history but does NOT
+    // reset the implementation set by earlier suites (the Org Chart
+    // suite earlier in this file calls
+    // `pe.hasPermission.mockResolvedValue(true)`, which would leak into
+    // the deny-by-default expectations below). Re-pin the deny default
+    // here so each Label CRUD test starts from a known state.
+    const pe = require('../../services/permissionEngine');
+    pe.hasPermission.mockResolvedValue(false);
     app = express();
     app.use(express.json());
     app.use('/api/labels', require('../../routes/labels'));
@@ -440,6 +450,14 @@ describe('Label CRUD role restriction (labels.js)', () => {
     // to boards they personally created. Product feedback widened
     // canManageBoard so any T1/T2 manages labels on any board they can
     // see. Tier 3/4 still get 403 (separate test below).
+    //
+    // Phase A — canManageBoard now consults permissionEngine.hasPermission
+    // for labels.create. A real manager (Tier 2) has base labels.create=true
+    // per the matrix; simulate that here so the controller takes the
+    // engine-grant branch instead of the createdBy fallback. The beforeEach
+    // pins the engine to deny-by-default for the negative tests above.
+    const pe = require('../../services/permissionEngine');
+    pe.hasPermission.mockResolvedValue(true);
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'manager' }));
     mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: 'someone-else' });
     mockModels.Label.create = jest.fn().mockResolvedValue({ id: 'lbl-1', name: 'Bug' });
