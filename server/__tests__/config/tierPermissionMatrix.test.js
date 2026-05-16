@@ -122,6 +122,13 @@ describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => 
     // `canManageBoard` and `permissionEngine.hasPermission` still gate per
     // request; this carveout only widens the base default.
     'labels',
+    // status_templates — Phase 2 product decision (mirrors labels): status
+    // tile groups are board-config metadata, not work product. Tasks created
+    // from a template snapshot the statuses into their own `statusConfig`
+    // JSONB, so deletion never breaks historical tasks. T1/T2 manage the
+    // library end-to-end. See server/config/permissionMatrix.js
+    // GRANTABILITY block for the matching grantability rule.
+    'status_templates',
   ]);
 
   it('every `delete` action is FALSE across every resource (except documented carveouts)', () => {
@@ -135,11 +142,12 @@ describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('labels.delete is the only T2 destructive carveout (regression guard)', () => {
+  it('labels.delete + status_templates.delete are the only T2 destructive carveouts (regression guard)', () => {
     expect(TIER_PERMISSIONS[2].labels.delete).toBe(true);
+    expect(TIER_PERMISSIONS[2].status_templates.delete).toBe(true);
     // If you find yourself adding a new entry to TIER_2_DELETE_CARVEOUTS,
     // make sure you've got an explicit product decision recorded.
-    expect(TIER_2_DELETE_CARVEOUTS.size).toBe(1);
+    expect(TIER_2_DELETE_CARVEOUTS.size).toBe(2);
   });
 
   it('archive.manage is FALSE (manage = restore + permanent-delete = destructive)', () => {
