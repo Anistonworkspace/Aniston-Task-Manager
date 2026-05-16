@@ -37,6 +37,23 @@ const TasksPage = lazy(() => import('./pages/TasksPage'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
 const RecurringWorkPage = lazy(() => import('./pages/RecurringWorkPage'));
+// Phase 1 (Monday-style chrome): workspace landing surface — Recents / Content /
+// Permissions tabs anchored at /workspaces/:id. Lives alongside boards; clicking
+// a board still navigates to /boards/:id as before.
+const WorkspacePage = lazy(() => import('./pages/Workspace/WorkspacePage'));
+// Phase 3 (AI Sidekick rearchitect): standalone /sidekick page. The in-app
+// SidekickPanel (right-side drawer) is mounted at the Layout level; this
+// page is the full-screen variant.
+const SidekickPage = lazy(() => import('./pages/Sidekick/SidekickPage'));
+// Phase 4 (AI Notetaker): /notetaker landing + /notetaker/meetings/:id detail.
+// The classic /meetings route stays in place so existing bookmarks work.
+const NotetakerPage = lazy(() => import('./pages/Notetaker/NotetakerPage'));
+const MeetingDetailPage = lazy(() => import('./pages/Notetaker/MeetingDetailPage'));
+// Doc Editor Phase B: collaborative documents inside a workspace.
+//   /workspaces/:workspaceId/docs           → list (DocsListPage)
+//   /workspaces/:workspaceId/docs/:docId    → editor (DocPage)
+const DocsListPage = lazy(() => import('./pages/Docs/DocsListPage'));
+const DocPage = lazy(() => import('./pages/Docs/DocPage'));
 
 function PageLoader() {
   return <AnistonLoader variant="page" size="lg" />;
@@ -137,6 +154,22 @@ export default function App() {
           <Route path="my-work" element={<Suspense fallback={<PageLoader />}><MyWorkPage /></Suspense>} />
           <Route path="boards" element={<Suspense fallback={<PageLoader />}><BoardsPage /></Suspense>} />
           <Route path="boards/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><BoardPage /></Suspense></ErrorBoundary>} />
+          {/* Workspace landing (Phase 1). Any authenticated user can visit;
+              the page itself enforces "owner-only" gating on edit actions. */}
+          <Route path="workspaces/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><WorkspacePage /></Suspense></ErrorBoundary>} />
+          {/* AI Sidekick standalone page (Phase 3). Two paths: /sidekick (new chat)
+              and /sidekick/:chatId (continue an existing local chat). */}
+          <Route path="sidekick" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><SidekickPage /></Suspense></ErrorBoundary>} />
+          <Route path="sidekick/:chatId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><SidekickPage /></Suspense></ErrorBoundary>} />
+          {/* AI Notetaker (Phase 4). The classic /meetings list is unchanged;
+              /notetaker is the Monday-style replacement built on the same
+              GET /api/meetings/my data source. */}
+          <Route path="notetaker" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><NotetakerPage /></Suspense></ErrorBoundary>} />
+          <Route path="notetaker/meetings/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><MeetingDetailPage /></Suspense></ErrorBoundary>} />
+          {/* Doc Editor Phase B — collaborative documents. Two routes:
+              the workspace list, and a single doc's editor. Both auth-only. */}
+          <Route path="workspaces/:workspaceId/docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsListPage /></Suspense></ErrorBoundary>} />
+          <Route path="workspaces/:workspaceId/docs/:docId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocPage /></Suspense></ErrorBoundary>} />
           <Route path="boards/:id/dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></AdminRoute>} />
           <Route path="dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           {/* Legacy "My Dashboard" routes — folded into the new Dashboard

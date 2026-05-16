@@ -6,7 +6,7 @@ import {
   FolderKanban, Star, StarOff, BarChart3, FileText, CalendarDays,
   Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, ClipboardCheck,
-  RefreshCw, Pin, PinOff
+  RefreshCw, Pin, PinOff, Sparkles,
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +16,11 @@ import CreateWorkspaceModal from '../board/CreateWorkspaceModal';
 import CreateBoardModal from '../board/CreateBoardModal';
 import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
+import BrowseAllWorkspacesModal from '../workspace/BrowseAllWorkspaces';
+// Phase 1 (Monday-style chrome): unified "+ Add new" Popover menu. Wraps
+// the existing Create-board + Create-workspace flows and grows naturally
+// as future content types (Doc / Dashboard / Form / Workflow) ship.
+import AddNewContentMenu from './AddNewContentMenu';
 import { canUser } from '../../utils/permissions';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 import { useApprovalsBadgeCount, formatBadgeCount } from '../../hooks/useNavBadgeCounts';
@@ -45,7 +50,7 @@ function workspaceScore(entry) {
 }
 
 // Portal-based dropdown that renders outside sidebar overflow
-function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, onRearrangeWorkspaces, canCreateWorkspace, canManage, hasMultipleWorkspaces }) {
+function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, onRearrangeWorkspaces, onBrowseAllWorkspaces, canCreateWorkspace, canManage, hasMultipleWorkspaces }) {
   const menuRef = useRef(null);
   const t = useT();
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -100,12 +105,13 @@ function WorkspaceMenu({ anchorRef, open, onClose, onNavigate, onAddWorkspace, o
         className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
         <LayoutGrid size={14} strokeWidth={1.8} /> {t('sidebar.browseAllBoards')}
       </button>
-      {canManage && (
-        <button onClick={() => { onClose(); onNavigate('/admin-settings'); }}
-          className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
-          <Puzzle size={14} strokeWidth={1.8} /> {t('sidebar.browseAllWorkspaces')}
-        </button>
-      )}
+      {/* Phase 1 — "Browse all workspaces" opens the dedicated modal instead
+          of routing to /admin-settings. Visible to every user (not just
+          managers) since the browse view itself respects per-row tier checks. */}
+      <button onClick={() => { onClose(); onBrowseAllWorkspaces?.(); }}
+        className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
+        <Puzzle size={14} strokeWidth={1.8} /> {t('sidebar.browseAllWorkspaces')}
+      </button>
       {canManage && (
         <button onClick={() => { onClose(); onNavigate('/archive'); }}
           className="flex items-center gap-2.5 px-3 py-2 text-sm text-text-secondary hover:bg-surface-50 w-full transition-colors">
@@ -166,6 +172,13 @@ export default function Sidebar({ collapsed, onToggle }) {
   // WORKSPACES header three-dot menu). The modal is shared across the
   // whole sidebar — only one instance, no per-workspace context needed.
   const [showRearrangeWorkspaces, setShowRearrangeWorkspaces] = useState(false);
+  // Phase 1: full-page Browse All Workspaces modal — replaces the prior
+  // /admin-settings redirect for the "browse all workspaces" menu item.
+  const [showBrowseAllWorkspaces, setShowBrowseAllWorkspaces] = useState(false);
+  // Phase 1: unified "+ Add new" menu popover. Wraps the existing
+  // CreateBoard / CreateWorkspace flows so users see one entry point
+  // and the menu can grow with future content types.
+  const [showAddNewMenu, setShowAddNewMenu] = useState(false);
   // Per-user board ordering: { [workspaceId]: [boardId, boardId, ...] }.
   const [boardOrders, setBoardOrders] = useState({});
   // Per-user workspace ordering (server-persisted). Array of workspaceIds in
@@ -484,6 +497,9 @@ export default function Sidebar({ collapsed, onToggle }) {
         { icon: Home, path: '/', label: t('sidebar.dashboard') },
         { icon: User, path: '/my-work', label: t('sidebar.myWork') },
         { icon: CalendarDays, path: '/meetings', label: t('sidebar.meetings') },
+        // Phase 4: AI Notetaker — Monday-style landing for meeting transcripts
+        // and summaries. Coexists with the classic /meetings list view.
+        { icon: Sparkles, path: '/notetaker', label: 'AI Notetaker' },
       ].map(item => (
         <button key={item.path} onClick={() => navigate(item.path)}
           className={`p-2 rounded-md transition-all duration-150 ${isActive(item.path) ? 'bg-sidebar-active text-sidebar-accent' : 'text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-active'}`}
@@ -551,6 +567,10 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={User} label={t('sidebar.myWork')} path="/my-work" tourId="nav-mywork" />
             {/* Org Chart and Time Plan moved to header icons (see Header.jsx). */}
             <NavItem icon={CalendarDays} label={t('sidebar.meetings')} path="/meetings" tourId="nav-meetings" />
+            {/* Phase 4: AI Notetaker landing — alongside the classic /meetings
+                list. Uses the same /api/meetings/my data source but adds the
+                3-column detail page, transcript viewer, and settings modal. */}
+            <NavItem icon={Sparkles} label="AI Notetaker" path="/notetaker" tourId="nav-notetaker" />
             <NavItem icon={FileText} label={t('sidebar.reviews')} path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label={t('sidebar.approvalsAndRequests')} path="/tasks" tourId="nav-tasks" badge={approvalsBadge} />
             <NavItem icon={RefreshCw} label={t('sidebar.recurringWork')} path="/recurring-work" tourId="nav-recurring-work" />
@@ -967,20 +987,45 @@ export default function Sidebar({ collapsed, onToggle }) {
           )}
 
           {/* Create Board — visible to anyone with create_board permission.
-              The bottom button defaults to the workspace of the board the
-              user is currently looking at (if any). When there is no inferred
-              workspace, the modal forces the user to pick one. */}
+              Phase 1: the bottom button now opens the unified "Add new"
+              Popover (AddNewContentMenu) instead of jumping straight into
+              CreateBoardModal. The menu still surfaces Board as the first
+              item — same number of clicks for the common case — but also
+              exposes Workspace (and future Doc / Dashboard / Form /
+              Workflow / Folder once those handlers are wired). */}
           {canCreateBoardPerm && (
             <div className="px-2 pb-4">
-              <button onClick={() => {
+              <AddNewContentMenu
+                open={showAddNewMenu}
+                onOpenChange={setShowAddNewMenu}
+                placement="top-start"
+                trigger={
+                  <button
+                    className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]"
+                  >
+                    <Plus size={14} /> Add new
+                  </button>
+                }
+                onCreateBoard={() => {
                   const inferredWsId = inferCurrentWorkspaceId();
                   const inferredWs = inferredWsId ? workspaces.find(w => w.id === inferredWsId) : null;
                   setBoardCreationWorkspace(inferredWs || null);
                   setShowCreateBoard(true);
                 }}
-                className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
-                <FolderKanban size={14} /> {t('sidebar.createNewBoard')}
-              </button>
+                onCreateWorkspace={() => setShowCreateWorkspace(true)}
+                // Doc Editor Phase B — "Doc" item in the + Add new menu
+                // navigates to the docs landing of the inferred workspace
+                // (current board's workspace, or first available). The
+                // landing page's own "+ New doc" button then creates the
+                // empty doc; this navigation keeps the menu's contract
+                // identical for every content type (modal OR navigate).
+                onCreateDoc={() => {
+                  const inferredWsId = inferCurrentWorkspaceId() || workspaces[0]?.id;
+                  if (inferredWsId) {
+                    navigate(`/workspaces/${inferredWsId}/docs`);
+                  }
+                }}
+              />
             </div>
           )}
         </div>
@@ -1019,9 +1064,20 @@ export default function Sidebar({ collapsed, onToggle }) {
         onNavigate={(path) => navigate(path)}
         onAddWorkspace={() => setShowCreateWorkspace(true)}
         onRearrangeWorkspaces={() => setShowRearrangeWorkspaces(true)}
+        onBrowseAllWorkspaces={() => setShowBrowseAllWorkspaces(true)}
         canCreateWorkspace={canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions)}
         canManage={canManage}
         hasMultipleWorkspaces={workspaces.length > 1}
+      />
+
+      {/* Phase 1: Browse-all-workspaces modal. Cards navigate to the new
+          /workspaces/:id landing page; the modal closes on selection.
+          "Create workspace" inside the modal reuses the existing
+          CreateWorkspaceModal flow. */}
+      <BrowseAllWorkspacesModal
+        isOpen={showBrowseAllWorkspaces}
+        onClose={() => setShowBrowseAllWorkspaces(false)}
+        onCreateWorkspace={() => { setShowBrowseAllWorkspaces(false); setShowCreateWorkspace(true); }}
       />
 
       {/* Create Workspace Modal — usedColors is the set of colours already

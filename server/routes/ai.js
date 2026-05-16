@@ -7,6 +7,9 @@ const {
   getProviders, createProvider, updateProvider, deleteProvider,
   setDefaultProvider, toggleProvider, testProvider,
   chatWithAI, checkGrammar,
+  // Plan A Slice 2 — one-shot AI endpoints (summary / suggest / plan).
+  summarizeTaskEndpoint, summarizeBoardEndpoint,
+  suggestPriorityEndpoint, planWeekEndpoint,
 } = require('../controllers/aiController');
 
 // All routes require authentication
@@ -65,5 +68,12 @@ router.post('/providers/:id/test', strictAdminOnly, testProvider);
 // ─── Chat & Grammar (all authenticated users, per-user rate-limited) ──────
 router.post('/chat', aiUserLimiter, chatWithAI);
 router.post('/grammar', aiUserLimiter, checkGrammar);
+
+// ─── One-shot endpoints (Plan A Slice 2) ─────────────────────────────────
+// Same per-user rate limit as /chat — these hit the same paid provider.
+router.post('/summarize/task/:id',  aiUserLimiter, summarizeTaskEndpoint);
+router.post('/summarize/board/:id', aiUserLimiter, summarizeBoardEndpoint);
+router.post('/suggest-priority',    aiUserLimiter, suggestPriorityEndpoint);
+router.post('/plan-week',           aiUserLimiter, planWeekEndpoint);
 
 module.exports = router;

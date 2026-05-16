@@ -3,8 +3,13 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Filter, SortAsc, Plus, Columns3, Calendar, Settings,
   LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal,
-  AlertCircle
+  AlertCircle, Sparkles,
 } from 'lucide-react';
+// Plan A Slice 1: board-scoped Sidekick mounted at the bottom of this page.
+import SidekickPanel from '../components/sidekick/SidekickPanel';
+// Plan A Slice 3: one-shot "Summarize" button + AISummaryPopover.
+import AISummaryPopover from '../components/sidekick/AISummaryPopover';
+import aiSummary from '../services/aiSummaryService';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -225,6 +230,10 @@ export default function BoardPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAutomations, setShowAutomations] = useState(false);
+  // Plan A Slice 1: board-scoped Sidekick. Triggered by the "Ask AI" button in
+  // the header — opens with scope='board' / scopeId=board.id so the backend
+  // prepends a focused board context (statuses, overdue, stuck, in-flight).
+  const [boardSidekickOpen, setBoardSidekickOpen] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState([]);
   const [sortConfig, setSortConfig] = useState(null);
   const [showCSVImport, setShowCSVImport] = useState(false);
@@ -1255,6 +1264,38 @@ export default function BoardPage() {
               <Settings size={16} />
             </button>
           )}
+          {/* Plan A Slice 3 — One-shot "Summarize" inline button. Calls the
+              dedicated POST /ai/summarize/board/:id endpoint and renders the
+              result inline. Faster than opening the chat panel when you
+              just want "where is this board at?" */}
+          {board?.id && (
+            <AISummaryPopover
+              title={`${board.name || 'Board'} — summary`}
+              placement="bottom-end"
+              run={() => aiSummary.summarizeBoard(board.id)}
+              emptyText="The AI returned an empty summary. Try Regenerate."
+              trigger={
+                <button
+                  type="button"
+                  className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors"
+                  title="Summarize this board"
+                >
+                  <Sparkles size={13} /> Summarize
+                </button>
+              }
+            />
+          )}
+          {/* Plan A Slice 1 — "Ask AI" opens a board-scoped Sidekick. Use
+              this for conversation; use "Summarize" for the one-line answer. */}
+          {board?.id && (
+            <button
+              onClick={() => setBoardSidekickOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/10 transition-colors"
+              title="Ask AI about this board"
+            >
+              <Sparkles size={13} /> Ask AI
+            </button>
+          )}
         </div>
 
         {/* View Tabs — Monday.com style: Main table ... Gantt Calendar Kanban + */}
@@ -1608,6 +1649,21 @@ export default function BoardPage() {
         onClose={() => setShowCreateGroupDialog(false)}
         onCreate={createGroupWithName}
       />
+
+      {/* Plan A Slice 1 — board-scoped Sidekick. The panel portals to
+          document.body so the trigger (header button) doesn't need to know
+          about layout, and the panel can overlay any board content. */}
+      {board?.id && (
+        <SidekickPanel
+          isOpen={boardSidekickOpen}
+          onClose={() => setBoardSidekickOpen(false)}
+          scope="board"
+          scopeId={board.id}
+          scopeLabel="this board"
+          pageContext={`Board: ${board.name || '(unnamed)'} in ${board.workspace?.name || 'workspace'}`}
+          pageState={{ route: `/boards/${board.id}`, boardId: board.id }}
+        />
+      )}
 
     </div>
   );

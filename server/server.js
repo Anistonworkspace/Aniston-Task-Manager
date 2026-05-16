@@ -518,6 +518,17 @@ app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/integrations', integrationConfigRoutes);
 app.use('/api/notes', noteRoutes);
+// Doc Editor Phase B — collaborative documents inside a workspace.
+//   /api/docs/:id family          → flat routes for a single doc + versions
+//   /api/workspaces/:id/docs(/:..) → list + create handled inline below so
+//                                     the workspaceId param falls through
+//                                     to the controller cleanly.
+const docRoutes = require('./routes/docs');
+const { authenticate } = require('./middleware/auth');
+const docCtl = require('./controllers/docController');
+app.use('/api/docs', docRoutes);
+app.get('/api/workspaces/:workspaceId/docs', authenticate, docCtl.listDocs);
+app.post('/api/workspaces/:workspaceId/docs', authenticate, docCtl.createDoc);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/transcription', transcriptionRoutes);
@@ -1233,6 +1244,69 @@ const start = async () => {
       console.log('[Server] status_templates table + indices ensured.');
     } catch (e) {
       console.warn('[Server] status_templates migration warning:', e.message?.slice(0, 100));
+    }
+
+    // ── Auto-migration: docs + doc_versions (Doc Editor Phase B).
+    // Idempotent CREATE-IF-NOT-EXISTS for both tables plus the workspace +
+    // archive indexes the doc list page reads. Mirrors server/models/Doc.js
+    // and server/models/DocVersion.js — Sequelize sync({alter:false}) won't
+    // touch existing tables, so this DDL is the source of truth at boot.
+    //
+    // Note: the sharePolicy enum is declared inline because Sequelize's
+    // ENUM type generates an enum value Postgres reuses — we want the same
+    // value-set whether the table was created here or via sync.
+    try {
+      await sequelize.query(`DO $$ BEGIN
+        CREATE TYPE doc_share_policy AS ENUM ('private', 'workspace', 'public_link');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS docs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "workspaceId" UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        title VARCHAR(300) NOT NULL DEFAULT 'Untitled doc',
+        "contentJson" JSONB NOT NULL DEFAULT '{"type":"doc","content":[]}'::jsonb,
+        "contentText" TEXT NOT NULL DEFAULT '',
+        slug VARCHAR(180),
+        "sharePolicy" doc_share_policy NOT NULL DEFAULT 'workspace',
+        "isArchived" BOOLEAN NOT NULL DEFAULT false,
+        "archivedAt" TIMESTAMP WITH TIME ZONE,
+        "archivedBy" UUID,
+        "createdBy" UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        "lastEditedBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "lastEditedAt" TIMESTAMP WITH TIME ZONE,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_workspace
+        ON docs("workspaceId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_creator
+        ON docs("createdBy")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_archived
+        ON docs("isArchived")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_slug
+        ON docs(slug)`);
+      // Trigram index for plain-text search across all docs the caller can
+      // see. The `contentText` column is server-derived from contentJson on
+      // save so the index reflects rendered content, not raw JSON keys.
+      await sequelize.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_text_trgm
+        ON docs USING gin("contentText" gin_trgm_ops)`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS doc_versions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "docId" UUID NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+        "contentJson" JSONB NOT NULL,
+        "contentText" TEXT NOT NULL DEFAULT '',
+        "savedBy" UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        note VARCHAR(200),
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_versions_doc
+        ON doc_versions("docId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_versions_doc_time
+        ON doc_versions("docId", "createdAt" DESC)`);
+      console.log('[Server] docs + doc_versions tables + indices ensured.');
+    } catch (e) {
+      console.warn('[Server] docs migration warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: legacy task_labels.id column repair ──

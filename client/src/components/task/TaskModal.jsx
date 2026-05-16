@@ -3,7 +3,7 @@ import {
   X, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Shield,
   HelpCircle, Calendar, Check, Lock, Settings, Plus, Pencil,
   ChevronDown, ChevronRight, RefreshCw, Bookmark, Bell, User as UserIcon,
-  UserCheck, Flag, Circle, FileText, ChevronUp,
+  UserCheck, Flag, Circle, FileText, ChevronUp, Sparkles,
 } from 'lucide-react';
 import { format, parseISO, formatDistanceToNowStrict } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
@@ -68,6 +68,21 @@ import useRealtimeEvent from '../../realtime/useRealtimeEvent';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 import DetailModalShell from '../common/DetailModalShell';
 import PortalDropdown from '../common/PortalDropdown';
+// Plan A Slice 1: small "Ask AI" button in the header opens a task-scoped
+// Sidekick panel on top of this modal. The panel portals into document.body
+// so it doesn't conflict with the modal's own layout.
+import SidekickPanel from '../sidekick/SidekickPanel';
+// Plan A Slice 3: one-shot inline AI features.
+//   - AISummaryPopover renders the "Summarize this task" result inline.
+//   - aiSummary calls the dedicated POST /api/ai/summarize/task/:id and
+//     /api/ai/suggest-priority endpoints (Slice 2 backend).
+import AISummaryPopover from '../sidekick/AISummaryPopover';
+import SuggestPriorityChip from '../sidekick/SuggestPriorityChip';
+import aiSummary from '../../services/aiSummaryService';
+// Doc Editor Phase A: the description field now uses Tiptap so users get
+// slash commands, formatting, and pasted-link auto-detection. Backward
+// compat: existing plain-text descriptions render as <p>...</p>.
+import RichTextEditor, { htmlToPlainText, looksLikeHtml } from '../common/RichTextEditor';
 import { buildScheduleSummary } from '../../services/recurringTasks';
 import { useToast } from '../common/Toast';
 import MarkDoneApprovalModal from './MarkDoneApprovalModal';
@@ -718,6 +733,10 @@ export default function TaskModal({
   const [deletedRemotely, setDeletedRemotely] = useState(false);
   const [showExtension, setShowExtension] = useState(false);
   const [showHelpRequest, setShowHelpRequest] = useState(false);
+  // Plan A Slice 1: task-scoped Sidekick. Opens on demand via the "Ask AI"
+  // header button. The panel reads scope='task' / scopeId=task.id so the
+  // backend prepends the task-specific context to the system prompt.
+  const [sidekickOpen, setSidekickOpen] = useState(false);
   const [recurringTemplate, setRecurringTemplate] = useState(
     task?.recurringTemplate || (task?.isRecurringInstance ? null : false)
   );
@@ -1567,6 +1586,39 @@ export default function TaskModal({
                 <span className="w-px h-4 bg-border mx-1" aria-hidden="true" />
               </>
             )}
+            {/* Plan A Slice 3 — One-shot "Summarize" button calls the
+                dedicated POST /ai/summarize/task/:id endpoint and renders
+                the result inline in a Popover. This is the fastest path to
+                "what is going on with this task" — one click, no chat. */}
+            {task?.id && (
+              <AISummaryPopover
+                title="Task summary"
+                placement="bottom-end"
+                run={() => aiSummary.summarizeTask(task.id)}
+                emptyText="The AI returned an empty summary. Try Regenerate."
+                trigger={
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors v3-lift"
+                    title="Summarize this task"
+                  >
+                    <Sparkles size={12} /> Summarize
+                  </button>
+                }
+              />
+            )}
+            {/* Plan A Slice 1 — "Ask AI" opens the task-scoped Sidekick.
+                Use this when you want a conversation (e.g. "what should the
+                next step be?"), not just a summary. */}
+            {task?.id && (
+              <button
+                onClick={() => setSidekickOpen(true)}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/10 transition-colors v3-lift"
+                title="Ask AI about this task"
+              >
+                <Sparkles size={12} /> Ask AI
+              </button>
+            )}
             <button onClick={() => setShowHelpRequest(true)}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-yellow-600 hover:bg-yellow-50 dark:hover:bg-yellow-900/10 transition-colors v3-lift" title="Request help">
               <HelpCircle size={12} /> Help
@@ -1962,6 +2014,22 @@ export default function TaskModal({
                             ))}
                           </div>
                         </PortalDropdown>
+                        {/* Plan A Slice 3 — AI "Suggest" chip. Calls
+                            POST /ai/suggest-priority and shows a popover
+                            with the suggested priority + reason +
+                            optional suggested due date. Apply re-uses the
+                            existing handlePriorityChange path. */}
+                        {task?.id && (
+                          <div className="mt-1">
+                            <SuggestPriorityChip
+                              taskTitle={task?.title}
+                              taskDescription={typeof draftDescription === 'string' ? draftDescription : ''}
+                              boardId={task?.boardId || boardId}
+                              currentPriority={priority}
+                              onApply={(suggested) => handlePriorityChange(suggested)}
+                            />
+                          </div>
+                        )}
                       </>
                     ) : (
                       <span
@@ -2575,31 +2643,43 @@ export default function TaskModal({
                 </div>
                 {canEditDescription ? (
                   <>
-                    <textarea
-                      value={draftDescription}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        setDraftDescription(next);
-                        draftDescriptionRef.current = next;
-                        checkDescGrammar(next);
-                      }}
-                      onFocus={() => setIsDescFocused(true)}
-                      // No onBlur — autosave is intentionally removed.
-                      placeholder="Add details, paste a link, or @mention someone…"
-                      disabled={isSavingDescription}
-                      aria-label="Task description"
-                      className="w-full text-sm border border-border rounded-lg px-3 py-2.5 bg-surface/30 focus:outline-none focus:border-primary focus:bg-white dark:focus:bg-zinc-900 resize-none min-h-[64px] placeholder:text-text-tertiary disabled:opacity-60"
-                    />
+                    {/* Doc Editor Phase A: Tiptap-based editor replaces the
+                        plain textarea. Behavior preserved:
+                          - Same draftDescription state shape (string)
+                          - Same dirty tracking (isDescriptionDirty)
+                          - Same explicit Save / Cancel buttons
+                          - Grammar correction still runs — fed plain text
+                            so the backend prompt logic is unchanged
+                          - No autosave (matches the documented contract) */}
+                    <div onFocus={() => setIsDescFocused(true)}>
+                      <RichTextEditor
+                        value={draftDescription}
+                        disabled={isSavingDescription}
+                        placeholder="Add details, paste a link, or use / for block commands…"
+                        minHeight={120}
+                        onUpdate={(html) => {
+                          const next = html;
+                          setDraftDescription(next);
+                          draftDescriptionRef.current = next;
+                          // Grammar correction takes plain text. The backend
+                          // /api/ai/grammar endpoint sees text it can score
+                          // without HTML noise.
+                          checkDescGrammar(looksLikeHtml(next) ? htmlToPlainText(next) : next);
+                        }}
+                      />
+                    </div>
                     <GrammarSuggestion
                       suggestion={descGrammarSuggestion}
                       isChecking={isCheckingDescGrammar}
                       onApply={() => {
                         const corrected = applyDescGrammar();
                         if (corrected) {
-                          // Update the draft only — explicit Save is still
-                          // required, matching the new no-autosave contract.
-                          setDraftDescription(corrected);
-                          draftDescriptionRef.current = corrected;
+                          // Grammar correction returns plain text. Wrap it
+                          // in a <p> so the editor accepts it without
+                          // re-triggering plain-text fallback formatting.
+                          const wrapped = looksLikeHtml(corrected) ? corrected : `<p>${corrected}</p>`;
+                          setDraftDescription(wrapped);
+                          draftDescriptionRef.current = wrapped;
                           setIsDescFocused(true);
                         }
                       }}
@@ -2640,8 +2720,18 @@ export default function TaskModal({
                     )}
                   </>
                 ) : isDescriptionLocked ? (
-                  <div aria-readonly="true" className="text-sm text-text-secondary px-3 py-2.5 border border-border rounded-lg min-h-[64px] bg-surface/30 whitespace-pre-wrap select-text">
-                    {savedDescription}
+                  // Doc Editor Phase A: locked descriptions may now contain
+                  // HTML (Tiptap output). Render with the same Tiptap editor
+                  // in `disabled` mode so formatting is preserved without
+                  // a separate read-only renderer or dangerouslySetInnerHTML.
+                  <div aria-readonly="true" className="rounded-lg border border-border bg-surface/30 select-text">
+                    <RichTextEditor
+                      value={savedDescription || ''}
+                      onUpdate={() => {}}
+                      disabled
+                      minHeight={64}
+                      placeholder=""
+                    />
                   </div>
                 ) : (
                   <p className="text-sm text-text-tertiary px-3 py-3 border border-dashed border-border rounded-lg bg-surface/20">
@@ -2920,6 +3010,21 @@ export default function TaskModal({
           </div>
         </footer>
       </DetailModalShell>
+
+      {/* Plan A Slice 1: task-scoped Sidekick. Sits outside DetailModalShell
+          so it portal-renders cleanly to document.body and overlays the
+          modal cleanly when opened. */}
+      {task?.id && (
+        <SidekickPanel
+          isOpen={sidekickOpen}
+          onClose={() => setSidekickOpen(false)}
+          scope="task"
+          scopeId={task.id}
+          scopeLabel="this task"
+          pageContext={`Task: ${task.title || '(untitled)'}${task.board?.name ? ` on ${task.board.name}` : ''}`}
+          pageState={{ route: `/tasks/${task.id}`, taskId: task.id, boardId: task.boardId }}
+        />
+      )}
 
       {/* Dependency Selector */}
       {showDepSelector && (

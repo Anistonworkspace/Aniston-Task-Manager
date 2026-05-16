@@ -2,8 +2,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Calendar as CalIcon, Table, Search, ChevronLeft, ChevronRight, Plus, Settings,
-  Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot, X,
+  Lock, Zap, AlertTriangle, Clock, CheckCircle2, CircleDot, X, Sparkles, ListOrdered,
 } from 'lucide-react';
+// Plan A Slice 1: planning-scoped Sidekick on "My Work". The hook reads
+// scope='planning' so the backend loads the caller's open tasks bucketed
+// by overdue/today/this-week/later — perfect for "Plan my week" prompts.
+import SidekickPanel from '../components/sidekick/SidekickPanel';
+// Plan A Slice 3: dedicated "Plan my week" modal — calls
+// POST /ai/plan-week (Slice 2) and renders the Mon-Fri schedule.
+import PlanWeekModal from '../components/sidekick/PlanWeekModal';
 import { SkeletonTable } from '../components/common/Skeleton';
 import {
   format, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths,
@@ -52,6 +59,14 @@ export default function MyWorkPage() {
   const [viewTab, setViewTab] = useState('table');
   const [searchQuery, setSearchQuery] = useState('');
   const [calMonth, setCalMonth] = useState(new Date());
+  // Plan A Slice 1: planning-scoped Sidekick. The panel renders the
+  // planning action chips on its empty state (Plan my week / Order today /
+  // What to focus on first / etc.), so a single "Ask AI" header button is
+  // enough — users pick the prompt that matches what they want.
+  const [planSidekickOpen, setPlanSidekickOpen] = useState(false);
+  // Plan A Slice 3: dedicated "Plan my week" modal — separate from the
+  // Ask AI chat because it renders a STRUCTURED Mon-Fri schedule, not text.
+  const [planWeekOpen, setPlanWeekOpen] = useState(false);
 
   useEffect(() => { loadTasks(); }, []);
 
@@ -197,6 +212,34 @@ export default function MyWorkPage() {
               </span>
             )}
           </div>
+          {tasks.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              {/* Plan A Slice 3 — "Plan my week" calls POST /ai/plan-week
+                  and renders the Mon-Fri structured schedule in a modal.
+                  Separate from the Sidekick chat because the result is
+                  structured (day columns), not free-form. */}
+              <button
+                type="button"
+                onClick={() => setPlanWeekOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold text-emerald-600 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800 transition-colors"
+                title="AI plans your Mon-Fri schedule"
+              >
+                <Sparkles size={13} /> Plan my week
+              </button>
+              {/* Plan A Slice 1 — "Ask AI" opens the planning-scoped
+                  Sidekick chat for free-form prompts (What to focus on /
+                  Am I overloaded / Roughly how long). Use this when you
+                  want a conversation, not a structured plan. */}
+              <button
+                type="button"
+                onClick={() => setPlanSidekickOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold text-violet-600 border border-violet-200 bg-violet-50 hover:bg-violet-100 dark:bg-violet-900/20 dark:border-violet-800 transition-colors"
+                title="Ask AI to plan or prioritize your tasks"
+              >
+                <Sparkles size={13} /> Ask AI
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Stats cards */}
@@ -353,6 +396,28 @@ export default function MyWorkPage() {
           </div>
         )}
       </div>
+
+      {/* Plan A Slice 1 — planning-scoped Sidekick mount. The panel's empty
+          state renders the planning action chips defined in
+          actionSuggestionCatalog.js so users can pick the prompt instead of
+          typing. The backend reads scope='planning' and loads the caller's
+          open tasks bucketed by overdue / today / this week / later. */}
+      <SidekickPanel
+        isOpen={planSidekickOpen}
+        onClose={() => setPlanSidekickOpen(false)}
+        scope="planning"
+        scopeLabel="your workload"
+        pageContext="My Work — caller's personal task list grouped by due date."
+        pageState={{ route: '/my-work' }}
+      />
+
+      {/* Plan A Slice 3 — Plan my week modal. Renders the structured AI
+          schedule when the user clicks the green header button. */}
+      <PlanWeekModal
+        isOpen={planWeekOpen}
+        onClose={() => setPlanWeekOpen(false)}
+        tasks={tasks}
+      />
 
     </div>
   );

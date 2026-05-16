@@ -35,6 +35,9 @@ const TaskReminder = require('./TaskReminder');
 const TaskApprovalFlow = require('./TaskApprovalFlow');
 const RecurringTaskTemplate = require('./RecurringTaskTemplate');
 const Note = require('./Note');
+// Doc Editor Phase B — collaborative document model + periodic version snapshots.
+const Doc = require('./Doc');
+const DocVersion = require('./DocVersion');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
 const AIProvider = require('./AIProvider');
@@ -416,6 +419,8 @@ module.exports = {
   TaskApprovalFlow,
   RecurringTaskTemplate,
   Note,
+  Doc,
+  DocVersion,
   Feedback,
   AIConfig,
   AIProvider,
@@ -519,6 +524,17 @@ Label.belongsToMany(Task, { through: TaskLabel, foreignKey: 'labelId', otherKey:
 StatusTemplate.belongsTo(Board, { foreignKey: 'boardId', as: 'board', onDelete: 'CASCADE' });
 StatusTemplate.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'CASCADE' });
 Board.hasMany(StatusTemplate, { foreignKey: 'boardId', as: 'statusTemplates' });
+
+// ─── Doc Editor (Phase B) ────────────────────────────────────
+// Doc belongs to one workspace and one author. Versions hang off the doc
+// with CASCADE so archiving/deleting a doc cleans up snapshots too.
+Doc.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspace', onDelete: 'CASCADE' });
+Doc.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+Doc.belongsTo(User, { foreignKey: 'lastEditedBy', as: 'lastEditor', onDelete: 'SET NULL' });
+Workspace.hasMany(Doc, { foreignKey: 'workspaceId', as: 'docs' });
+Doc.hasMany(DocVersion, { foreignKey: 'docId', as: 'versions', onDelete: 'CASCADE' });
+DocVersion.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
+DocVersion.belongsTo(User, { foreignKey: 'savedBy', as: 'author', onDelete: 'SET NULL' });
 
 // ─── Task <-> TaskReference (1-to-many) ──────────────────────
 // Each task may carry multiple free-form reference entries (ticket IDs,

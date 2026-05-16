@@ -52,6 +52,7 @@
 const { app, BrowserWindow, session, shell, Menu, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL, fileURLToPath } = require('url');
 const { resolveConfig } = require('./runtimeConfig');
 const { createTray, destroyTray, showHideToTrayHint } = require('./tray');
 const { notify } = require('./notifications');
@@ -166,31 +167,69 @@ function installPublicAssetRewriter() {
   // at http://localhost:3000) the asset paths resolve correctly already.
   if (!isPackaged) return;
   const ses = session.fromPartition('persist:aniston');
-  const docDir = path.dirname(clientIndexHtml()); // ...\client-dist
-  // Normalise to a file:// URL prefix Electron returns from webRequest.
-  // Drive letters are upper-cased in the URL ("file:///C:/..."), and
-  // backslashes are forward-slashes.
-  const docDirUrl = `file:///${docDir.replace(/\\/g, '/')}`;
+  const docDirRaw = path.dirname(clientIndexHtml()); // ...\client-dist
+
+  // Windows path comparison is a minefield in Electron:
+  //   - `Monday Aniston` (space) vs `Monday%20Aniston` in the URL.
+  //   - Long Names (`Monday Aniston`) vs 8.3 short names (`MONDAY~1`,
+  //     `ANISTO~2`) — Electron's `process.resourcesPath` may return either
+  //     form depending on whether the parent directory had a long name,
+  //     and Chromium may fetch the OTHER form. We saw this on a real
+  //     install where `aniston-user` came through as `ANISTO~2`.
+  //   - Case differences (`Programs` vs `programs`).
+  //
+  // String-comparing file:// URLs directly fails for all three. The robust
+  // thing is to (a) canonicalise both paths to their realpath (Node's
+  // `fs.realpathSync` expands 8.3 short names to their long-name form on
+  // Windows), and (b) compare case-insensitively. The kernel does the
+  // canonical resolution for us; we don't try to second-guess every
+  // encoding edge case.
+  function canonicalizePath(p) {
+    try { return fs.realpathSync.native(p).toLowerCase(); }
+    catch {
+      try { return fs.realpathSync(p).toLowerCase(); }
+      catch { return p.toLowerCase(); }
+    }
+  }
+  const docDirCanon = canonicalizePath(docDirRaw);
+  // URL form (with %20 / %7E encoding) used to build redirect targets.
+  // Cached against the RAW dir — Chromium accepts either short or long
+  // name in a file:// URL because the kernel still resolves the file.
+  const docDirUrl = pathToFileURL(docDirRaw).href;
+  const docDirUrlPrefix = docDirUrl.endsWith('/') ? docDirUrl : docDirUrl + '/';
+
+  function isInsideDocDir(urlString) {
+    let urlPath;
+    try {
+      urlPath = fileURLToPath(urlString);
+    } catch {
+      return false; // unparsable file:// URL — definitely not ours
+    }
+    const urlPathCanon = canonicalizePath(urlPath);
+    // Equal (the index.html itself) or strictly-inside (assets, icons).
+    if (urlPathCanon === docDirCanon) return true;
+    return urlPathCanon.startsWith(docDirCanon + path.sep);
+  }
+
   ses.webRequest.onBeforeRequest({ urls: ['file:///*'] }, (details, callback) => {
     const url = details.url;
     // Pass through requests already rooted inside the client-dist directory.
-    if (url.startsWith(docDirUrl + '/')) {
+    if (isInsideDocDir(url)) {
       callback({});
       return;
     }
-    // Match `file:///<drive>:/<segment>/...` — drive-root absolute references
-    // from `<img src="/icons/...">` and similar. The first path segment is
-    // the public-asset folder name (icons, audio, favicon.svg, etc.).
+    // Match `file:///<drive>:/<first-segment>/<rest>` — drive-root absolute
+    // references from `<img src="/icons/...">` and similar. We only rewrite
+    // when the request looks like a public-asset path (not, say, a system
+    // file URL the OS may emit for an unrelated reason). The match captures
+    // everything after `<drive>:/` so we can splice it onto the doc dir.
     const m = url.match(/^file:\/\/\/[A-Za-z]:\/([^/]+(?:\/[^?#]*)?)(\?.*)?$/);
     if (!m) {
       callback({});
       return;
     }
     const restPath = m[1];
-    // Never rewrite into our own application-script paths — those are the
-    // hashed bundle and would already match docDirUrl above. We only
-    // rewrite public-root assets.
-    const redirectURL = `${docDirUrl}/${restPath}${m[2] || ''}`;
+    const redirectURL = `${docDirUrlPrefix}${restPath}${m[2] || ''}`;
     diag(`asset-rewrite ${url} -> ${redirectURL}`);
     callback({ redirectURL });
   });

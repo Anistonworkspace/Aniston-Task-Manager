@@ -599,7 +599,7 @@ async function testProvider(req, res) {
  */
 async function chatWithAI(req, res) {
   try {
-    const { messages, context, providerId, pageState } = req.body;
+    const { messages, context, providerId, pageState, scope, scopeId } = req.body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ success: false, message: 'Messages array is required.' });
@@ -610,15 +610,29 @@ async function chatWithAI(req, res) {
 
     // Build real, role-scoped data context from the database
     const route = pageState?.route || '';
-    console.log('[AIChat] pageState received:', JSON.stringify(pageState));
-    console.log('[AIChat] Resolved route for context:', route);
+    console.log('[AIChat] pageState received:', JSON.stringify(pageState), '| scope:', scope, '| scopeId:', scopeId);
 
     const dataContext = await buildAIContext(req.user, route, pageState || {});
     console.log('[AIChat] dataContext length:', dataContext?.length || 0);
-    console.log('[AIChat] dataContext preview:', (dataContext || '').slice(0, 300));
+
+    // Plan A Slice 1: when the client sends `scope` + `scopeId` (e.g. from
+    // the scoped Sidekick), prepend a focused scope-specific context to the
+    // system prompt. Falls back to empty string when the scope is unknown
+    // or the user can't see the resource — the route-based context still
+    // applies in that case.
+    let scopeContext = '';
+    if (scope) {
+      try {
+        const { buildScopeContext } = require('../services/aiScopeContextService');
+        scopeContext = await buildScopeContext(req.user, { scope, scopeId, params: pageState || {} });
+        console.log('[AIChat] scopeContext length:', scopeContext?.length || 0);
+      } catch (err) {
+        console.warn('[AIChat] scope context failed (non-fatal):', err.message);
+      }
+    }
 
     // Combine static page description (for feature help) with real data
-    const systemPrompt = buildSystemPrompt(req.user, context, dataContext);
+    const systemPrompt = buildSystemPrompt(req.user, context, dataContext, scopeContext);
     const reply = await aiService.chat(cleanMessages, systemPrompt, providerId);
 
     res.json({
@@ -687,21 +701,162 @@ async function chatWithAI(req, res) {
 }
 
 /**
+ * Plan A Slice 2 — one-shot AI endpoints.
+ *
+ * These are thin wrappers around aiSummaryService. They exist as dedicated
+ * routes (not "scoped chat") because they return structured payloads:
+ *   - text summaries          → { success, data: { summary } }
+ *   - priority suggestions    → { success, data: { priority, reason, suggestedDueDate } }
+ *   - week plans              → { success, data: { schedule: [...], notes } }
+ *
+ * Frontend callers can render these inline (Popovers, badges) without
+ * opening the Sidekick chat panel.
+ */
+
+async function summarizeTaskEndpoint(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: 'Task id is required.' });
+    const { summarizeTaskWithAI, AiScopeUnavailableError } = require('../services/aiSummaryService');
+    try {
+      const out = await summarizeTaskWithAI(req.user, id, { providerId: req.body?.providerId });
+      res.json({ success: true, data: out });
+    } catch (err) {
+      if (err instanceof AiScopeUnavailableError) {
+        return res.status(404).json({ success: false, code: err.code, message: err.message });
+      }
+      throw err;
+    }
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+async function summarizeBoardEndpoint(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: 'Board id is required.' });
+    const { summarizeBoardWithAI, AiScopeUnavailableError } = require('../services/aiSummaryService');
+    try {
+      const out = await summarizeBoardWithAI(req.user, id, { providerId: req.body?.providerId });
+      res.json({ success: true, data: out });
+    } catch (err) {
+      if (err instanceof AiScopeUnavailableError) {
+        return res.status(404).json({ success: false, code: err.code, message: err.message });
+      }
+      throw err;
+    }
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+async function suggestPriorityEndpoint(req, res) {
+  try {
+    const { taskTitle, taskDescription, boardId, providerId } = req.body || {};
+    if (!taskTitle || typeof taskTitle !== 'string' || taskTitle.length > 400) {
+      return res.status(400).json({
+        success: false,
+        message: 'taskTitle is required (max 400 chars).',
+      });
+    }
+    const { suggestPriorityWithAI } = require('../services/aiSummaryService');
+    const out = await suggestPriorityWithAI(req.user, { taskTitle, taskDescription, boardId }, { providerId });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+async function planWeekEndpoint(req, res) {
+  try {
+    const { taskIds, providerId } = req.body || {};
+    if (taskIds && !Array.isArray(taskIds)) {
+      return res.status(400).json({ success: false, message: 'taskIds must be an array of strings.' });
+    }
+    const { planWeekWithAI } = require('../services/aiSummaryService');
+    const out = await planWeekWithAI(req.user, { taskIds }, { providerId });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+/**
+ * Shared error response for the one-shot AI endpoints. Mirrors the shape
+ * chatWithAI uses so frontend error-mapping stays uniform.
+ */
+function handleAiEndpointError(res, error) {
+  const safeLogger = require('../utils/safeLogger');
+  safeLogger.warn('[AIController] one-shot error', { err: error });
+
+  if (error?.message?.includes('not configured') || error?.message?.includes('not available')) {
+    return res.status(400).json({
+      success: false,
+      code: 'AI_NOT_CONFIGURED',
+      message: 'AI is not configured. Ask an admin to set up AI in Integrations.',
+    });
+  }
+  if (error?.message?.includes('Unknown AI provider type')) {
+    return res.status(400).json({
+      success: false,
+      code: 'AI_PROVIDER_UNSUPPORTED',
+      message: 'The selected AI provider type is not supported.',
+    });
+  }
+
+  const { classifyError } = require('../services/aiService');
+  const provInfo = error?._providerInfo;
+  const classified = classifyError(error, 0, provInfo || {});
+  let userMessage = (classified?.message || 'AI request failed.').replace(/\s*\(\d+ms\)/g, '');
+  if (classified?.diagnostics?.failureType === 'authentication' && provInfo) {
+    userMessage = `The API key for provider "${provInfo.displayName}" is invalid or expired. Update it in Integrations → AI Provider.`;
+  }
+  const statusMap = {
+    authentication: 401,
+    billing: 402,
+    permission: 403,
+    rate_limit: 429,
+    timeout: 504,
+    network: 502,
+  };
+  const httpStatus = statusMap[classified?.diagnostics?.failureType] || 500;
+  res.status(httpStatus).json({ success: false, message: userMessage });
+}
+
+/**
  * Build a system prompt that gives the AI both feature knowledge AND real scoped data.
  *
  * @param {object} user - Authenticated user
  * @param {string} staticContext - Static page description from the frontend (for feature help)
  * @param {string} dataContext - Real role-scoped data from aiContextService
+ * @param {string} scopeContext - Optional focused context from aiScopeContextService
+ *                                (task / board / planning) — when present, it takes
+ *                                precedence over the route-based dataContext for the
+ *                                "answer using THIS data" instructions.
  */
-function buildSystemPrompt(user, staticContext, dataContext) {
+function buildSystemPrompt(user, staticContext, dataContext, scopeContext = '') {
   const roleName = user.role === 'assistant_manager' ? 'Assistant Manager' : user.role.charAt(0).toUpperCase() + user.role.slice(1);
   const hasLiveData = dataContext && !dataContext.startsWith('(') && dataContext.length > 20;
+  const hasScope = !!(scopeContext && scopeContext.length > 20);
 
   return `You are the AI assistant for Aniston Project Hub. You have DIRECT ACCESS to the application database. Real data from the database is included below.
 
 ## YOUR #1 RULE
 
-${hasLiveData ? `The section labeled "LIVE DATA FROM DATABASE" below contains REAL numbers queried from the database right now. This is not placeholder data. It is live and accurate.
+${hasScope ? `The section labeled "SCOPED CONTEXT" below is the SPECIFIC thing the user is asking about right now (a particular task, board, or their own workload). Answer questions using THAT data first. The general "LIVE DATA FROM DATABASE" section is supplementary background.
+
+**MANDATORY behavior:**
+- Read the SCOPED CONTEXT below carefully.
+- Answer the user's question using facts from that section.
+- When summarizing, lead with the bottom line in your FIRST sentence (e.g. "This task is stuck waiting on legal review" — not "Sure! Here's a summary…").
+- When suggesting a plan or priority, base it on the dates, statuses, and dependencies actually present in the SCOPED CONTEXT.
+
+**FORBIDDEN:**
+- "I don't have access to this task/board" — you do, it's below.
+- Asking the user for information that's already in the SCOPED CONTEXT.
+- Generic advice that doesn't reference the specific items below.
+` : hasLiveData ? `The section labeled "LIVE DATA FROM DATABASE" below contains REAL numbers queried from the database right now. This is not placeholder data. It is live and accurate.
 
 **MANDATORY behavior when the user asks a data question (counts, metrics, task names, statuses, who is assigned, what is overdue, etc.):**
 - Read the LIVE DATA section below.
@@ -721,7 +876,11 @@ If the user asks about something NOT in the data, say you only have data for the
 
 Current user: ${user.name}, Role: ${roleName}${user.isSuperAdmin ? ' (Super Admin)' : ''}
 
-########## LIVE DATA FROM DATABASE (queried just now, role-scoped) ##########
+${hasScope ? `########## SCOPED CONTEXT (focus of this conversation) ##########
+${scopeContext}
+########## END SCOPED CONTEXT ##########
+
+` : ''}########## LIVE DATA FROM DATABASE (queried just now, role-scoped) ##########
 ${dataContext || '(No data for this page.)'}
 ########## END LIVE DATA ##########
 
@@ -764,4 +923,9 @@ module.exports = {
   testProvider,
   chatWithAI,
   checkGrammar,
+  // Plan A Slice 2 — one-shot endpoints
+  summarizeTaskEndpoint,
+  summarizeBoardEndpoint,
+  suggestPriorityEndpoint,
+  planWeekEndpoint,
 };

@@ -6,6 +6,10 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import useSpeechToText from '../hooks/useSpeechToText';
+// Doc Editor Phase A — swap the plain textarea for the Tiptap-based
+// RichTextEditor. `htmlToPlainText` lets us keep the AI processing flow
+// and dedup logic on plain text while the editor body lives as HTML.
+import RichTextEditor, { htmlToPlainText, looksLikeHtml } from '../components/common/RichTextEditor';
 
 const AI_PROCESS_TYPES = [
   { id: 'clean', label: 'Clean', icon: Sparkles, color: 'emerald' },
@@ -48,7 +52,10 @@ function NoteEditor({ note, onSaved, onCancel }) {
   const [aiError, setAiError] = useState(null);
   const [aiCopied, setAiCopied] = useState(false);
 
-  const textareaRef = useRef(null);
+  // editorRef exposes RichTextEditor's imperative API (insertText, focus,
+  // getText, etc.). Voice-to-text uses insertText to append dictated chunks
+  // without clobbering existing rich content.
+  const editorRef = useRef(null);
   const titleRef = useRef(null);
 
   const speechSupported = isSpeechSupported();
@@ -87,22 +94,32 @@ function NoteEditor({ note, onSaved, onCancel }) {
     if (title.trim()) setTitleError(false);
   }, [title]);
 
-  // Append each finalized speech chunk to the content field.
-  // Using onFinal callback preserves pre-existing typed content, allows
-  // multi-session resume-recording, and doesn't clobber manual edits.
+  // Append each finalized speech chunk to the editor body.
+  // Phase A migration: dedup uses editor.getText() rather than string-comparing
+  // HTML — mobile speech engines occasionally replay the last chunk after an
+  // auto-restart, and we want to drop the duplicate before insertText runs.
   const handleFinalTranscript = useCallback((finalText) => {
     if (!finalText) return;
-    setContent((prev) => {
-      // Safety net: drop already-appended chunks that mobile engines can
-      // replay after auto-restart cycles (keeps user-typed prefix intact).
-      const chunkTrim = finalText.trim();
-      if (chunkTrim) {
-        const prevTail = prev.trimEnd().toLowerCase();
+    const chunkTrim = finalText.trim();
+    if (!chunkTrim) return;
+    const editor = editorRef.current;
+    if (editor) {
+      const prevPlain = (editor.getText() || '').trimEnd().toLowerCase();
+      if (prevPlain.endsWith(chunkTrim.toLowerCase())) return; // already there
+      editor.insertText(finalText);
+      // The editor's onUpdate will flow the new HTML back to setContent —
+      // we don't need to call it directly.
+    } else {
+      // Fallback if the editor ref hasn't attached yet (very early voice
+      // events). Append to the raw content state — RichTextEditor will
+      // rewrap as <p> on the next render.
+      setContent((prev) => {
+        const prevTail = (prev || '').trimEnd().toLowerCase();
         if (prevTail.endsWith(chunkTrim.toLowerCase())) return prev;
-      }
-      const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
-      return prev + sep + finalText;
-    });
+        const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+        return prev + sep + finalText;
+      });
+    }
   }, []);
 
   const toggleMic = () => {
@@ -114,13 +131,18 @@ function NoteEditor({ note, onSaved, onCancel }) {
   };
 
   const handleAiProcess = async (type) => {
-    if (!content.trim()) return;
+    // Doc Editor Phase A: `content` may now be HTML (RichTextEditor body).
+    // The /notes/process backend prompt is plain-text-oriented, so feed it
+    // the stripped text — keeps the existing 4 prompts (clean / summarize /
+    // action_items / meeting_notes) working byte-for-byte.
+    const plain = looksLikeHtml(content) ? htmlToPlainText(content) : content;
+    if (!plain.trim()) return;
     setAiProcessing(true);
     setAiProcessType(type);
     setAiError(null);
     setAiResult('');
     try {
-      const res = await api.post('/notes/process', { text: content, processType: type });
+      const res = await api.post('/notes/process', { text: plain, processType: type });
       setAiResult(res.data?.result || '');
     } catch (err) {
       setAiError(err.response?.data?.message || 'AI processing failed. Is an AI provider configured?');
@@ -308,14 +330,16 @@ function NoteEditor({ note, onSaved, onCancel }) {
         </div>
       )}
 
-      {/* Textarea for content */}
-      <textarea
-        ref={textareaRef}
+      {/* Rich text editor for content (Doc Editor Phase A). Replaces the
+          plain textarea. Voice-to-text appends via editorRef.insertText —
+          see handleFinalTranscript above. Existing plain-text notes load
+          fine (RichTextEditor wraps plain values in <p> on mount). */}
+      <RichTextEditor
+        ref={editorRef}
         value={content}
-        onChange={(e) => setContent(e.target.value)}
-        placeholder={isListening ? 'Speak now — your words will appear here...' : 'Type your note here, or use the microphone to dictate...'}
-        rows={10}
-        className="w-full px-3 py-3 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 resize-y focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/30 font-mono leading-relaxed"
+        onUpdate={(html) => setContent(html)}
+        placeholder={isListening ? 'Speak now — your words will appear here...' : 'Type your note here, or use the microphone to dictate. Try / for block commands.'}
+        minHeight={240}
       />
 
       {/* Interim transcript preview */}

@@ -1,4 +1,16 @@
 import '@testing-library/jest-dom';
+import { vi } from 'vitest';
+
+// Doc Editor Phase A — Tiptap's BubbleMenu uses tippy.js, whose default
+// export only resolves correctly in real browsers. In jsdom + ESM,
+// the plugin throws "tippy is not a function" the moment a transaction
+// dispatches. Stub the BubbleMenu component globally so any test that
+// renders RichTextEditor (or anything that embeds it) mounts cleanly.
+// Production usage is unaffected — Vite's bundler resolves tippy fine.
+vi.mock('@tiptap/react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, BubbleMenu: () => null };
+});
 
 // Mock IntersectionObserver
 class IntersectionObserver {
