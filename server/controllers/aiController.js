@@ -751,6 +751,127 @@ async function summarizeBoardEndpoint(req, res) {
   }
 }
 
+/**
+ * POST /api/ai/extract-actions
+ * body: { text, providerId? }
+ *
+ * Notetaker companion — pulls structured action items out of a meeting
+ * transcript. Returns { actions: [{title, owner?, dueDate?, priority?}] }.
+ * Stateless; uses no task/board context (owner names are free-text the
+ * caller can resolve to real users when they click "Create task").
+ */
+async function extractActionsEndpoint(req, res) {
+  try {
+    const { text, providerId } = req.body || {};
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'text is required.',
+        code: 'invalid_input',
+      });
+    }
+    const { extractActionItemsWithAI } = require('../services/aiSummaryService');
+    const out = await extractActionItemsWithAI({ text }, { providerId });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+/**
+ * POST /api/ai/inline-edit
+ * body: { text, mode, providerId? }
+ *
+ * Phase E — "select text in editor → AI transform" endpoint. Stateless;
+ * does NOT load any task/board/doc context. Caller-supplied text is the
+ * full input. Per-user rate-limited via the aiUserLimiter on the route.
+ *
+ * mode is one of the keys in INLINE_MODES (improve/shorter/longer/grammar/
+ * continue/casual/professional). Anything else → 400.
+ */
+async function inlineEditEndpoint(req, res) {
+  try {
+    const { text, mode, providerId } = req.body || {};
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'text is required.',
+        code: 'invalid_input',
+      });
+    }
+    if (typeof mode !== 'string' || !mode.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'mode is required.',
+        code: 'invalid_input',
+      });
+    }
+    const { transformInlineWithAI, INLINE_MODES } = require('../services/aiSummaryService');
+    if (!INLINE_MODES[mode]) {
+      return res.status(400).json({
+        success: false,
+        message: `Unknown mode. Allowed: ${Object.keys(INLINE_MODES).join(', ')}.`,
+        code: 'invalid_mode',
+      });
+    }
+    const out = await transformInlineWithAI({ text, mode }, { providerId });
+    res.json({ success: true, data: out });
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
+/**
+ * POST /api/ai/summarize/doc/:id
+ *
+ * Loads the doc, verifies the caller can see its workspace (same gate as
+ * doc reads), then asks the model for a short Markdown summary. Returns
+ * 404 if the doc doesn't exist, 403 if not visible. Plain-text-only — the
+ * Tiptap JSON envelope would burn tokens on structure that doesn't change
+ * the summary.
+ */
+async function summarizeDocEndpoint(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: 'Doc id is required.' });
+    const { Doc } = require('../models');
+    const doc = await Doc.findByPk(id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
+
+    // Reuse the doc controller's canCallerSeeWorkspace check by re-implementing
+    // the minimum needed (workspace member, creator, admin, manager, or super).
+    const u = req.user;
+    let allowed = false;
+    if (u?.isSuperAdmin || u?.role === 'admin' || u?.role === 'manager') allowed = true;
+    if (!allowed) {
+      const { Workspace, User } = require('../models');
+      const ws = await Workspace.findByPk(doc.workspaceId, {
+        include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
+      });
+      if (ws && (ws.createdBy === u.id
+        || (ws.workspaceMembers || []).some((m) => m.id === u.id))) {
+        allowed = true;
+      }
+    }
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
+    }
+
+    const { summarizeDocWithAI, AiScopeUnavailableError } = require('../services/aiSummaryService');
+    try {
+      const out = await summarizeDocWithAI(req.user, doc, { providerId: req.body?.providerId });
+      res.json({ success: true, data: out });
+    } catch (err) {
+      if (err instanceof AiScopeUnavailableError) {
+        return res.status(404).json({ success: false, code: err.code, message: err.message });
+      }
+      throw err;
+    }
+  } catch (err) {
+    handleAiEndpointError(res, err);
+  }
+}
+
 async function suggestPriorityEndpoint(req, res) {
   try {
     const { taskTitle, taskDescription, boardId, providerId } = req.body || {};
@@ -926,6 +1047,9 @@ module.exports = {
   // Plan A Slice 2 — one-shot endpoints
   summarizeTaskEndpoint,
   summarizeBoardEndpoint,
+  summarizeDocEndpoint,
   suggestPriorityEndpoint,
   planWeekEndpoint,
+  inlineEditEndpoint,
+  extractActionsEndpoint,
 };

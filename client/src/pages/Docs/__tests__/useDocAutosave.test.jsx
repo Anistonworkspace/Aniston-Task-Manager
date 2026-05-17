@@ -131,8 +131,14 @@ describe('useDocAutosave', () => {
       <Harness hookProps={{ docId: 'd1', debounceMs: 50 }} captureRef={captureRef} />
     );
 
+    // Use `flush(patch)` instead of `scheduleSave(patch)` here. Both
+    // exercise the same success state machine, but `flush` calls send()
+    // synchronously without a setTimeout. The earlier scheduleSave path
+    // raced with @testing-library's 50ms waitFor poll under heavy load
+    // (debounceMs=50 + poll=50 → flaky on slow CI). See May-17 test
+    // hardening notes.
     await act(async () => {
-      captureRef.current.scheduleSave({ contentJson: { v: 1 } });
+      await captureRef.current.flush({ contentJson: { v: 1 } });
     });
 
     await waitFor(() => expect(getByTestId('status').textContent).toBe('saved'));
@@ -146,8 +152,10 @@ describe('useDocAutosave', () => {
       <Harness hookProps={{ docId: 'd1', debounceMs: 50 }} captureRef={captureRef} />
     );
 
+    // Same flake-mitigation as the success case above — flush() instead
+    // of scheduleSave() avoids the timer/poll race.
     await act(async () => {
-      captureRef.current.scheduleSave({ contentJson: { v: 1 } });
+      await captureRef.current.flush({ contentJson: { v: 1 } });
     });
 
     await waitFor(() => expect(getByTestId('status').textContent).toBe('error'));

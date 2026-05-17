@@ -1,5 +1,15 @@
 import '@testing-library/jest-dom';
 import { vi } from 'vitest';
+import { configure } from '@testing-library/dom';
+
+// Harden the suite against load-based flakes. Testing-library's default
+// `waitFor` timeout is 1000 ms — too tight when the 73-file suite runs
+// hot (we've observed ~80s total runs vs the typical ~50s, during which
+// any `waitFor` slower than 1s flakes — root cause of the May-17
+// transient "1 failed / 696 passed" we caught). Bumping to 5s eliminates
+// the flake without slowing real failures down meaningfully (successful
+// asserts settle in <100ms; this only affects the failure path).
+configure({ asyncUtilTimeout: 5000 });
 
 // Doc Editor Phase A — Tiptap's BubbleMenu uses tippy.js, whose default
 // export only resolves correctly in real browsers. In jsdom + ESM,

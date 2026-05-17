@@ -28,7 +28,7 @@ import { getErrorMessage } from '../../utils/errorMap';
  * onUpdate on every keystroke, so without coalescing we'd hammer the
  * backend. The latest patch wins; intermediate patches are discarded.
  */
-export default function useDocAutosave({ docId, debounceMs = 1200, onSaved } = {}) {
+export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enabled = true } = {}) {
   const [status, setStatus] = useState('idle');
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [error, setError] = useState('');
@@ -99,11 +99,15 @@ export default function useDocAutosave({ docId, debounceMs = 1200, onSaved } = {
   const scheduleSave = useCallback((patch) => {
     if (!patch || typeof patch !== 'object') return;
     if (!docId) return;
+    // Phase G — silently drop scheduled saves when collab owns the doc.
+    // We don't even mark `dirty` because the collab pill is the source
+    // of truth for "is my work being persisted" in that mode.
+    if (!enabled) return;
     pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
     setStatus('dirty');
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(send, debounceMs);
-  }, [docId, debounceMs, send]);
+  }, [docId, debounceMs, send, enabled]);
 
   const flush = useCallback(async (patch) => {
     if (patch) {

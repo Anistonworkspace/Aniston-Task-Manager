@@ -65,6 +65,188 @@ async function summarizeBoardWithAI(user, boardId, opts = {}) {
   return { kind: 'text', summary: stripFences(String(reply || '').trim()) };
 }
 
+// ─── Notetaker — extract action items from a transcript ─────────
+//
+// One-shot AI call: take a meeting transcript (possibly speaker-prefixed:
+//   "Speaker 1: we need to ship the auth fix by Friday")
+// and return a structured array of action items the user can convert into
+// tasks. Strict-JSON output via a fenced block; if the model refuses we
+// fall back to an empty list so the UI degrades gracefully.
+//
+// Each action has: { title, owner?, dueDate?, priority? }.
+// owner is a free-text name string the LLM extracts (we resolve to a real
+// user later when the caller clicks "Create task"); we never trust the
+// AI to assert user IDs.
+
+const ACTION_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+
+async function extractActionItemsWithAI({ text } = {}, opts = {}) {
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('text is required');
+  }
+  const truncated = truncate(text.trim(), 8000);
+
+  const system = [
+    'You read meeting transcripts and extract concrete action items.',
+    'Return ONLY a JSON object inside a single ```json fenced block.',
+    'Shape:',
+    '  { "actions": [',
+    '      { "title": string,',
+    '        "owner": string | null,',
+    '        "dueDate": string | null,   // YYYY-MM-DD or null',
+    '        "priority": "low" | "medium" | "high" | "critical" | null',
+    '      }',
+    '  ] }',
+    'Rules:',
+    '- Only include items that are real to-dos. Skip pleasantries.',
+    '- owner is a person name as spoken (e.g. "Sara"), null if unclear.',
+    '- dueDate ISO YYYY-MM-DD if a specific date was mentioned (e.g. "by Friday" → next Friday), else null.',
+    '- priority "critical" only if the speaker said urgent/blocker/escalate; default null.',
+    '- Title should be a single imperative sentence (~80 chars max).',
+    '- Cap at 12 actions even if the meeting was longer.',
+    '- Return { "actions": [] } if the transcript has no clear action items.',
+  ].join('\n');
+
+  const reply = await aiService.chat(
+    [{ role: 'user', content: `Transcript:\n"""\n${truncated}\n"""\n\nExtract action items.` }],
+    system,
+    opts.providerId,
+  );
+
+  const parsed = parseFencedJSON(reply);
+  if (!parsed || !Array.isArray(parsed.actions)) {
+    safeLogger.warn('[aiSummary] extractActions: non-JSON reply; returning empty list', {
+      reply: truncate(String(reply || ''), 200),
+    });
+    return { kind: 'structured', actions: [] };
+  }
+
+  const cleaned = parsed.actions
+    .filter((a) => a && typeof a === 'object')
+    .map((a) => {
+      const title = typeof a.title === 'string' ? a.title.trim().slice(0, 180) : '';
+      if (!title) return null;
+      const owner = typeof a.owner === 'string' && a.owner.trim()
+        ? a.owner.trim().slice(0, 80)
+        : null;
+      const dueDate = isIsoDate(a.dueDate) ? a.dueDate : null;
+      const priority = ACTION_PRIORITIES.includes(a.priority) ? a.priority : null;
+      return { title, owner, dueDate, priority };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+
+  return { kind: 'structured', actions: cleaned };
+}
+
+// ─── Phase E — inline AI transforms on selected text ─────────────
+//
+// Surfaces a "select text → AI" interaction inside any rich editor.
+// Modes (mirrored on the client `BubbleAIMenu`):
+//   improve       — fix awkward phrasing, sharpen the message
+//   shorter       — same idea, fewer words
+//   longer        — expand with detail / context
+//   grammar       — fix grammar / spelling only, keep wording intact
+//   continue      — write the next sentence(s) in the same voice
+//   casual        — rewrite in a more casual tone
+//   professional  — rewrite in a more formal/business tone
+//
+// Each mode picks a system prompt; the response is plain text (no fences,
+// no Markdown surround). The caller swaps the selection in-place.
+const INLINE_MODES = {
+  improve: {
+    system: 'You improve the user-supplied passage. Return ONLY the improved text. No preamble, no fences, no explanation. Keep the language and the rough length the same. Preserve any names, numbers, URLs, and proper nouns verbatim.',
+    instruction: 'Rewrite to be clearer and stronger while preserving meaning.',
+  },
+  shorter: {
+    system: 'You shorten the user-supplied passage. Return ONLY the shortened text. Keep the meaning, drop filler.',
+    instruction: 'Rewrite the passage to be ~40% shorter, no bullets, no preamble.',
+  },
+  longer: {
+    system: 'You expand the user-supplied passage with relevant detail. Return ONLY the expanded text. Stay on topic.',
+    instruction: 'Expand the passage by ~50% with concrete detail. No fluff.',
+  },
+  grammar: {
+    system: 'You fix grammar and spelling only. Preserve the author voice, capitalization style, and word choice as much as possible. Return ONLY the corrected text.',
+    instruction: 'Correct grammar and spelling. Do not rewrite for style.',
+  },
+  continue: {
+    system: 'You continue writing in the same voice as the user-supplied passage. Return ONLY the continuation. Do not repeat the original.',
+    instruction: 'Write 1-3 sentences that naturally continue what came before.',
+  },
+  casual: {
+    system: 'You rewrite the user-supplied passage in a casual, conversational tone. Return ONLY the rewritten text.',
+    instruction: 'Same meaning, casual conversational tone.',
+  },
+  professional: {
+    system: 'You rewrite the user-supplied passage in a polished business/professional tone. Return ONLY the rewritten text.',
+    instruction: 'Same meaning, polished professional tone. No jargon spam.',
+  },
+};
+
+const INLINE_MAX_INPUT_CHARS = 4000;
+
+async function transformInlineWithAI({ text, mode } = {}, opts = {}) {
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('text is required');
+  }
+  const cfg = INLINE_MODES[mode];
+  if (!cfg) {
+    throw new Error(`Unknown mode: ${mode}. Allowed: ${Object.keys(INLINE_MODES).join(', ')}`);
+  }
+  const trimmed = text.trim();
+  const truncated = trimmed.length > INLINE_MAX_INPUT_CHARS
+    ? trimmed.slice(0, INLINE_MAX_INPUT_CHARS)
+    : trimmed;
+
+  const reply = await aiService.chat(
+    [{
+      role: 'user',
+      content: `${cfg.instruction}\n\nPassage:\n"""${truncated}"""`,
+    }],
+    cfg.system,
+    opts.providerId,
+  );
+
+  // Strip Markdown fences and stray surrounding quotes the model sometimes
+  // adds despite the system prompt asking for raw text.
+  const cleaned = stripFences(String(reply || '').trim())
+    .replace(/^["'"]+|["'"]+$/g, '')
+    .trim();
+  return { kind: 'text', mode, output: cleaned };
+}
+
+/**
+ * Phase D — one-shot doc summary.
+ *
+ * Reads a doc the caller can see (workspace-visibility gate done in the
+ * controller; this service trusts its caller) and asks the model for a
+ * short summary. Plain-text shadow (`contentText`) is sent — the JSON
+ * envelope would burn tokens on Tiptap nesting that doesn't change the
+ * summary.
+ */
+async function summarizeDocWithAI(user, doc, opts = {}) {
+  if (!doc || !doc.id) throw new AiScopeUnavailableError('Doc not found.');
+  const text = String(doc.contentText || '').trim();
+  if (!text) {
+    return {
+      kind: 'text',
+      summary: 'This doc is empty — write something first, then hit Summarize.',
+    };
+  }
+  const truncated = truncate(text, 6000);
+  const system = [
+    `You are summarizing a collaborative document titled "${doc.title || 'Untitled doc'}".`,
+    'Lead with the bottom line, then list the most important points as 3-5 short bullets.',
+    'Keep the whole reply under 180 words. Reply in plain Markdown — no code fences, no preamble.',
+  ].join(' ');
+  const messages = [
+    { role: 'user', content: `Doc contents:\n\n${truncated}\n\nSummarize.` },
+  ];
+  const reply = await aiService.chat(messages, system, opts.providerId);
+  return { kind: 'text', summary: stripFences(String(reply || '').trim()) };
+}
+
 // ─── suggest priority ────────────────────────────────────────
 
 const ALLOWED_PRIORITIES = ['low', 'medium', 'high', 'critical'];
@@ -313,10 +495,14 @@ function truncate(s, n) {
 module.exports = {
   summarizeTaskWithAI,
   summarizeBoardWithAI,
+  summarizeDocWithAI,
   suggestPriorityWithAI,
   planWeekWithAI,
+  transformInlineWithAI,
+  extractActionItemsWithAI,
   AiNotConfiguredError,
   AiScopeUnavailableError,
+  INLINE_MODES,
   // Exposed for tests:
   __parseFencedJSON: parseFencedJSON,
   __stripFences: stripFences,

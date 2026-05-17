@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import OnboardingTour from '../common/OnboardingTour';
-// Phase 3: AIAssistant.jsx remains on disk as a fallback (revert by swapping
-// the import below). The new right-side SidekickPanel replaces it as the
-// default AI surface across the app.
+// SidekickPanel is the canonical AI surface across the app. (Legacy
+// AIAssistant.jsx was removed 2026-05-17 after SidekickPanel had run
+// stable in production — no production code referenced it.)
 import SidekickPanel from '../sidekick/SidekickPanel';
 import VoiceNotes from '../common/VoiceNotes';
 import FeedbackWidget from '../common/FeedbackWidget';
@@ -13,12 +13,53 @@ import ToolsFAB from '../common/ToolsFAB';
 import RoleChangePopup from '../common/RoleChangePopup';
 import BannerStack, { BannersProvider } from './Banners';
 
+// Initial sidebar state: collapsed on small viewports so the drawer doesn't
+// cover the page contents on first load. We read window.matchMedia at module
+// init time — useState's lazy initializer keeps this from re-firing on
+// re-renders. SSR-safe: typeof window guard returns `false` (= sidebar open)
+// during render, which is the historical desktop default.
+function initialSidebarCollapsed() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  // Tailwind's `md` breakpoint is 768px — match it so the JS state lines up
+  // with the CSS that already hides the sidebar via `max-md:-translate-x-full`.
+  return window.matchMedia('(max-width: 767px)').matches;
+}
+
 export default function Layout() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed);
   const [voiceNotesOpen, setVoiceNotesOpen] = useState(false);
+  // Opt-in flag honored on the next open — lets pages like NotetakerPage
+  // request "open the recorder in Meeting Mode" without lifting the whole
+  // VoiceNotes state into a context.
+  const [voiceNotesInitialMeetingMode, setVoiceNotesInitialMeetingMode] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const location = useLocation();
+
+  // Mobile: auto-collapse the sidebar after every route change so the drawer
+  // doesn't keep covering the page after the user taps a nav link. Desktop
+  // (md and up) is unaffected — the drawer overlay is hidden by CSS there
+  // and the sidebar collapse is purely cosmetic.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      setSidebarCollapsed(true);
+    }
+  }, [location.pathname]);
+
+  // Any page can fire `window.dispatchEvent(new CustomEvent('open-voice-notes', { detail: { meetingMode: true } }))`
+  // to open the recorder pre-configured. Keeps NotetakerPage decoupled
+  // from Layout state — no prop drilling, no context refactor for one
+  // affordance.
+  useEffect(() => {
+    function onOpenVoiceNotes(e) {
+      const wantsMeeting = !!(e?.detail?.meetingMode);
+      setVoiceNotesInitialMeetingMode(wantsMeeting);
+      setVoiceNotesOpen(true);
+    }
+    window.addEventListener('open-voice-notes', onOpenVoiceNotes);
+    return () => window.removeEventListener('open-voice-notes', onOpenVoiceNotes);
+  }, []);
 
   // App shell: floating-card framing (.app-shell + .floating-card--stuck)
   // gives the app warmth and depth — a tan-tinted base layer with a
@@ -46,7 +87,14 @@ export default function Layout() {
           </main>
         </div>
         <ToolsFAB onOpenVoiceNotes={() => setVoiceNotesOpen(true)} onOpenFeedback={() => setFeedbackOpen(true)} onOpenAI={() => setAiOpen(true)} />
-        <VoiceNotes isOpen={voiceNotesOpen} onClose={() => setVoiceNotesOpen(false)} />
+        <VoiceNotes
+          isOpen={voiceNotesOpen}
+          onClose={() => {
+            setVoiceNotesOpen(false);
+            setVoiceNotesInitialMeetingMode(false);
+          }}
+          initialMeetingMode={voiceNotesInitialMeetingMode}
+        />
         <FeedbackWidget isOpen={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
         <SidekickPanel isOpen={aiOpen} onClose={() => setAiOpen(false)} />
         <OnboardingTour />

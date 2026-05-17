@@ -11,6 +11,7 @@ import EmptyState from '../../components/common/EmptyState';
 import UpcomingMeetingCard from './UpcomingMeetingCard';
 import MeetingSummariesTable from './MeetingSummariesTable';
 import NotetakerSettingsModal from './NotetakerSettingsModal';
+import RecentRecordings from './RecentRecordings';
 import { isUpcomingMeeting } from './notetakerHelpers';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 
@@ -90,6 +91,16 @@ export default function NotetakerPage() {
     toast.info(CALENDAR_OAUTH_NOT_READY_MESSAGE);
   }
 
+  // Open the existing floating VoiceNotes recorder pre-configured for
+  // multi-speaker meeting capture. The Layout listens for this event and
+  // flips highAccuracyMode on its own state so we don't have to lift the
+  // panel into a context just for one affordance.
+  function handleStartRecording() {
+    window.dispatchEvent(new CustomEvent('open-voice-notes', {
+      detail: { meetingMode: true },
+    }));
+  }
+
   // Empty state — only shown when there are absolutely no meetings AND
   // calendar isn't connected. Otherwise we show the regular populated layout.
   const isFullyEmpty = !loading && !error && meetings.length === 0 && !calendarConnected;
@@ -107,39 +118,38 @@ export default function NotetakerPage() {
             Let AI take meeting notes for you
           </h1>
           <p className="mt-2 text-sm text-text-secondary">
-            Connect your calendar to automatically capture meeting notes and action items,
-            seamlessly integrated into your workflow.
+            Hit record now, or connect your calendar to automatically capture meeting
+            notes and action items, seamlessly integrated into your workflow.
           </p>
 
-          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Primary CTA — start recording immediately. Multi-speaker
+              Deepgram pipeline is already configured; this just opens the
+              floating recorder pre-flipped to Meeting Mode. */}
+          <div className="mt-6">
             <button
               type="button"
-              onClick={() => handleConnectCalendar('google')}
-              className="flex items-center justify-center gap-3 px-4 py-3 rounded-md border-2 border-border bg-surface text-sm font-semibold text-text-primary hover:border-primary-300 transition-colors"
+              onClick={handleStartRecording}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md bg-primary text-white text-sm font-semibold hover:bg-primary-600 transition-colors shadow"
             >
-              <span
-                className="w-5 h-5 rounded-full inline-flex items-center justify-center text-white text-[10px] font-bold"
-                style={{
-                  backgroundImage: 'conic-gradient(from 0deg, #ea4335, #fbbc04, #34a853, #4285f4, #ea4335)',
-                }}
-              >
-                G
-              </span>
-              Google Calendar
+              <Mic size={16} /> Start recording now
             </button>
-            <button
-              type="button"
-              onClick={() => handleConnectCalendar('outlook')}
-              className="flex items-center justify-center gap-3 px-4 py-3 rounded-md border-2 border-border bg-surface text-sm font-semibold text-text-primary hover:border-primary-300 transition-colors"
-            >
-              <span
-                className="w-5 h-5 rounded-full inline-flex items-center justify-center text-white text-[10px] font-bold"
-                style={{ backgroundColor: '#0078d4' }}
-              >
-                O
-              </span>
-              Outlook Calendar
-            </button>
+            <p className="mt-2 text-[11px] text-text-tertiary">
+              Opens the recorder in multi-speaker meeting mode. Works on phone or laptop.
+            </p>
+          </div>
+
+          {/* Calendar OAuth — flagged as theater in the May-17 audit:
+              backend endpoints don't exist yet so clicks only fire a toast.
+              Replaced with a clearly-labeled "coming soon" notice so users
+              don't waste a click. When the OAuth slice lands, restore the
+              buttons + delete this notice. The grid stays so the layout
+              doesn't reflow when we add it back. */}
+          <div className="mt-6 rounded-md border-2 border-dashed border-border bg-surface/40 px-4 py-3 text-[12px] text-text-tertiary text-center">
+            <span className="font-semibold text-text-secondary">Auto-record from calendar</span>
+            {' — '}coming in a future release.
+            For now, use{' '}
+            <span className="font-semibold text-text-secondary">Start recording now</span>
+            {' '}above whenever you're in a meeting.
           </div>
 
           <p className="mt-6 text-xs text-text-tertiary">
@@ -179,6 +189,14 @@ export default function NotetakerPage() {
         </div>
         <button
           type="button"
+          onClick={handleStartRecording}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold text-white bg-primary hover:bg-primary-600 transition-colors shadow-sm"
+          title="Open the recorder in multi-speaker meeting mode"
+        >
+          <Mic size={14} /> Record meeting
+        </button>
+        <button
+          type="button"
           onClick={() => setShowSettings(true)}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-text-secondary border border-border bg-surface hover:border-primary-300 hover:text-primary"
         >
@@ -187,6 +205,10 @@ export default function NotetakerPage() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-4">
+        {/* Recordings the user has made from anywhere in the app. Auto-
+            refreshes via the 'notes:changed' event VoiceNotes dispatches. */}
+        <RecentRecordings />
+
         {/* Upcoming card grid */}
         {upcoming.length > 0 && (
           <section className="mb-6">

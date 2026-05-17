@@ -8,8 +8,12 @@ const {
   setDefaultProvider, toggleProvider, testProvider,
   chatWithAI, checkGrammar,
   // Plan A Slice 2 — one-shot AI endpoints (summary / suggest / plan).
-  summarizeTaskEndpoint, summarizeBoardEndpoint,
+  summarizeTaskEndpoint, summarizeBoardEndpoint, summarizeDocEndpoint,
   suggestPriorityEndpoint, planWeekEndpoint,
+  // Phase E — inline AI transforms on user-selected text.
+  inlineEditEndpoint,
+  // Notetaker — structured action-item extraction from a transcript.
+  extractActionsEndpoint,
 } = require('../controllers/aiController');
 
 // All routes require authentication
@@ -73,7 +77,13 @@ router.post('/grammar', aiUserLimiter, checkGrammar);
 // Same per-user rate limit as /chat — these hit the same paid provider.
 router.post('/summarize/task/:id',  aiUserLimiter, summarizeTaskEndpoint);
 router.post('/summarize/board/:id', aiUserLimiter, summarizeBoardEndpoint);
+router.post('/summarize/doc/:id',   aiUserLimiter, summarizeDocEndpoint);
 router.post('/suggest-priority',    aiUserLimiter, suggestPriorityEndpoint);
 router.post('/plan-week',           aiUserLimiter, planWeekEndpoint);
+// Phase E — inline AI transform on user-selected text. Same rate budget
+// as the other one-shot endpoints since it hits the same paid provider.
+router.post('/inline-edit',         aiUserLimiter, inlineEditEndpoint);
+// Notetaker — extract action items from a transcript.
+router.post('/extract-actions',     aiUserLimiter, extractActionsEndpoint);
 
 module.exports = router;

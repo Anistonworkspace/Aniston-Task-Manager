@@ -26,6 +26,48 @@ import { useToast } from '../../components/common/Toast';
  * clicking a board still navigates to /boards/:id as before.
  */
 
+// Iso illustration banner — sits above WorkspaceHeader and gives the landing
+// page warmth (skill §7). Tints itself from the workspace color so each
+// workspace feels distinct. Pure inline SVG; no external assets.
+function WorkspaceBanner({ color = '#0073ea' }) {
+  return (
+    <div
+      className="relative h-24 overflow-hidden"
+      style={{ background: `linear-gradient(135deg, ${color}1f 0%, ${color}33 100%)` }}
+      aria-hidden="true"
+    >
+      <svg
+        viewBox="0 0 600 96"
+        preserveAspectRatio="xMaxYMid slice"
+        className="absolute inset-y-0 right-0 h-full opacity-90"
+      >
+        <defs>
+          <linearGradient id="ws-card-a" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.85" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.55" />
+          </linearGradient>
+          <linearGradient id="ws-card-b" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stopColor={color} stopOpacity="0.75" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.4" />
+          </linearGradient>
+        </defs>
+        {/* Iso back card */}
+        <polygon points="430,18 540,18 580,38 470,38" fill="url(#ws-card-a)" stroke="#ffffff" strokeOpacity="0.6" />
+        <polygon points="470,38 580,38 580,78 470,78" fill="#ffffff" fillOpacity="0.55" />
+        <polygon points="430,18 470,38 470,78 430,58" fill={color} fillOpacity="0.18" />
+        {/* Iso front card */}
+        <polygon points="370,42 480,42 520,62 410,62" fill="url(#ws-card-b)" stroke="#ffffff" strokeOpacity="0.5" />
+        <polygon points="410,62 520,62 520,90 410,90" fill={color} fillOpacity="0.35" />
+        <polygon points="370,42 410,62 410,90 370,70" fill={color} fillOpacity="0.55" />
+        {/* sparkle dots */}
+        <circle cx="350" cy="22" r="2" fill="#ffcb00" />
+        <circle cx="365" cy="60" r="1.5" fill="#ff158a" />
+        <circle cx="555" cy="50" r="2" fill="#00c875" />
+      </svg>
+    </div>
+  );
+}
+
 function WorkspaceHeader({ workspace, isOwner, onSave, onShare, onInvite }) {
   const [editingName, setEditingName] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
@@ -379,6 +421,7 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex flex-col h-full">
+      <WorkspaceBanner color={workspace.color} />
       <WorkspaceHeader
         workspace={workspace}
         isOwner={isOwner}

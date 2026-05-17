@@ -40,6 +40,11 @@ const meetingRoutes = require('./routes/meetings');
 const dependencyRoutes = require('./routes/dependencies');
 const teamsRoutes = require('./routes/teams');
 const automationRoutes = require('./routes/automations');
+// Workflow Canvas (Phase W1) — visual node-graph automation. Coexists
+// with the legacy automation engine on /api/automations; both routes
+// + both engines stay live.
+const workflowRoutes = require('./routes/workflows');
+const formRoutes = require('./routes/forms');
 const workspaceRoutes = require('./routes/workspaces');
 const permissionRoutes = require('./routes/permissions');
 const accessRequestRoutes = require('./routes/accessRequests');
@@ -104,6 +109,14 @@ initializeSocket(server);
 // with Socket.io (which handles /socket.io/*).
 const { attachMeetingStream } = require('./services/meetingStreamService');
 attachMeetingStream(server);
+
+// ─── Doc Editor Phase G — collab WebSocket (Hocuspocus + Y.js) ───────
+// Claims only /api/docs-collab/ws so it coexists with Socket.io and
+// /api/meeting-stream/ws — each upgrade handler ignores paths it
+// doesn't own. attachDocCollab returns null and logs if hocuspocus/yjs
+// aren't installed; boot continues either way.
+const { attachDocCollab } = require('./services/docCollabService');
+attachDocCollab(server);
 
 // ─── Global middleware ───────────────────────────────────────
 //
@@ -489,6 +502,9 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/meetings', meetingRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/automations', automationRoutes);
+// Workflow Canvas Phase W1 — sibling of /api/automations.
+app.use('/api/workflows', workflowRoutes);
+app.use('/api/forms', formRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/permissions', permissionRoutes);
 app.use('/api/access-requests', accessRequestRoutes);
@@ -538,6 +554,11 @@ app.use('/api/recurring-tasks', recurringTaskRoutes);
 app.use('/api/board-orders', boardOrderRoutes);
 app.use('/api/system-settings', systemSettingsRoutes);
 app.use('/api/meeting-stream', meetingStreamRoutes);
+// Doc Editor Phase G — collab ticket endpoint. Mirrors meeting-stream
+// ticket: short-lived JWT (60s) used to authenticate the WS upgrade
+// on /api/docs-collab/ws.
+const docCollabRoutes = require('./routes/docCollab');
+app.use('/api/docs-collab', docCollabRoutes);
 // Slice 5b: authenticated desktop installer download + version manifest.
 // File payload lives at server/downloads/desktop/Monday-Aniston-Setup.exe,
 // populated by `npm run desktop:publish`.
@@ -1304,9 +1325,238 @@ const start = async () => {
         ON doc_versions("docId")`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_versions_doc_time
         ON doc_versions("docId", "createdAt" DESC)`);
-      console.log('[Server] docs + doc_versions tables + indices ensured.');
+
+      // Doc Editor Phase D Slice 1 — @-mentions per doc. Unique on
+      // (docId, mentionedUserId) so the same user can't have two rows
+      // for the same doc; updateDoc relies on that uniqueness when
+      // diffing mentions between saves.
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS doc_mentions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "docId" UUID NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+        "mentionedUserId" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "mentionedByUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "anchorOffset" INTEGER,
+        "resolvedAt" TIMESTAMP WITH TIME ZONE,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_mentions_doc
+        ON doc_mentions("docId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_mentions_user
+        ON doc_mentions("mentionedUserId")`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_mentions_doc_user
+        ON doc_mentions("docId", "mentionedUserId")`);
+
+      // Doc Editor Phase D Slice 2 — task chips per doc.
+      // Unique on (docId, taskId) so the same task can't have two
+      // rows for the same doc. CASCADE on both ends so deleting either
+      // the doc or the task removes the link cleanly.
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS doc_task_references (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "docId" UUID NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+        "taskId" UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        "addedByUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "anchorOffset" INTEGER,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_task_refs_doc
+        ON doc_task_references("docId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_task_refs_task
+        ON doc_task_references("taskId")`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_task_refs_doc_task
+        ON doc_task_references("docId", "taskId")`);
+
+      // Doc Editor Phase F — selection-anchored comments + replies.
+      // Self-referential FK on parentId (replies hang off top-level
+      // comments). CASCADE through doc → comments and parent → replies
+      // so archiving/deleting a doc cleans up its threads, and deleting
+      // a parent wipes orphan children. Author / resolver FKs SET NULL
+      // so historical threads survive user deletion.
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS doc_comments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "docId" UUID NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+        "parentId" UUID REFERENCES doc_comments(id) ON DELETE CASCADE,
+        "authorId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        body TEXT NOT NULL,
+        "anchorText" TEXT NOT NULL,
+        "anchorFrom" INTEGER,
+        "anchorTo" INTEGER,
+        resolved BOOLEAN NOT NULL DEFAULT false,
+        "resolvedAt" TIMESTAMP WITH TIME ZONE,
+        "resolvedBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_comments_doc
+        ON doc_comments("docId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_comments_doc_resolved
+        ON doc_comments("docId", resolved)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_comments_parent
+        ON doc_comments("parentId")`);
+
+      // Doc Editor Phase G — Y.js CRDT state column. BYTEA; populated by
+      // Hocuspocus onStoreDocument. NULL on existing rows that predate
+      // collab; the service either rejects collab for non-trivial legacy
+      // docs (no auto-migration) or starts fresh for empty docs.
+      await sequelize.query(`ALTER TABLE docs
+        ADD COLUMN IF NOT EXISTS "yjsState" BYTEA`);
+
+      console.log('[Server] docs + doc_versions + doc_mentions + doc_task_references + doc_comments tables + indices ensured.');
     } catch (e) {
       console.warn('[Server] docs migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: workflows + workflow_nodes + workflow_edges +
+    //    workflow_runs (Workflow Canvas Phase W1). Mirrors the docs
+    //    block above — CREATE TABLE IF NOT EXISTS is the source of
+    //    truth at boot. Coexists with the legacy `automations` table.
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS workflows (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(200) NOT NULL,
+        description TEXT,
+        "boardId" UUID REFERENCES boards(id) ON DELETE CASCADE,
+        "workspaceId" UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        "createdBy" UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+        "isActive" BOOLEAN NOT NULL DEFAULT false,
+        "lastRunAt" TIMESTAMP WITH TIME ZONE,
+        "lastRunStatus" VARCHAR(20),
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflows_workspace
+        ON workflows("workspaceId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflows_board
+        ON workflows("boardId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflows_board_active
+        ON workflows("boardId", "isActive")`);
+      // May-17 audit follow-up — optimal index for the hot-path
+      // processWorkflows() query: `WHERE isActive=true AND (boardId IS NULL
+      // OR boardId=?)`. The (isActive, boardId) column order lets Postgres
+      // jump straight to the small `isActive=true` slice first, then scan
+      // by boardId within it. The `(boardId, isActive)` index above stays
+      // for the inverse access pattern (look up "what's active on this
+      // board" without the global filter). Both are tiny.
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflows_active_board
+        ON workflows("isActive", "boardId")`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_nodes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "workflowId" UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        type VARCHAR(16) NOT NULL,
+        kind VARCHAR(64) NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        position JSONB NOT NULL DEFAULT '{"x":0,"y":0}'::jsonb,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_nodes_workflow
+        ON workflow_nodes("workflowId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_nodes_workflow_type
+        ON workflow_nodes("workflowId", type)`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_edges (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "workflowId" UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        "sourceNodeId" UUID NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
+        "targetNodeId" UUID NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
+        condition JSONB,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow
+        ON workflow_edges("workflowId")`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_edges_source_target
+        ON workflow_edges("sourceNodeId", "targetNodeId")`);
+      // Phase W2 — branch column for condition-node outgoing edges.
+      // 'true' / 'false' / NULL. Idempotent.
+      await sequelize.query(`ALTER TABLE workflow_edges
+        ADD COLUMN IF NOT EXISTS branch VARCHAR(8)`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_runs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "workflowId" UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        trigger VARCHAR(64) NOT NULL,
+        context JSONB,
+        status VARCHAR(16) NOT NULL,
+        "nodesRun" INTEGER NOT NULL DEFAULT 0,
+        "durationMs" INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        "startedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_time
+        ON workflow_runs("workflowId", "startedAt" DESC)`);
+
+      // W3 — pending wait queue for resumable wait actions (>5 min).
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_waits (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "workflowId" UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        "fromNodeId" UUID NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
+        context JSONB NOT NULL DEFAULT '{}'::jsonb,
+        "resumeAt" TIMESTAMP WITH TIME ZONE NOT NULL,
+        "attemptCount" INTEGER NOT NULL DEFAULT 0,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_waits_resume_at
+        ON workflow_waits("resumeAt")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_waits_workflow
+        ON workflow_waits("workflowId")`);
+
+      console.log('[Server] workflows + workflow_nodes + workflow_edges + workflow_runs + workflow_waits tables + indices ensured.');
+    } catch (e) {
+      console.warn('[Server] workflows migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: forms + form_submissions (Phase F1) ──
+    try {
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS forms (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(200) NOT NULL,
+        description TEXT,
+        slug VARCHAR(80) NOT NULL UNIQUE,
+        "workspaceId" UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        "targetBoardId" UUID REFERENCES boards(id) ON DELETE SET NULL,
+        fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+        "isPublic" BOOLEAN NOT NULL DEFAULT false,
+        "isActive" BOOLEAN NOT NULL DEFAULT true,
+        "submissionCount" INTEGER NOT NULL DEFAULT 0,
+        "createdBy" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_forms_workspace
+        ON forms("workspaceId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_forms_target_board
+        ON forms("targetBoardId")`);
+      // Phase F2 — targetColumnMap (idempotent). NOT NULL default '{}'::jsonb
+      // so the new col is safe to add even when rows already exist.
+      await sequelize.query(`ALTER TABLE forms
+        ADD COLUMN IF NOT EXISTS "targetColumnMap" JSONB NOT NULL DEFAULT '{}'::jsonb`);
+
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS form_submissions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "formId" UUID NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        "submitterEmail" VARCHAR(320),
+        "submitterIp" VARCHAR(64),
+        "submitterUserAgent" VARCHAR(500),
+        "submittedByUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "taskId" UUID REFERENCES tasks(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_form_submissions_form
+        ON form_submissions("formId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_form_submissions_form_time
+        ON form_submissions("formId", "createdAt" DESC)`);
+
+      console.log('[Server] forms + form_submissions tables + indices ensured.');
+    } catch (e) {
+      console.warn('[Server] forms migration warning:', e.message?.slice(0, 200));
     }
 
     // ── Auto-migration: legacy task_labels.id column repair ──
@@ -2378,6 +2628,19 @@ const start = async () => {
       console.warn('[Server] AI migration skipped:', migErr.message?.slice(0, 80));
     }
 
+    // Bootstrap a default AIProvider from env vars (DEEPSEEK_API_KEY /
+    // OPENAI_API_KEY / OPENROUTER_API_KEY / ANTHROPIC_API_KEY) when the
+    // table is otherwise empty. Idempotent — never overwrites an existing
+    // active provider configured via /admin-settings. Lets a fresh install
+    // boot with summarize/Sidekick working out of the box if any of these
+    // vars is set in .env.
+    try {
+      const { bootstrapFromEnv } = require('./services/aiService');
+      bootstrapFromEnv();
+    } catch (bootErr) {
+      console.warn('[Server] AI env bootstrap skipped:', bootErr.message?.slice(0, 80));
+    }
+
     // ── One-time data cleanup: Director Plan & Time Plan ──
     // One-shot cleanup ran historically. Now invoked manually via
     // `node cleanup-plan-data.js` if needed. See P1-27 in audit.
@@ -2432,6 +2695,12 @@ const start = async () => {
       // Outbound webhook retry job (every 5 min) — drains failed deliveries
       const { startWebhookRetryJob } = require('./jobs/webhookRetryJob');
       startWebhookRetryJob();
+
+      // Workflow wait resume job (every 1 min) — Phase W3. Picks up
+      // long-running `wait` actions that were persisted to workflow_waits
+      // and resumes the walk past them once their resumeAt has elapsed.
+      const { startWorkflowWaitJob } = require('./jobs/workflowWaitJob');
+      startWorkflowWaitJob();
 
       // Weekly VACUUM ANALYZE on hot tables. Defends against the planner-stats
       // drift class of incident (May 2026 pg_toast_2619 corruption hit prod

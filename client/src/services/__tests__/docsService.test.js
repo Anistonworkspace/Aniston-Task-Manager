@@ -19,6 +19,7 @@ import {
   restoreDoc,
   listVersions,
   restoreVersion,
+  migrateDocToCollab,
 } from '../docsService';
 
 beforeEach(() => {
@@ -141,5 +142,27 @@ describe('docsService client wrappers', () => {
     api.get.mockResolvedValue({});
     out = await listWorkspaceDocs('w1');
     expect(out).toEqual({});
+  });
+
+  // ─── Phase G follow-up — migrateDocToCollab ────────────────────
+
+  it('migrateDocToCollab POSTs /docs/:id/migrate-to-collab', async () => {
+    api.post.mockResolvedValue({
+      data: { success: true, data: { doc: { id: 'd1', yjsState: 'present' }, alreadyMigrated: false } },
+    });
+    const out = await migrateDocToCollab('d1');
+    expect(api.post).toHaveBeenCalledWith('/docs/d1/migrate-to-collab');
+    expect(out.alreadyMigrated).toBe(false);
+  });
+
+  it('migrateDocToCollab throws when docId is missing', async () => {
+    await expect(migrateDocToCollab()).rejects.toThrow(/docId/);
+    await expect(migrateDocToCollab('')).rejects.toThrow(/docId/);
+  });
+
+  it('migrateDocToCollab tolerates flat response shape (defensive)', async () => {
+    api.post.mockResolvedValue({ data: { doc: { id: 'd1' }, alreadyMigrated: true } });
+    const out = await migrateDocToCollab('d1');
+    expect(out.alreadyMigrated).toBe(true);
   });
 });

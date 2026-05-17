@@ -15,6 +15,7 @@ import Avatar from '../common/Avatar';
 import TaskComments from './TaskComments';
 import TaskFiles from './TaskFiles';
 import SubtaskList from './SubtaskList';
+import TaskDocReferencesBar from './TaskDocReferencesBar';
 import WorkLogSection from './WorkLogSection';
 import ActivityFeed from './ActivityFeed';
 import DependencyBadge from '../dependencies/DependencyBadge';
@@ -2739,6 +2740,11 @@ export default function TaskModal({
                   </p>
                 )}
               </div>
+
+              {/* Doc Editor Phase D Slice 2 — bidirectional doc → task link.
+                  Renders a slim pill row when the task is mentioned in one
+                  or more workspace docs; hides itself entirely otherwise. */}
+              <TaskDocReferencesBar taskId={task.id} />
 
               {/* Subtasks */}
               <div ref={subtasksRef}>

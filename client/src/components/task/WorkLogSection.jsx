@@ -6,6 +6,7 @@ import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import useGrammarCorrection from '../../hooks/useGrammarCorrection';
 import GrammarSuggestion from '../common/GrammarSuggestion';
+import MentionInput from '../common/MentionInput';
 
 export default function WorkLogSection({ taskId }) {
   const { user, canManage } = useAuth();
@@ -16,7 +17,21 @@ export default function WorkLogSection({ taskId }) {
   const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const [users, setUsers] = useState([]);
   const { checkGrammar, suggestion: grammarSuggestion, isChecking: isCheckingGrammar, applySuggestion: applyGrammar, dismissSuggestion: dismissGrammar } = useGrammarCorrection();
+
+  // Load workspace users once for the @mention picker on the add-log
+  // textarea. Failure is non-fatal — MentionInput just renders without
+  // autocomplete suggestions.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/auth/users').then((res) => {
+      if (cancelled) return;
+      const list = res.data?.data?.users || res.data?.users || res.data?.data || res.data || [];
+      setUsers(Array.isArray(list) ? list : []);
+    }).catch(() => { /* noop */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (taskId) loadLogs();
@@ -116,13 +131,12 @@ export default function WorkLogSection({ taskId }) {
               className="text-xs border border-border rounded px-2 py-1 focus:outline-none focus:border-primary"
             />
           </div>
-          <textarea
+          <MentionInput
             value={content}
-            onChange={(e) => { setContent(e.target.value); checkGrammar(e.target.value); }}
-            onKeyDown={(e) => { if (e.key === 'Escape') { setAdding(false); setContent(''); } }}
-            placeholder="What did you work on today?"
+            onChange={(v) => { setContent(v); checkGrammar(v); }}
+            users={users}
+            placeholder="What did you work on today? Type @ to mention someone."
             className="w-full text-sm border border-border rounded-md px-3 py-2 focus:outline-none focus:border-primary resize-none min-h-[80px] mb-2"
-            autoFocus
           />
           <GrammarSuggestion
             suggestion={grammarSuggestion}

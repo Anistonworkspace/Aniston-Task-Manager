@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import TranscriptProcessor from './TranscriptProcessor';
 import {
   Mic, Square, X, ChevronDown, ChevronUp, Clock, FileText,
   Trash2, Save, Settings, AlertCircle, Shield, AlertTriangle,
@@ -85,7 +86,7 @@ function saveSettingsToStorage(settings) {
   } catch {}
 }
 
-export default function VoiceNotes({ isOpen, onClose }) {
+export default function VoiceNotes({ isOpen, onClose, initialMeetingMode = false }) {
   const [activeTab, setActiveTab] = useState('record');
   // savedTranscript holds the final text the user will save
   // (may include meeting-mode labels or AI-processed text)
@@ -102,6 +103,18 @@ export default function VoiceNotes({ isOpen, onClose }) {
   // Meeting mode state
   const [meetingMode, setMeetingMode] = useState(false);
   const [currentSpeaker, setCurrentSpeaker] = useState(1);
+
+  // When the panel is opened by a caller that asked for meeting mode
+  // (NotetakerPage hero button → Layout custom event), flip the
+  // highAccuracyMode setting on. Re-applied each fresh open so it
+  // doesn't override the user's preference between sessions.
+  useEffect(() => {
+    if (isOpen && initialMeetingMode) {
+      setSettings((prev) => ({ ...prev, highAccuracyMode: true }));
+      setMeetingMode(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialMeetingMode]);
 
   // High Accuracy Meeting Mode (Deepgram-backed): speaker-labeled segments
   // accumulated via the onFinal callback from useMeetingTranscription.
@@ -241,7 +254,14 @@ export default function VoiceNotes({ isOpen, onClose }) {
   async function loadRecentNotes() {
     try {
       const res = await api.get('/notes/my');
-      setRecentNotes((res.data.notes || []).slice(0, 5));
+      // Tolerate both the unwrapped `{ notes }` envelope and the canonical
+      // `{ success, data: { notes } }` shape — RecentRecordings.jsx handles
+      // both the same way, so we mirror that defensiveness here. (Audit
+      // P0 2026-05-17: this used to only read `res.data.notes` and the
+      // recent-notes panel was silently empty in environments where the
+      // /notes/my endpoint returned the canonical shape.)
+      const list = res?.data?.data?.notes || res?.data?.notes || [];
+      setRecentNotes(list.slice(0, 5));
     } catch (err) {
       if (window.__NOTES_DEBUG__) console.error('[VoiceNotes] loadRecentNotes failed:', err);
     }
@@ -785,7 +805,20 @@ export default function VoiceNotes({ isOpen, onClose }) {
 
                 {/* ── LIVE TRANSCRIPT ─────────────────────────────── */}
                 <div ref={liveTranscriptRef} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 min-h-[80px] max-h-[220px] overflow-y-auto text-sm text-gray-700 dark:text-gray-300 space-y-1.5">
-                  {highAccuracyMode && segments.length > 0 ? (
+                  {highAccuracyMode ? (
+                    // Meeting Mode (Deepgram).
+                    //
+                    // Bug-fix 2026-05-17 (v2):
+                    // Previous gate `highAccuracyMode && segments.length > 0`
+                    // hid interim text until the first FINAL segment landed.
+                    // Deepgram only marks segments final on speech pauses,
+                    // so for 5-15s of continuous speech nothing rendered
+                    // (server-side log proved txMsgs were arriving).
+                    // Also: interim text was tiny grey italic and easy to
+                    // miss. Now it's full size dark text in a subtle
+                    // dotted box, plus a green "Hearing you" pulse so the
+                    // user sees feedback the *first* time audio reaches
+                    // the model.
                     <>
                       {segments.map((seg, i) => {
                         const c = speakerColor(seg.speaker, speakerColorMapRef);
@@ -800,7 +833,34 @@ export default function VoiceNotes({ isOpen, onClose }) {
                           </div>
                         );
                       })}
-                      {interim && <p className="text-gray-400 italic text-[12px]">{interim}</p>}
+                      {interim && (
+                        <div className="rounded-lg px-2.5 py-1.5 border border-dashed border-emerald-300 bg-emerald-50/60 dark:bg-emerald-900/10">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                            <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                              Hearing you…
+                            </span>
+                          </div>
+                          <p className="text-[13px] leading-snug text-gray-700 dark:text-gray-200">
+                            {interim}
+                          </p>
+                        </div>
+                      )}
+                      {segments.length === 0 && !interim && (
+                        <span className="text-gray-400 italic">
+                          Listening… start speaking. Captions appear within a second.
+                        </span>
+                      )}
+                      {/* Real-time mic + diagnostics block. The big VU bar
+                          is the genuine RMS of incoming PCM frames — when
+                          it stays flat while bytesSent climbs, the OS is
+                          giving us silence (muted mic / wrong device /
+                          Voice Isolation eating input). The "Mic appears
+                          silent" warning fires after 2 seconds of bytes
+                          flowing with zero peak. */}
+                      {meetingStream.diagnostics && (
+                        <MicDiagnostics d={meetingStream.diagnostics} />
+                      )}
                     </>
                   ) : (
                     <>
@@ -863,6 +923,24 @@ export default function VoiceNotes({ isOpen, onClose }) {
                   </div>
                 )}
                 <div className="flex items-center gap-1 text-xs text-gray-400"><Clock size={11} /><span>{fmt(duration)}</span></div>
+
+                {/* Notetaker: closing-the-loop UI. Only shown in High
+                    Accuracy / Meeting Mode since the stripped transcript
+                    is more likely to be substantive meeting content there.
+                    Runs Summary + Extract-Actions in parallel and lets the
+                    user one-click each action item into a real task. */}
+                {highAccuracyMode && (savedTranscript || hookTranscript).trim().length > 20 && (
+                  <TranscriptProcessor
+                    transcript={
+                      // Prefer the speaker-formatted view if we have segments;
+                      // segments are richer context for the AI ("Sara: ship by Fri").
+                      segments.length > 0
+                        ? segments.map((s) => `${speakerLabelOverrides[s.speaker] || s.speaker}: ${s.text}`).join('\n')
+                        : (savedTranscript || hookTranscript)
+                    }
+                    defaultBoardId={null /* future: pass current board context */}
+                  />
+                )}
 
                 {/* AI Processing buttons */}
                 <div>
@@ -1041,6 +1119,49 @@ export default function VoiceNotes({ isOpen, onClose }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * MicDiagnostics — production-grade mic feedback for the recorder.
+ *
+ * Earlier the recorder showed only a decorative pulsing-bars animation
+ * that ran regardless of mic state, so users couldn't tell when their
+ * hardware was muted or the wrong input device was picked. This block
+ * shows the *actual* RMS of incoming PCM frames + the device the browser
+ * chose + a "Mic appears silent" warning when bytes are flowing but the
+ * input is dead. Same pattern Loom / Zoom / Teams ship with.
+ */
+function MicDiagnostics({ d }) {
+  const level = d.micLevel || 0;
+  const peak = d.micPeakLevel || 0;
+  const looksSilent = d.bytesSent > 50 * 1024 && peak === 0;
+  return (
+    <div className="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 w-12 flex-shrink-0">Mic</span>
+        <div className="flex-1 h-2 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+          <div
+            className={`h-full transition-all duration-100 ${
+              level > 60 ? 'bg-emerald-500' : level > 20 ? 'bg-emerald-400' : level > 0 ? 'bg-amber-400' : 'bg-zinc-300'
+            }`}
+            style={{ width: `${Math.max(2, level)}%` }}
+          />
+        </div>
+      </div>
+      {d.deviceLabel && (
+        <div className="text-[10px] text-zinc-500 truncate" title={d.deviceLabel}>
+          <span className="font-semibold">Device:</span> {d.deviceLabel}
+        </div>
+      )}
+      {looksSilent && (
+        <div className="rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-700 dark:text-amber-300 leading-snug">
+          <span className="font-semibold">Mic appears silent.</span> Audio is reaching the server but your input has no signal.
+          Check the hardware mute key, OS sound settings, or which input device is selected
+          (current: {d.deviceLabel || 'unknown'}).
+        </div>
+      )}
     </div>
   );
 }

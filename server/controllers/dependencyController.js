@@ -434,6 +434,123 @@ const getCrossTeamDependencies = async (req, res) => {
 const assignDependency = (req, res) => dependencyRequestController.createDependencyRequest(req, res);
 
 /**
+ * GET /api/dependencies/graph?boardId=<uuid>?
+ *
+ * Returns a complete DAG of task → task dependency links the caller can see,
+ * shaped for direct consumption by reactflow:
+ *
+ *   {
+ *     nodes: [
+ *       { id, title, status, priority, boardId, boardName, dueDate, assigneeName }
+ *     ],
+ *     edges: [
+ *       { id, source, target, type }   // source depends on target
+ *     ],
+ *   }
+ *
+ * Visibility — admin / manager see everything; everyone else sees only
+ * dependencies where they appear as task.assignedTo, dependsOnTask.assignedTo,
+ * or createdById. This mirrors getCrossTeamDependencies on purpose; the graph
+ * is a parallel READ surface, not a privilege escalation.
+ *
+ * boardId is optional — when provided, only edges where BOTH endpoints sit on
+ * that board are returned. (Cross-board edges are dropped, not silently kept,
+ * so the per-board view doesn't surface orphan task nodes.)
+ */
+const getDependencyGraph = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.isSuperAdmin
+      || req.user.role === 'admin'
+      || req.user.role === 'manager';
+    const { boardId } = req.query || {};
+
+    const where = { isArchived: false };
+    const deps = await TaskDependency.findAll({
+      where,
+      include: [
+        {
+          model: Task, as: 'task',
+          attributes: ['id', 'title', 'status', 'priority', 'assignedTo', 'boardId', 'dueDate'],
+          include: [
+            { model: User, as: 'assignee', attributes: ['id', 'name'], required: false },
+            { model: Board, as: 'board', attributes: ['id', 'name', 'color'], required: false },
+          ],
+        },
+        {
+          model: Task, as: 'dependsOnTask',
+          attributes: ['id', 'title', 'status', 'priority', 'assignedTo', 'boardId', 'dueDate'],
+          include: [
+            { model: User, as: 'assignee', attributes: ['id', 'name'], required: false },
+            { model: Board, as: 'board', attributes: ['id', 'name', 'color'], required: false },
+          ],
+        },
+      ],
+      order: [['createdAt', 'ASC']],
+    });
+
+    // Drop rows with a missing endpoint — happens after a task is permanently
+    // deleted before the dependency row is cleaned up. Filter visibility per
+    // the same rule as getCrossTeamDependencies. Apply boardId filter LAST.
+    const visible = deps.filter((d) => {
+      if (!d.task || !d.dependsOnTask) return false;
+      if (!isAdmin) {
+        const mine = d.task.assignedTo === userId
+          || d.dependsOnTask.assignedTo === userId
+          || d.createdById === userId;
+        if (!mine) return false;
+      }
+      if (boardId) {
+        return d.task.boardId === boardId && d.dependsOnTask.boardId === boardId;
+      }
+      return true;
+    });
+
+    // Build node + edge arrays. Deduplicate node ids (a task can appear on
+    // many edges); preserve insertion order so the client-side layout is
+    // stable across reloads.
+    const seenNodeIds = new Set();
+    const nodes = [];
+    function pushNode(t) {
+      if (!t || seenNodeIds.has(t.id)) return;
+      seenNodeIds.add(t.id);
+      nodes.push({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        boardId: t.boardId,
+        boardName: t.board?.name || null,
+        boardColor: t.board?.color || null,
+        dueDate: t.dueDate,
+        assigneeName: t.assignee?.name || null,
+      });
+    }
+
+    const edges = visible.map((d) => {
+      pushNode(d.task);
+      pushNode(d.dependsOnTask);
+      return {
+        id: d.id,
+        // Convention: an edge from task → dependsOnTask means
+        //   "task depends on dependsOnTask"
+        // (i.e. dependsOnTask must complete first). reactflow renders source
+        // → target arrows, so the arrowhead naturally points at the
+        // prerequisite.
+        source: d.taskId,
+        target: d.dependsOnTaskId,
+        type: d.dependencyType || 'blocks',
+      };
+    });
+
+    res.json({ success: true, data: { nodes, edges } });
+  } catch (error) {
+    console.error('[Dependency] getDependencyGraph error:', error);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+};
+
+/**
  * PUT /api/tasks/:taskId/dependencies/:dependencyId/archive
  * Archive a resolved dependency
  */
@@ -573,4 +690,4 @@ const restoreDependency = async (req, res) => {
   }
 };
 
-module.exports = { getTaskDependencies, createDependency, createDependencyOrRequest, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency, archiveDependency, getArchivedDependencies, permanentDeleteDependency, restoreDependency };
+module.exports = { getTaskDependencies, createDependency, createDependencyOrRequest, removeDependency, delegateTask, getCrossTeamDependencies, assignDependency, archiveDependency, getArchivedDependencies, permanentDeleteDependency, restoreDependency, getDependencyGraph };

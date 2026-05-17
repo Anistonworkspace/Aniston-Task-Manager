@@ -108,6 +108,50 @@ export default function useMeetingTranscription() {
   const [interim, setInterim] = useState('');
   const [error, setError] = useState(null);
 
+  // Phase D — observable diagnostics. Exposed so the UI can render a
+  // small "WS: open · rx: 12 · interim: 47ch" strip during recording.
+  // Lets us tell-at-a-glance whether the breakdown is in (a) the WS
+  // connection, (b) message receipt, (c) message filtering, or
+  // (d) React rendering — without forcing the user into DevTools.
+  const [diagnostics, setDiagnostics] = useState({
+    wsState: 'idle', // idle | connecting | open | closed | error
+    totalMsgs: 0,
+    transcriptMsgs: 0,
+    nonEmptyTranscripts: 0,
+    bytesSent: 0,
+    lastMsgAt: null,
+    // micLevel = peak RMS of the most recent PCM frame, normalized 0-100.
+    // Tells us whether the OS is actually delivering audio (vs. silent
+    // frames). When this stays at 0 while bytesSent climbs, the mic is
+    // muted at OS / hardware level.
+    micLevel: 0,
+    micPeakLevel: 0, // running peak over the session
+    deviceLabel: '',
+  });
+  const diagRef = useRef({
+    wsState: 'idle',
+    totalMsgs: 0,
+    transcriptMsgs: 0,
+    nonEmptyTranscripts: 0,
+    bytesSent: 0,
+    lastMsgAt: null,
+    micLevel: 0,
+    micPeakLevel: 0,
+    deviceLabel: '',
+  });
+  const diagFlushTimerRef = useRef(null);
+  function flushDiag() {
+    if (diagFlushTimerRef.current) return;
+    diagFlushTimerRef.current = setTimeout(() => {
+      diagFlushTimerRef.current = null;
+      setDiagnostics({ ...diagRef.current });
+    }, 250);
+  }
+  function bumpDiag(patch) {
+    diagRef.current = { ...diagRef.current, ...patch };
+    flushDiag();
+  }
+
   const onFinalCbRef = useRef(null);
   const listeningRef = useRef(false);
   const stoppingRef = useRef(false);
@@ -127,6 +171,7 @@ export default function useMeetingTranscription() {
     listeningRef.current = false;
     setIsListening(false);
     setInterim('');
+    bumpDiag({ wsState: 'closed' });
 
     const ws = wsRef.current;
     wsRef.current = null;
@@ -174,6 +219,7 @@ export default function useMeetingTranscription() {
       try { ws = new WebSocket(url); }
       catch (err) { reject(err); return; }
       wsRef.current = ws;
+      bumpDiag({ wsState: 'connecting' });
 
       const cleanup = () => {
         ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null;
@@ -181,6 +227,7 @@ export default function useMeetingTranscription() {
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
+        bumpDiag({ wsState: 'open' });
         cleanup();
         wireSocket(ws);
         resolve(ws);
@@ -232,19 +279,27 @@ export default function useMeetingTranscription() {
 
   function wireSocket(ws) {
     ws.onmessage = (ev) => {
+      // Count EVERY message before any filtering so the diagnostic strip
+      // can tell us whether messages are arriving at all.
+      diagRef.current.totalMsgs += 1;
+      diagRef.current.lastMsgAt = Date.now();
       let msg;
       try { msg = JSON.parse(ev.data); }
-      catch { return; }
-      if (msg.type === 'ready') return;
+      catch { flushDiag(); return; }
+      if (msg.type === 'ready') { flushDiag(); return; }
       if (msg.type === 'error') {
         setError(msg.message || 'Transcription error.');
+        flushDiag();
         return;
       }
-      if (msg.type === 'closed') return;
-      if (msg.type !== 'transcript') return;
+      if (msg.type === 'closed') { flushDiag(); return; }
+      if (msg.type !== 'transcript') { flushDiag(); return; }
 
+      diagRef.current.transcriptMsgs += 1;
       const segments = Array.isArray(msg.segments) ? msg.segments : [];
-      if (segments.length === 0) return;
+      if (segments.length === 0) { flushDiag(); return; }
+      diagRef.current.nonEmptyTranscripts += 1;
+      flushDiag();
 
       // Interim preview: concatenate all speaker texts from the latest non-
       // final result so the user sees live captions.
@@ -301,6 +356,16 @@ export default function useMeetingTranscription() {
       },
     });
     streamRef.current = stream;
+    // Surface the device the browser actually picked so the user can
+    // confirm it's the right mic (and not e.g. a disconnected Bluetooth
+    // headset that's first in the device list).
+    try {
+      const track = stream.getAudioTracks()[0];
+      if (track) {
+        diagRef.current.deviceLabel = track.label || '(unnamed)';
+        flushDiag();
+      }
+    } catch { /* getAudioTracks rarely throws */ }
 
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextCtor) throw new Error('Web Audio API is not supported.');
@@ -322,7 +387,32 @@ export default function useMeetingTranscription() {
     worklet.port.onmessage = (event) => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      try { ws.send(event.data); } catch { /* socket gone */ }
+      try {
+        ws.send(event.data);
+        diagRef.current.bytesSent += event.data?.byteLength || 0;
+        // Mic-level meter. event.data is an ArrayBuffer holding Int16 PCM
+        // samples. RMS in Int16 range (max 32767) → normalized 0-100. If
+        // this is 0 while bytesSent climbs, the OS is delivering silent
+        // frames (mic muted, wrong device picked, or Voice Isolation
+        // blocking input). That's the smoking gun the user needs.
+        if (event.data && event.data.byteLength) {
+          const view = new Int16Array(event.data);
+          let sumSquares = 0;
+          // Sample every 8th value — full pass on a 1600-sample frame is
+          // overkill 30x/sec; 200 samples is enough for a UI meter.
+          for (let i = 0; i < view.length; i += 8) {
+            const v = view[i];
+            sumSquares += v * v;
+          }
+          const rms = Math.sqrt(sumSquares / (view.length / 8));
+          const level = Math.min(100, Math.round((rms / 8000) * 100));
+          diagRef.current.micLevel = level;
+          if (level > diagRef.current.micPeakLevel) {
+            diagRef.current.micPeakLevel = level;
+          }
+        }
+        flushDiag();
+      } catch { /* socket gone */ }
     };
 
     source.connect(worklet);
@@ -339,6 +429,14 @@ export default function useMeetingTranscription() {
     listeningRef.current = true;
     setIsListening(true);
     reconnectAttemptRef.current = 0;
+    // Reset diagnostics so the live strip starts at zero for the new
+    // recording — otherwise a previous session's tx count would survive.
+    diagRef.current = {
+      wsState: 'idle', totalMsgs: 0, transcriptMsgs: 0,
+      nonEmptyTranscripts: 0, bytesSent: 0, lastMsgAt: null,
+      micLevel: 0, micPeakLevel: 0, deviceLabel: '',
+    };
+    setDiagnostics({ ...diagRef.current });
 
     try {
       await startAudioPipeline();
@@ -360,5 +458,10 @@ export default function useMeetingTranscription() {
     setError(null);
   }, []);
 
-  return { isListening, transcript, interim, error, startListening, stopListening, resetTranscript };
+  return {
+    isListening, transcript, interim, error,
+    startListening, stopListening, resetTranscript,
+    // Phase D — read-only diagnostics for the live UI strip.
+    diagnostics,
+  };
 }

@@ -2533,12 +2533,16 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // Process automations
+    // Process automations + workflows. Both engines coexist (Workflow
+    // Canvas Phase W1 — see services/workflowEngine.js). Lazy-required
+    // to dodge any module-load timing issues with model registration.
     if (updates.status && updates.status !== previousStatus) {
       processAutomations('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: req.user.id });
+      require('../services/workflowEngine').processWorkflows('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: req.user.id });
     }
     if (updates.assignedTo && updates.assignedTo !== previousAssignee) {
       processAutomations('task_assigned', { task: fullTask, userId: req.user.id });
+      require('../services/workflowEngine').processWorkflows('task_assigned', { task: fullTask, userId: req.user.id });
     }
 
     // Realtime — fans out to board + assignees / supervisors / owners /

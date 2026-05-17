@@ -75,7 +75,7 @@ function SummaryCard({ template, onTemplateChange, onCopy, copied, hasSummary, c
       className="rounded-md bg-surface overflow-hidden"
       style={{
         border: '1px solid var(--layout-border-color, #e2e2e2)',
-        borderLeft: '3px solid #579bfc', // signature colored left-border (skill §7.3)
+        borderLeft: '3px solid #ff158a', // signature coral/pink left-border (skill §7.3)
       }}
     >
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border-light">

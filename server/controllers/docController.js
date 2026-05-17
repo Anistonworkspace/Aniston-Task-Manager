@@ -25,12 +25,16 @@
  */
 
 const { Op } = require('sequelize');
-const { Doc, DocVersion, Workspace, User } = require('../models');
+const { Doc, DocVersion, DocMention, DocTaskReference, Task, Workspace, User } = require('../models');
 const safeLogger = require('../utils/safeLogger');
 const { logActivity } = require('../services/activityService');
-const { xss } = require('xss');
 let xssFn;
 try { xssFn = require('xss'); } catch { xssFn = (s) => s; }
+// Notification service is loaded lazily so doc controller unit tests that
+// stub the models without stubbing notifications don't pull a real
+// notification queue connection into the test environment.
+let notificationService;
+try { notificationService = require('../services/notificationService'); } catch { notificationService = null; }
 
 const SNAPSHOT_EVERY_SAVES = 10;
 
@@ -74,6 +78,207 @@ function extractContentText(contentJson) {
   }
   walk(contentJson);
   return parts.join(' ').trim().slice(0, 50000);
+}
+
+/**
+ * Phase D Slice 1 — extract every mention node's user-id from a Tiptap
+ * document JSON. The mention node format is
+ *   { type: 'mention', attrs: { id, label, ... } }
+ * (per @tiptap/extension-mention's default schema). We pull the `id`
+ * attribute and dedup; the order is doc-traversal order so the FIRST
+ * occurrence wins for anchorOffset purposes.
+ *
+ * Returns: [{ userId, anchorOffset }]
+ *   - userId: the mentioned user's UUID (skipped silently when not a UUID
+ *             string — defensive against bad data)
+ *   - anchorOffset: cumulative plain-text byte offset to the mention's
+ *             position (best-effort; missing for purely-formatting nodes)
+ *
+ * Returns an empty array for any contentJson the walker doesn't recognise.
+ */
+function extractMentions(contentJson) {
+  if (!contentJson || typeof contentJson !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  let offset = 0;
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'mention' && node.attrs && typeof node.attrs.id === 'string') {
+      const userId = node.attrs.id.trim();
+      // Only keep UUID-shaped ids. A malformed mention (e.g. legacy
+      // text-only) is silently dropped — the user can edit the doc and
+      // re-create the mention via the picker.
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
+          && !seen.has(userId)) {
+        seen.add(userId);
+        out.push({ userId, anchorOffset: offset });
+      }
+      // Mention nodes render as ~`@name` in the plain-text shadow; advance
+      // the offset by the label length so subsequent mentions get accurate
+      // positions.
+      const label = String(node.attrs.label || node.attrs.id || '');
+      offset += label.length + 1;
+      return;
+    }
+    if (typeof node.text === 'string') offset += node.text.length;
+    if (Array.isArray(node.content)) node.content.forEach(walk);
+  }
+  walk(contentJson);
+  return out;
+}
+
+/**
+ * Diff existing DocMention rows against the new contentJson's mention set
+ * and emit notifications for newly-introduced mentions. Removed mentions
+ * are NOT explicitly un-notified (the user already saw the notification
+ * when they were first mentioned).
+ *
+ * The idempotencyKey ensures re-saves of the same doc don't double-notify
+ * users who were already mentioned in the prior save. Format:
+ *   `doc-mention:<docId>:<userId>`
+ */
+async function syncDocMentionsAndNotify(doc, contentJson, actor) {
+  const incoming = extractMentions(contentJson);
+  const incomingIds = new Set(incoming.map((m) => m.userId));
+
+  const existing = await DocMention.findAll({
+    where: { docId: doc.id },
+    attributes: ['id', 'mentionedUserId'],
+  });
+  const existingIds = new Set(existing.map((m) => m.mentionedUserId));
+
+  // Insertions: present in incoming, absent from existing.
+  const toInsert = incoming.filter((m) => !existingIds.has(m.userId) && m.userId !== actor.id);
+  // Deletions: present in existing, absent from incoming. We remove the
+  // rows so back-references stay accurate, but don't undo notifications.
+  const toDeleteIds = Array.from(existingIds).filter((id) => !incomingIds.has(id));
+
+  for (const m of toInsert) {
+    try {
+      await DocMention.create({
+        docId: doc.id,
+        mentionedUserId: m.userId,
+        mentionedByUserId: actor.id,
+        anchorOffset: m.anchorOffset,
+      });
+    } catch (err) {
+      // Unique-index race: someone else just inserted the same row. Safe
+      // to ignore.
+      safeLogger.warn('[Doc] mention insert race (non-fatal)', { docId: doc.id, userId: m.userId, err });
+    }
+    if (notificationService?.createNotification) {
+      try {
+        await notificationService.createNotification({
+          userId: m.userId,
+          type: 'doc_mention',
+          message: `${actor.name || 'Someone'} mentioned you in "${doc.title}"`,
+          entityType: 'doc',
+          entityId: doc.id,
+          idempotencyKey: `doc-mention:${doc.id}:${m.userId}`,
+        });
+      } catch (err) {
+        safeLogger.warn('[Doc] mention notification failed (non-fatal)', { docId: doc.id, userId: m.userId, err });
+      }
+    }
+  }
+
+  if (toDeleteIds.length > 0) {
+    try {
+      await DocMention.destroy({
+        where: { docId: doc.id, mentionedUserId: { [Op.in]: toDeleteIds } },
+      });
+    } catch (err) {
+      safeLogger.warn('[Doc] mention delete failed (non-fatal)', { docId: doc.id, err });
+    }
+  }
+
+  return { added: toInsert.length, removed: toDeleteIds.length };
+}
+
+/**
+ * Phase D Slice 2 — extract every task-chip node's task-id from a Tiptap
+ * doc JSON. Node shape:
+ *   { type: 'taskChip', attrs: { taskId, label, status, ... } }
+ *
+ * Returns [{ taskId, anchorOffset }], dedup'd in doc-traversal order.
+ * Only UUID-shaped taskIds survive — malformed chips are silently dropped
+ * the same way bad mentions are.
+ */
+function extractTaskRefs(contentJson) {
+  if (!contentJson || typeof contentJson !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  let offset = 0;
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    // Accept either 'taskChip' or 'task-chip' to be lenient with how the
+    // frontend declares the node's name.
+    if ((node.type === 'taskChip' || node.type === 'task-chip')
+        && node.attrs && typeof node.attrs.taskId === 'string') {
+      const taskId = node.attrs.taskId.trim();
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)
+          && !seen.has(taskId)) {
+        seen.add(taskId);
+        out.push({ taskId, anchorOffset: offset });
+      }
+      const label = String(node.attrs.label || node.attrs.taskId || '');
+      offset += label.length + 1;
+      return;
+    }
+    if (typeof node.text === 'string') offset += node.text.length;
+    if (Array.isArray(node.content)) node.content.forEach(walk);
+  }
+  walk(contentJson);
+  return out;
+}
+
+/**
+ * Diff existing DocTaskReference rows against the new contentJson's task
+ * chip set. Insert new ones (the chip author becomes addedByUserId);
+ * delete removed ones. No notification fan-out — task assignees /
+ * watchers already get their own task events; layering a "your task was
+ * referenced in a doc" notification on top would be noise.
+ */
+async function syncDocTaskRefs(doc, contentJson, actor) {
+  const incoming = extractTaskRefs(contentJson);
+  const incomingIds = new Set(incoming.map((r) => r.taskId));
+
+  const existing = await DocTaskReference.findAll({
+    where: { docId: doc.id },
+    attributes: ['id', 'taskId'],
+  });
+  const existingIds = new Set(existing.map((r) => r.taskId));
+
+  const toInsert = incoming.filter((r) => !existingIds.has(r.taskId));
+  const toDeleteIds = Array.from(existingIds).filter((id) => !incomingIds.has(id));
+
+  for (const r of toInsert) {
+    try {
+      await DocTaskReference.create({
+        docId: doc.id,
+        taskId: r.taskId,
+        addedByUserId: actor.id,
+        anchorOffset: r.anchorOffset,
+      });
+    } catch (err) {
+      // Unique-index race: safe to swallow.
+      safeLogger.warn('[Doc] task-ref insert race (non-fatal)', {
+        docId: doc.id, taskId: r.taskId, err,
+      });
+    }
+  }
+
+  if (toDeleteIds.length > 0) {
+    try {
+      await DocTaskReference.destroy({
+        where: { docId: doc.id, taskId: { [Op.in]: toDeleteIds } },
+      });
+    } catch (err) {
+      safeLogger.warn('[Doc] task-ref delete failed (non-fatal)', { docId: doc.id, err });
+    }
+  }
+
+  return { added: toInsert.length, removed: toDeleteIds.length };
 }
 
 function slugify(name) {
@@ -156,6 +361,18 @@ async function createDoc(req, res) {
       lastEditedAt: new Date(),
     });
 
+    // Phase D Slice 1 — record any @-mentions present in the initial
+    // contentJson and fire notifications. Fire-and-forget so a failure
+    // here doesn't block the create.
+    syncDocMentionsAndNotify(doc, contentJson, req.user).catch((err) => {
+      safeLogger.warn('[Doc] initial mention sync failed (non-fatal)', { docId: doc.id, err });
+    });
+    // Phase D Slice 2 — record any task chips. Same fire-and-forget
+    // pattern. No notification needed; task watchers cover that path.
+    syncDocTaskRefs(doc, contentJson, req.user).catch((err) => {
+      safeLogger.warn('[Doc] initial task-ref sync failed (non-fatal)', { docId: doc.id, err });
+    });
+
     logActivity({
       action: 'created',
       description: `Created doc: ${doc.title}`,
@@ -204,7 +421,12 @@ async function updateDoc(req, res) {
     const { id } = req.params;
     const doc = await Doc.findByPk(id);
     if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
+    // Collab-doc default (Notion-style): anyone with workspace access can
+    // edit the body. canCallerEditDoc stays strict for destructive actions
+    // (archive/restore/restoreVersion) below.
+    const canEditBody = canCallerEditDoc(req.user, doc)
+      || await canCallerSeeWorkspace(req.user, doc.workspaceId);
+    if (!canEditBody) {
       return res.status(403).json({ success: false, message: 'You do not have permission to edit this doc.' });
     }
 
@@ -250,6 +472,19 @@ async function updateDoc(req, res) {
           safeLogger.warn('[Doc] version snapshot failed (non-fatal)', { err: verr, docId: doc.id });
         }
       }
+
+      // Phase D Slice 1 — diff mentions on every content save. Fire-and-forget
+      // because notification fan-out shouldn't slow the autosave loop.
+      // idempotencyKey on each notification means re-saving the same body
+      // doesn't double-notify users who were already mentioned.
+      syncDocMentionsAndNotify(doc, updates.contentJson, req.user).catch((err) => {
+        safeLogger.warn('[Doc] mention sync failed (non-fatal)', { docId: doc.id, err });
+      });
+      // Phase D Slice 2 — diff task chips on every content save. No
+      // notifications; the table just tracks bidirectional links.
+      syncDocTaskRefs(doc, updates.contentJson, req.user).catch((err) => {
+        safeLogger.warn('[Doc] task-ref sync failed (non-fatal)', { docId: doc.id, err });
+      });
     }
 
     logActivity({
@@ -329,6 +564,213 @@ async function restoreDoc(req, res) {
   }
 }
 
+/**
+ * Phase D Slice 1 — GET /api/docs/mentionable?workspaceId=…&q=…
+ *
+ * Returns the list of users the caller can @-mention in a doc. Today the
+ * scope is: workspace creator + explicit workspace members, filtered by
+ * name match (case-insensitive substring). Self is excluded — you can't
+ * mention yourself.
+ *
+ * Future iterations could expand to "anyone the caller can see via the
+ * hierarchy service" for cross-workspace mentions. Keeping it tight for
+ * Slice 1 avoids leaking the wider user directory.
+ */
+async function listMentionableUsers(req, res) {
+  try {
+    const { workspaceId } = req.query;
+    const q = String(req.query.q || '').trim().toLowerCase();
+    if (!workspaceId) {
+      return res.status(400).json({ success: false, message: 'workspaceId is required.' });
+    }
+    const allowed = await canCallerSeeWorkspace(req.user, workspaceId);
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this workspace.' });
+    }
+
+    const ws = await Workspace.findByPk(workspaceId, {
+      include: [
+        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRS, 'isActive'] },
+        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRS, 'isActive'] },
+      ],
+    });
+    if (!ws) {
+      return res.status(404).json({ success: false, message: 'Workspace not found.' });
+    }
+
+    const candidates = new Map();
+    if (ws.creator && ws.creator.isActive !== false) {
+      candidates.set(ws.creator.id, ws.creator);
+    }
+    for (const m of (ws.workspaceMembers || [])) {
+      if (m.isActive !== false && !candidates.has(m.id)) {
+        candidates.set(m.id, m);
+      }
+    }
+    candidates.delete(req.user.id); // self-mentions blocked
+
+    let list = Array.from(candidates.values());
+    if (q) {
+      list = list.filter((u) => (u.name || '').toLowerCase().includes(q)
+        || (u.email || '').toLowerCase().includes(q));
+    }
+    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    // Cap at 25 — UI menu doesn't need more than that.
+    list = list.slice(0, 25);
+
+    res.json({
+      success: true,
+      data: {
+        users: list.map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          avatar: u.avatar,
+        })),
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] listMentionableUsers error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load mentionable users.' });
+  }
+}
+
+/**
+ * Phase D Slice 2 — GET /api/docs/searchable-tasks?workspaceId=…&q=…
+ *
+ * Returns tasks the caller can reference inside a doc, scoped to a
+ * workspace. The picker UI feeds typed input directly into the `q`
+ * param. Results are capped at 25 to keep the dropdown snappy.
+ *
+ * Scope today: tasks on boards inside the workspace, excluding archived.
+ * RBAC: caller must be able to see the workspace; per-task visibility is
+ * not enforced beyond workspace membership because a doc inside the
+ * workspace is implicitly readable to all workspace members.
+ */
+async function listSearchableTasks(req, res) {
+  try {
+    const { workspaceId } = req.query;
+    const q = String(req.query.q || '').trim();
+    if (!workspaceId) {
+      return res.status(400).json({ success: false, message: 'workspaceId is required.' });
+    }
+    const allowed = await canCallerSeeWorkspace(req.user, workspaceId);
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this workspace.' });
+    }
+
+    const { Board } = require('../models');
+    const boards = await Board.findAll({
+      where: { workspaceId, isArchived: false },
+      attributes: ['id', 'name', 'color'],
+      raw: true,
+    });
+    const boardIds = boards.map((b) => b.id);
+    const boardLookup = new Map(boards.map((b) => [b.id, b]));
+    if (boardIds.length === 0) {
+      return res.json({ success: true, data: { tasks: [] } });
+    }
+
+    const where = {
+      isArchived: false,
+      boardId: { [Op.in]: boardIds },
+    };
+    if (q) {
+      where.title = { [Op.iLike]: `%${q}%` };
+    }
+
+    const tasks = await Task.findAll({
+      where,
+      attributes: ['id', 'title', 'status', 'priority', 'boardId', 'dueDate'],
+      order: [['updatedAt', 'DESC']],
+      limit: 25,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        tasks: tasks.map((t) => {
+          const board = boardLookup.get(t.boardId);
+          return {
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            priority: t.priority,
+            dueDate: t.dueDate,
+            boardId: t.boardId,
+            boardName: board?.name || null,
+            boardColor: board?.color || null,
+          };
+        }),
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] listSearchableTasks error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load tasks.' });
+  }
+}
+
+/**
+ * Phase D Slice 2 — GET /api/tasks/:id/doc-references
+ *
+ * Bidirectional companion to the chip insertion path. Returns the list
+ * of docs that currently reference a given task — i.e. "this task is
+ * mentioned in N docs." Used by a future TaskModal pill (Slice 2b).
+ *
+ * RBAC: caller must be able to see the task's board (via canUserSeeBoard).
+ * Doc-level visibility is then narrowed by workspace membership — we
+ * filter docs whose workspace the caller can see.
+ */
+async function listDocReferencesForTask(req, res) {
+  try {
+    const { id: taskId } = req.params;
+    if (!taskId) {
+      return res.status(400).json({ success: false, message: 'task id is required.' });
+    }
+    const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId'] });
+    if (!task) {
+      return res.status(404).json({ success: false, message: 'Task not found.' });
+    }
+    const { canUserSeeBoard } = require('../services/boardVisibilityService');
+    const allowed = await canUserSeeBoard(req.user, task.boardId).catch(() => false);
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const refs = await DocTaskReference.findAll({
+      where: { taskId },
+      include: [
+        {
+          model: Doc,
+          as: 'doc',
+          attributes: ['id', 'title', 'workspaceId', 'isArchived'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    // Filter to docs whose workspace the caller can see — defense in depth.
+    const visibleDocs = [];
+    for (const ref of refs) {
+      if (!ref.doc || ref.doc.isArchived) continue;
+      const ok = await canCallerSeeWorkspace(req.user, ref.doc.workspaceId).catch(() => false);
+      if (ok) {
+        visibleDocs.push({
+          docId: ref.doc.id,
+          title: ref.doc.title,
+          workspaceId: ref.doc.workspaceId,
+          createdAt: ref.createdAt,
+        });
+      }
+    }
+
+    res.json({ success: true, data: { docs: visibleDocs } });
+  } catch (err) {
+    safeLogger.error('[Doc] listDocReferencesForTask error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load doc references.' });
+  }
+}
+
 async function listVersions(req, res) {
   try {
     const { id } = req.params;
@@ -391,6 +833,128 @@ async function restoreVersion(req, res) {
   }
 }
 
+/**
+ * POST /api/docs/:id/migrate-to-collab
+ *
+ * Phase G follow-up — opt-in migration for pre-Phase-G docs whose
+ * `contentJson` has real content. The Hocuspocus `onLoadDocument` hook
+ * refuses to open these for collab because we never built a server-side
+ * headless Tiptap to losslessly hydrate the existing JSON into a Y.doc
+ * with the full custom-node schema (mentions / chips / comments / images
+ * / tables). Auto-migration would silently drop any unknown node types
+ * and corrupt the doc.
+ *
+ * Honest design instead:
+ *   1. Snapshot the current contentJson into DocVersion so the original
+ *      content is recoverable from the History menu.
+ *   2. Encode a fresh, empty Y.doc state and write it to `yjsState`.
+ *      The Hocuspocus hook will now accept this doc on next connect.
+ *   3. Replace `contentJson` with a single-paragraph "migration notice"
+ *      so the first collab user lands on a clean canvas with a clear
+ *      pointer back to the snapshot. They can either copy the old body
+ *      in via the editor, or restore the snapshot via the version
+ *      history modal.
+ *
+ * RBAC: owner-or-admin only (canCallerEditDoc — destructive action).
+ * Idempotent: calling again on an already-migrated doc returns 200
+ * without a new snapshot or a Y.doc reset.
+ */
+async function migrateDocToCollab(req, res) {
+  try {
+    const { id } = req.params;
+    const doc = await Doc.findByPk(id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
+    if (!canCallerEditDoc(req.user, doc)) {
+      return res.status(403).json({ success: false, message: 'Only doc owner or admins can migrate a doc to collab.' });
+    }
+    if (doc.isArchived) {
+      return res.status(400).json({ success: false, message: 'Cannot migrate an archived doc. Restore it first.' });
+    }
+    if (doc.yjsState) {
+      // Already migrated. Idempotent success.
+      return res.json({
+        success: true,
+        data: { doc: serializeDoc(doc, { includeContent: true }), alreadyMigrated: true },
+      });
+    }
+
+    // Lazy-require yjs so doc-controller unit tests that don't stub it
+    // still load the module cleanly.
+    let Y;
+    try { Y = require('yjs'); }
+    catch (err) {
+      safeLogger.error('[Doc] migrate: yjs not installed', { err });
+      return res.status(503).json({
+        success: false,
+        code: 'collab_disabled',
+        message: 'Real-time collab is not configured on this server.',
+      });
+    }
+
+    // 1. Snapshot the original contentJson so nothing is lost.
+    try {
+      await DocVersion.create({
+        docId: doc.id,
+        contentJson: doc.contentJson || { type: 'doc', content: [] },
+        contentText: doc.contentText || '',
+        savedBy: req.user.id,
+        note: 'Pre-collab-migration snapshot',
+      });
+    } catch (verr) {
+      // Don't block migration on snapshot failure — but log it loudly.
+      // The user can still recover the row from DocVersion's normal
+      // SNAPSHOT_EVERY_SAVES cadence if it landed on one.
+      safeLogger.warn('[Doc] migrate: pre-migration snapshot failed', { err: verr, docId: doc.id });
+    }
+
+    // 2. Build a clean empty Y.doc and encode its state.
+    const ydoc = new Y.Doc();
+    const yjsState = Buffer.from(Y.encodeStateAsUpdate(ydoc));
+
+    // 3. Replace contentJson with a one-line migration notice + reset
+    //    the text shadow. The notice tells the user where their old
+    //    content went without burying that info in a toast they might
+    //    miss.
+    const noticeJson = {
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: 'This doc was migrated for real-time collaboration. Your previous content is preserved in the version history (click History above to restore).',
+        }],
+      }],
+    };
+
+    await doc.update({
+      yjsState,
+      contentJson: noticeJson,
+      contentText: 'Migrated for collab. Previous content preserved in version history.',
+      lastEditedBy: req.user.id,
+      lastEditedAt: new Date(),
+    });
+
+    logActivity({
+      action: 'migrated',
+      description: `Migrated doc to collab: ${doc.title}`,
+      entityType: 'doc',
+      entityId: doc.id,
+      userId: req.user.id,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        doc: serializeDoc(doc, { includeContent: true }),
+        alreadyMigrated: false,
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] migrateDocToCollab error', { err });
+    res.status(500).json({ success: false, message: 'Failed to migrate doc.' });
+  }
+}
+
 // ─── input validation helpers ────────────────────────────────
 
 function sanitizeTitle(input) {
@@ -424,4 +988,14 @@ module.exports = {
   restoreDoc,
   listVersions,
   restoreVersion,
+  // Phase D Slice 1
+  listMentionableUsers,
+  // Phase D Slice 2
+  listSearchableTasks,
+  listDocReferencesForTask,
+  // Phase G follow-up — opt-in migrate-to-collab
+  migrateDocToCollab,
+  // Exposed for unit tests
+  __extractMentions: extractMentions,
+  __extractTaskRefs: extractTaskRefs,
 };

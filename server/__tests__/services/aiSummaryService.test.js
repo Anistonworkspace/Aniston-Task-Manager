@@ -36,6 +36,7 @@ const { buildScopeContext } = require('../../services/aiScopeContextService');
 const {
   summarizeTaskWithAI, summarizeBoardWithAI,
   suggestPriorityWithAI, planWeekWithAI,
+  extractActionItemsWithAI,
   AiScopeUnavailableError,
   __parseFencedJSON, __stripFences,
 } = require('../../services/aiSummaryService');
@@ -232,5 +233,146 @@ describe('planWeekWithAI', () => {
     const out = await planWeekWithAI(USER, {});
     const mon = out.schedule.find((d) => d.dayKey === 'mon');
     expect(mon.taskIds.length).toBeLessThanOrEqual(20);
+  });
+});
+
+// ─── extractActionItemsWithAI ───────────────────────────────
+//
+// Notetaker companion. Stateless — does not load any scope context.
+// The AI is told to return a fenced JSON object of action items; the
+// service sanitizes each row (priority enum, ISO date, owner 80-char cap)
+// and caps the array at 12.
+
+describe('extractActionItemsWithAI', () => {
+  it('throws when text is missing or empty / whitespace-only', async () => {
+    await expect(extractActionItemsWithAI()).rejects.toThrow(/text is required/);
+    await expect(extractActionItemsWithAI({})).rejects.toThrow(/text is required/);
+    await expect(extractActionItemsWithAI({ text: '' })).rejects.toThrow(/text is required/);
+    await expect(extractActionItemsWithAI({ text: '   \n\t  ' })).rejects.toThrow(/text is required/);
+    // aiService.chat must NOT be called when input is invalid.
+    expect(aiService.chat).not.toHaveBeenCalled();
+  });
+
+  it('happy path: model returns a fenced JSON block with one action', async () => {
+    aiService.chat.mockResolvedValue('```json\n{"actions":[{"title":"Ship the auth fix","owner":"Sara","dueDate":"2026-06-13","priority":"high"}]}\n```');
+    const out = await extractActionItemsWithAI({ text: 'meeting transcript here' });
+    expect(out).toEqual({
+      kind: 'structured',
+      actions: [{
+        title: 'Ship the auth fix',
+        owner: 'Sara',
+        dueDate: '2026-06-13',
+        priority: 'high',
+      }],
+    });
+  });
+
+  it('filters out malformed actions (missing title, empty title, non-objects)', async () => {
+    aiService.chat.mockResolvedValue('```json\n{"actions":[' +
+      '{"title":"Good one","owner":"Bob"},' +
+      '{"title":"","owner":"Eve"},' +
+      '{"owner":"NoTitle"},' +
+      '{"title":"   "},' +
+      'null,' +
+      '"not-an-object",' +
+      '{"title":"Also good"}' +
+    ']}\n```');
+    const out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out.kind).toBe('structured');
+    expect(out.actions.map((a) => a.title)).toEqual(['Good one', 'Also good']);
+  });
+
+  it('sanitizes invalid priority values to null', async () => {
+    aiService.chat.mockResolvedValue('```json\n{"actions":[' +
+      '{"title":"A","priority":"urgent"},' +
+      '{"title":"B","priority":"HIGH"},' +
+      '{"title":"C","priority":"critical"},' +
+      '{"title":"D","priority":null}' +
+    ']}\n```');
+    const out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out.actions).toEqual([
+      { title: 'A', owner: null, dueDate: null, priority: null },   // 'urgent' invalid
+      { title: 'B', owner: null, dueDate: null, priority: null },   // case-sensitive
+      { title: 'C', owner: null, dueDate: null, priority: 'critical' },
+      { title: 'D', owner: null, dueDate: null, priority: null },
+    ]);
+  });
+
+  it('sanitizes dueDate: non-ISO becomes null, valid ISO preserved', async () => {
+    aiService.chat.mockResolvedValue('```json\n{"actions":[' +
+      '{"title":"A","dueDate":"Friday"},' +
+      '{"title":"B","dueDate":"2026-06-13"},' +
+      '{"title":"C","dueDate":"06/13/2026"},' +
+      '{"title":"D","dueDate":null}' +
+    ']}\n```');
+    const out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out.actions[0].dueDate).toBeNull();          // "Friday"
+    expect(out.actions[1].dueDate).toBe('2026-06-13');  // valid ISO
+    expect(out.actions[2].dueDate).toBeNull();          // US-style
+    expect(out.actions[3].dueDate).toBeNull();
+  });
+
+  it('sanitizes owner: trims and caps at 80 chars', async () => {
+    const longName = '  ' + 'a'.repeat(200) + '  ';
+    aiService.chat.mockResolvedValue(`\`\`\`json\n{"actions":[` +
+      `{"title":"A","owner":${JSON.stringify(longName)}},` +
+      `{"title":"B","owner":"  Sara  "},` +
+      `{"title":"C","owner":""},` +
+      `{"title":"D","owner":"   "},` +
+      `{"title":"E","owner":42}` +
+    `]}\n\`\`\``);
+    const out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out.actions[0].owner).toHaveLength(80);
+    expect(out.actions[0].owner).toBe('a'.repeat(80));
+    expect(out.actions[1].owner).toBe('Sara');
+    expect(out.actions[2].owner).toBeNull();
+    expect(out.actions[3].owner).toBeNull();
+    expect(out.actions[4].owner).toBeNull(); // non-string
+  });
+
+  it('caps the actions list at 12 even if the model returns more', async () => {
+    const actions = Array.from({ length: 30 }, (_, i) => ({ title: `Action ${i}` }));
+    aiService.chat.mockResolvedValue('```json\n' + JSON.stringify({ actions }) + '\n```');
+    const out = await extractActionItemsWithAI({ text: 'long transcript' });
+    expect(out.actions).toHaveLength(12);
+    expect(out.actions[0].title).toBe('Action 0');
+    expect(out.actions[11].title).toBe('Action 11');
+  });
+
+  it('returns an empty actions array when the AI reply is non-JSON or empty', async () => {
+    aiService.chat.mockResolvedValueOnce('definitely not json at all');
+    let out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out).toEqual({ kind: 'structured', actions: [] });
+
+    aiService.chat.mockResolvedValueOnce('');
+    out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out).toEqual({ kind: 'structured', actions: [] });
+
+    // Fenced JSON with the wrong shape (no `actions` array) also degrades to [].
+    aiService.chat.mockResolvedValueOnce('```json\n{"foo":"bar"}\n```');
+    out = await extractActionItemsWithAI({ text: 'transcript' });
+    expect(out).toEqual({ kind: 'structured', actions: [] });
+  });
+
+  it('truncates very long input (> 8000 chars) before sending to aiService.chat', async () => {
+    aiService.chat.mockResolvedValue('```json\n{"actions":[]}\n```');
+    const giantText = 'x'.repeat(20000);
+    await extractActionItemsWithAI({ text: giantText });
+    expect(aiService.chat).toHaveBeenCalledTimes(1);
+    const [messages] = aiService.chat.mock.calls[0];
+    const userContent = messages[0].content;
+    // The transcript section is wrapped in `"""…"""`. The wrapper plus
+    // surrounding prompt adds a small overhead, but the embedded transcript
+    // should be at most 8000 chars (truncate() caps at n-1 + '…').
+    expect(userContent).toContain('Transcript:');
+    // Pull out just what's between the triple-quote fences.
+    const match = /"""\n([\s\S]*?)\n"""/.exec(userContent);
+    expect(match).not.toBeNull();
+    const sentTranscript = match[1];
+    expect(sentTranscript.length).toBeLessThanOrEqual(8000);
+    // The truncation marker proves the long input got trimmed (not sent whole).
+    expect(sentTranscript.endsWith('…')).toBe(true);
+    // And it must definitely not still be the full 20k payload.
+    expect(sentTranscript.length).toBeLessThan(giantText.length);
   });
 });

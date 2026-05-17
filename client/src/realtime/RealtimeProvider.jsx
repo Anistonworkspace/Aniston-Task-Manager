@@ -68,6 +68,11 @@ const REALTIME_EVENTS = [
   // subscribes via useRealtimeEvent and refetches on receipt so other tabs
   // / other users see hierarchy changes without a manual reload.
   'org:hierarchy:changed',
+  // Doc comments — fired by docCommentController.{create,update,delete,
+  // resolve,unresolve}Comment via broadcastCommentsChanged. DocPage
+  // listens via useRealtimeEvent + filters by docId so peer mutations
+  // refresh local inline highlights without polling.
+  'doc:comments:changed',
 ];
 
 const RealtimeContext = createContext(null);

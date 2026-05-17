@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Sparkles, Copy, Check, RefreshCw, AlertCircle } from 'lucide-react';
+import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import Popover from '../common/Popover';
 import { useToast } from '../common/Toast';
 import safeLog from '../../utils/safeLog';
-import { getErrorMessage } from '../../utils/errorMap';
+import { getErrorMessage, getErrorCode } from '../../utils/errorMap';
 
 /**
  * AISummaryPopover (Plan A Slice 3) — reusable one-shot AI result UI.
@@ -39,6 +40,7 @@ export default function AISummaryPopover({
   const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'ok' | 'error'
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
   const [copied, setCopied] = useState(false);
   const requestRef = useRef(0);
   const toast = useToast();
@@ -48,6 +50,7 @@ export default function AISummaryPopover({
     setStatus('loading');
     setData(null);
     setError('');
+    setErrorCode('');
     try {
       const out = await run();
       if (myReq !== requestRef.current) return; // a newer run started; drop result
@@ -57,6 +60,7 @@ export default function AISummaryPopover({
       if (myReq !== requestRef.current) return;
       safeLog.error('[AISummaryPopover] run failed', err);
       setError(getErrorMessage(err));
+      setErrorCode(getErrorCode(err) || '');
       setStatus('error');
     }
   }, [run]);
@@ -149,7 +153,18 @@ export default function AISummaryPopover({
             {status === 'error' && (
               <div className="flex items-start gap-2 text-danger">
                 <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
-                <span>{error || 'Something went wrong.'}</span>
+                <div className="flex-1">
+                  <div>{error || 'Something went wrong.'}</div>
+                  {errorCode === 'AI_NOT_CONFIGURED' && (
+                    <Link
+                      to="/integrations"
+                      onClick={() => setOpen(false)}
+                      className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-primary hover:underline"
+                    >
+                      <Settings size={11} /> Configure AI provider
+                    </Link>
+                  )}
+                </div>
               </div>
             )}
             {status === 'ok' && (

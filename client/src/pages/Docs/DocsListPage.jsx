@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { FileText, Plus, Search, Archive, RotateCcw, MoreHorizontal } from 'lucide-react';
+import { FileText, Plus, Search, Archive, RotateCcw, MoreHorizontal, Loader2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import {
   listWorkspaceDocs, createDoc as createDocApi,
@@ -118,9 +118,18 @@ export default function DocsListPage() {
             type="button"
             onClick={handleCreate}
             disabled={creating}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-primary text-white text-sm font-semibold hover:bg-primary-600 disabled:opacity-60"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-primary text-white text-sm font-semibold hover:bg-primary-600 disabled:opacity-60 disabled:cursor-wait min-w-[110px] justify-center transition-colors"
           >
-            <Plus size={14} /> New doc
+            {creating ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Creating…
+              </>
+            ) : (
+              <>
+                <Plus size={14} /> New doc
+              </>
+            )}
           </button>
         </div>
 

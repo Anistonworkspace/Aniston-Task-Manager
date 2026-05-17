@@ -34,6 +34,12 @@ export async function summarizeBoard(boardId, { providerId } = {}) {
   return unwrap(res);
 }
 
+export async function summarizeDoc(docId, { providerId } = {}) {
+  if (!docId) throw new Error('docId is required');
+  const res = await api.post(`/ai/summarize/doc/${docId}`, providerId ? { providerId } : {});
+  return unwrap(res);
+}
+
 export async function suggestPriority({ taskTitle, taskDescription, boardId, providerId } = {}) {
   if (!taskTitle) throw new Error('taskTitle is required');
   const res = await api.post('/ai/suggest-priority', {
@@ -50,9 +56,47 @@ export async function planWeek({ taskIds, providerId } = {}) {
   return unwrap(res);
 }
 
+/**
+ * Notetaker — extract action items from a transcript.
+ *
+ * Returns { kind: 'structured', actions: [{ title, owner, dueDate, priority }] }.
+ * `owner` is a free-text name the model heard ("Sara") — the caller is
+ * responsible for resolving to a real user ID when creating tasks.
+ */
+export async function extractActions({ text, providerId } = {}) {
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('text is required');
+  }
+  const res = await api.post('/ai/extract-actions', { text, providerId });
+  return unwrap(res);
+}
+
+/**
+ * Phase E — "select text in editor → AI transform".
+ *
+ * Modes: 'improve' | 'shorter' | 'longer' | 'grammar' | 'continue' |
+ *        'casual' | 'professional'
+ *
+ * Returns { kind: 'text', mode, output } where `output` is the cleaned
+ * text the caller should swap into the editor's selection.
+ */
+export async function transformInline({ text, mode, providerId } = {}) {
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('text is required');
+  }
+  if (typeof mode !== 'string' || !mode.trim()) {
+    throw new Error('mode is required');
+  }
+  const res = await api.post('/ai/inline-edit', { text, mode, providerId });
+  return unwrap(res);
+}
+
 export default {
   summarizeTask,
   summarizeBoard,
+  summarizeDoc,
   suggestPriority,
   planWeek,
+  transformInline,
+  extractActions,
 };

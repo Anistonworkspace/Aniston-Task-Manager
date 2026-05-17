@@ -29,9 +29,7 @@ const ArchivedPage = lazy(() => import('./pages/ArchivedPage'));
 const AdminSettingsPage = lazy(() => import('./pages/AdminSettingsPage'));
 const AccessRequestPage = lazy(() => import('./pages/AccessRequestPage'));
 const OrgChartPage = lazy(() => import('./pages/OrgChartPage'));
-// Phase 7: /cross-team URL now serves the new Dependency Requests page. The
-// legacy CrossTeamTasksPage file is retained for reference but no longer
-// routed — the new DependenciesPage replaces it in place.
+// /cross-team URL serves the Dependency Requests page.
 const DependenciesPage = lazy(() => import('./pages/DependenciesPage'));
 const TasksPage = lazy(() => import('./pages/TasksPage'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
@@ -54,6 +52,21 @@ const MeetingDetailPage = lazy(() => import('./pages/Notetaker/MeetingDetailPage
 //   /workspaces/:workspaceId/docs/:docId    → editor (DocPage)
 const DocsListPage = lazy(() => import('./pages/Docs/DocsListPage'));
 const DocPage = lazy(() => import('./pages/Docs/DocPage'));
+// Phase W1 — Workflow Canvas. Two routes:
+//   /workflows         → library list (WorkflowsListPage)
+//   /workflows/:id     → reactflow canvas (WorkflowCanvasPage)
+// Both auth-only; finer permission gating arrives in a follow-up slice.
+const WorkflowsListPage = lazy(() => import('./pages/Workflows/WorkflowsListPage'));
+const WorkflowCanvasPage = lazy(() => import('./pages/Workflows/WorkflowCanvasPage'));
+// Phase F1 — Forms. Internal CRUD routes plus a PUBLIC /f/:slug route that
+// is intentionally outside the authenticated Layout (mounted separately in
+// the routes block below).
+const FormsListPage = lazy(() => import('./pages/Forms/FormsListPage'));
+const FormBuilderPage = lazy(() => import('./pages/Forms/FormBuilderPage'));
+const FormViewPage = lazy(() => import('./pages/Forms/FormViewPage'));
+// Dependency Graph (new) — visual DAG of task → task dependencies. Sits
+// alongside the existing list view at /cross-team. Reuses reactflow.
+const DependencyGraphPage = lazy(() => import('./pages/DependencyGraphPage'));
 
 function PageLoader() {
   return <AnistonLoader variant="page" size="lg" />;
@@ -149,6 +162,10 @@ export default function App() {
         <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
         <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        {/* Forms (Phase F1) — PUBLIC submit page. Mounted at the top level
+            on purpose: the visitor may be unauthenticated and we never want
+            them to bounce through /login when they have the public URL. */}
+        <Route path="/f/:slug" element={<Suspense fallback={<PageLoader />}><FormViewPage /></Suspense>} />
         <Route path="/" element={<ProtectedRoute><ErrorBoundary><Layout /></ErrorBoundary></ProtectedRoute>}>
           <Route index element={<Suspense fallback={<PageLoader />}><HomePage /></Suspense>} />
           <Route path="my-work" element={<Suspense fallback={<PageLoader />}><MyWorkPage /></Suspense>} />
@@ -170,6 +187,16 @@ export default function App() {
               the workspace list, and a single doc's editor. Both auth-only. */}
           <Route path="workspaces/:workspaceId/docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsListPage /></Suspense></ErrorBoundary>} />
           <Route path="workspaces/:workspaceId/docs/:docId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocPage /></Suspense></ErrorBoundary>} />
+          {/* Workflow Canvas (Phase W1) — list + per-workflow canvas. */}
+          <Route path="workflows" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><WorkflowsListPage /></Suspense></ErrorBoundary>} />
+          <Route path="workflows/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><WorkflowCanvasPage /></Suspense></ErrorBoundary>} />
+          {/* Forms (Phase F1) — workspace-scoped list + per-form builder.
+              The PUBLIC /f/:slug route is mounted OUTSIDE the Layout below
+              so anonymous submitters never bounce through /login. */}
+          <Route path="forms" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><FormsListPage /></Suspense></ErrorBoundary>} />
+          <Route path="forms/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><FormBuilderPage /></Suspense></ErrorBoundary>} />
+          {/* Dependency Graph — visual DAG companion to the /cross-team list. */}
+          <Route path="dependencies/graph" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DependencyGraphPage /></Suspense></ErrorBoundary>} />
           <Route path="boards/:id/dashboard" element={<AdminRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></AdminRoute>} />
           <Route path="dashboard" element={<ManagerRoute requiredPermission="dashboard.view"><Suspense fallback={<PageLoader />}><DashboardPage /></Suspense></ManagerRoute>} />
           {/* Legacy "My Dashboard" routes — folded into the new Dashboard

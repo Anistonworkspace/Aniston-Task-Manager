@@ -21,6 +21,7 @@ import { ReactRenderer } from '@tiptap/react';
 import Suggestion from '@tiptap/suggestion';
 import {
   Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Minus, Pilcrow,
+  Hash, AtSign, Table as TableIcon,
 } from 'lucide-react';
 
 // ─── Menu items ─────────────────────────────────────────────────────────
@@ -115,13 +116,64 @@ export const SLASH_ITEMS = [
   },
 ];
 
-function filterItems(query) {
+// Phase D Slice 2c — discoverability items for the mention + task-chip
+// pickers. The pickers themselves are bound to `@` and `+` trigger chars,
+// but a user who doesn't know that has no way to find them. These slash
+// items delete the typed `/whatever` range, then insert the matching
+// trigger char at the cursor — which immediately re-activates the
+// Suggestion plugin for that char and opens the corresponding picker.
+//
+// Only available when the caller's RichTextEditor has those features
+// wired (mentions / tasks prop). Toggled via the SlashCommand options
+// passed in by RichTextEditor.
+export const SLASH_TASK_LINK_ITEM = {
+  title: 'Link a task',
+  description: 'Insert a chip referencing an existing task (or create one)',
+  keywords: ['task', 'link', 'reference', 'chip', '+'],
+  icon: Hash,
+  command: ({ editor, range }) => {
+    editor.chain().focus().deleteRange(range).insertContent('+').run();
+  },
+};
+
+export const SLASH_MENTION_ITEM = {
+  title: 'Mention a teammate',
+  description: 'Tag someone — they get a notification',
+  keywords: ['mention', 'at', 'person', 'user', '@'],
+  icon: AtSign,
+  command: ({ editor, range }) => {
+    editor.chain().focus().deleteRange(range).insertContent('@').run();
+  },
+};
+
+// Phase C — table block. Unlike the mention/task discoverability items
+// above, this one is universal: tables don't require any caller-supplied
+// data source, so RichTextEditor always exposes it in the slash menu.
+// Inserts a starter 3×3 table with a header row — the user can add rows
+// or columns from the right-click menu (Tiptap's built-in table commands)
+// or via the toolbar in a future polish pass.
+export const SLASH_TABLE_ITEM = {
+  title: 'Insert table',
+  description: '3×3 starter table; add rows/columns via right-click',
+  keywords: ['table', 'grid', 'tabular', 'spreadsheet'],
+  icon: TableIcon,
+  command: ({ editor, range }) => {
+    editor
+      .chain()
+      .focus()
+      .deleteRange(range)
+      .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+      .run();
+  },
+};
+
+function filterItems(query, baseItems = SLASH_ITEMS) {
   const q = (query || '').toLowerCase().trim();
-  if (!q) return SLASH_ITEMS.slice(0, 8);
-  return SLASH_ITEMS.filter((item) => {
+  if (!q) return baseItems.slice(0, 10);
+  return baseItems.filter((item) => {
     if (item.title.toLowerCase().includes(q)) return true;
     return (item.keywords || []).some((k) => k.toLowerCase().includes(q));
-  }).slice(0, 8);
+  }).slice(0, 10);
 }
 
 // ─── Menu UI component ──────────────────────────────────────────────────
@@ -218,6 +270,10 @@ export const SlashCommand = Extension.create({
 
   addOptions() {
     return {
+      // Phase D Slice 2c — caller-injected extras (Link task, Mention).
+      // RichTextEditor passes these in based on the parent's `mentions`
+      // / `tasks` props so users discover the pickers via `/` too.
+      extraItems: [],
       suggestion: {
         char: '/',
         startOfLine: false,
@@ -228,7 +284,14 @@ export const SlashCommand = Extension.create({
         command: ({ editor, range, props }) => {
           props.item.command({ editor, range });
         },
-        items: ({ query }) => filterItems(query).map((item) => ({ ...item })),
+        items: ({ query, editor }) => {
+          const extras = editor?.extensionManager?.extensions
+            ?.find((e) => e.name === 'slashCommand')?.options?.extraItems || [];
+          // Discoverability extras float to the top so they're visible
+          // even before the user types anything past `/`.
+          const merged = [...extras, ...SLASH_ITEMS];
+          return filterItems(query, merged).map((item) => ({ ...item }));
+        },
         render: () => {
           let component;
           return {

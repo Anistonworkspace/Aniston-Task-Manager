@@ -932,6 +932,153 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 /* ===== Recharts ===== */
 .recharts-responsive-container { font-size: 12px; }
 
+/* ===== Tiptap / RichTextEditor (Doc Editor) =====
+   The Tiptap Placeholder extension renders empty-state hint text via a
+   `::before` pseudo-element on the empty paragraph. Without this CSS the
+   placeholder is invisible and the editor looks like a blank box.
+   Also clears the browser's default contenteditable focus outline
+   (the rounded blue box) and lays down Notion-style typography. */
+.rte-content .ProseMirror {
+  outline: none;
+  min-height: inherit;
+  caret-color: var(--primary-color);
+  cursor: text;
+}
+.rte-content .ProseMirror:focus { outline: none; }
+.rte-content .ProseMirror > * + * { margin-top: 0.6em; }
+.rte-content .ProseMirror p { line-height: 1.6; min-height: 1.4em; }
+.rte-content .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+.rte-content .ProseMirror h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; margin-top: 1.2em; }
+.rte-content .ProseMirror h2 { font-size: 1.5rem;   font-weight: 700; line-height: 1.25; margin-top: 1em; }
+.rte-content .ProseMirror h3 { font-size: 1.25rem;  font-weight: 600; line-height: 1.3; margin-top: 0.8em; }
+.rte-content .ProseMirror ul { list-style: disc;    padding-left: 1.5rem; }
+.rte-content .ProseMirror ol { list-style: decimal; padding-left: 1.5rem; }
+.rte-content .ProseMirror li > p { margin: 0; }
+.rte-content .ProseMirror blockquote {
+  border-left: 3px solid var(--primary-color);
+  padding-left: 0.9rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.rte-content .ProseMirror code {
+  background: var(--surface-100, rgba(0,0,0,0.05));
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.rte-content .ProseMirror pre {
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 0.85rem 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+}
+.rte-content .ProseMirror pre code { background: transparent; padding: 0; color: inherit; }
+.rte-content .ProseMirror hr {
+  border: 0;
+  border-top: 1px solid var(--border-color, #e2e2e2);
+  margin: 1.2em 0;
+}
+.rte-content .ProseMirror a {
+  color: var(--primary-color);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* DocPage-specific: bigger surface, no outer toolbar border. */
+.rich-doc-body .rte-content { padding: 0.25rem 0; }
+.rich-doc-body .ProseMirror p { font-size: 16px; }
+
+/* Phase F polish — commented-text highlights. Soft amber background + a
+   subtle underline so the marked range reads as annotated without
+   competing with the user's own formatting marks (bold, code, etc.).
+   Click affordance handled by the cursor change. */
+.rte-content .ProseMirror .comment-mark,
+.rich-doc-body .ProseMirror .comment-mark {
+  background-color: rgba(251, 191, 36, 0.18);
+  border-bottom: 2px solid rgba(251, 191, 36, 0.55);
+  border-radius: 2px;
+  padding: 1px 0;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.rte-content .ProseMirror .comment-mark:hover,
+.rich-doc-body .ProseMirror .comment-mark:hover {
+  background-color: rgba(251, 191, 36, 0.32);
+  border-bottom-color: rgba(217, 119, 6, 0.75);
+}
+
+/* P2-8 — floating sticky toolbar for chromeless mode. The toolbar is the
+   first direct child of the editor wrapper (RichTextEditor renders it
+   above EditorContent). Sticky + backdrop-blur + shadow makes it feel
+   "alive" — matches the Monday/Notion behaviour the user expected. */
+.rich-doc-body > div > div:first-child {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: saturate(180%) blur(8px);
+  -webkit-backdrop-filter: saturate(180%) blur(8px);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 4px 12px -10px rgba(15, 23, 42, 0.15);
+  border-radius: 6px;
+  padding: 4px 6px !important;
+  margin-bottom: 8px !important;
+}
+.dark .rich-doc-body > div > div:first-child {
+  background: rgba(20, 23, 30, 0.88);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4), 0 4px 12px -10px rgba(0, 0, 0, 0.5);
+}
+/* Toolbar button polish — visible active/focus state, soft press transition. */
+.rich-doc-body > div > div:first-child button {
+  position: relative;
+  transition: background-color 120ms ease, transform 80ms ease;
+}
+.rich-doc-body > div > div:first-child button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.rich-doc-body > div > div:first-child button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 1px;
+}
+
+/* P2-9 — task-chip + mention polish for read-mode (rendered HTML from
+   tiptapJsonToHtml in DocPage). The Tiptap node's HTMLAttributes already
+   style the in-editor chip via Tailwind utilities, but a saved doc
+   reloaded via the JSON→HTML bridge emits a bare `.task-chip` span — this
+   block gives it identical visual treatment without depending on
+   Tailwind class strings making it through the round-trip. */
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #0073ea;
+  background: rgba(0, 115, 234, 0.10);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease;
+  user-select: none;
+}
+.task-chip:hover { background: rgba(0, 115, 234, 0.18); }
+.mention {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #0073ea;
+  background: rgba(0, 115, 234, 0.10);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
 /* ===== Toast ===== */
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(80px); }
@@ -1379,4 +1526,76 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   }
   .bento-tile-tall { grid-row: span 1; }
   .bento-tile-wide { grid-column: span 1; }
+}
+
+/* ===== Doc Editor Phase H — inline images =====
+   The buildImageExtension factory mounts an `image` Node into the Tiptap
+   editor. These rules clamp images to the editor's content width so a
+   pasted/uploaded photo doesn't blow up the writing surface, round the
+   corners to match the rest of the doc chrome, and add vertical breathing
+   room. Two selectors: the editable surface (`.rte-content .ProseMirror`)
+   and the read-mode body rendered from JSON in DocPage
+   (`.rich-doc-body .ProseMirror`). */
+.rte-content .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 0.5em 0;
+}
+.rich-doc-body .ProseMirror img {
+  max-width: 100%;
+}
+
+/* Phase C — table block styling. Borders are intentionally light so
+   tables read as structured but don't compete with body copy. The
+   resize handle from @tiptap/extension-table is styled via the wrapper
+   it adds (`.tableWrapper`). */
+.rte-content .ProseMirror .rte-table,
+.rich-doc-body .ProseMirror .rte-table {
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  overflow: hidden;
+  width: 100%;
+  table-layout: fixed;
+}
+.rte-content .ProseMirror .rte-table td,
+.rte-content .ProseMirror .rte-table th,
+.rich-doc-body .ProseMirror .rte-table td,
+.rich-doc-body .ProseMirror .rte-table th {
+  border: 1px solid var(--border-color, #e2e2e2);
+  padding: 6px 8px;
+  vertical-align: top;
+  min-width: 80px;
+  box-sizing: border-box;
+  position: relative;
+}
+.rte-content .ProseMirror .rte-table th,
+.rich-doc-body .ProseMirror .rte-table th {
+  background: rgba(15, 23, 42, 0.04);
+  font-weight: 600;
+  text-align: left;
+}
+.dark .rte-content .ProseMirror .rte-table th,
+.dark .rich-doc-body .ProseMirror .rte-table th {
+  background: rgba(255, 255, 255, 0.04);
+}
+.rte-content .ProseMirror .tableWrapper,
+.rich-doc-body .ProseMirror .tableWrapper {
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.rte-content .ProseMirror .column-resize-handle,
+.rich-doc-body .ProseMirror .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: rgba(0, 115, 234, 0.4);
+  cursor: col-resize;
+  pointer-events: none;
+}
+.rte-content .ProseMirror .selectedCell,
+.rich-doc-body .ProseMirror .selectedCell {
+  background: rgba(0, 115, 234, 0.10);
 }

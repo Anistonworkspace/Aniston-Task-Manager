@@ -505,4 +505,51 @@ async function migrateFromLegacy() {
   }
 }
 
-module.exports = { chat, getActiveConfig, getProviderById, getAllProviders, testConnection, migrateFromLegacy, classifyError };
+/**
+ * Boot-time bootstrap: if no active AIProvider exists in the DB and a
+ * supported API key is set in env vars, seed the first matching provider
+ * so out-of-the-box installs don't need a manual /admin-settings round-trip
+ * before any AI feature works.
+ *
+ * Priority (first one set wins):
+ *   DEEPSEEK_API_KEY      → deepseek
+ *   OPENAI_API_KEY        → openai
+ *   OPENROUTER_API_KEY    → openai (OpenRouter is OpenAI-compatible)
+ *   ANTHROPIC_API_KEY     → anthropic
+ *
+ * Idempotent — if any active provider already exists, this is a no-op.
+ */
+async function bootstrapFromEnv() {
+  try {
+    const { AIProvider } = require('../models');
+    const { encrypt } = require('../utils/encryption');
+
+    const existing = await AIProvider.findOne({ where: { isActive: true } });
+    if (existing) return; // someone already configured one — don't overwrite
+
+    const candidates = [
+      { envVar: 'DEEPSEEK_API_KEY',   provider: 'deepseek', model: 'deepseek-chat',     baseUrl: '',                                    displayName: 'DeepSeek (env)' },
+      { envVar: 'OPENAI_API_KEY',     provider: 'openai',   model: 'gpt-3.5-turbo',     baseUrl: '',                                    displayName: 'OpenAI (env)' },
+      { envVar: 'OPENROUTER_API_KEY', provider: 'openai',   model: 'openai/gpt-3.5-turbo', baseUrl: 'https://openrouter.ai/api/v1',     displayName: 'OpenRouter (env)' },
+      { envVar: 'ANTHROPIC_API_KEY',  provider: 'anthropic',model: 'claude-3-haiku-20240307', baseUrl: '',                              displayName: 'Anthropic (env)' },
+    ];
+
+    const pick = candidates.find((c) => typeof process.env[c.envVar] === 'string' && process.env[c.envVar].trim().length > 0);
+    if (!pick) return; // nothing in env to seed from
+
+    await AIProvider.create({
+      provider: pick.provider,
+      displayName: pick.displayName,
+      apiKey: encrypt(process.env[pick.envVar].trim()),
+      model: pick.model,
+      baseUrl: pick.baseUrl,
+      isActive: true,
+      isDefault: true,
+    });
+    console.log(`[AIService] Bootstrapped AIProvider from ${pick.envVar} (provider=${pick.provider}).`);
+  } catch (err) {
+    safeLogger.warn('[AIService] env bootstrap failed (non-fatal)', { err });
+  }
+}
+
+module.exports = { chat, getActiveConfig, getProviderById, getAllProviders, testConnection, migrateFromLegacy, bootstrapFromEnv, classifyError };

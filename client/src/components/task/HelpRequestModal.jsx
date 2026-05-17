@@ -4,6 +4,7 @@ import { HelpCircle, X, Send, AlertCircle, Clock, Video, Check } from 'lucide-re
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { resolveTier, tierLabel } from '../../utils/tiers';
+import MentionInput from '../common/MentionInput';
 
 const URGENCY_CONFIG = {
   low: { label: 'Low', color: '#579bfc' },
@@ -119,9 +120,14 @@ export default function HelpRequestModal({ task, onClose }) {
             </div>
             <div>
               <label className="text-xs text-gray-500 mb-1 block">What help do you need?</label>
-              <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
-                placeholder="Describe what you're stuck on..."
-                className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary resize-none" />
+              <MentionInput
+                value={description}
+                onChange={setDescription}
+                users={users}
+                rows={3}
+                placeholder="Describe what you're stuck on. Type @ to mention someone."
+                className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary resize-none"
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

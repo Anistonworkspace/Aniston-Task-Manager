@@ -92,6 +92,16 @@ const Doc = sequelize.define(
       allowNull: true,
       comment: 'Updated on every successful save. Distinct from updatedAt which Sequelize bumps for any column change.',
     },
+    // Doc Editor Phase G — Y.js CRDT state. Hocuspocus persists encoded
+    // Y.doc updates (Y.encodeStateAsUpdate -> Uint8Array) into this BYTEA
+    // column on debounced flushes. NULL on existing rows that predate
+    // collab; the service either rejects collab for non-trivial legacy
+    // docs (no auto-migration) or starts a fresh CRDT for empty docs.
+    yjsState: {
+      type: DataTypes.BLOB,
+      allowNull: true,
+      comment: 'Encoded Y.doc state (Y.encodeStateAsUpdate). Populated by Hocuspocus onStoreDocument. Source of truth for live collab once non-null.',
+    },
   },
   {
     tableName: 'docs',

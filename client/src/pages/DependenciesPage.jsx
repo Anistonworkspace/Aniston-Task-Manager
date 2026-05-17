@@ -5,6 +5,7 @@ import {
   Link2, Inbox, Send, CheckCircle2, XCircle, Search,
   Calendar, Flag, ExternalLink, Play, Check, X, Trash2,
   AlertCircle, FileText, Archive, RefreshCw, ArrowRight,
+  Network,
 } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -343,19 +344,31 @@ export default function DependenciesPage() {
           transition={{ duration: 0.3 }}
           className="mb-4"
         >
-          <h1
-            className="text-xl sm:text-2xl font-bold flex items-center gap-2.5 mb-0.5"
-            style={{ color: TONE.textPrimary, letterSpacing: '-0.02em' }}
-          >
-            <span
-              className="w-9 h-9 flex items-center justify-center"
-              style={{ background: HERO_GRADIENT, boxShadow: SHADOW_BUTTON, borderRadius: 12 }}
-              aria-hidden="true"
+          <div className="flex items-start gap-2">
+            <h1
+              className="text-xl sm:text-2xl font-bold flex items-center gap-2.5 mb-0.5 flex-1 min-w-0"
+              style={{ color: TONE.textPrimary, letterSpacing: '-0.02em' }}
             >
-              <Link2 size={16} style={{ color: TONE.indigo }} />
-            </span>
-            {t('dependenciesPage.title')}
-          </h1>
+              <span
+                className="w-9 h-9 flex items-center justify-center"
+                style={{ background: HERO_GRADIENT, boxShadow: SHADOW_BUTTON, borderRadius: 12 }}
+                aria-hidden="true"
+              >
+                <Link2 size={16} style={{ color: TONE.indigo }} />
+              </span>
+              {t('dependenciesPage.title')}
+            </h1>
+            {/* View graph — visual companion at /dependencies/graph. Surfaced
+                inline (not behind a tab) so users discover it on first visit. */}
+            <button
+              type="button"
+              onClick={() => navigate('/dependencies/graph')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border border-border bg-surface text-text-secondary hover:bg-surface-100 hover:text-primary flex-shrink-0"
+              title="See task → task dependencies as a visual graph"
+            >
+              <Network size={12} /> View graph
+            </button>
+          </div>
           <p className="text-[13px] ml-[46px]" style={{ color: TONE.textSecondary }}>
             {t('dependenciesPage.subtitle')}
           </p>

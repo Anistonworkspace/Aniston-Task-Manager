@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Calendar, Clock, X, Check, AlertCircle, Send } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import MentionInput from '../common/MentionInput';
 
 export default function DueDateExtensionModal({ task, onClose, onUpdated }) {
   const { canManage } = useAuth();
@@ -12,10 +13,22 @@ export default function DueDateExtensionModal({ task, onClose, onUpdated }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reviewNote, setReviewNote] = useState('');
+  const [users, setUsers] = useState([]);
 
   useEffect(() => {
     if (task?.id) fetchExtensions();
   }, [task?.id]);
+
+  // Load workspace users once for the @mention picker. Failure is non-fatal.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/auth/users').then((res) => {
+      if (cancelled) return;
+      const list = res.data?.data?.users || res.data?.users || res.data?.data || res.data || [];
+      setUsers(Array.isArray(list) ? list : []);
+    }).catch(() => { /* noop */ });
+    return () => { cancelled = true; };
+  }, []);
 
   async function fetchExtensions() {
     try {
@@ -84,9 +97,14 @@ export default function DueDateExtensionModal({ task, onClose, onUpdated }) {
             </div>
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Reason for Extension</label>
-              <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2}
-                placeholder="Why do you need more time?"
-                className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary resize-none" />
+              <MentionInput
+                value={reason}
+                onChange={setReason}
+                users={users}
+                rows={2}
+                placeholder="Why do you need more time? Type @ to mention someone."
+                className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-primary resize-none"
+              />
             </div>
             {error && <p className="text-xs text-red-500 flex items-center gap-1"><AlertCircle size={11} /> {error}</p>}
             <button onClick={handleRequest} disabled={loading}

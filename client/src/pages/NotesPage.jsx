@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Mic, MicOff, FileText, Search, Trash2, Edit3, Clock, Save, X,
   ChevronDown, Plus, AlertTriangle, Globe, ArrowLeft,
@@ -643,13 +644,32 @@ export default function NotesPage() {
     try {
       const res = await api.get('/notes/my');
       if (window.__NOTES_DEBUG__) console.log('[NotesPage] loadNotes response:', res.data);
-      setNotes(res.data.notes || []);
+      // Tolerate both response shapes (canonical and legacy unwrapped).
+      const list = res?.data?.data?.notes || res?.data?.notes || [];
+      setNotes(list);
     } catch (err) {
       console.error('[NotesPage] loadNotes failed:', err?.response?.status, err?.response?.data || err.message);
     } finally {
       setLoading(false);
     }
   }
+
+  // Audit P0 2026-05-17: RecentRecordings (Notetaker) links to
+  // /notes?focus=<id> but nothing was reading the param, so the deep link
+  // was dead. Resolve once notes load: open that note in the editor view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const targetId = searchParams.get('focus');
+    if (!targetId || loading || notes.length === 0) return;
+    const target = notes.find((n) => n.id === targetId);
+    if (!target) return;
+    setEditingNote(target);
+    setView('editor');
+    // Consume the param so a refresh / re-mount doesn't keep re-opening it.
+    const next = new URLSearchParams(searchParams);
+    next.delete('focus');
+    setSearchParams(next, { replace: true });
+  }, [notes, loading, searchParams, setSearchParams]);
 
   const handleNew = () => { setEditingNote(null); setView('editor'); };
   const handleEdit = (note) => { setEditingNote(note); setView('editor'); };

@@ -37,6 +37,14 @@ export default defineConfig(({ mode }) => ({
     setupFiles: ['./src/test/setup.js'],
     css: true,
     include: ['src/**/*.{test,spec}.{js,jsx}'],
+    // Bumped from the 5s vitest default + the 1s testing-library default
+    // because the full 73-file suite under heavy parallel load produces
+    // CI runs that occasionally take ~80s instead of the usual ~50s.
+    // Individual `waitFor` calls without explicit timeouts (~210 sites)
+    // were inheriting the 1s default and intermittently failing on the
+    // slow runs — root cause of the May-17 transient "1 failed / 696
+    // passed" flake. 8s gives plenty of slack without masking real bugs.
+    testTimeout: 10000,
   },
   server: {
     port: 3000,

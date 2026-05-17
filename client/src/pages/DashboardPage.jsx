@@ -343,6 +343,16 @@ export default function DashboardPage() {
         })}
       </motion.div>
 
+      {/* Phase B widget row — Number / Battery / Calendar surfaces that the
+          existing fixed-layout dashboard didn't have. Each widget reuses
+          `summary`/`byStatus`/`trendData` already loaded by /dashboard/stats,
+          so no extra network calls. */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+        <NumberWidget trendData={trendData} />
+        <BatteryWidget byStatus={byStatus} total={summary.totalTasks} />
+        <CalendarWidget trendData={trendData} />
+      </div>
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Status Pie */}
@@ -915,5 +925,106 @@ export default function DashboardPage() {
         />
       )}
     </motion.div>
+  );
+}
+
+// "Done this week" key-metric tile with a delta arrow vs last week. Server
+// returns trendData as 14 chronological points (oldest first), so we split it
+// 7/7 and compare the halves.
+function NumberWidget({ trendData = [] }) {
+  const sum = (arr) => arr.reduce((acc, d) => acc + (d?.count || 0), 0);
+  const lastWeek = sum(trendData.slice(0, 7));
+  const thisWeek = sum(trendData.slice(7, 14));
+  const delta = thisWeek - lastWeek;
+  const pct = lastWeek > 0 ? Math.round((delta / lastWeek) * 100) : (thisWeek > 0 ? 100 : 0);
+  const trendColor = delta > 0 ? '#00c875' : delta < 0 ? '#df2f4a' : '#6b7280';
+  const arrow = delta > 0 ? '↑' : delta < 0 ? '↓' : '→';
+  return (
+    <div className="widget-card">
+      <div className="flex items-center gap-2 mb-2">
+        <CheckCircle2 size={14} className="text-success" />
+        <span className="text-xs text-text-secondary font-medium">Done this week</span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-3xl font-bold text-text-primary">{thisWeek}</span>
+        <span className="text-sm font-semibold" style={{ color: trendColor }}>
+          {arrow} {Math.abs(pct)}%
+        </span>
+      </div>
+      <p className="text-[11px] text-text-tertiary mt-1">
+        {lastWeek > 0 ? `vs ${lastWeek} last week` : 'no completions last week'}
+      </p>
+    </div>
+  );
+}
+
+// Battery widget — stacked horizontal status bar. Each segment width is
+// proportional to its share of totalTasks. Empty state shows a flat gray track.
+function BatteryWidget({ byStatus = [], total = 0 }) {
+  const safeTotal = total > 0 ? total : Math.max(1, byStatus.reduce((acc, s) => acc + (s.value || 0), 0));
+  return (
+    <div className="widget-card">
+      <div className="flex items-center gap-2 mb-2">
+        <Activity size={14} className="text-primary" />
+        <span className="text-xs text-text-secondary font-medium">Status battery</span>
+      </div>
+      {byStatus.length === 0 ? (
+        <div className="h-3 rounded-full bg-surface-100" />
+      ) : (
+        <div className="flex h-3 rounded-full overflow-hidden bg-surface-100">
+          {byStatus.map((s) => (
+            <div
+              key={s.name}
+              title={`${s.name}: ${s.value} (${Math.round((s.value / safeTotal) * 100)}%)`}
+              style={{ width: `${(s.value / safeTotal) * 100}%`, backgroundColor: s.color }}
+            />
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+        {byStatus.map((s) => (
+          <div key={s.name} className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: s.color }} />
+            <span>{s.name}</span>
+            <span className="font-semibold">{s.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Calendar widget — 14-day mini heatmap of completions. Renders 2 rows × 7 day
+// cells (oldest top-left → today bottom-right). Color intensity scales with
+// the day's completion count vs the 14-day max so the busiest day is the most
+// saturated. Hovering a cell reveals the date + count.
+function CalendarWidget({ trendData = [] }) {
+  const max = Math.max(1, ...trendData.map((d) => d?.count || 0));
+  return (
+    <div className="widget-card">
+      <div className="flex items-center gap-2 mb-2">
+        <Calendar size={14} className="text-primary" />
+        <span className="text-xs text-text-secondary font-medium">Activity (14d)</span>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {trendData.map((d, i) => {
+          const intensity = (d?.count || 0) / max;
+          const bg = intensity === 0
+            ? 'var(--surface-100, #f3f4f6)'
+            : `rgba(0, 200, 117, ${0.2 + intensity * 0.8})`;
+          return (
+            <div
+              key={d?.date || i}
+              title={d?.date ? `${d.date}: ${d.count} completed` : ''}
+              className="aspect-square rounded-sm"
+              style={{ backgroundColor: bg }}
+            />
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-text-tertiary mt-2">
+        Greener cells = more tasks completed that day.
+      </p>
+    </div>
   );
 }

@@ -38,6 +38,12 @@ const Note = require('./Note');
 // Doc Editor Phase B — collaborative document model + periodic version snapshots.
 const Doc = require('./Doc');
 const DocVersion = require('./DocVersion');
+// Doc Editor Phase D Slice 1 — @-mentions per doc (notifications + back-refs).
+const DocMention = require('./DocMention');
+// Doc Editor Phase D Slice 2 — task chips per doc (back-refs only).
+const DocTaskReference = require('./DocTaskReference');
+// Doc Editor Phase F — threaded comments anchored to selection text.
+const DocComment = require('./DocComment');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
 const AIProvider = require('./AIProvider');
@@ -55,6 +61,17 @@ const PushSubscription = require('./PushSubscription');
 const SystemSetting = require('./SystemSetting');
 const RefreshToken = require('./RefreshToken');
 const PendingLoginToken = require('./PendingLoginToken');
+// Workflow Canvas Phase W1 — visual node-graph automation. Coexists with
+// the legacy `Automation` table; both engines fire on the same triggers.
+const Workflow = require('./Workflow');
+const WorkflowNode = require('./WorkflowNode');
+const WorkflowEdge = require('./WorkflowEdge');
+const WorkflowRun = require('./WorkflowRun');
+const WorkflowWait = require('./WorkflowWait');
+// Forms Phase F1 — workspace-scoped data collection forms + submissions.
+// Public submissions hit /api/forms/public/:slug/submit (unauthenticated).
+const Form = require('./Form');
+const FormSubmission = require('./FormSubmission');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -421,6 +438,9 @@ module.exports = {
   Note,
   Doc,
   DocVersion,
+  DocMention,
+  DocTaskReference,
+  DocComment,
   Feedback,
   AIConfig,
   AIProvider,
@@ -438,6 +458,13 @@ module.exports = {
   SystemSetting,
   RefreshToken,
   PendingLoginToken,
+  Workflow,
+  WorkflowNode,
+  WorkflowEdge,
+  WorkflowRun,
+  WorkflowWait,
+  Form,
+  FormSubmission,
 };
 
 // ─── RefreshToken <-> User ───────────────────────────────────────────
@@ -536,6 +563,39 @@ Doc.hasMany(DocVersion, { foreignKey: 'docId', as: 'versions', onDelete: 'CASCAD
 DocVersion.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
 DocVersion.belongsTo(User, { foreignKey: 'savedBy', as: 'author', onDelete: 'SET NULL' });
 
+// ─── Doc Editor Phase D Slice 1 — @-mentions ─────────────────
+// Each doc tracks an explicit list of users it currently mentions, separate
+// from the contentJson body. The body stays the source of truth for what
+// the doc says; this table is the index for notifications + back-refs.
+Doc.hasMany(DocMention, { foreignKey: 'docId', as: 'mentions', onDelete: 'CASCADE' });
+DocMention.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
+DocMention.belongsTo(User, { foreignKey: 'mentionedUserId', as: 'mentionedUser', onDelete: 'CASCADE' });
+DocMention.belongsTo(User, { foreignKey: 'mentionedByUserId', as: 'mentionedBy', onDelete: 'SET NULL' });
+User.hasMany(DocMention, { foreignKey: 'mentionedUserId', as: 'docMentions' });
+
+// ─── Doc Editor Phase D Slice 2 — task chips ────────────────
+// Tasks referenced inside a doc body via the task-chip extension. One row
+// per (doc, task). Used for bidirectional links — Task.docReferences gives
+// a task its "referenced in N docs" backlink.
+Doc.hasMany(DocTaskReference, { foreignKey: 'docId', as: 'taskReferences', onDelete: 'CASCADE' });
+DocTaskReference.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
+DocTaskReference.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'CASCADE' });
+DocTaskReference.belongsTo(User, { foreignKey: 'addedByUserId', as: 'addedBy', onDelete: 'SET NULL' });
+Task.hasMany(DocTaskReference, { foreignKey: 'taskId', as: 'docReferences' });
+
+// ─── Doc Editor Phase F — threaded selection-anchored comments ──
+// Threads: top-level comments (parentId NULL) + child replies. The
+// self-referential FK cascades so deleting a parent wipes orphan replies.
+// Author / resolver FKs use SET NULL so historical comments survive user
+// deletion; the UI renders the missing actor as "Unknown user."
+Doc.hasMany(DocComment, { foreignKey: 'docId', as: 'comments', onDelete: 'CASCADE' });
+DocComment.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
+DocComment.belongsTo(User, { foreignKey: 'authorId', as: 'author', onDelete: 'SET NULL' });
+DocComment.belongsTo(User, { foreignKey: 'resolvedBy', as: 'resolver', onDelete: 'SET NULL' });
+DocComment.hasMany(DocComment, { foreignKey: 'parentId', as: 'replies', onDelete: 'CASCADE' });
+DocComment.belongsTo(DocComment, { foreignKey: 'parentId', as: 'parent', onDelete: 'CASCADE' });
+User.hasMany(DocComment, { foreignKey: 'authorId', as: 'authoredDocComments' });
+
 // ─── Task <-> TaskReference (1-to-many) ──────────────────────
 // Each task may carry multiple free-form reference entries (ticket IDs,
 // invoice numbers, doc IDs). CASCADE on delete so archiving a task wipes
@@ -617,3 +677,41 @@ TeamsNotificationLog.belongsTo(User, { foreignKey: 'user_id', as: 'user', onDele
 TeamsNotificationLog.belongsTo(Task, { foreignKey: 'task_id', as: 'task', onDelete: 'SET NULL' });
 User.hasMany(TeamsNotificationLog, { foreignKey: 'user_id', as: 'teamsNotifications' });
 Task.hasMany(TeamsNotificationLog, { foreignKey: 'task_id', as: 'teamsNotifications' });
+
+// ─── Workflow Canvas (Phase W1) ─────────────────────────────
+// Workflows live in a workspace, optionally scoped to a board. Nodes +
+// edges hang off the workflow with CASCADE so deleting the workflow
+// wipes its canvas state. Runs are an append-only audit log; they too
+// cascade-delete with the workflow (drop the workflow, drop the audit).
+// The legacy Automation table is untouched — both engines coexist.
+Workflow.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspace', onDelete: 'CASCADE' });
+Workflow.belongsTo(Board, { foreignKey: 'boardId', as: 'board', onDelete: 'CASCADE' });
+Workflow.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+Workspace.hasMany(Workflow, { foreignKey: 'workspaceId', as: 'workflows' });
+Board.hasMany(Workflow, { foreignKey: 'boardId', as: 'workflows' });
+
+Workflow.hasMany(WorkflowNode, { foreignKey: 'workflowId', as: 'nodes', onDelete: 'CASCADE' });
+WorkflowNode.belongsTo(Workflow, { foreignKey: 'workflowId', as: 'workflow', onDelete: 'CASCADE' });
+
+Workflow.hasMany(WorkflowEdge, { foreignKey: 'workflowId', as: 'edges', onDelete: 'CASCADE' });
+WorkflowEdge.belongsTo(Workflow, { foreignKey: 'workflowId', as: 'workflow', onDelete: 'CASCADE' });
+WorkflowEdge.belongsTo(WorkflowNode, { foreignKey: 'sourceNodeId', as: 'sourceNode', onDelete: 'CASCADE' });
+WorkflowEdge.belongsTo(WorkflowNode, { foreignKey: 'targetNodeId', as: 'targetNode', onDelete: 'CASCADE' });
+
+Workflow.hasMany(WorkflowRun, { foreignKey: 'workflowId', as: 'runs', onDelete: 'CASCADE' });
+WorkflowRun.belongsTo(Workflow, { foreignKey: 'workflowId', as: 'workflow', onDelete: 'CASCADE' });
+
+// W3 — workflow waits. CASCADE so deleting a workflow also drops pending
+// resumes; otherwise the cron job would try to resume into a missing graph.
+Workflow.hasMany(WorkflowWait, { foreignKey: 'workflowId', as: 'waits', onDelete: 'CASCADE' });
+WorkflowWait.belongsTo(Workflow, { foreignKey: 'workflowId', as: 'workflow', onDelete: 'CASCADE' });
+WorkflowWait.belongsTo(WorkflowNode, { foreignKey: 'fromNodeId', as: 'fromNode', onDelete: 'CASCADE' });
+
+// ─── Form <-> Workspace / Board / User / Submissions ─────────────────
+Form.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspace', onDelete: 'CASCADE' });
+Form.belongsTo(Board, { foreignKey: 'targetBoardId', as: 'targetBoard', onDelete: 'SET NULL' });
+Form.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+Form.hasMany(FormSubmission, { foreignKey: 'formId', as: 'submissions', onDelete: 'CASCADE' });
+FormSubmission.belongsTo(Form, { foreignKey: 'formId', as: 'form', onDelete: 'CASCADE' });
+FormSubmission.belongsTo(User, { foreignKey: 'submittedByUserId', as: 'submittedBy', onDelete: 'SET NULL' });
+FormSubmission.belongsTo(Task, { foreignKey: 'taskId', as: 'task', onDelete: 'SET NULL' });

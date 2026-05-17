@@ -20,6 +20,8 @@ const {
 } = require('../controllers/taskController');
 const { getCrossTeamDependencies } = require('../controllers/dependencyController');
 const { recordReceipt } = require('../controllers/taskReceiptController');
+// Phase D Slice 2 — bidirectional doc → task linking.
+const { listDocReferencesForTask } = require('../controllers/docController');
 
 const router = express.Router();
 
@@ -116,6 +118,13 @@ router.post(
 
 // ─── GET /api/tasks ──────────────────────────────────────────
 router.get('/', getTasks);
+
+// ─── GET /api/tasks/:id/doc-references (Phase D Slice 2) ────
+// "Where in the workspace is this task referenced?" — bidirectional companion
+// to doc-side task chips. Reuses canViewTask so the caller must already be
+// able to read the task; the controller then filters docs by workspace
+// visibility.
+router.get('/:id/doc-references', canViewTask, listDocReferencesForTask);
 
 // ─── GET /api/tasks/:id (with visibility check) ─────────────
 router.get('/:id', canViewTask, getTask);

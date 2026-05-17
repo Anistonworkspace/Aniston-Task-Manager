@@ -8,6 +8,7 @@ const {
   delegateTask,
   assignDependency,
   archiveDependency,
+  getDependencyGraph,
 } = require('../controllers/dependencyController');
 const dependencyRequestController = require('../controllers/dependencyRequestController');
 const drPerm = require('../middleware/dependencyRequestPermissions');
@@ -64,6 +65,11 @@ router.put('/tasks/:taskId/dependencies/:dependencyId/archive', archiveDependenc
 // Mounted as bare URLs because the parent app mounts this router at /api.
 // These return only the current user's own data so they don't need a per-row
 // auth guard — the controller scopes the query by user id.
+// Dependency graph — DAG view for the dedicated /dependencies/graph page.
+// Visibility-scoped inside the controller (admin/manager see all; everyone
+// else sees only deps where they're a participant or the creator).
+router.get('/dependencies/graph', getDependencyGraph);
+
 router.get('/dependencies/assigned-to-me', dependencyRequestController.listAssignedToMe);
 router.get('/dependencies/created-by-me',  dependencyRequestController.listCreatedByMe);
 // Lightweight count for the global header badge — see controller header.

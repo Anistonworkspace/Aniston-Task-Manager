@@ -6,7 +6,8 @@ import {
   FolderKanban, Star, StarOff, BarChart3, FileText, CalendarDays,
   Puzzle, Archive, Settings, PanelLeftClose, PanelLeft,
   Edit3, ArrowUpDown, LayoutGrid, ClipboardCheck,
-  RefreshCw, Pin, PinOff, Sparkles,
+  RefreshCw, Pin, PinOff, Sparkles, BookOpen, Workflow,
+  Users, Trash2, FileSpreadsheet,
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -17,6 +18,7 @@ import CreateBoardModal from '../board/CreateBoardModal';
 import RearrangeBoardsModal from '../board/RearrangeBoardsModal';
 import RearrangeWorkspacesModal from '../board/RearrangeWorkspacesModal';
 import BrowseAllWorkspacesModal from '../workspace/BrowseAllWorkspaces';
+import ContextMenu from '../common/ContextMenu/ContextMenu';
 // Phase 1 (Monday-style chrome): unified "+ Add new" Popover menu. Wraps
 // the existing Create-board + Create-workspace flows and grows naturally
 // as future content types (Doc / Dashboard / Form / Workflow) ship.
@@ -571,6 +573,28 @@ export default function Sidebar({ collapsed, onToggle }) {
                 list. Uses the same /api/meetings/my data source but adds the
                 3-column detail page, transcript viewer, and settings modal. */}
             <NavItem icon={Sparkles} label="AI Notetaker" path="/notetaker" tourId="nav-notetaker" />
+            {/* Doc Editor — top-level entry. Routes to the first available
+                workspace's docs landing; the landing has its own "+ New doc"
+                button. Hidden when the user has no workspaces (no destination)
+                OR has exactly one workspace (the per-workspace "Docs" row
+                inside the workspaces section below already covers that case;
+                duplicate flagged in the May-17 audit). */}
+            {workspaces.length > 1 && (
+              <NavItem
+                icon={BookOpen}
+                label="Docs"
+                path={`/workspaces/${workspaces[0].id}/docs`}
+                tourId="nav-docs"
+              />
+            )}
+            {/* Workflow Canvas (Phase W1) — visual trigger → action automations.
+                Sits between Docs and Reviews because it pairs with collaborative
+                editing surfaces, not the analytics ones below. */}
+            <NavItem icon={Workflow} label="Workflows" path="/workflows" tourId="nav-workflows" />
+            {/* Forms (Phase F1) — public & internal intake forms. Same band as
+                Workflows / Docs since they share the "build a thing once,
+                use it many times" mental model. */}
+            <NavItem icon={FileSpreadsheet} label="Forms" path="/forms" tourId="nav-forms" />
             <NavItem icon={FileText} label={t('sidebar.reviews')} path="/reviews" tourId="nav-reviews" />
             <NavItem icon={ClipboardCheck} label={t('sidebar.approvalsAndRequests')} path="/tasks" tourId="nav-tasks" badge={approvalsBadge} />
             <NavItem icon={RefreshCw} label={t('sidebar.recurringWork')} path="/recurring-work" tourId="nav-recurring-work" />
@@ -776,7 +800,14 @@ export default function Sidebar({ collapsed, onToggle }) {
                   {/* Workspace row. Per UX requirement, only the chevron
                       toggles the board list — clicking the title/name does
                       nothing. The row is a div (not a button) so accidental
-                      title clicks don't collapse the workspace. */}
+                      title clicks don't collapse the workspace.
+
+                      Right-clicking the row opens a ContextMenu (Monday
+                      parity); the existing hover-MoreHorizontal dropdown
+                      stays as the discoverable affordance for mouse users
+                      who don't know right-click is wired. */}
+                  <ContextMenu>
+                  <ContextMenu.Trigger asChild>
                   <div
                     className="flex items-center gap-2 pl-3 pr-7 py-1.5 w-full hover:bg-sidebar-hover rounded-md transition-colors cursor-default">
                     <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0 text-white text-[10px] font-bold"
@@ -820,6 +851,72 @@ export default function Sidebar({ collapsed, onToggle }) {
                       <ChevronDown size={13} className={`transition-transform duration-150 ${isOpen ? '' : '-rotate-90'}`} />
                     </button>
                   </div>
+                  </ContextMenu.Trigger>
+                  <ContextMenu.Content ariaLabel={`Workspace ${ws.name} actions`}>
+                    <ContextMenu.Item
+                      icon={wsUsage[ws.id]?.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                      onSelect={() => toggleWorkspacePin(ws.id)}
+                    >
+                      {wsUsage[ws.id]?.pinned ? t('sidebar.unpinFromTop') : t('sidebar.pinToTop')}
+                    </ContextMenu.Item>
+                    {canCreateBoardPerm && (
+                      <ContextMenu.Item
+                        icon={<Plus size={14} />}
+                        onSelect={() => openCreateBoardForWorkspace(ws)}
+                      >
+                        {t('sidebar.createBoard')}
+                      </ContextMenu.Item>
+                    )}
+                    <ContextMenu.Item
+                      icon={<ArrowUpDown size={14} />}
+                      onSelect={() => openRearrangeForWorkspace(ws)}
+                    >
+                      {t('sidebar.rearrangeBoards')}
+                    </ContextMenu.Item>
+                    <ContextMenu.Item
+                      icon={<Users size={14} />}
+                      onSelect={() => navigate(`/workspaces/${ws.id}`)}
+                    >
+                      Manage members
+                    </ContextMenu.Item>
+                    {canEditWsPerm && <ContextMenu.Separator />}
+                    {canEditWsPerm && (
+                      <ContextMenu.Item
+                        icon={<Edit3 size={14} />}
+                        onSelect={() => { setRenamingWorkspace(ws.id); setWsRenameValue(ws.name); }}
+                      >
+                        {t('common.rename')}
+                      </ContextMenu.Item>
+                    )}
+                    {canEditWsPerm && (
+                      <ContextMenu.Item
+                        icon={<Archive size={14} />}
+                        onSelect={() => {
+                          if (window.confirm(`Archive workspace "${ws.name}"? All boards inside will be hidden.`)) {
+                            api.put(`/workspaces/${ws.id}`, { isActive: false }).then(() => loadData());
+                          }
+                        }}
+                      >
+                        {t('sidebar.archiveWorkspace')}
+                      </ContextMenu.Item>
+                    )}
+                    {canEditWsPerm && (
+                      <ContextMenu.Item
+                        destructive
+                        icon={<Trash2 size={14} />}
+                        onSelect={() => {
+                          if (window.confirm(`Permanently delete workspace "${ws.name}"? This cannot be undone.`)) {
+                            api.delete(`/workspaces/${ws.id}`)
+                              .then(() => loadData())
+                              .catch((err) => window.alert(err?.response?.data?.message || 'Could not delete workspace.'));
+                          }
+                        }}
+                      >
+                        Delete workspace
+                      </ContextMenu.Item>
+                    )}
+                  </ContextMenu.Content>
+                  </ContextMenu>
                   {/* Workspace hover menu — always rendered (every user can
                       personally pin/unpin), but each item inside is gated by
                       its own permission. Assistant managers with the
@@ -924,6 +1021,18 @@ export default function Sidebar({ collapsed, onToggle }) {
                         {wsBoards.length === 0 && (
                           <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsYet')}</p>
                         )}
+                        {/* Doc Editor — per-workspace docs entry. Monday-style
+                            left nav: docs live alongside boards inside each
+                            workspace, not in a separate global section. */}
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/workspaces/${ws.id}/docs`)}
+                          className={`sidebar-item w-full mt-0.5 ${location.pathname.startsWith(`/workspaces/${ws.id}/docs`) ? 'sidebar-item-active' : ''}`}
+                          title="Open docs for this workspace"
+                        >
+                          <BookOpen size={14} strokeWidth={1.8} />
+                          <span className="flex-1 text-left truncate text-[12px]">Docs</span>
+                        </button>
                       </div>
                     );
                   })()}
@@ -976,15 +1085,13 @@ export default function Sidebar({ collapsed, onToggle }) {
             );
           })()}
 
-          {/* Add Workspace — admin/super_admin only */}
-          {canUser(user?.role, 'create_workspace', isSuperAdmin, permissionGrants, effectivePermissions) && (
-            <div className="px-2 pb-1">
-              <button onClick={() => setShowCreateWorkspace(true)}
-                className="flex items-center gap-2 px-3 py-1.5 w-full text-sidebar-text/50 hover:text-sidebar-accent hover:bg-sidebar-hover rounded-md transition-colors text-[13px]">
-                <Plus size={14} /> {t('sidebar.addNewWorkspace')}
-              </button>
-            </div>
-          )}
+          {/* Removed 2026-05-17: standalone "+ Add new workspace" button was
+              a duplicate of the "Workspace" item inside AddNewContentMenu
+              below. Both gated on the same `create_workspace` permission,
+              both opened CreateWorkspaceModal. The Popover is the canonical
+              entry point and surfaces every content type uniformly — having
+              two "Add workspace" affordances three lines apart was confusing
+              (called out by the user in the May-17 audit). */}
 
           {/* Create Board — visible to anyone with create_board permission.
               Phase 1: the bottom button now opens the unified "Add new"
@@ -1023,6 +1130,12 @@ export default function Sidebar({ collapsed, onToggle }) {
                   const inferredWsId = inferCurrentWorkspaceId() || workspaces[0]?.id;
                   if (inferredWsId) {
                     navigate(`/workspaces/${inferredWsId}/docs`);
+                  } else {
+                    // No workspaces yet — silent navigation would feel broken.
+                    // Open the workspace-creation modal so the user can make
+                    // one first; the doc landing is gated on having a
+                    // workspace to attach to.
+                    setShowCreateWorkspace(true);
                   }
                 }}
               />

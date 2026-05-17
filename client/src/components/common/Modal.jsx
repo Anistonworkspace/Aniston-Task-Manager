@@ -52,11 +52,16 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
 
   // Sizes per skill §7.1 — base widths grow at ≥1280 and ≥1440.
   // `panel` is a non-spec right-rail variant kept for back-compat.
+  //
+  // Mobile (`max-md`): every centered size is allowed to grow to 92vh so
+  // long-form modals (TaskModal, CreateBoardModal) don't crop their
+  // footers behind the bottom edge on small screens. The base ≥md cap
+  // (50/80/80/90vh) is preserved on desktop.
   const sizes = {
-    sm:    'max-w-[460px] xl:max-w-[480px] 2xl:max-w-[520px] max-h-[50vh]',
-    md:    'max-w-[540px] xl:max-w-[580px] 2xl:max-w-[620px] max-h-[80vh]',
-    lg:    'max-w-[800px] xl:max-w-[840px] 2xl:max-w-[900px] max-h-[80vh]',
-    xl:    'max-w-[960px] max-h-[90vh]',
+    sm:    'max-w-[460px] xl:max-w-[480px] 2xl:max-w-[520px] max-md:max-h-[92vh] max-h-[50vh]',
+    md:    'max-w-[540px] xl:max-w-[580px] 2xl:max-w-[620px] max-md:max-h-[92vh] max-h-[80vh]',
+    lg:    'max-w-[800px] xl:max-w-[840px] 2xl:max-w-[900px] max-md:max-h-[92vh] max-h-[80vh]',
+    xl:    'max-w-[960px] max-md:max-h-[92vh] max-h-[90vh]',
     fullView: 'w-full mx-6 mt-10 max-h-[calc(100vh-40px)]',
     panel: 'max-w-[600px] ml-auto h-full rounded-none',
   };
@@ -65,7 +70,10 @@ export default function Modal({ isOpen, onClose, title, children, footer, size =
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="fixed inset-0 flex items-center justify-center"
+          // Mobile: 12px horizontal padding so the modal panel doesn't hug
+          // the viewport edge on phones. Desktop: no padding — the modal's
+          // own max-width keeps it centered with breathing room.
+          className="fixed inset-0 flex items-center justify-center max-md:px-3"
           style={{ zIndex: 'var(--modal-z-index, 10000)' }}
           onClick={(e) => e.target === e.currentTarget && onClose()}
           {...modalOverlay}

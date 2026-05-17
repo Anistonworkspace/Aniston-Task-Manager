@@ -66,8 +66,10 @@ export default function NotetakerSettingsModal({
     setPrefs((prev) => {
       const next = { ...prev, [key]: !prev[key] };
       writePrefs(next);
-      // Show a tiny saved toast so the user knows we persisted.
-      toast.success('Saved');
+      // Prefs are localStorage-only until the user-prefs sync endpoint
+      // lands — be honest about that in the toast so users don't expect
+      // these to follow them across devices.
+      toast.success('Saved on this device');
       return next;
     });
   }

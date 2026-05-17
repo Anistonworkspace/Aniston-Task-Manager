@@ -4,6 +4,7 @@ import DetailModalShell from '../common/DetailModalShell';
 import api from '../../services/api';
 import { useToast } from '../common/Toast';
 import { roleLabelFor } from '../../utils/approvalStages';
+import MentionInput from '../common/MentionInput';
 
 /**
  * Centered modal that intercepts a "Done" status change and submits the
@@ -23,7 +24,21 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
   const [preview, setPreview] = useState(null); // { autoApprove, nextApprover }
   const [previewError, setPreviewError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [users, setUsers] = useState([]);
   const fileInputRef = useRef(null);
+
+  // Load workspace users once for the @mention picker on the comment field.
+  // Failure is non-fatal — the textarea still works, just without
+  // autocomplete.
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/auth/users').then((res) => {
+      if (cancelled) return;
+      const list = res.data?.data?.users || res.data?.users || res.data?.data || res.data || [];
+      setUsers(Array.isArray(list) ? list : []);
+    }).catch(() => { /* noop */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load the next-approver preview as soon as the modal opens.
   useEffect(() => {
@@ -149,14 +164,13 @@ export default function MarkDoneApprovalModal({ task, onClose, onSubmitted }) {
               {comment.length}/2000
             </span>
           </div>
-          <textarea
-            autoFocus
+          <MentionInput
             value={comment}
-            onChange={(e) => setComment(e.target.value)}
+            onChange={(v) => setComment(v.slice(0, 2000))}
+            users={users}
             disabled={submitting}
-            placeholder="Brief note for the reviewer — what was done, anything they should check…"
+            placeholder="Brief note for the reviewer — what was done, anything they should check. Type @ to mention someone."
             rows={2}
-            maxLength={2000}
             className="w-full px-3 py-2 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-[13px] text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none disabled:opacity-60 min-h-[56px] max-h-[96px] leading-snug"
           />
         </div>

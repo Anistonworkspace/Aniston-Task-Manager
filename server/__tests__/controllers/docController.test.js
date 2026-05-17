@@ -760,3 +760,95 @@ describe('restoreVersion', () => {
     expect(versionArgs.savedBy).toBe(OWNER.id);
   });
 });
+
+// ─── migrateDocToCollab (Phase G follow-up) ────────────────────────────────
+
+describe('migrateDocToCollab', () => {
+  test('404 when doc not found', async () => {
+    Doc.findByPk.mockResolvedValue(null);
+    const req = { user: ADMIN, params: { id: 'missing' } };
+    const res = mockRes();
+    await docCtrl.migrateDocToCollab(req, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('403 when caller is not owner / admin', async () => {
+    const doc = makeDoc({ createdBy: OWNER.id });
+    Doc.findByPk.mockResolvedValue(doc);
+    const req = { user: OTHER, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.migrateDocToCollab(req, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(doc.update).not.toHaveBeenCalled();
+  });
+
+  test('400 when doc is archived', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id, isArchived: true });
+    Doc.findByPk.mockResolvedValue(doc);
+    const req = { user: ADMIN, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.migrateDocToCollab(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(doc.update).not.toHaveBeenCalled();
+  });
+
+  test('idempotent: doc with existing yjsState short-circuits without snapshot or reset', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id, yjsState: Buffer.from([1, 2, 3]) });
+    Doc.findByPk.mockResolvedValue(doc);
+    const req = { user: ADMIN, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.migrateDocToCollab(req, res);
+    expect(DocVersion.create).not.toHaveBeenCalled();
+    expect(doc.update).not.toHaveBeenCalled();
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.data.alreadyMigrated).toBe(true);
+  });
+
+  test('happy path: snapshots contentJson, resets yjsState + contentJson, returns alreadyMigrated=false', async () => {
+    const original = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hello world' }] }] };
+    const doc = makeDoc({
+      createdBy: ADMIN.id,
+      contentJson: original,
+      contentText: 'hello world',
+      yjsState: null,
+    });
+    Doc.findByPk.mockResolvedValue(doc);
+    DocVersion.create.mockResolvedValue({ id: 'v-snap-1' });
+    const req = { user: ADMIN, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.migrateDocToCollab(req, res);
+
+    // 1. Snapshot was taken with the ORIGINAL contentJson.
+    expect(DocVersion.create).toHaveBeenCalledWith(expect.objectContaining({
+      docId: 'd1',
+      contentJson: original,
+      note: 'Pre-collab-migration snapshot',
+      savedBy: ADMIN.id,
+    }));
+
+    // 2. Doc was updated with a fresh yjsState (Buffer with bytes) +
+    //    replacement contentJson + new contentText.
+    expect(doc.update).toHaveBeenCalledTimes(1);
+    const args = doc.update.mock.calls[0][0];
+    expect(Buffer.isBuffer(args.yjsState)).toBe(true);
+    expect(args.yjsState.length).toBeGreaterThan(0);
+    expect(args.contentJson?.type).toBe('doc');
+    expect(args.contentText).toMatch(/version history/i);
+    expect(args.lastEditedBy).toBe(ADMIN.id);
+    expect(args.lastEditedAt).toBeInstanceOf(Date);
+
+    // 3. Activity logged.
+    expect(activityService.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'migrated',
+      entityType: 'doc',
+      entityId: 'd1',
+      userId: ADMIN.id,
+    }));
+
+    // 4. Response shape.
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.data.alreadyMigrated).toBe(false);
+  });
+});

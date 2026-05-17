@@ -1100,6 +1100,19 @@ export default function IntegrationsPage() {
                                     Default
                                   </span>
                                 )}
+                                {/* Env-bootstrap marker — bootstrapFromEnv() in
+                                    aiService.js sets displayName to "<name> (env)".
+                                    Surfacing it warns admins that editing or deleting
+                                    this row will be re-created by the env var on the
+                                    next server boot. */}
+                                {p.displayName && p.displayName.endsWith(' (env)') && (
+                                  <span
+                                    className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                                    title="Auto-seeded from an env var on server boot. Editing here will not survive a restart unless you also unset the env var."
+                                  >
+                                    Env
+                                  </span>
+                                )}
                                 {p.isActive ? (
                                   <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
                                     <CheckCircle2 size={10} /> Active

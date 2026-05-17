@@ -1476,7 +1476,19 @@ export default function BoardPage() {
               padding-edge gap that `position: sticky; left: 0` can't cover
               — any data-cell scrolled into that gap bleeds out. Putting it
               here keeps the gutter as static, non-scrollable space. */}
-          <div className="flex-1 flex flex-col px-2 sm:px-6 pb-6 min-h-0">
+          <div className="flex-1 flex flex-col px-2 sm:px-6 pb-6 min-h-0 relative">
+            {/* Mobile-only right-edge fade — boards are wider than a phone
+                viewport and touch users often don't realise they can swipe.
+                The gradient sits ABOVE the scroll container (pointer-events
+                disabled so it doesn't intercept drags) and hides on md+ where
+                the board comfortably fits. */}
+            <div
+              aria-hidden="true"
+              className="md:hidden pointer-events-none absolute right-0 top-0 bottom-6 w-8 z-10"
+              style={{
+                background: 'linear-gradient(to right, transparent 0%, rgba(0,0,0,0.06) 60%, rgba(0,0,0,0.10) 100%)',
+              }}
+            />
             <div className="flex-1 overflow-auto -webkit-overflow-scrolling-touch min-h-0" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             {/* Server / network failure — replaces the legitimate "no tasks"
                 empty state so the user isn't told "no tasks assigned to you"
