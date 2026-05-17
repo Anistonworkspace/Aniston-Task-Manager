@@ -575,11 +575,12 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={Sparkles} label="AI Notetaker" path="/notetaker" tourId="nav-notetaker" />
             {/* Doc Editor — top-level entry. Routes to the first available
                 workspace's docs landing; the landing has its own "+ New doc"
-                button. Hidden when the user has no workspaces (no destination)
-                OR has exactly one workspace (the per-workspace "Docs" row
-                inside the workspaces section below already covers that case;
-                duplicate flagged in the May-17 audit). */}
-            {workspaces.length > 1 && (
+                button. Visible whenever there's a workspace to route to — the
+                per-workspace "Docs" row inside the expanded workspace tree
+                is complementary, not a duplicate (some users keep the
+                workspace tree collapsed and need the top-level entry to
+                reach docs at all). */}
+            {workspaces.length > 0 && workspaces[0]?.id && (
               <NavItem
                 icon={BookOpen}
                 label="Docs"

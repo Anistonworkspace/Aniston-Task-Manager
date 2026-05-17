@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { FileSpreadsheet, Plus, Search, Loader2, Trash2, ExternalLink, Globe2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { listForms, createForm, deleteForm } from '../../services/formsService';
+import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../components/common/Toast';
 import EmptyState from '../../components/common/EmptyState';
@@ -34,6 +35,20 @@ export default function FormsListPage() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
+  // Workspaces fetched lazily so "+ New form" can auto-pick when no
+  // ?workspaceId= is in the URL (the sidebar "Forms" link routes here
+  // without one). Without this, create couldn't proceed at all.
+  const [workspaces, setWorkspaces] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/workspaces').then((res) => {
+      if (cancelled) return;
+      const list = res.data?.data?.workspaces || res.data?.workspaces || res.data?.data || res.data || [];
+      setWorkspaces(Array.isArray(list) ? list : []);
+    }).catch((err) => safeLog.warn('[FormsListPage] workspaces load failed', err));
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,15 +68,18 @@ export default function FormsListPage() {
 
   async function handleCreate() {
     if (creating) return;
-    // We need a workspaceId — if none in the URL, prompt the user to pick.
-    // For the v1 list page we just ask them to navigate from a workspace.
-    if (!workspaceId) {
-      toast.info('Open a workspace and use "+ New form" there to choose where the form lives.');
+    // Resolve a workspaceId: URL wins; otherwise auto-pick the caller's
+    // first visible workspace. The server requires workspaceId on create
+    // — without this, the click did nothing useful (toast saying "open a
+    // workspace" with no way to act on it).
+    const targetWorkspaceId = workspaceId || workspaces[0]?.id;
+    if (!targetWorkspaceId) {
+      toast.error('You need at least one workspace before you can create a form.');
       return;
     }
     setCreating(true);
     try {
-      const { form } = await createForm({ workspaceId, name: 'Untitled form' });
+      const { form } = await createForm({ workspaceId: targetWorkspaceId, name: 'Untitled form' });
       navigate(`/forms/${form.id}`);
     } catch (err) {
       toast.error(getErrorMessage(err));
@@ -146,7 +164,7 @@ export default function FormsListPage() {
               ? 'Try a different search term.'
               : 'Forms collect submissions from teammates or the public — great for requests, feedback, and intake.'
           }
-          primaryAction={!query && workspaceId ? { label: '+ New form', onClick: handleCreate } : undefined}
+          primaryAction={!query && (workspaceId || workspaces[0]?.id) ? { label: '+ New form', onClick: handleCreate } : undefined}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

@@ -8,6 +8,7 @@ import {
   listWorkflows, createWorkflow as createWorkflowApi,
   deleteWorkflow as deleteWorkflowApi,
 } from '../../services/workflowsService';
+import api from '../../services/api';
 import safeLog from '../../utils/safeLog';
 import { getErrorMessage } from '../../utils/errorMap';
 import { useAuth } from '../../context/AuthContext';
@@ -47,6 +48,21 @@ export default function WorkflowsListPage() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [creating, setCreating] = useState(false);
+  // Workspaces the caller can see — fetched lazily so the "+ New workflow"
+  // button can auto-pick one when the URL is the global /workflows path
+  // (no ?workspaceId=…). Without this, the create POST would 400 on the
+  // server-side "workspaceId is required" guard.
+  const [workspaces, setWorkspaces] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/workspaces').then((res) => {
+      if (cancelled) return;
+      const list = res.data?.data?.workspaces || res.data?.workspaces || res.data?.data || res.data || [];
+      setWorkspaces(Array.isArray(list) ? list : []);
+    }).catch((err) => safeLog.warn('[WorkflowsListPage] workspaces load failed', err));
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,10 +82,19 @@ export default function WorkflowsListPage() {
 
   async function handleCreate() {
     if (creating) return;
+    // Resolve a workspaceId: URL takes priority; otherwise auto-pick the
+    // caller's first visible workspace. The server requires workspaceId on
+    // create (workflows are workspace-scoped), so sending `undefined` would
+    // 400 — which is what the user was seeing on the global /workflows view.
+    const targetWorkspaceId = workspaceId || workspaces[0]?.id;
+    if (!targetWorkspaceId) {
+      toast.error('You need at least one workspace before you can create a workflow.');
+      return;
+    }
     setCreating(true);
     try {
       const { workflow } = await createWorkflowApi({
-        workspaceId: workspaceId || undefined,
+        workspaceId: targetWorkspaceId,
         name: 'Untitled workflow',
       });
       navigate(`/workflows/${workflow.id}`);

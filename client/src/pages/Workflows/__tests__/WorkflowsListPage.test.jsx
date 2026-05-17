@@ -36,6 +36,20 @@ vi.mock('../../../services/workflowsService', () => ({
   deleteWorkflow: vi.fn(),
 }));
 
+// Workspaces fetch — defaulted to one workspace so the "+ New workflow"
+// button has a workspaceId to auto-pick. The empty-workspaces branch is
+// covered by a dedicated test below.
+vi.mock('../../../services/api', () => ({
+  default: {
+    get: vi.fn((url) => {
+      if (url === '/workspaces') {
+        return Promise.resolve({ data: { workspaces: [{ id: 'ws-default', name: 'Main' }] } });
+      }
+      return Promise.resolve({ data: {} });
+    }),
+  },
+}));
+
 vi.mock('../../../context/AuthContext', () => ({
   useAuth: vi.fn(),
 }));
@@ -125,7 +139,7 @@ describe('WorkflowsListPage', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument();
   });
 
-  it('"+ New workflow" button calls createWorkflow + navigates to the canvas', async () => {
+  it('"+ New workflow" button auto-picks the first visible workspace + navigates to the canvas', async () => {
     listWorkflows.mockResolvedValue({ workflows: [] });
     createWorkflow.mockResolvedValue({ workflow: { id: 'w99', name: 'Untitled workflow' } });
     renderPage();
@@ -136,8 +150,12 @@ describe('WorkflowsListPage', () => {
       fireEvent.click(btn);
     });
 
+    // The list page lives at /workflows (no ?workspaceId= in URL), so the
+    // create handler auto-picks the first workspace returned by the
+    // mocked /workspaces endpoint — without this, the server would 400
+    // on "workspaceId is required".
     expect(createWorkflow).toHaveBeenCalledWith({
-      workspaceId: undefined,
+      workspaceId: 'ws-default',
       name: 'Untitled workflow',
     });
     await waitFor(() =>
