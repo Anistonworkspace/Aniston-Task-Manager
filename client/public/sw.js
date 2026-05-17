@@ -31,6 +31,32 @@ function isUserScopedApi(pathname) {
   );
 }
 
+// Synthetic fallback for API requests when `fetch()` throws. We split on
+// `navigator.onLine` so:
+//   - User is genuinely offline → 503 + "You are offline." (errorMap shows
+//     the connection-themed message to the user).
+//   - Network is up but the request threw (most common: brief 502/connection
+//     reset during a backend redeploy, DNS hiccup, or a TLS handshake retry)
+//     → 502 + a "service temporarily unavailable" message that does NOT
+//     accuse the user of being offline when their wifi is fine.
+function fallbackApiResponse() {
+  const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (isOffline) {
+    return new Response(
+      JSON.stringify({ success: false, code: 'OFFLINE', message: 'You are offline.' }),
+      { headers: { 'Content-Type': 'application/json' }, status: 503 }
+    );
+  }
+  return new Response(
+    JSON.stringify({
+      success: false,
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'The server is briefly unavailable. Please retry in a moment.',
+    }),
+    { headers: { 'Content-Type': 'application/json' }, status: 502 }
+  );
+}
+
 // Install — cache static assets + IMMEDIATELY activate (no waiting)
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -136,14 +162,14 @@ self.addEventListener('fetch', (event) => {
   // Exception: user-scoped APIs (notifications, auth/me, push) MUST NEVER be
   // cached. Caching them lets a different user — or a logged-out user reading
   // an offline tab — see the previous user's data. We pass-through to network
-  // and surface a 503 on offline rather than serving stale.
+  // and surface a 502 on transient failure (e.g. deploy cutover) or a 503
+  // with the "offline" message ONLY when the browser actually reports
+  // navigator.onLine === false. The earlier blanket "offline" body falsely
+  // accused users of being offline during every deploy.
   if (url.pathname.startsWith('/api/')) {
     if (isUserScopedApi(url.pathname)) {
       event.respondWith(
-        fetch(request).catch(() => new Response(
-          JSON.stringify({ success: false, message: 'You are offline.' }),
-          { headers: { 'Content-Type': 'application/json' }, status: 503 }
-        ))
+        fetch(request).catch(() => fallbackApiResponse())
       );
       return;
     }
@@ -157,18 +183,17 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => {
-          return caches.match(request).then((cached) => {
-            return cached || new Response(JSON.stringify({ success: false, message: 'You are offline.' }), {
-              headers: { 'Content-Type': 'application/json' },
-              status: 503,
-            });
-          });
+          return caches.match(request).then((cached) => cached || fallbackApiResponse());
         })
     );
     return;
   }
 
-  // Navigation requests: ALWAYS network-first (prevents stale index.html)
+  // Navigation requests: ALWAYS network-first (prevents stale index.html).
+  // On failure, prefer the cached page; only drop the user on offline.html
+  // when we genuinely look offline (navigator.onLine === false). A brief
+  // network blip during deploy used to throw the user straight to the
+  // "You're Offline" full-page even though they were perfectly online.
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
@@ -181,7 +206,16 @@ self.addEventListener('fetch', (event) => {
         })
         .catch(() => {
           return caches.match(request).then((cached) => {
-            return cached || caches.match(OFFLINE_URL);
+            if (cached) return cached;
+            // Try the cached index.html before falling back to offline.html.
+            return caches.match('/').then((root) => {
+              if (root) return root;
+              const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+              if (isOffline) return caches.match(OFFLINE_URL);
+              // Network is up — return a 502 so the browser shows its own
+              // "this site can't be reached" instead of our offline page.
+              return new Response('Service temporarily unavailable', { status: 502 });
+            });
           });
         })
     );
