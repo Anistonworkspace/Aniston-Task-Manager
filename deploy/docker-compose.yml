@@ -72,7 +72,13 @@ services:
     volumes:
       - uploads_data:/app/uploads
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5000/api/health"]
+      # node:20-alpine ships with `wget` but NOT `curl`. The previous probe
+      # used curl and silently returned 127 ("command not found") every 30s,
+      # which Docker correctly reads as failure → marks the container
+      # unhealthy even when the app itself is serving 200s. Switching to
+      # `wget --spider` matches what's actually installed and lines up with
+      # the Dockerfile-level HEALTHCHECK in deploy/Dockerfile.server.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
