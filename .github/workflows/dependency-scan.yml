@@ -1,0 +1,90 @@
+name: Dependency + secret scan
+
+# Phase 4.6 of the QA remediation plan
+# (docs/qa-audit-2026-05-17.md → §17.1 / §29.1).
+#
+# Runs three signals on every PR + every push to main:
+#   1. `npm audit` on root + server + client + desktop
+#   2. gitleaks (rejects PRs that introduce a secret-shaped string)
+#   3. trufflehog (deeper credential pattern scan, advisory only)
+#
+# Failure model:
+#   - npm audit HIGH/CRITICAL fails the build → PR blocked.
+#   - Moderate audit findings are reported but don't block — they show up
+#     in Dependabot weekly PRs which is the right place to triage them.
+#   - gitleaks failure blocks the PR.
+#   - trufflehog is advisory (uploads SARIF for visibility but doesn't fail
+#     the build) because it has a higher false-positive rate. Promote to
+#     blocking once we have a baseline of clean runs.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 02:00 UTC — catches CVEs disclosed mid-week even if no
+    # one pushes a PR.
+    - cron: '0 2 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  npm-audit:
+    name: npm audit (high / critical only)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: [".", "server", "client", "desktop"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps (no run-scripts)
+        working-directory: ${{ matrix.directory }}
+        # --package-lock-only + --ignore-scripts protects the CI runner
+        # from a malicious postinstall script in a freshly-pinned dep.
+        run: npm install --no-audit --no-fund --ignore-scripts || true
+      - name: Audit (fail on high or critical)
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --audit-level=high
+
+  gitleaks:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan historical commits — a
+          # secret leaked in commit N-2 must still be caught when PR N
+          # opens, even if PR N doesn't touch the secret.
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No GITLEAKS_LICENSE → tool runs in OSS mode (sufficient for us).
+        with:
+          config-path: .gitleaks.toml
+
+  trufflehog:
+    name: trufflehog credential scan (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trufflehog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          # Scan only the PR's commit range (or the whole repo on the
+          # weekly cron run via the else-branch).
+          path: ./
+          base: ${{ github.event.pull_request.base.sha || '' }}
+          head: ${{ github.event.pull_request.head.sha || github.sha }}
+          extra_args: --only-verified

@@ -1,6 +1,15 @@
 import '@testing-library/jest-dom';
-import { vi } from 'vitest';
+import { vi, expect } from 'vitest';
 import { configure } from '@testing-library/dom';
+// Phase 4.1 — a11y assertions via axe-core. Imports `toHaveNoViolations`
+// matcher and registers it with Vitest's expect, so any component test
+// can do `expect(await axe(container)).toHaveNoViolations()`.
+//
+// We do NOT enforce a11y assertions globally — they need to be added
+// per-component (Phase 5.2). Importing here makes the matcher available
+// everywhere without each test file having to register it.
+import { toHaveNoViolations } from 'jest-axe';
+expect.extend(toHaveNoViolations);
 
 // Harden the suite against load-based flakes. Testing-library's default
 // `waitFor` timeout is 1000 ms — too tight when the 73-file suite runs

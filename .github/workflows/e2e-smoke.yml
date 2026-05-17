@@ -1,0 +1,154 @@
+name: E2E smoke (Playwright)
+
+# Phase 5.1 of the QA remediation plan (docs/qa-audit-2026-05-17.md → §14).
+#
+# Runs the small "smoke" Playwright suite on every PR and every push to
+# main. The smoke suite covers the top user journeys (login, navigation,
+# tier-4 permission denial) — the full e2e set runs nightly via a
+# separate workflow (TBD).
+#
+# Failure model
+# -------------
+# A smoke failure BLOCKS the PR/merge — same gating as the existing
+# Jest/Vitest jobs in deploy.yml. The smoke set is intentionally small
+# (3 spec files, ~10 tests) so it can't time-pad CI.
+#
+# Requirements
+# ------------
+# Tests need a running Postgres + the seeded test users (admin@aniston.com,
+# john@aniston.com, etc.) from server/seed-users.js. We bring up the
+# stack via docker-compose, wait for the health endpoint, then seed, then
+# run the smoke set.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: E2E smoke (chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aniston_project_hub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: aniston_project_hub
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      JWT_SECRET: ci-test-secret-for-e2e
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      CLIENT_URL: http://localhost:3000
+      PORT: 5000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── Install deps ────────────────────────────────────────────
+      - name: Install root deps
+        run: npm install --no-audit --no-fund
+
+      - name: Install server deps
+        working-directory: server
+        run: npm install --no-audit --no-fund
+
+      - name: Install client deps
+        working-directory: client
+        run: npm install --no-audit --no-fund
+
+      # ── Build client (Vite) so dev server isn't needed at runtime ─
+      # Smoke tests run against the built client served behind the
+      # API. Faster + closer to prod than `npm run dev`.
+      - name: Build client
+        working-directory: client
+        run: npm run build
+
+      # ── Bring up the API + seed users ───────────────────────────
+      - name: Start server in background
+        working-directory: server
+        run: |
+          nohup node server.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/api/health > /dev/null; then
+              echo "Server is up after $i seconds"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:5000/api/health || (echo "Server failed to start"; cat server.log; exit 1)
+
+      - name: Seed test users
+        working-directory: server
+        env:
+          ALLOW_SEED_IN_PRODUCTION: 'false'
+          NODE_ENV: development
+        # seed-users.js refuses in production by default. In CI we
+        # run it as `development` (NOT prod) so the seed step proceeds
+        # without needing the dangerous prod-override flag.
+        run: node seed-users.js || true
+
+      # ── Serve the built client on :3000 ─────────────────────────
+      # Use a tiny static server so Playwright can hit /login etc.
+      # Same port the dev config expects.
+      - name: Serve client dist
+        working-directory: client/dist
+        run: |
+          nohup npx -y serve@14 -s . -l 3000 > ../../client-serve.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:3000 > /dev/null; then
+              echo "Client served after $i seconds"
+              break
+            fi
+            sleep 1
+          done
+
+      # ── Run Playwright ──────────────────────────────────────────
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke suite
+        env:
+          # Skip the webServer config — we already brought up the stack
+          # above. Setting PLAYWRIGHT_BASE_URL signals playwright.config.ts
+          # to skip its own webServer block.
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+        run: npx playwright test e2e/smoke-*.spec.ts --reporter=github
+
+      # ── Upload artefacts on failure ─────────────────────────────
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log
+          path: server/server.log
+          retention-days: 7

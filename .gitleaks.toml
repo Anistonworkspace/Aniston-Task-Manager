@@ -1,0 +1,72 @@
+# gitleaks config — Phase 4.6 of the QA remediation plan
+# (docs/qa-audit-2026-05-17.md → §17.1).
+#
+# This file inherits the default ruleset (40+ rules covering AWS keys,
+# Anthropic / OpenAI keys, GitHub tokens, Slack tokens, Stripe keys,
+# generic API keys, etc.) and adds:
+#   1. Aniston-specific allowlists for our own .env.example template
+#      placeholders — the strings "CHANGE_ME", "your-secret-here", etc.
+#      legitimately appear in committed sample env files
+#   2. Path-level exclusions for fixtures + node_modules + image binaries
+#
+# How it runs
+#   - .github/workflows/dependency-scan.yml runs gitleaks-action against
+#     every PR + push to main.
+#   - A PR that introduces a secret-shaped string fails the build.
+#   - The full git history is scanned (fetch-depth: 0 in the workflow)
+#     so leaks added in earlier commits also fail the build until they
+#     are rewritten or allowlisted.
+
+# Extend, don't replace, the upstream default ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Aniston project allowlist"
+
+# Sample env files contain placeholders the tool would otherwise flag.
+paths = [
+  '''(?i)\.env\.example$''',
+  '''(?i)\.env\.production\.example$''',
+  '''(?i)deploy/k8s/secrets\.yml$''',
+  # Documentation routinely shows fake examples — Markdown isn't a leak path.
+  '''(?i)CLAUDE\.md$''',
+  '''(?i)README\.md$''',
+  '''(?i)docs/.*\.md$''',
+  '''(?i)PRE_PUSH_SAFETY_REPORT\.md$''',
+  # Test fixtures and snapshots
+  '''(?i)__tests__/.*''',
+  '''(?i)e2e/.*\.spec\.ts$''',
+  '''(?i)test/.*''',
+  # Build artefacts + binaries
+  '''(?i)client/dist/.*''',
+  '''(?i)client/node_modules/.*''',
+  '''(?i)server/node_modules/.*''',
+  '''(?i)desktop/node_modules/.*''',
+  '''(?i)desktop/dist/.*''',
+  '''(?i)server/downloads/.*''',
+  '''(?i).*\.(png|jpg|jpeg|gif|webp|svg|ico|exe|pdf|zip|gz)$''',
+]
+
+# Placeholder strings legitimately committed (these are NOT real secrets).
+regexes = [
+  '''CHANGE_ME''',
+  '''(?i)your[_-]?(api[_-]?key|secret|password|token)''',
+  '''(?i)changeme''',
+  '''(?i)test[_-]?secret''',
+  '''(?i)ci-test-secret''',
+  '''(?i)dummy[_-]?(key|secret|token)''',
+  '''(?i)mock[_-]?(key|secret|token)''',
+  # Local-dev default Postgres password is documented in CLAUDE.md
+  '''(?i)password=postgres''',
+]
+
+# Project-specific stop words for commit messages that legitimately reference
+# secret-like keywords (e.g. "rotate JWT_SECRET in prod") so the PR can still
+# merge with the right discussion attached.
+stopwords = [
+  'rotation',
+  'rotate',
+  'placeholder',
+  'example',
+]

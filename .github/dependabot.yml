@@ -1,0 +1,97 @@
+# Dependabot configuration — Phase 4.5 of the QA remediation plan
+# (docs/qa-audit-2026-05-17.md → §17.2 / §29.1).
+#
+# What it does
+# ------------
+# Weekly checks against npm registries + the GitHub Actions registry. PRs
+# are auto-opened for any dependency with a newer compatible version.
+# Patch + minor bumps are grouped to reduce PR noise; major bumps get
+# their own PR each so the upgrade impact is reviewable independently.
+#
+# Why three ecosystems
+# --------------------
+# This repo has three separate package.json files (root, server, client)
+# plus the desktop sub-package. Each is scanned independently. The
+# root workspace orchestrator picks up scripts; server + client are the
+# real production surfaces; desktop builds the Electron installer.
+#
+# Why no auto-merge
+# -----------------
+# Auto-merge of even patch bumps has bitten teams when a "patch" actually
+# changes runtime behavior. Every Dependabot PR gets a human reviewer
+# until we have green light from Phase 7 (testcontainers) tests that can
+# catch unknown-unknowns at PR time.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - root-workspace
+    groups:
+      patch-and-minor-root:
+        update-types: [patch, minor]
+
+  - package-ecosystem: npm
+    directory: "/server"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - server
+    groups:
+      patch-and-minor-server:
+        update-types: [patch, minor]
+
+  - package-ecosystem: npm
+    directory: "/client"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - client
+    groups:
+      patch-and-minor-client:
+        update-types: [patch, minor]
+
+  - package-ecosystem: npm
+    directory: "/desktop"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - desktop
+    groups:
+      patch-and-minor-desktop:
+        update-types: [patch, minor]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions

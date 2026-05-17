@@ -1,0 +1,8 @@
+# Playwright e2e tests live here. See playwright.config.ts.
+#
+# To run locally:
+#   npm run e2e          # headless, all browsers in playwright.config.ts
+#   npm run e2e:ui       # interactive UI mode (great for debugging)
+#   npm run e2e:debug    # step-through debugger
+#
+# CI runs a smaller "smoke" subset on every PR (Phase 5.1).
