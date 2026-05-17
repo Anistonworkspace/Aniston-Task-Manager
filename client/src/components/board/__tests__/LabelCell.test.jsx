@@ -125,7 +125,12 @@ describe('LabelCell — optimistic state with stale-prop latch (P2-5)', () => {
 });
 
 describe('LabelCell — unmount safety (P2-5)', () => {
-  it('does not throw when component unmounts mid-mutation', async () => {
+  it('does not throw or log a React warning when component unmounts mid-mutation', async () => {
+    // Spy on console.error before mounting so we catch any React
+    // "setState on unmounted component" warning that fires when the
+    // delayed API resolution touches state on a torn-down tree.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
     let resolveLatch;
     api.post.mockReturnValue(
       new Promise((resolve) => { resolveLatch = () => resolve({ data: { success: true } }); }),
@@ -139,12 +144,31 @@ describe('LabelCell — unmount safety (P2-5)', () => {
     fireEvent.click(screen.getByText('Add'));
     await waitFor(() => expect(screen.getByText('Bug')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Bug'));
+
+    // Sanity check that the test path actually fired the mutation we are
+    // testing the safety of — otherwise the unmount safety check would be
+    // exercising the wrong code path.
+    expect(api.post).toHaveBeenCalled();
+
     // Unmount BEFORE the API resolves
     unmount();
     // Now resolve the in-flight request — must not log "setState on
     // unmounted component" warnings or throw.
     await act(async () => { resolveLatch(); });
-    // The test passes if no error is thrown during unmount.
-    expect(true).toBe(true);
+
+    // The component MUST NOT have logged any React warning during the
+    // late state update. We filter to React-shaped warnings only so an
+    // unrelated console.error from a dependency does not false-positive.
+    const reactWarnings = errorSpy.mock.calls.filter(
+      (args) => args.some(
+        (arg) => typeof arg === 'string'
+          && (arg.includes('unmounted component')
+            || arg.includes("Can't perform a React state update")
+            || arg.includes('was not wrapped in act')),
+      ),
+    );
+    expect(reactWarnings).toEqual([]);
+
+    errorSpy.mockRestore();
   });
 });
