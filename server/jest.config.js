@@ -29,6 +29,7 @@ module.exports = {
   // honest. We do NOT set a global threshold because the rest of the
   // codebase is still being filled in (Phase 6 of the remediation plan).
   coverageThreshold: {
+    // Phase 2 wave 1
     'utils/errors.js':                       { branches: 95, statements: 95, functions: 95, lines: 95 },
     'middleware/errorHandler.js':            { branches: 90, statements: 95, functions: 95, lines: 95 },
     'middleware/apiKeyAuth.js':              { branches: 90, statements: 95, functions: 60, lines: 95 },
@@ -36,6 +37,12 @@ module.exports = {
     'middleware/upload.js':                  { branches: 75, statements: 80, functions: 70, lines: 80 },
     'services/approvalChainService.js':      { branches: 75, statements: 85, functions: 85, lines: 90 },
     'services/approvalNotificationService.js': { branches: 90, statements: 95, functions: 95, lines: 95 },
+    // Phase 2 wave 2 — bigger services where 95% would need testcontainers.
+    // Floors are set just below the LATEST measurements so honest progress
+    // is locked in; the higher targets stay in the remediation plan.
+    'services/notificationService.js':       { branches: 70, statements: 80, functions: 80, lines: 80 },
+    'services/dependencyService.js':         { branches: 60, statements: 70, functions: 80, lines: 70 },
+    'services/recurringTaskService.js':      { branches: 40, statements: 40, functions: 55, lines: 38 },
   },
   verbose: true,
   forceExit: true,
