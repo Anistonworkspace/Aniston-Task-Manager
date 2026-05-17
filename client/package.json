@@ -25,7 +25,7 @@
     "@tiptap/extension-table-row": "2.27.2",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
-    "@tiptap/suggestion": "^2.27.2",
+    "@tiptap/suggestion": "^3.23.4",
     "axios": "^1.7.2",
     "date-fns": "^3.6.0",
     "exceljs": "^4.4.0",
