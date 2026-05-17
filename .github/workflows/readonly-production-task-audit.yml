@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: SSH to EC2 and run READ-ONLY task audit
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
