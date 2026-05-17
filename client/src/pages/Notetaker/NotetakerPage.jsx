@@ -41,7 +41,13 @@ const CALENDAR_OAUTH_NOT_READY_MESSAGE = (
 );
 
 export default function NotetakerPage() {
-  const { user, isSuperAdmin, isAdmin } = useAuth();
+  // isSuperAdmin / isAdmin were previously passed down as `showDebug` to
+  // UpcomingMeetingCard + MeetingSummariesTable, which added a Debug
+  // column + icon for tier-1/2 users only. Users on other tiers
+  // legitimately complained the Notetaker UI "looked different" between
+  // roles. The debug surface was a dev affordance, not a real feature —
+  // we now hide it everywhere so every tier sees the same UI.
+  const { user } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -222,7 +228,7 @@ export default function NotetakerPage() {
                   meeting={m}
                   onClick={() => handleOpenMeeting(m)}
                   onInviteNotetaker={handleInviteNotetaker}
-                  showDebug={isAdmin || isSuperAdmin}
+                  showDebug={false}
                 />
               ))}
             </div>
@@ -255,7 +261,7 @@ export default function NotetakerPage() {
             meetings={meetings}
             loading={loading}
             onOpen={handleOpenMeeting}
-            showDebug={isAdmin || isSuperAdmin}
+            showDebug={false}
             view={tab === 'upcoming' ? 'upcoming' : 'past'}
           />
         </section>

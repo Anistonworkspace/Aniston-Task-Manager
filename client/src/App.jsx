@@ -67,6 +67,11 @@ const FormViewPage = lazy(() => import('./pages/Forms/FormViewPage'));
 // Dependency Graph (new) — visual DAG of task → task dependencies. Sits
 // alongside the existing list view at /cross-team. Reuses reactflow.
 const DependencyGraphPage = lazy(() => import('./pages/DependencyGraphPage'));
+// Tier-agnostic Docs entry. Resolves the caller's first visible workspace
+// then redirects; shows a friendly empty state when they belong to none.
+// Decouples the sidebar Docs nav-item from the workspace data shape so
+// members on day 1 see the entry instead of a missing nav row.
+const DocsRedirectPage = lazy(() => import('./pages/Docs/DocsRedirectPage'));
 
 function PageLoader() {
   return <AnistonLoader variant="page" size="lg" />;
@@ -184,7 +189,11 @@ export default function App() {
           <Route path="notetaker" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><NotetakerPage /></Suspense></ErrorBoundary>} />
           <Route path="notetaker/meetings/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><MeetingDetailPage /></Suspense></ErrorBoundary>} />
           {/* Doc Editor Phase B — collaborative documents. Two routes:
-              the workspace list, and a single doc's editor. Both auth-only. */}
+              the workspace list, and a single doc's editor. Both auth-only.
+              The top-level `/docs` entry resolves the caller's first
+              visible workspace and redirects (or shows an empty state
+              when they belong to none). */}
+          <Route path="docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsRedirectPage /></Suspense></ErrorBoundary>} />
           <Route path="workspaces/:workspaceId/docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsListPage /></Suspense></ErrorBoundary>} />
           <Route path="workspaces/:workspaceId/docs/:docId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocPage /></Suspense></ErrorBoundary>} />
           {/* Workflow Canvas (Phase W1) — list + per-workflow canvas. */}

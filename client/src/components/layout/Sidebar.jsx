@@ -573,21 +573,13 @@ export default function Sidebar({ collapsed, onToggle }) {
                 list. Uses the same /api/meetings/my data source but adds the
                 3-column detail page, transcript viewer, and settings modal. */}
             <NavItem icon={Sparkles} label="AI Notetaker" path="/notetaker" tourId="nav-notetaker" />
-            {/* Doc Editor — top-level entry. Routes to the first available
-                workspace's docs landing; the landing has its own "+ New doc"
-                button. Visible whenever there's a workspace to route to — the
-                per-workspace "Docs" row inside the expanded workspace tree
-                is complementary, not a duplicate (some users keep the
-                workspace tree collapsed and need the top-level entry to
-                reach docs at all). */}
-            {workspaces.length > 0 && workspaces[0]?.id && (
-              <NavItem
-                icon={BookOpen}
-                label="Docs"
-                path={`/workspaces/${workspaces[0].id}/docs`}
-                tourId="nav-docs"
-              />
-            )}
+            {/* Doc Editor — top-level entry, always visible. Points at the
+                tier-agnostic /docs landing which resolves the caller's
+                first workspace and redirects (or shows a friendly empty
+                state when they belong to none). Earlier versions gated
+                this row on `workspaces.length`, which hid the link entirely
+                for fresh members on day one. */}
+            <NavItem icon={BookOpen} label="Docs" path="/docs" tourId="nav-docs" />
             {/* Workflow Canvas (Phase W1) — visual trigger → action automations.
                 Sits between Docs and Reviews because it pairs with collaborative
                 editing surfaces, not the analytics ones below. */}
