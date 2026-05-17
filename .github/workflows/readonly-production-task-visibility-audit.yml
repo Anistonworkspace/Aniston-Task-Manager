@@ -512,7 +512,7 @@ jobs:
       # ──────────────────────────────────────────────────────────────────────
       - name: Upload audit artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-task-visibility-audit
           path: aniston-audit-output.txt
