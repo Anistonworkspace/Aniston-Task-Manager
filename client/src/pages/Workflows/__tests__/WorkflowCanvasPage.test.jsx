@@ -101,6 +101,24 @@ vi.mock('../../../utils/safeLog', () => ({
   },
 }));
 
+// May-26 fix — the canvas now reads the current user from AuthContext to
+// filter its own socket echoes. Tests don't wrap in AuthProvider, so stub
+// the hook to return a synthetic admin.
+vi.mock('../../../context/AuthContext', () => ({
+  useAuth: () => ({
+    user: { id: 'u-test', name: 'Tester', role: 'admin', isSuperAdmin: true },
+  }),
+}));
+
+// May-26 fix — the canvas joins workflow:<id> + subscribes to workflow:*
+// socket events. The test environment doesn't have a real socket; stub the
+// service so the imports resolve and emits / subscriptions become no-ops.
+vi.mock('../../../services/socket', () => ({
+  emit: vi.fn(),
+  subscribe: vi.fn(() => () => {}),
+  onConnect: vi.fn(() => () => {}),
+}));
+
 import WorkflowCanvasPage from '../WorkflowCanvasPage';
 import {
   getWorkflow,
@@ -198,7 +216,15 @@ describe('WorkflowCanvasPage', () => {
     await act(async () => { fireEvent.click(publishBtn); });
 
     await waitFor(() =>
-      expect(updateWorkflow).toHaveBeenCalledWith('w1', { isActive: true })
+      // May-26 fix — the page now passes a third `opts` argument carrying
+      // a clientMutationId so the canvas can recognise its own save echoes
+      // on the workflow:* socket room. The third arg is generated per
+      // mutation, so we match it loosely with expect.objectContaining.
+      expect(updateWorkflow).toHaveBeenCalledWith(
+        'w1',
+        { isActive: true },
+        expect.objectContaining({ clientMutationId: expect.any(String) }),
+      )
     );
     expect(mockToastSuccess).toHaveBeenCalledWith('Workflow published');
   });
@@ -213,5 +239,50 @@ describe('WorkflowCanvasPage', () => {
       expect(screen.getByText(/Couldn't load this workflow/i)).toBeInTheDocument()
     );
     expect(screen.getByText(/Workflow not found/)).toBeInTheDocument();
+  });
+
+  // ── May-26 regression — duplicate-trigger warning + disconnected-node hint ──
+  it('shows a duplicate-trigger banner when the persisted graph has >1 trigger', async () => {
+    getWorkflow.mockResolvedValue({
+      workflow: { id: 'w1', name: 'Has Dupes', isActive: false },
+      nodes: [
+        { id: 'n1', type: 'trigger', kind: 'task_created', position: { x: 0, y: 0 }, config: {} },
+        { id: 'n2', type: 'trigger', kind: 'status_changed', position: { x: 0, y: 0 }, config: {} },
+      ],
+      edges: [],
+    });
+    renderCanvas();
+    await waitFor(() => expect(screen.getByText('Has Dupes')).toBeInTheDocument());
+    expect(screen.getByTestId('workflow-duplicate-trigger-banner')).toBeInTheDocument();
+  });
+
+  it('shows a disconnected-nodes hint when nodes have no incident edges', async () => {
+    getWorkflow.mockResolvedValue({
+      workflow: { id: 'w1', name: 'No Edges', isActive: false },
+      nodes: [
+        { id: 'n1', type: 'trigger', kind: 'task_created', position: { x: 0, y: 0 }, config: {} },
+        { id: 'n2', type: 'action',  kind: 'change_status', position: { x: 0, y: 100 }, config: { to: 'done' } },
+      ],
+      edges: [], // visually stacked but no connection
+    });
+    renderCanvas();
+    await waitFor(() => expect(screen.getByText('No Edges')).toBeInTheDocument());
+    const hint = screen.getByTestId('workflow-disconnected-hint');
+    expect(hint).toBeInTheDocument();
+    expect(hint).toHaveTextContent(/2 nodes are not connected/i);
+  });
+
+  it('does NOT show the disconnected-nodes hint when every node has an edge', async () => {
+    getWorkflow.mockResolvedValue({
+      workflow: { id: 'w1', name: 'Wired', isActive: false },
+      nodes: [
+        { id: 'n1', type: 'trigger', kind: 'task_created', position: { x: 0, y: 0 }, config: {} },
+        { id: 'n2', type: 'action',  kind: 'change_status', position: { x: 0, y: 100 }, config: { to: 'done' } },
+      ],
+      edges: [{ id: 'e1', sourceNodeId: 'n1', targetNodeId: 'n2', branch: null }],
+    });
+    renderCanvas();
+    await waitFor(() => expect(screen.getByText('Wired')).toBeInTheDocument());
+    expect(screen.queryByTestId('workflow-disconnected-hint')).not.toBeInTheDocument();
   });
 });

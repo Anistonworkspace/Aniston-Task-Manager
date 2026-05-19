@@ -20,6 +20,7 @@ const {
   refreshTokenEndpoint,
   microsoftAuthUrl,
   microsoftCallback,
+  desktopSsoComplete,
   getSsoStatus,
   getAssignableUsersList,
 } = require('../controllers/authController');
@@ -345,6 +346,11 @@ router.get('/assignable-users', authenticate, getAssignableUsersList);
 // ─── Microsoft SSO ────────────────────────────────────────────
 router.get('/microsoft', microsoftAuthUrl);
 router.get('/microsoft/callback', microsoftCallback);
+// Stable backend-owned terminal URL for desktop SSO flows. Public on
+// purpose — see controllers/authController.js#desktopSsoComplete for
+// the security argument. Auth cookies are set by /microsoft/callback's
+// redirect response, NOT by this handler.
+router.get('/desktop-complete', desktopSsoComplete);
 router.get('/sso-status', getSsoStatus);
 
 // ─── Account Approval (admin/manager only) ───────────────────

@@ -189,11 +189,11 @@ describe('buildScopeContext', () => {
     const inThirtyDays = new Date(now.getTime() + 86400000 * 30);
 
     Task.findAll.mockResolvedValue([
-      { title: 'Past due thing', status: 'working_on_it', priority: 'high',     dueDate: yesterday,  board: { name: 'A' } },
-      { title: 'Today thing',    status: 'not_started',   priority: 'critical', dueDate: today,      board: { name: 'A' } },
-      { title: 'This week',      status: 'review',        priority: 'medium',   dueDate: inFourDays, board: { name: 'B' } },
-      { title: 'Later',          status: 'not_started',   priority: 'low',      dueDate: inThirtyDays, board: { name: 'B' } },
-      { title: 'No date',        status: 'working_on_it', priority: 'medium',   dueDate: null,       board: { name: 'B' } },
+      { id: 't1', title: 'Past due thing', status: 'working_on_it', priority: 'high',     dueDate: yesterday,  board: { name: 'A' } },
+      { id: 't2', title: 'Today thing',    status: 'not_started',   priority: 'critical', dueDate: today,      board: { name: 'A' } },
+      { id: 't3', title: 'This week',      status: 'review',        priority: 'medium',   dueDate: inFourDays, board: { name: 'B' } },
+      { id: 't4', title: 'Later',          status: 'not_started',   priority: 'low',      dueDate: inThirtyDays, board: { name: 'B' } },
+      { id: 't5', title: 'No date',        status: 'working_on_it', priority: 'medium',   dueDate: null,       board: { name: 'B' } },
     ]);
 
     const text = await buildScopeContext(USER, { scope: 'planning' });
@@ -207,6 +207,33 @@ describe('buildScopeContext', () => {
     expect(text).toContain('LATER');
     expect(text).toContain('NO DUE DATE');
     expect(text).toContain('Total open tasks: 5');
+    // New (May 2026): authoritative counts block at the top so the LLM
+    // quotes exact totals for "how many overdue" questions instead of
+    // counting bullet rows underneath.
+    expect(text).toContain('AUTHORITATIVE COUNTS');
+    expect(text).toMatch(/Overdue:\s*1/);
+    expect(text).toMatch(/Total open:\s*5/);
+    // New (May 2026): every task line carries id=<uuid> so the LLM
+    // has stable, verbatim IDs to put in its plan-week output.
+    expect(text).toContain('id=t1');
+    expect(text).toContain('id=t5');
+  });
+
+  it('planning scope returns task IDs and counts via loadPlanningTaskList', async () => {
+    const yesterday = new Date(Date.now() - 86400000);
+    Task.findAll.mockResolvedValue([
+      { id: 't1', title: 'A', status: 'not_started', priority: 'high',     dueDate: yesterday, board: { name: 'X' } },
+      { id: 't2', title: 'B', status: 'not_started', priority: 'critical', dueDate: null,      board: { name: 'X' } },
+    ]);
+    const { loadPlanningTaskList } = require('../../services/aiScopeContextService');
+    const out = await loadPlanningTaskList(USER);
+    expect(out.tasks).toHaveLength(2);
+    expect(out.allowedIds.has('t1')).toBe(true);
+    expect(out.allowedIds.has('t2')).toBe(true);
+    expect(out.counts.total).toBe(2);
+    expect(out.counts.overdue).toBe(1);
+    expect(out.counts.noDate).toBe(1);
+    expect(out.context).toContain('AUTHORITATIVE COUNTS');
   });
 
   it('returns empty string and logs when an underlying query throws', async () => {

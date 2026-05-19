@@ -23,6 +23,29 @@ const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
 
 const dryRun = !process.argv.includes('--fix');
 
+// ── Production safety guard ─────────────────────────────────────────────
+// This script issues `UPDATE director_plans SET categories = …` against
+// rows whose `categories` JSONB is empty, copying content from a "best"
+// row of the same director. That is a real DATA RESTORATION write — and
+// could silently rewrite a production row if the manual operator picks
+// the wrong source row. Pair the existing `--fix` flag with an explicit
+// `ALLOW_PROD_PLAN_RECOVERY=true` env opt-in in production, matching the
+// shape of the `ALLOW_PROD_PLAN_CLEANUP` guard in cleanup-plan-data.js.
+//
+// Dry-run is unaffected — operators can preview safely in any env.
+// Local / dev / test are unaffected (the guard only fires in
+// NODE_ENV=production).
+if (!dryRun
+    && process.env.NODE_ENV === 'production'
+    && process.env.ALLOW_PROD_PLAN_RECOVERY !== 'true') {
+  console.log(
+    '[recover-director-plans] Refusing to run --fix in production. ' +
+    'Set ALLOW_PROD_PLAN_RECOVERY=true to run intentionally. ' +
+    'Re-run with no flags (or --dry-run) to preview without writing.'
+  );
+  process.exit(0);
+}
+
 async function main() {
   try {
     await sequelize.authenticate();

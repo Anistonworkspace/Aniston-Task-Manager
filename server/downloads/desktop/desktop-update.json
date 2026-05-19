@@ -1,0 +1,9 @@
+{
+  "version": "1.1.0",
+  "platform": "win32",
+  "installerUrl": "https://monday.anistonav.com/api/desktop/download",
+  "releaseNotes": "v1.1.0 (Slice 7.1): fix SSO regression caused by the Slice 7 logout cookie wipe. The wipe was racing with the OAuth callback's Set-Cookie response and deleting the fresh auth cookies, leaving the main window unable to authenticate after popup close. Now: a ssoInProgress flag flips to true the moment we see /api/auth/microsoft go out (the SSO flow's second request), the logout wipe defers itself by 3 seconds, and the deferred wipe checks the flag before running. Explicit user-initiated sign-outs still wipe cookies normally (no SSO follows, flag stays false). SSO-prep logouts are now safely skipped.",
+  "mandatory": false,
+  "publishedAt": "2026-05-18T12:20:29.369Z",
+  "sizeBytes": 83560967
+}

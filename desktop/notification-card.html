@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Monday Aniston Notification</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src file: data:; script-src 'unsafe-inline';" />
+<style>
+  /* -----------------------------------------------------------------
+   * Teams-style notification card — Monday Aniston branding.
+   *
+   * Visual targets (matching the Teams reference screenshot):
+   *   - Dark card (#1F1F23) with a thin colored top strip
+   *   - Brand color: Teams purple-blue gradient (#5B5FC7 → #4F52B2)
+   *   - Round avatar (purple), white initials
+   *   - Bold title, 4-line clamp body
+   *   - Subtle hover lift + entrance/exit animation
+   *   - Bottom-right of workArea, above the taskbar (positioning
+   *     handled by notificationWindow.js, not CSS)
+   *
+   * Window constraints (driven by notificationWindow.js):
+   *   - Frameless, transparent, skip-taskbar, non-focusable
+   *   - Width fixed (360px), height auto-resizes per card count
+   * --------------------------------------------------------------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: transparent;
+    color: #f3f4f7;
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    overflow: hidden;
+    cursor: default;
+  }
+  body {
+    padding: 8px 12px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+  }
+
+  /* Card — fixed width, dark background, soft shadow.
+     Width: 336px (window 360 - 24px horizontal padding). */
+  .card {
+    width: 336px;
+    background: #1f1f23;
+    border-radius: 10px;
+    box-shadow:
+      0 10px 32px rgba(0, 0, 0, 0.45),
+      0 2px 8px rgba(0, 0, 0, 0.25);
+    overflow: hidden;
+    pointer-events: auto;
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+    transition: opacity 240ms ease-out, transform 240ms ease-out, box-shadow 200ms ease;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .card.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  .card.leaving {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  .card:hover {
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, 0.55),
+      0 3px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Top accent strip — the Teams-style purple gradient that gives the
+     card its identity at a glance. */
+  .accent {
+    height: 3px;
+    background: linear-gradient(90deg, #5B5FC7 0%, #4F52B2 50%, #6B4FB8 100%);
+  }
+
+  /* App header row. */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 8px 12px;
+  }
+  .app-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    object-fit: contain;
+    flex: 0 0 auto;
+    background: rgba(91, 95, 199, 0.15);
+  }
+  .app-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #b3b6ff; /* Teams-purple-tinted */
+    letter-spacing: 0.2px;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .ts {
+    font-size: 11px;
+    color: #8a8a90;
+    flex: 0 0 auto;
+  }
+  .close-btn {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #8a8a90;
+    cursor: pointer;
+    border-radius: 4px;
+    flex: 0 0 auto;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .close-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f3f4f7;
+  }
+  .close-btn svg { width: 12px; height: 12px; }
+
+  /* Body — avatar + title + message. */
+  .body {
+    padding: 4px 12px 14px 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+  }
+  .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #5B5FC7 0%, #4F52B2 100%);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    flex: 0 0 auto;
+    user-select: none;
+    letter-spacing: 0.3px;
+    box-shadow: 0 2px 6px rgba(91, 95, 199, 0.35);
+  }
+  .text {
+    flex: 1;
+    min-width: 0;
+  }
+  .title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #f5f5f7;
+    line-height: 1.35;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+  .message {
+    font-size: 12.5px;
+    color: #c9c9cf;
+    margin-top: 4px;
+    line-height: 1.45;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* CTA footer — subtle "Open in app →" affordance. The whole card is
+     clickable, but a visible hint helps users discover that. */
+  .cta {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 8px 12px;
+    font-size: 11.5px;
+    color: #b3b6ff;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .cta:hover { color: #d4d6ff; }
+  .cta-arrow { font-size: 12px; }
+
+  /* Light theme variant (for systems that prefer light).
+     The notification window's transparent backing means we don't
+     actually fight any OS chrome — these styles only apply if the OS
+     reports a light preference AND the user explicitly opts in by
+     setting a body class. By default we stay dark to match Teams. */
+  body.theme-light .card {
+    background: #ffffff;
+    border-color: rgba(0, 0, 0, 0.08);
+    color: #1f2937;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+  body.theme-light .title { color: #111827; }
+  body.theme-light .message { color: #4b5563; }
+  body.theme-light .app-name { color: #5B5FC7; }
+  body.theme-light .ts { color: #9aa0a6; }
+  body.theme-light .close-btn { color: #9aa0a6; }
+  body.theme-light .close-btn:hover { background: #f1f3f5; color: #1f2937; }
+  body.theme-light .cta { border-top-color: rgba(0, 0, 0, 0.06); color: #5B5FC7; }
+</style>
+</head>
+<body>
+<script>
+  // -----------------------------------------------------------------
+  // Renderer for the custom notification window.
+  //
+  // Communicates with the Electron main process via IPC channels
+  // exposed through the dedicated preload (notification-card-preload.js):
+  //   IN:
+  //     'notif-card:show'    payload: { id, title, body, url, iconUrl, sender, ts }
+  //     'notif-card:dismiss' payload: { id }
+  //     'notif-card:clear'   no payload — dismiss everything
+  //   OUT:
+  //     'notif-card:click'    payload: { id }   user clicked body
+  //     'notif-card:close'    payload: { id }   user clicked X
+  //     'notif-card:hover'    payload: { id, hovered: bool }
+  //     'notif-card:bounds'   payload: { width, height } sent on every layout change
+  // -----------------------------------------------------------------
+
+  const bridge = window.notifBridge;
+  if (!bridge) {
+    document.body.innerHTML = '';
+  }
+
+  const cards = new Map();
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function reportBounds() {
+    const w = Math.max(360, document.documentElement.scrollWidth);
+    const h = Math.max(80, document.documentElement.scrollHeight);
+    if (bridge && bridge.reportBounds) bridge.reportBounds({ width: w, height: h });
+  }
+
+  function renderCard(payload) {
+    if (!payload || !payload.id || !payload.title) return;
+    if (cards.has(payload.id)) return;
+
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.setAttribute('data-id', payload.id);
+
+    const senderName = (payload.sender || '').trim();
+    const initials = senderName
+      ? senderName.split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase()
+      : 'MA';
+
+    const tsLabel = payload.ts ? escapeHtml(payload.ts) : '';
+
+    card.innerHTML = ''
+      + '<div class="accent"></div>'
+      + '<div class="header">'
+      +   (payload.iconUrl
+            ? '<img class="app-icon" src="' + escapeHtml(payload.iconUrl) + '" alt="" />'
+            : '<span class="app-icon"></span>')
+      +   '<span class="app-name">Monday Aniston</span>'
+      +   (tsLabel ? '<span class="ts">' + tsLabel + '</span>' : '')
+      +   '<button class="close-btn" data-action="close" aria-label="Close">'
+      +     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">'
+      +       '<line x1="3" y1="3" x2="13" y2="13" /><line x1="13" y1="3" x2="3" y2="13" />'
+      +     '</svg>'
+      +   '</button>'
+      + '</div>'
+      + '<div class="body">'
+      +   '<div class="avatar">' + escapeHtml(initials) + '</div>'
+      +   '<div class="text">'
+      +     '<div class="title">' + escapeHtml(payload.title) + '</div>'
+      +     (payload.body ? '<div class="message">' + escapeHtml(payload.body) + '</div>' : '')
+      +   '</div>'
+      + '</div>'
+      + (payload.url
+          ? '<div class="cta"><span>Open in Monday Aniston</span><span class="cta-arrow">→</span></div>'
+          : '');
+
+    card.addEventListener('mouseenter', () => bridge.hover(payload.id, true));
+    card.addEventListener('mouseleave', () => bridge.hover(payload.id, false));
+
+    card.addEventListener('click', (ev) => {
+      const closeBtn = ev.target && ev.target.closest && ev.target.closest('[data-action="close"]');
+      if (closeBtn) {
+        ev.stopPropagation();
+        bridge.close(payload.id);
+        return;
+      }
+      bridge.click(payload.id);
+    });
+
+    document.body.appendChild(card);
+    cards.set(payload.id, card);
+
+    requestAnimationFrame(() => {
+      card.classList.add('visible');
+      reportBounds();
+    });
+  }
+
+  function dismissCard(id) {
+    const card = cards.get(id);
+    if (!card) return;
+    card.classList.remove('visible');
+    card.classList.add('leaving');
+    setTimeout(() => {
+      try { card.remove(); } catch (e) { /* ignore */ }
+      cards.delete(id);
+      reportBounds();
+    }, 260);
+  }
+
+  function clearAll() {
+    for (const id of Array.from(cards.keys())) dismissCard(id);
+  }
+
+  if (bridge) {
+    bridge.onShow((payload) => renderCard(payload));
+    bridge.onDismiss((payload) => { if (payload && payload.id) dismissCard(payload.id); });
+    bridge.onClear(() => clearAll());
+    reportBounds();
+  }
+</script>
+</body>
+</html>

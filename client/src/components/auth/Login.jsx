@@ -218,7 +218,25 @@ export default function Login() {
     setSsoLoading(true);
     logout();
     try {
-      const res = await api.get('/auth/microsoft');
+      // Detect desktop mode. The preload exposes `window.anistonDesktop`
+      // ONLY when running inside the packaged Electron wrapper; the web
+      // bundle stays on the legacy full-page redirect path below.
+      const isDesktop = typeof window !== 'undefined'
+          && window.anistonDesktop
+          && typeof window.anistonDesktop.openSso === 'function';
+
+      // Slice 8 — Desktop-aware OAuth state.
+      // When in desktop mode we pass `?desktop=1` to the backend's
+      // /auth/microsoft endpoint so it signs `desktop: true` into the
+      // OAuth state JWT. microsoftCallback later honours that flag and
+      // redirects to a stable backend-owned terminal URL
+      // (/api/auth/desktop-complete?status=...) that Electron detects
+      // deterministically, instead of the renderer-state URL
+      // (/login?sso=...) that broke when Login.jsx routing changed.
+      // Web flow unaffected — without `?desktop=1` the state JWT and
+      // callback redirect URL are byte-identical to the prior behaviour.
+      const microsoftPath = isDesktop ? '/auth/microsoft?desktop=1' : '/auth/microsoft';
+      const res = await api.get(microsoftPath);
       const authUrl = res.data?.data?.authUrl || res.data?.authUrl;
       if (!authUrl) {
         setError('Could not start Microsoft sign-in.');
@@ -226,29 +244,54 @@ export default function Login() {
         return;
       }
       // Desktop branch: a full-page navigation to Microsoft's OAuth URL
-      // would either be blocked by `will-navigate` (cross-origin from
-      // file://) or — in the buggy pre-fix state — open in the user's
-      // default browser, which doesn't share cookies with the Electron
-      // session and leaves the desktop stuck on "Signing in...". The
-      // preload bridge instead opens a child BrowserWindow inside the
-      // app that shares the same persist:aniston session, so the
-      // cookies Microsoft's callback sets are visible to the main
-      // window when we reload below.
-      if (typeof window !== 'undefined'
-          && window.anistonDesktop
-          && typeof window.anistonDesktop.openSso === 'function') {
+      // would be blocked by `will-navigate` (cross-origin from file://).
+      // The preload bridge opens a child BrowserWindow inside the app
+      // that shares the persist:aniston session, so the cookies the
+      // OAuth callback sets are visible to the main window.
+      //
+      // Slice 8 — When openSso resolves with {ok:true} the main process
+      // has ALREADY verified the session via net.request to /auth/me
+      // (with the same persist:aniston cookies). We trust that and
+      // refresh the renderer's AuthContext via loginWithToken() — a
+      // single /auth/me round-trip — rather than doing a full
+      // window.location.reload(). Cleaner UX (no blank flash) and
+      // there is exactly one path that can grant the user past /login:
+      // the AuthContext setUser inside loginWithToken plus PublicRoute's
+      // user-aware Navigate. No reliance on URL parsing.
+      if (isDesktop) {
         const result = await window.anistonDesktop.openSso(authUrl);
         if (result?.ok) {
-          // OAuth succeeded; reload so AuthContext re-fetches /auth/me
-          // with the newly-set cookies. A full reload is the simplest
-          // way to flush every stale piece of in-memory state without
-          // hand-rolling a "rebuild auth from cookie" path.
-          window.location.reload();
+          try {
+            await loginWithToken();
+            navigate('/', { replace: true });
+          } catch {
+            // Extremely rare: cookies disappeared between main's
+            // /auth/me verification and ours. Keep user on /login with
+            // a clear message rather than an unhelpful blank state.
+            setError('Microsoft sign-in completed but session could not be loaded. Please try again.');
+            setSsoLoading(false);
+          }
         } else {
-          // User closed the window, declined, or the load failed.
-          setError(result?.reason === 'window-closed'
-            ? 'Microsoft sign-in was cancelled.'
-            : 'Microsoft sign-in failed. Please try again.');
+          // Distinguish the failure modes so the user sees an actionable
+          // message. Reasons originate from the main process:
+          //   - 'window-closed'         user closed the popup pre-completion
+          //   - 'verification-failed'   /auth/me did not 200 within retry budget
+          //   - 'server-error'          backend explicitly redirected with status=error
+          //   - 'load-failed'           popup failed to load the OAuth URL
+          //   - 'not-https'/'invalid-url' impossible from normal flow
+          let msg = 'Microsoft sign-in failed. Please try again.';
+          if (result?.reason === 'window-closed') {
+            msg = 'Microsoft sign-in was cancelled.';
+          } else if (result?.reason === 'verification-failed') {
+            msg = 'Microsoft sign-in completed, but the session could not be verified. Please try again.';
+          } else if (result?.reason === 'server-error') {
+            msg = result?.msg
+              ? `Microsoft sign-in failed: ${result.msg}`
+              : 'Microsoft sign-in failed. Please try again.';
+          } else if (result?.reason === 'load-failed') {
+            msg = 'Could not open the Microsoft sign-in page. Please check your internet connection and try again.';
+          }
+          setError(msg);
           setSsoLoading(false);
         }
         return;

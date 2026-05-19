@@ -20,6 +20,11 @@ const { Notification } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { iconsRoot } = require('./paths');
+const notificationWindow = require('./notificationWindow');
+const sharedLog = require('./log');
+
+// Diagnostic logger is wired in from main.js when notify() is called.
+// We accept it per-call rather than imported so unit tests can mock it.
 
 // In-memory dedup. Same `notif-<id>` tag arriving twice within DEDUP_WINDOW_MS
 // shows once. The renderer's burst dispatcher already throttles its own
@@ -161,10 +166,6 @@ function buildToastXml({ title, body, iconUrl }) {
  * @returns {{ ok: boolean, deduped?: boolean, reason?: string, error?: string }}
  */
 function notify({ payload, onClick }) {
-  if (!Notification.isSupported()) {
-    return { ok: false, reason: 'unsupported' };
-  }
-
   const title = sanitize(payload && payload.title, 200);
   const body = sanitize(payload && payload.body, 500);
   if (!title) return { ok: false, reason: 'invalid-title' };
@@ -183,6 +184,56 @@ function notify({ payload, onClick }) {
   // percent-encoding in a URL.
   const iconFsPath = path.join(iconsRoot(), 'icon-512.png');
   const iconUrl = pathToFileURL(iconFsPath).href;
+
+  // Slice 10 — PRIMARY transport: custom Teams-style notification
+  // window. The window manages position (bottom-right above the
+  // taskbar), hover-persistence, queue, rate limiting, and click →
+  // focus + navigate. If creation fails for any reason (display
+  // configuration edge case, GPU process down, etc.) the function
+  // returns { ok: false } and we fall through to the native path
+  // below so the user never silently misses a notification.
+  const cardId = tag || `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  try {
+    const result = notificationWindow.show({
+      payload: {
+        id: cardId,
+        title,
+        body,
+        url: url || '',
+        iconUrl,
+        sender: '', // not yet provided by the renderer; reserved for future
+        ts: '',
+      },
+      onClick: ({ url: clickUrl }) => {
+        try { if (onClick) onClick({ url: clickUrl }); }
+        catch (err) { console.warn('[Aniston Desktop] notif-card onClick threw:', err && err.message); }
+      },
+      onClose: () => { /* user dismissed; nothing to do */ },
+      diag: (msg) => console.log('[Aniston Desktop]', msg),
+    });
+    if (result && result.ok) {
+      sharedLog.notif(`notify: PATH=custom-window id=${cardId} title-len=${title.length} body-len=${body.length} tag=${tag || 'none'} hasUrl=${!!url} deduped=${!!result.deduped}`);
+      return { ok: true, deduped: !!result.deduped };
+    }
+    if (result && result.reason === 'rate-limit') {
+      // Rate-limited — return success-but-deduped so the renderer
+      // doesn't escalate to its own fallback. The user is mid-flood;
+      // dropping is correct.
+      sharedLog.notif(`notify: PATH=rate-limited id=${cardId}`);
+      return { ok: true, deduped: true, reason: 'rate-limit' };
+    }
+    sharedLog.notif(`notify: custom window declined (reason=${result && result.reason}) — falling back to native toast`);
+  } catch (err) {
+    sharedLog.notif(`notify: custom window threw (${err && err.message}) — falling back to native toast`);
+  }
+
+  // Fallback path beyond this point: native Electron Notification.
+  // Used only when the custom window failed to create / show.
+  if (!Notification.isSupported()) {
+    sharedLog.notif(`notify: PATH=unsupported (Notification.isSupported() false)`);
+    return { ok: false, reason: 'unsupported' };
+  }
+  sharedLog.notif(`notify: PATH=native-toast id=${cardId} (custom window unavailable)`);
 
   // Slice 6.5 — log every notification attempt so the next time toasts
   // silently stop firing we can see exactly what happened. Values are

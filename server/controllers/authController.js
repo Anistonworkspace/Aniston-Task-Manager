@@ -1245,7 +1245,20 @@ const microsoftAuthUrl = async (req, res) => {
       });
     }
 
-    const state = jwt.sign({ type: 'sso_state' }, process.env.JWT_SECRET, { expiresIn: '10m' });
+    // Desktop-aware OAuth state. When the renderer originates from the
+    // Electron desktop wrapper, it passes `?desktop=1` on the call to
+    // /api/auth/microsoft. We sign the flag into the OAuth state JWT so
+    // microsoftCallback (called after Microsoft redirects back) knows to
+    // route the final redirect to /api/auth/desktop-complete — a stable
+    // backend-owned URL Electron detects deterministically — instead of
+    // the renderer-state URL /login?sso=success which was unreliable
+    // because Login.jsx routing changes could silently break detection.
+    // `desktop` is only included when truthy so existing web SSO state
+    // JWTs continue to verify-equal (no payload-shape change for web).
+    const isDesktop = req.query.desktop === '1' || req.query.desktop === 'true';
+    const statePayload = { type: 'sso_state' };
+    if (isDesktop) statePayload.desktop = true;
+    const state = jwt.sign(statePayload, process.env.JWT_SECRET, { expiresIn: '10m' });
 
     const authUrl = `${config.authUrl}/authorize?` + new URLSearchParams({
       client_id: config.clientId,
@@ -1272,21 +1285,71 @@ const microsoftCallback = async (req, res) => {
   const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
   const { code, state, error: authError } = req.query;
 
+  // ── Decode OAuth state FIRST ──────────────────────────────────────
+  // The desktop flag is signed into the state JWT by microsoftAuthUrl
+  // when the renderer is the Electron desktop wrapper. Every redirect
+  // below (success, conflict, error) routes through `ssoRedirect()`
+  // which picks the desktop-completion URL when stateDesktop=true and
+  // the legacy /login?sso=... URL otherwise. The web SSO flow keeps
+  // its exact prior URLs byte-for-byte.
+  let stateDesktop = false;
+  let stateValid = false;
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, process.env.JWT_SECRET);
+      if (decoded && decoded.type === 'sso_state') {
+        stateValid = true;
+        stateDesktop = !!decoded.desktop;
+      }
+    } catch {
+      // stateValid stays false; ssoRedirect('error', 'invalid_state') below
+    }
+  }
+
+  /**
+   * Single redirect path for every SSO outcome. Picks the URL based on
+   * stateDesktop so the desktop wrapper sees a stable backend-owned URL
+   * (/api/auth/desktop-complete?status=...) it can detect deterministically
+   * without scraping the renderer's React Router state.
+   *
+   *   kind:   'success' | 'conflict' | 'error'
+   *   msg:    optional short string (URL-encoded into the query)
+   */
+  function ssoRedirect(kind, msg) {
+    // Desktop success + error → stable backend-owned terminal URL the
+    // Electron wrapper detects deterministically.
+    //
+    // Desktop conflict → INTENTIONALLY uses the legacy /login?sso=session_conflict
+    // path even on desktop. The conflict UX requires the React
+    // "Continue here" button inside the popup; that lives in Login.jsx
+    // and only renders when the popup loads /login?sso=session_conflict.
+    // The Electron wrapper's past-login fallback detector then catches
+    // the popup's navigation to '/' after force-sso succeeds. Routing
+    // conflict to the static /api/auth/desktop-complete page would
+    // leave the user with no actionable UI.
+    if (stateDesktop && (kind === 'success' || kind === 'error')) {
+      const params = new URLSearchParams({ status: kind });
+      if (msg) params.set('msg', String(msg));
+      return res.redirect(`${CLIENT_URL}/api/auth/desktop-complete?${params.toString()}`);
+    }
+    if (kind === 'success') return res.redirect(`${CLIENT_URL}/login?sso=success`);
+    if (kind === 'conflict') return res.redirect(`${CLIENT_URL}/login?sso=session_conflict`);
+    // error (web)
+    const errParam = msg ? `&msg=${encodeURIComponent(String(msg))}` : '';
+    return res.redirect(`${CLIENT_URL}/login?sso=error${errParam}`);
+  }
+
   if (authError) {
-    return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(authError)}`);
+    return ssoRedirect('error', authError);
   }
 
   if (!code || !state) {
-    return res.redirect(`${CLIENT_URL}/login?sso=error&msg=missing_params`);
+    return ssoRedirect('error', 'missing_params');
   }
 
   try {
-    // Verify state token
-    try {
-      const decoded = jwt.verify(state, process.env.JWT_SECRET);
-      if (decoded.type !== 'sso_state') throw new Error('Invalid state');
-    } catch {
-      return res.redirect(`${CLIENT_URL}/login?sso=error&msg=invalid_state`);
+    if (!stateValid) {
+      return ssoRedirect('error', 'invalid_state');
     }
 
     const config = await getTeamsConfig();
@@ -1334,12 +1397,12 @@ const microsoftCallback = async (req, res) => {
         oid = oid || profileRes.data.id || '';
       } catch (profileErr) {
         safeLogger.error('[Auth] SSO profile fetch error', { err: profileErr });
-        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=profile_fetch_failed`);
+        return ssoRedirect('error', 'profile_fetch_failed');
       }
     }
 
     if (!email) {
-      return res.redirect(`${CLIENT_URL}/login?sso=error&msg=no_email`);
+      return ssoRedirect('error', 'no_email');
     }
 
     // Validate id_token issuer + audience. This catches a token produced for a
@@ -1347,7 +1410,7 @@ const microsoftCallback = async (req, res) => {
     if (id_token && config.clientId) {
       if (aud && aud !== config.clientId) {
         safeLogger.error('[Auth] SSO rejected: id_token audience does not match client id.');
-        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
+        return ssoRedirect('error', 'Invalid identity token.');
       }
       // For single-tenant deployments (tenantId is a real GUID, not 'common'/'organizations'/'consumers'),
       // pin the issuer to that tenant. Multi-tenant deployments accept any verified Microsoft issuer.
@@ -1360,7 +1423,7 @@ const microsoftCallback = async (req, res) => {
         ];
         if (!expectedIssuers.includes(iss)) {
           safeLogger.error('[Auth] SSO rejected: unexpected id_token issuer', { iss });
-          return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Invalid identity token.')}`);
+          return ssoRedirect('error', 'Invalid identity token.');
         }
       }
     }
@@ -1391,10 +1454,9 @@ const microsoftCallback = async (req, res) => {
           email,
           userIds: oidMatches.map((u) => u.id),
         });
-        return res.redirect(
-          `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
-            'Account conflict detected — multiple users are linked to this Microsoft identity. Contact your administrator.'
-          )}`
+        return ssoRedirect(
+          'error',
+          'Account conflict detected — multiple users are linked to this Microsoft identity. Contact your administrator.'
         );
       }
       if (oidMatches.length === 1) {
@@ -1407,10 +1469,9 @@ const microsoftCallback = async (req, res) => {
             dbEmail: candidate.email,
             ssoEmail: email,
           });
-          return res.redirect(
-            `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
-              'Account conflict detected — Microsoft identity does not match this account. Contact your administrator.'
-            )}`
+          return ssoRedirect(
+            'error',
+            'Account conflict detected — Microsoft identity does not match this account. Contact your administrator.'
           );
         }
         user = candidate;
@@ -1427,10 +1488,9 @@ const microsoftCallback = async (req, res) => {
       });
       if (emailMatches.length > 1) {
         safeLogger.error('[Auth] SSO security error: duplicate emails detected', { email });
-        return res.redirect(
-          `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
-            'Account conflict detected — multiple users have this email. Contact your administrator.'
-          )}`
+        return ssoRedirect(
+          'error',
+          'Account conflict detected — multiple users have this email. Contact your administrator.'
         );
       }
       if (emailMatches.length === 1) {
@@ -1443,10 +1503,9 @@ const microsoftCallback = async (req, res) => {
             dbTeamsUserIdPrefix: candidate.teamsUserId.slice(0, 6),
             ssoOidPrefix: oid.slice(0, 6),
           });
-          return res.redirect(
-            `${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent(
-              'This account is linked to a different Microsoft identity. Contact your administrator.'
-            )}`
+          return ssoRedirect(
+            'error',
+            'This account is linked to a different Microsoft identity. Contact your administrator.'
           );
         }
         user = candidate;
@@ -1485,13 +1544,13 @@ const microsoftCallback = async (req, res) => {
 
       // Check account status
       if (!user.isActive) {
-        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account has been deactivated.')}`);
+        return ssoRedirect('error', 'Account has been deactivated.');
       }
       if (user.accountStatus === 'pending') {
-        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account is pending admin approval.')}`);
+        return ssoRedirect('error', 'Account is pending admin approval.');
       }
       if (user.accountStatus === 'rejected') {
-        return res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Account request was rejected.')}`);
+        return ssoRedirect('error', 'Account request was rejected.');
       }
     } else {
       // No user matched — auto-create. Always role='member'; role is NEVER taken
@@ -1527,22 +1586,114 @@ const microsoftCallback = async (req, res) => {
     if (activeSession) {
       const rawPendingToken = await createPendingLoginToken(user, 'sso', req);
       setPendingLoginCookie(res, rawPendingToken);
-      return res.redirect(`${CLIENT_URL}/login?sso=session_conflict`);
+      // Note for desktop: ssoRedirect('conflict') routes to
+      // /api/auth/desktop-complete?status=conflict. Electron detects it
+      // and currently re-uses the past-login fallback to handle the user's
+      // "Continue here" confirmation (which navigates back to '/' inside
+      // the popup after force-sso). Future improvement: native desktop
+      // confirm dialog driven by the conflict status; out of scope for
+      // this fix.
+      return ssoRedirect('conflict');
     }
 
     // No active session — establish one. establishSession writes the
     // refresh row, signs the access token with `sid` = new JTI, and
     // sets both httpOnly cookies. The frontend reads the cookie on
-    // /login?sso=success and calls /auth/me to load the user.
+    // /login?sso=success (web) OR the desktop wrapper intercepts
+    // /api/auth/desktop-complete?status=success and verifies the
+    // session via /api/auth/me before notifying the renderer.
     await establishSession(user, res, req);
-    res.redirect(`${CLIENT_URL}/login?sso=success`);
+    ssoRedirect('success');
   } catch (error) {
     // safeLogger redacts Microsoft Graph response details so a Graph 401
     // error's `response.data` (which can carry refresh-token state) is
     // summarised, not dumped verbatim, into the log file.
     safeLogger.error('[Auth] Microsoft SSO callback error', { err: error });
-    res.redirect(`${CLIENT_URL}/login?sso=error&msg=${encodeURIComponent('Authentication failed. Please try again.')}`);
+    ssoRedirect('error', 'Authentication failed. Please try again.');
   }
+};
+
+/**
+ * GET /api/auth/desktop-complete?status=success|conflict|error&msg=...
+ *
+ * Stable backend-owned terminal URL for the desktop SSO flow. The
+ * Electron wrapper detects navigation to this URL deterministically
+ * (via webContents `did-redirect-navigation` / `did-navigate`) and
+ * verifies the session out-of-band by calling /api/auth/me with the
+ * popup's session cookies. No JavaScript on this page participates in
+ * the auth handshake — the page exists purely so accidental browser
+ * hits (or Electron interception misses) see a friendly message
+ * instead of a 404.
+ *
+ * Security:
+ *   - Public endpoint by design. Carries NO secrets in the body or in
+ *     the query (status / msg are descriptive only). Auth state lives
+ *     in the httpOnly cookies that were SET by /auth/microsoft/callback
+ *     on the response that redirected to this URL; this handler does
+ *     not read or write cookies.
+ *   - Status values are sanitised against a strict allowlist before
+ *     interpolation into the HTML response.
+ *   - msg is HTML-escaped to defeat any reflected-XSS attempt via a
+ *     crafted upstream redirect.
+ */
+const desktopSsoComplete = async (req, res) => {
+  const allowedStatus = new Set(['success', 'conflict', 'error']);
+  const rawStatus = typeof req.query.status === 'string' ? req.query.status : '';
+  const status = allowedStatus.has(rawStatus) ? rawStatus : 'error';
+  const rawMsg = typeof req.query.msg === 'string' ? req.query.msg.slice(0, 300) : '';
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  const heading = status === 'success'
+    ? 'You are signed in'
+    : status === 'conflict'
+      ? 'Another session is active'
+      : 'Sign-in failed';
+  const body = status === 'success'
+    ? 'You can close this window.'
+    : status === 'conflict'
+      ? 'Open the desktop app to choose which session to keep.'
+      : (rawMsg
+          ? `${rawMsg}\nPlease return to the app and try again.`
+          : 'Please return to the app and try again.');
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  // Hint: don't cache — every flow generates a fresh URL with distinct
+  // query params and we never want a stale "success" page served from
+  // a proxy if the actual flow failed.
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.status(200).send(
+    `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(heading)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         background: #f6f8fa; color: #1f2937; margin: 0;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: white; border-radius: 12px; padding: 32px; max-width: 380px;
+          box-shadow: 0 2px 16px rgba(0,0,0,0.08); text-align: center; }
+  h1 { font-size: 18px; margin: 0 0 12px; font-weight: 600; }
+  p { font-size: 14px; line-height: 1.5; color: #4b5563; margin: 0; white-space: pre-line; }
+</style>
+</head>
+<body>
+<div class="card" data-aniston-desktop-sso="${escapeHtml(status)}">
+  <h1>${escapeHtml(heading)}</h1>
+  <p>${escapeHtml(body)}</p>
+</div>
+</body>
+</html>`
+  );
 };
 
 /**
@@ -1727,6 +1878,7 @@ module.exports = {
   refreshTokenEndpoint,
   microsoftAuthUrl,
   microsoftCallback,
+  desktopSsoComplete,
   getSsoStatus,
   // D-2 helpers exported so auth routes (logout) and other modules
   // (admin "logout everywhere") can revoke tokens cleanly.

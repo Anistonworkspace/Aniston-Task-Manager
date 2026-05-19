@@ -12,12 +12,26 @@ server/coverage/
 client/coverage/
 coverage/
 
-# Slice 5b: desktop installer + generated manifest are large/dynamic and
-# get populated by `npm run desktop:publish` from the build host. Keep the
-# directory tracked via .gitkeep so the controller's existsSync path is
-# valid in a fresh clone, but never commit the EXE or manifest themselves.
-server/downloads/desktop/*
-!server/downloads/desktop/.gitkeep
+# Slice 9 (OTA enablement): the desktop installer + manifest live under
+# server/downloads/desktop/ and MUST be present in the production image
+# for /api/desktop/{manifest,download} to return 200. Before slice 9 the
+# entire directory was gitignored, which silently broke OTA in
+# production (CI's `git reset --hard origin/main` + docker build never
+# included the binary). We now commit the published artefacts so the
+# next deploy carries them automatically.
+#
+# Trade-off: each release adds ~80 MB to git history. At ~12 releases/yr
+# that is ~1 GB/yr — acceptable for company-scale internal distribution.
+# If release cadence grows or installer balloons, migrate to a Docker
+# named volume (mount `server/downloads/desktop` as a volume in
+# deploy/docker-compose.yml) and re-add the gitignore rules — the
+# backend controllers + publish script need NO changes for that
+# migration, only deploy config.
+#
+# Local-build scratch directories that should NEVER be committed.
+server/downloads/desktop/*.tmp
+server/downloads/desktop/*.partial
+server/downloads/desktop/staging/
 .DS_Store
 *.log
 .claude/

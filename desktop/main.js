@@ -58,6 +58,8 @@ const { createTray, destroyTray, showHideToTrayHint } = require('./tray');
 const { notify } = require('./notifications');
 const { iconsRoot, clientIndexHtml } = require('./paths');
 const updater = require('./updater');
+const notificationWindow = require('./notificationWindow');
+const sharedLog = require('./log');
 
 // Slice 6 diagnostic logging. Gated by env var so packaged production users
 // never see DevTools or log files. Two flags:
@@ -68,20 +70,11 @@ const updater = require('./updater');
 // we only log paths, error codes, and console levels.
 const DESKTOP_DEBUG = process.env.ANISTON_DESKTOP_DEBUG === '1';
 const DESKTOP_LOG = DESKTOP_DEBUG || process.env.ANISTON_DESKTOP_LOG === '1';
-let desktopLogStream = null;
-function diag(msg) {
-  if (!DESKTOP_LOG) return;
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  try {
-    if (!desktopLogStream) {
-      const dir = path.join(app.getPath('userData'), 'logs');
-      try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
-      desktopLogStream = fs.createWriteStream(path.join(dir, 'desktop.log'), { flags: 'a' });
-    }
-    desktopLogStream.write(line);
-  } catch { /* ignore log failures */ }
-  try { console.log(line.trimEnd()); } catch { /* ignore */ }
-}
+// Slice 11 — diag() is now backed by the shared log module so other
+// desktop submodules (notifications.js, notificationWindow.js) can
+// write to the same desktop.log file via require('./log').
+sharedLog.setDiagEnabled(DESKTOP_LOG);
+const diag = sharedLog.diag;
 
 // Stable AppUserModelId. Must be set BEFORE any window/notification is
 // created -- otherwise Windows generates a synthetic per-EXE ID and toast
@@ -827,72 +820,122 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
     // webContents is gone.
     let lastSeenUrl = null;
 
-    // Slice 6.6 — polling-based SSO completion detection.
+    // Slice 8 — DETERMINISTIC SSO completion detection.
     //
-    // History of attempts that failed:
+    // History of approaches and why each was insufficient:
     //   - URL pattern matching for `?sso=success`: lost the race when the
     //     in-page Login.jsx replaceState'd the query string off the URL.
-    //   - `session.cookies.on('changed')`: the event SHOULD fire when the
-    //     backend's Set-Cookie response writes the auth cookies, but in
-    //     production the popup completed OAuth (rendered the dashboard
-    //     inside itself) without our listener ever firing. Likely culprit:
-    //     the cookie's `domain` attribute is `.anistonav.com` (parent
-    //     domain wildcard) and our strict `domain === 'monday.anistonav.com'`
-    //     equality check rejected it. Could also be an Electron-version
-    //     specific event-emit edge case — either way, event-driven
-    //     detection isn't reliable enough.
+    //   - `session.cookies.on('changed')`: cookie events did not fire
+    //     reliably across Electron versions / cookie domain shapes.
+    //   - URL-heuristic "past-login" detection + cookie-jar polling: the
+    //     popup's URL inside React Router could pass /login without the
+    //     cookies actually being committed yet, and the cookie poll's
+    //     "resolve {ok:true} anyway after timeout" branch silently
+    //     reported success when /auth/me would have 401'd. That is the
+    //     exact failure mode that produced the "popup closes but main
+    //     stuck on login" production bug.
     //
-    // The new approach: poll the cookie jar directly after every
-    // navigation in the popup. The cookie jar is the canonical state;
-    // we don't depend on an event firing or guess what name/domain shape
-    // the backend uses. We accept ANY cookie whose name is `aniston_at`
-    // or `aniston_rt` AND whose `domain` is either `monday.anistonav.com`
-    // (host-only) OR a parent that would apply to it (`.anistonav.com`).
-    // Polling is restricted to navigations on monday.anistonav.com so
-    // stale cookies from a previous session don't trigger a false
-    // positive before the OAuth flow has even started.
-    const AUTH_COOKIE_NAMES = new Set(['aniston_at', 'aniston_rt']);
+    // The robust replacement:
+    //
+    //   1. The backend's microsoftCallback (when state.desktop=true)
+    //      redirects to /api/auth/desktop-complete?status=success|conflict|error
+    //      — a stable backend-owned URL that no UI-routing change can
+    //      break. We detect THAT URL exactly.
+    //
+    //   2. On detection of status=success, we VERIFY the session by
+    //      calling /api/auth/me from the main process using net.request
+    //      with the SAME persist:aniston session the popup is writing to.
+    //      Only a 200 response is treated as success — never a guess
+    //      based on cookie presence or URL inference.
+    //
+    //   3. Legacy fallback (past-login heuristic) is kept ONLY for two
+    //      edge cases: (a) state JWTs signed BEFORE this code deployed,
+    //      and (b) the SSO-conflict-then-confirm flow where the popup
+    //      ends up at '/' after force-sso. Both paths run through the
+    //      SAME net.request verification — no path can fake success.
 
     /**
-     * Does this cookie object represent a valid auth cookie for our
-     * production backend? Accepts both exact-host and parent-domain
-     * cookies; either form is sent by the browser on a request to
-     * monday.anistonav.com so either is a valid signal that the OAuth
-     * flow completed.
+     * Authoritative session verification. Hits the backend's /api/auth/me
+     * from the main process using the persist:aniston session — the same
+     * session the popup just wrote cookies into. Returns true ONLY when
+     * the server replies 200 (i.e. authenticate middleware accepted the
+     * cookie AND the RefreshToken row is still active in the DB). Any
+     * 4xx / 5xx / network error is treated as "not authenticated."
+     *
+     * Retries up to 4 times across ~1.6 s in case the popup's Set-Cookie
+     * commit hasn't propagated to the shared session jar yet when we
+     * first ask. The interval is short because cookie commit is normally
+     * sub-100ms; the retry budget is defensive, not load-bearing.
      */
-    function cookieAuthorisesProd(cookie) {
-      if (!cookie || !AUTH_COOKIE_NAMES.has(cookie.name)) return false;
-      const raw = (cookie.domain || '').toLowerCase();
-      const bare = raw.replace(/^\./, '');
-      if (!bare) return false;
-      if (bare === PROD_API_HOSTNAME) return true;
-      // Parent-domain match: cookie applies to subdomain too. We accept
-      // `.anistonav.com` or any other suffix of `monday.anistonav.com`.
-      return PROD_API_HOSTNAME.endsWith('.' + bare);
+    async function verifySessionWithBackend() {
+      const MAX_ATTEMPTS = 4;
+      const INTERVAL_MS = 400;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const ok = await fetchAuthMeOnce();
+        if (ok) {
+          diag(`sso-verify: /auth/me 200 on attempt ${attempt}/${MAX_ATTEMPTS}`);
+          return true;
+        }
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, INTERVAL_MS));
+        }
+      }
+      diag(`sso-verify: /auth/me did not return 200 after ${MAX_ATTEMPTS} attempts`);
+      return false;
     }
 
-    /**
-     * Query the popup's own session cookie jar (NOT a separately-resolved
-     * `session.fromPartition('persist:aniston')` — the popup's webContents
-     * carries the actual session it's using, which guarantees we read the
-     * same jar the popup writes to).
-     */
-    async function popupHasAuthCookies() {
-      try {
-        if (!ssoWin || ssoWin.isDestroyed()) return false;
-        const popupSes = ssoWin.webContents.session;
-        const cookies = await popupSes.cookies.get({});
-        const found = Array.isArray(cookies)
-          && cookies.some(cookieAuthorisesProd);
-        if (found && DESKTOP_LOG) {
-          const match = cookies.find(cookieAuthorisesProd);
-          diag(`sso: auth cookie present — name=${match.name} domain=${match.domain}`);
+    function fetchAuthMeOnce() {
+      return new Promise((resolveOnce) => {
+        let timedOut = false;
+        let netReq;
+        const TIMEOUT_MS = 8000;
+        const t = setTimeout(() => {
+          timedOut = true;
+          try { if (netReq) netReq.abort(); } catch { /* ignore */ }
+          resolveOnce(false);
+        }, TIMEOUT_MS);
+        try {
+          netReq = net.request({
+            url: `https://${PROD_API_HOSTNAME}/api/auth/me`,
+            method: 'GET',
+            session: session.fromPartition('persist:aniston'),
+            useSessionCookies: true,
+          });
+          // Match the renderer's Origin so the backend's origin-validation
+          // middleware accepts the request (the renderer's traffic gets
+          // its Origin rewritten by installOriginRewrite; net.request is
+          // not subject to webRequest hooks, so we set it explicitly).
+          netReq.setHeader('Origin', PROD_ORIGIN);
+          netReq.on('response', (resp) => {
+            // Drain the body to release the socket; we only care about
+            // the status code.
+            resp.on('data', () => {});
+            resp.on('end', () => {
+              if (timedOut) return;
+              clearTimeout(t);
+              const ok = resp.statusCode >= 200 && resp.statusCode < 300;
+              if (!ok) diag(`sso-verify: /auth/me returned ${resp.statusCode}`);
+              resolveOnce(ok);
+            });
+            resp.on('error', () => {
+              clearTimeout(t);
+              if (!timedOut) resolveOnce(false);
+            });
+          });
+          netReq.on('error', (err) => {
+            clearTimeout(t);
+            if (!timedOut) {
+              diag(`sso-verify: /auth/me error: ${err && err.message ? err.message : err}`);
+              resolveOnce(false);
+            }
+          });
+          netReq.end();
+        } catch (err) {
+          clearTimeout(t);
+          diag(`sso-verify: net.request threw: ${err && err.message ? err.message : err}`);
+          resolveOnce(false);
         }
-        return found;
-      } catch (err) {
-        diag(`sso: cookie poll failed: ${err && err.message ? err.message : err}`);
-        return false;
-      }
+      });
     }
 
     function finish(result) {
@@ -904,14 +947,27 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       // re-run AuthContext.loadUser, and any post-login API calls
       // have settled, the flag is safely false again.
       markSsoEnd();
-      // Cancel any pending cookie-verification retry so it doesn't
-      // fire after we've already resolved.
-      if (cookieVerifyTimer) {
-        try { clearTimeout(cookieVerifyTimer); } catch { /* ignore */ }
-        cookieVerifyTimer = null;
+      // Cancel any pending verification retry so it doesn't fire after
+      // we've already resolved.
+      if (verifyTimer) {
+        try { clearTimeout(verifyTimer); } catch { /* ignore */ }
+        verifyTimer = null;
       }
-      // Resolve the renderer's promise immediately so it can start the
-      // post-OAuth reload while we tear down the child window.
+      // Slice 8 — belt-and-suspenders IPC notification.
+      // The openSso promise (resolved below) is the primary success
+      // signal for the renderer that called us. But if the renderer
+      // crashed and was reborn between openSso start and finish, the
+      // promise resolution lands on a dead webContents and the new
+      // renderer never learns the OAuth completed. Sending an explicit
+      // event lets AuthContext (which subscribes via the preload) catch
+      // the success and refresh auth state.
+      if (result && result.ok === true && mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send('aniston:sso-complete', { ok: true });
+        } catch { /* swallow — promise resolution is the primary path */ }
+      }
+      // Resolve the renderer's promise immediately so it can refresh
+      // auth state while we tear down the child window.
       resolve(result);
       // 500 ms grace period before closing the popup so any in-page JS
       // (its own loginWithToken, navigate('/'), etc.) finishes — not
@@ -945,103 +1001,69 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
     ssoWin.once('ready-to-show', () => ssoWin.show());
 
     /**
-     * Slice 6.9 — URL-path-based OAuth completion detection.
+     * Slice 8 — DETERMINISTIC URL detection.
      *
-     * The previous cookie-jar polling approach was unreliable: even
-     * when the popup was demonstrably authenticated (rendering the
-     * Dashboard with the welcome tour), `cookies.get({})` was not
-     * returning the auth cookies in a way that made `cookieAuthorisesProd`
-     * match. Probable culprits: (a) `cookies.get({})` with an empty
-     * filter behaves differently than expected; (b) the cookies in the
-     * shared persist:aniston session aren't visible to
-     * `ssoWin.webContents.session.cookies` for some Electron-internal
-     * reason; (c) the cookie names changed between server versions.
+     * PRIMARY signal: navigation to /api/auth/desktop-complete.
+     *   The backend's microsoftCallback redirects there when the OAuth
+     *   state carries `desktop: true`. The URL is server-owned and
+     *   stable; no React Router / Login.jsx change can break detection.
      *
-     * The MORE RELIABLE signal: the popup's URL. The web app's
-     * ProtectedRoute redirects any unauthenticated request away from
-     * the dashboard back to /login. So if the popup ends up on ANY
-     * non-/login path on `monday.anistonav.com`, the React Router
-     * guards must have admitted the user — which means OAuth succeeded
-     * and the auth cookies ARE in the session, regardless of whether
-     * we can see them via our own cookie API.
+     * FALLBACK signal: navigation to any path on monday.anistonav.com
+     *   that is NOT /login and NOT /auth/* (intermediate). Kept so:
+     *     - in-flight state JWTs from a pre-deploy renderer (which lack
+     *       the desktop flag and therefore redirect to /login?sso=success)
+     *       still work,
+     *     - the SSO-conflict-then-confirm flow (popup ends up at '/'
+     *       after force-sso) still closes the popup,
+     *     - any future legitimate redirect target stays detected.
      *
-     * Special cases handled:
-     *   - `/login?sso=success`: the canonical post-OAuth redirect
-     *     target. Close immediately.
-     *   - `/login?sso=session_conflict`: user needs to confirm
-     *     session takeover. STAY OPEN.
-     *   - `/login` (no SSO param, or other params): still in the
-     *     login flow. STAY OPEN.
-     *   - `/auth/microsoft/callback`: intermediate. STAY OPEN — the
-     *     server's 302 will redirect us to /login?sso=success in
-     *     ~50 ms, and that triggers the success path.
-     *   - any other path on monday.anistonav.com (e.g. `/`, `/tasks`,
-     *     `/boards/123`): the React Router guards admitted us. Close.
+     * Both signals run through the SAME authoritative verification
+     * (verifySessionWithBackend → /api/auth/me). The "resolve {ok:true}
+     * anyway after timeout" fallback that hid the production bug is GONE.
      */
-    // Slice 6.11 — verify auth cookies are committed before resolving.
-    //
-    // The previous URL-path detection correctly identified WHEN the
-    // popup had passed /login (meaning loginWithToken had resolved and
-    // the route guards admitted the user). BUT — and this is the bit
-    // that broke us in production — Electron's cookie storage to the
-    // persistent jar is async. The popup's Set-Cookie response is
-    // processed by Chromium's network stack synchronously, but
-    // committing it into the shared session jar that the main window
-    // reads from happens on the next event-loop turn. resolving the
-    // IPC promise immediately means the main window calls
-    // `window.location.reload()` before the cookies are visible to its
-    // /auth/me request → 401 → bounced back to /login.
-    //
-    // Fix: after URL-path detection, poll the cookie jar for up to
-    // 3 seconds (6 attempts × 500ms). Resolve only when auth cookies
-    // are confirmed present. If they never show up, resolve anyway
-    // after the timeout — the main window's reload may still pick
-    // them up later, and we don't want to hang the SSO flow forever.
-    // (AUTH_COOKIE_NAMES is already declared above in the
-    // cookieAuthorisesProd helper — reuse that one.)
-    const COOKIE_VERIFY_ATTEMPTS = 6;
-    const COOKIE_VERIFY_INTERVAL_MS = 500;
-    let cookieVerifyTimer = null;
-    let pastLoginDetected = false;
+    let verifyTimer = null;
+    let completionInFlight = false;
 
-    async function inspectCookieJar(label) {
-      try {
-        const ses = session.fromPartition('persist:aniston');
-        const cookies = await ses.cookies.get({ domain: PROD_API_HOSTNAME });
-        const names = (cookies || []).map((c) => `${c.name}(${c.domain}|sameSite=${c.sameSite || '?'})`);
-        diag(`sso-jar[${label}]: ${cookies.length} cookies → ${names.join(', ')}`);
-        const hasAuth = (cookies || []).some((c) => AUTH_COOKIE_NAMES.has(c.name));
-        return hasAuth;
-      } catch (err) {
-        diag(`sso-jar[${label}] inspect failed: ${err && err.message ? err.message : err}`);
-        return false;
+    /**
+     * Run the authoritative session check and resolve the promise with
+     * the actual outcome. Idempotent — only the first invocation
+     * actually does work; subsequent calls are no-ops while the first
+     * is in flight or after resolve.
+     *
+     * `expectedStatus` is taken from the desktop-complete URL when
+     * available. We honour it: 'conflict' resolves with ok:false so
+     * the renderer can surface the right UX (the user can still go
+     * through the conflict popup, which navigates to '/' on confirm
+     * and re-triggers this verifier via the fallback).
+     */
+    async function verifyAndFinish(reasonLabel, expectedStatus) {
+      if (resolved || completionInFlight) return;
+      completionInFlight = true;
+      diag(`sso: verifyAndFinish reason=${reasonLabel} expectedStatus=${expectedStatus || 'none'}`);
+      if (expectedStatus === 'error') {
+        finish({ ok: false, reason: 'server-error', msg: expectedStatus });
+        return;
       }
-    }
-
-    function verifyCookiesAndFinish(attempt) {
-      if (resolved) return;
-      inspectCookieJar(`attempt ${attempt + 1}/${COOKIE_VERIFY_ATTEMPTS}`).then((hasAuth) => {
-        if (resolved) return;
-        if (hasAuth) {
-          diag('sso: auth cookies confirmed in jar — resolving');
-          finish({ ok: true });
-          return;
-        }
-        if (attempt + 1 >= COOKIE_VERIFY_ATTEMPTS) {
-          // Last-attempt fallback: resolve anyway. If cookies really
-          // aren't there, the main reload will land at /login and the
-          // user can try again — better than leaving the popup open
-          // forever waiting for cookies that may never arrive (e.g.
-          // OAuth declined post-callback).
-          diag('sso: cookie verification exhausted — resolving anyway');
-          finish({ ok: true });
-          return;
-        }
-        cookieVerifyTimer = setTimeout(
-          () => verifyCookiesAndFinish(attempt + 1),
-          COOKIE_VERIFY_INTERVAL_MS
-        );
-      });
+      if (expectedStatus === 'conflict') {
+        // Don't auto-resolve a conflict — the popup is now showing the
+        // /login?sso=session_conflict UI (server fell back to that for
+        // the conflict path) OR will after the redirect to
+        // /api/auth/desktop-complete?status=conflict (which is a static
+        // info page; the user can re-trigger SSO with the conflict
+        // resolved). Either way, do NOT claim success. The fallback
+        // detector will fire after the user clicks "Continue here" and
+        // the popup navigates to '/'.
+        diag('sso: server reported conflict — staying open for user confirmation');
+        completionInFlight = false;
+        return;
+      }
+      // success path (or fallback past-login URL) — verify authoritatively.
+      const ok = await verifySessionWithBackend();
+      if (ok) {
+        finish({ ok: true });
+      } else {
+        finish({ ok: false, reason: 'verification-failed' });
+      }
     }
 
     function maybeFinishOnNav(url) {
@@ -1052,32 +1074,45 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       if (u.hostname !== PROD_API_HOSTNAME) return;
       const path = u.pathname || '/';
 
+      // PRIMARY — deterministic completion URL.
+      // Backend redirects desktop SSO flows here. Status is one of
+      // success | conflict | error. We honour the explicit status
+      // instead of inferring from cookies or React state.
+      if (path === '/api/auth/desktop-complete' || path === '/api/auth/desktop-complete/') {
+        const status = u.searchParams.get('status') || 'error';
+        verifyAndFinish(`desktop-complete?status=${status}`, status);
+        return;
+      }
+
       // Intermediate auth-callback URLs — stay open, the server will
-      // 302 us to /login?sso=success or similar within a few ms.
-      if (path.startsWith('/auth/')) {
+      // 302 to /api/auth/desktop-complete (or, for pre-deploy state,
+      // /login?sso=...) within a few ms.
+      if (path.startsWith('/auth/') || path.startsWith('/api/auth/')) {
         diag('sso: on /auth/* — waiting for redirect');
         return;
       }
 
       if (path === '/login' || path === '/login/') {
-        // Stay open regardless of query params. Even with
-        // ?sso=success, the popup still needs to call loginWithToken
-        // to mint the real cookies. The pushState navigation from
-        // /login → / after loginWithToken completes is what triggers
-        // our close (via did-navigate-in-page below).
-        diag(`sso: still on /login — waiting for in-page nav past /login`);
+        // Stay open. With state.desktop=true the popup should NEVER
+        // sit on /login post-callback (server redirects to
+        // /api/auth/desktop-complete instead). With pre-deploy state
+        // it can be /login?sso=success transiently — the popup's
+        // in-page Login.jsx then loginWithTokens and navigates to '/',
+        // which the fallback below picks up.
+        diag(`sso: on /login — waiting for in-page nav past /login`);
         return;
       }
 
-      // Any other path on the backend domain means the React Router
-      // auth guards admitted us → loginWithToken (or equivalent) must
-      // have resolved. Kick off cookie verification (with retries)
-      // before resolving so the main window's reload doesn't beat the
-      // cookie commit to the jar.
-      if (pastLoginDetected) return; // already started verifying
-      pastLoginDetected = true;
-      diag(`sso: past-login URL detected (${path}) — verifying cookies before resolve`);
-      verifyCookiesAndFinish(0);
+      // FALLBACK — past-login URL. Reached via:
+      //   (a) pre-deploy state JWTs (no `desktop` flag) → backend
+      //       redirects to /login?sso=success → popup runs the web
+      //       SSO post-handler → navigate('/').
+      //   (b) SSO-conflict-then-confirm: popup is on
+      //       /login?sso=session_conflict, user clicks Continue here,
+      //       forceLoginSSO mints cookies, popup navigates to '/'.
+      // Both paths must STILL go through verifySessionWithBackend so
+      // a cookie-less navigation can never fake success.
+      verifyAndFinish(`fallback past-login (${path})`, 'success');
     }
     ssoWin.webContents.on('did-navigate', (_e, u) => { maybeFinishOnNav(u); });
     ssoWin.webContents.on('did-redirect-navigation', (_e, u) => { maybeFinishOnNav(u); });
@@ -1099,26 +1134,36 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       // If we already detected success, this close is our own teardown
       // — finish() is idempotent so the no-op return below is safe.
       if (resolved) return;
-      // User-initiated close. We can no longer query webContents (it's
-      // gone), but we captured the URL into `lastSeenUrl` on every
-      // navigation while the popup was alive — re-use the same
-      // past-login check the live detector uses. Slice 6.10: treat
-      // /login (with OR without ?sso=success) as NOT past login, since
-      // the actual auth cookies are minted by the in-page
-      // loginWithToken() AFTER /login?sso=success loads — if the user
-      // closed at that URL, loginWithToken hadn't yet finished and
-      // the main-window reload would land back at /login.
+      // Slice 8 — if verification is already in flight when the user
+      // closes the window, let the in-flight verifySessionWithBackend
+      // call settle and call finish itself. Don't race a parallel
+      // finish() from this close handler against that — the in-flight
+      // one will resolve with the actual server-side truth.
+      if (completionInFlight) {
+        diag('sso: window closed while verification in flight — letting it complete');
+        return;
+      }
+      // User-initiated close BEFORE we saw a completion URL. Use
+      // lastSeenUrl to guess: if the popup was past /login, the
+      // backend session is most likely valid — but we MUST still
+      // verify before reporting success (the previous "treat as
+      // success" shortcut here was the silent-fail surface in the
+      // production bug). For any /login or pre-auth URL, report
+      // cancelled.
       if (lastSeenUrl) {
         try {
           const u = new URL(lastSeenUrl);
           if (u.hostname === PROD_API_HOSTNAME) {
             const path = u.pathname || '/';
             const pastLogin = !path.startsWith('/auth/')
+              && !path.startsWith('/api/auth/')
               && path !== '/login'
               && path !== '/login/';
             if (pastLogin) {
-              diag('sso: window closed but last URL was past login — treating as success');
-              finish({ ok: true });
+              diag('sso: window closed past login — verifying session before resolving');
+              // verifyAndFinish handles the resolve. completionInFlight
+              // is set inside so any duplicate triggers are no-ops.
+              verifyAndFinish('window-closed-past-login', 'success');
               return;
             }
           }
@@ -1132,6 +1177,49 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       finish({ ok: false, reason: 'load-failed' });
     });
   });
+});
+
+// Slice 9 — Update IPC surface for the renderer's Settings → Desktop panel.
+//
+// Three handlers + one event stream:
+//   - aniston:update:get-status   → returns current state snapshot
+//   - aniston:update:check        → triggers a check; returns immediately
+//   - aniston:update:install      → user explicitly chose to install the
+//                                   already-detected update from Settings
+//   - aniston:update-state        → broadcast event whenever state changes
+//
+// State is read-only from the renderer's perspective. The renderer can
+// ASK for actions but cannot directly mutate updater state. This keeps
+// the trust boundary clean — the renderer cannot fake a "ready" status
+// to coax main into spawning an arbitrary EXE.
+ipcMain.handle('aniston:update:get-status', () => {
+  return updater.getState();
+});
+ipcMain.handle('aniston:update:check', async () => {
+  // Returns immediately; updater drives setState which broadcasts via
+  // the 'aniston:update-state' channel below.
+  updater.checkForUpdates({ mainWindow, diag, triggeredByUser: true })
+    .catch((err) => diag(`update:check error: ${err && err.message}`));
+  return { ok: true };
+});
+ipcMain.handle('aniston:update:install', async () => {
+  // `autoInstall: true` makes updater skip its own modal dialog (the
+  // user has already confirmed intent via Settings) and drive
+  // straight to download → verify → spawn. Updater state events keep
+  // the renderer informed throughout.
+  updater.checkForUpdates({ mainWindow, diag, triggeredByUser: true, autoInstall: true })
+    .catch((err) => diag(`update:install error: ${err && err.message}`));
+  return { ok: true };
+});
+
+// Subscribe to updater state changes and broadcast each transition to the
+// main window's renderer. The renderer's preload bridges these into a
+// React subscription via `onUpdateState`.
+updater.subscribe((next) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('aniston:update-state', next); }
+    catch { /* renderer may be tearing down */ }
+  }
 });
 
 // Slice 3: renderer -> main IPC bridge. The handler is the ONLY route the
@@ -1158,6 +1246,11 @@ app.on('ready', () => {
   installLogoutCookieWipe();
   installPublicAssetRewriter();
   installRequestTracer();
+  // Wire the custom notification window's IPC channels once. Idempotent
+  // calls aren't safe (ipcMain.on stacks listeners) so this MUST run
+  // exactly once at app boot. The window itself is created lazily on
+  // the first notification.
+  notificationWindow.wireIpc(diag);
   createWindow();
   // Tray must be created AFTER `app.ready` (Tray API isn't available before
   // that). The window already exists by this point; showMainWindow / refresh
@@ -1172,6 +1265,40 @@ app.on('ready', () => {
       diag,
       triggeredByUser: true,
     }),
+    // Slice 11 — verification hook. Fires a sample notification through
+    // the SAME notify() path the renderer uses. If the user sees a
+    // Teams-style card → the slice-10 code IS active in the running
+    // installer. If the user sees a native Windows toast → the
+    // installer is the pre-slice-10 build (rebuild + reinstall needed)
+    // OR the custom window failed to create (audit log at
+    // %APPDATA%\Monday Aniston\logs\notif.log).
+    testNotification: () => {
+      const { notify } = require('./notifications');
+      const result = notify({
+        payload: {
+          title: 'Test notification',
+          body: 'If you see this as a Teams-style card with a purple top strip, the custom notification window is working correctly. If you see a regular Windows toast instead, see notif.log in this app\'s user-data folder for the reason.',
+          tag: 'notif-test-' + Date.now(),
+          url: '/',
+        },
+        onClick: ({ url }) => {
+          showMainWindow();
+          if (url) navigateRenderer(url);
+        },
+      });
+      // Surface a quick dialog so the user knows the action happened
+      // even if the notification path silently fell back.
+      const { dialog } = require('electron');
+      dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        buttons: ['OK'],
+        title: 'Test notification dispatched',
+        message: result && result.ok
+          ? 'A test notification was dispatched. Look for it in the bottom-right corner of your screen.'
+          : 'Test notification dispatch failed: ' + (result && result.reason ? result.reason : 'unknown'),
+        detail: 'Check %APPDATA%\\Monday Aniston\\logs\\notif.log for the full trace.',
+      });
+    },
     quit: quitApp,
   });
   // Auto-update check on startup. 60 s delay so we don't race with the
@@ -1214,7 +1341,15 @@ app.on('before-quit', () => { isQuitting = true; });
 // from the system tray promptly rather than lingering for a second after
 // the window closes (a known cosmetic issue on Windows when the tray icon
 // is not destroyed in the will-quit phase).
-app.on('will-quit', () => { destroyTray(); });
+app.on('will-quit', () => {
+  destroyTray();
+  // Tear down the custom notification window too. It would be reaped on
+  // process exit anyway, but explicit destroy keeps the bottom-right
+  // popup from briefly persisting if app.quit races the renderer
+  // teardown.
+  try { notificationWindow.destroy(); }
+  catch { /* ignore — best-effort cleanup */ }
+});
 
 // Defense-in-depth: forbid renderers from spawning <webview> sub-frames or
 // attaching Node integrations. Belt-and-suspenders on top of the strict

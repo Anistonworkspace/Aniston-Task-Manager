@@ -1,7 +1,7 @@
 {
   "name": "monday-aniston-desktop",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Monday Aniston — Windows desktop wrapper (Electron)",
   "main": "main.js",
   "scripts": {
@@ -25,6 +25,10 @@
       "preload.js",
       "tray.js",
       "notifications.js",
+      "notificationWindow.js",
+      "notification-card.html",
+      "notification-card-preload.js",
+      "log.js",
       "runtimeConfig.js",
       "paths.js",
       "updater.js",

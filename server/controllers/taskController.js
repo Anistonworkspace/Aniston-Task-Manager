@@ -952,6 +952,32 @@ const createTask = async (req, res) => {
       message: 'Task created successfully.',
       data: { task: createdTaskJSON || fullTask },
     });
+
+    // Workflow Canvas trigger — `task_created`. Fire-and-forget AFTER the
+    // response so the caller never waits on workflow fan-out. Wrapped so a
+    // misbehaving workflow can never destabilize the create response.
+    //
+    // Loop guard: workflow actions call Task.update()/Task.create() directly
+    // via Sequelize, so they don't re-enter this controller path. The
+    // `originSource` marker is plumbed through anyway as forward-compat
+    // for any future code that creates tasks via this controller from
+    // inside a workflow action.
+    try {
+      const originSource = req.body?._workflowOrigin === true ? 'workflow' : 'user';
+      if (originSource !== 'workflow' && fullTask) {
+        require('../services/workflowEngine').processWorkflows('task_created', {
+          task: fullTask,
+          userId: req.user.id,
+          actorId: req.user.id,
+          boardId: fullTask.boardId,
+          workspaceId: fullTask.board?.workspaceId || null,
+          groupId: fullTask.groupId || null,
+          originSource,
+        });
+      }
+    } catch (wfErr) {
+      logger.warn('[Task] processWorkflows(task_created) enqueue failed (non-fatal):', wfErr.message);
+    }
   } catch (error) {
     logger.error('[Task] Create error:', error);
     res.status(500).json({ success: false, message: 'Server error creating task.' });
@@ -2636,13 +2662,64 @@ const updateTask = async (req, res) => {
     // Process automations + workflows. Both engines coexist (Workflow
     // Canvas Phase W1 — see services/workflowEngine.js). Lazy-required
     // to dodge any module-load timing issues with model registration.
-    if (updates.status && updates.status !== previousStatus) {
-      processAutomations('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: req.user.id });
-      require('../services/workflowEngine').processWorkflows('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: req.user.id });
-    }
-    if (updates.assignedTo && updates.assignedTo !== previousAssignee) {
-      processAutomations('task_assigned', { task: fullTask, userId: req.user.id });
-      require('../services/workflowEngine').processWorkflows('task_assigned', { task: fullTask, userId: req.user.id });
+    //
+    // Loop guard: when this update is itself the side effect of a workflow
+    // action, the caller plumbs `_workflowOrigin: true` so we don't re-fire
+    // task_updated / status_changed / task_assigned and cause runaway
+    // chains. Workflow actions today call Task.update() directly via
+    // Sequelize so they bypass this controller — `_workflowOrigin` is the
+    // forward-compat marker for any future code that updates tasks via
+    // the HTTP layer from inside a workflow action.
+    const _workflowOrigin = req.body?._workflowOrigin === true;
+    const actorId = req.user.id;
+    if (!_workflowOrigin) {
+      if (updates.status && updates.status !== previousStatus) {
+        processAutomations('status_changed', { task: fullTask, previousStatus, newStatus: updates.status, userId: actorId });
+        require('../services/workflowEngine').processWorkflows('status_changed', {
+          task: fullTask, previousStatus, newStatus: updates.status,
+          userId: actorId, actorId, originSource: 'user',
+        });
+      }
+      if (updates.assignedTo && updates.assignedTo !== previousAssignee) {
+        processAutomations('task_assigned', { task: fullTask, userId: actorId });
+        require('../services/workflowEngine').processWorkflows('task_assigned', {
+          task: fullTask, userId: actorId, actorId, originSource: 'user',
+        });
+      }
+
+      // ── task_updated — fire ONCE per request, only when at least one
+      // user/business-visible field actually changed. The `changes` object
+      // (computed at line ~1716) already filters to fields whose JSON
+      // representation actually differs from the previous value, so we
+      // only need a second filter to drop noisy/internal fields per the
+      // May-19 audit's spec.
+      const MEANINGFUL_UPDATE_FIELDS = new Set([
+        'title', 'description', 'status', 'priority',
+        'dueDate', 'startDate', 'assignedTo', 'groupId', 'customFields',
+      ]);
+      const changedFields = Object.keys(changes).filter((f) => MEANINGFUL_UPDATE_FIELDS.has(f));
+      if (changedFields.length > 0) {
+        // Build snapshots for ONLY the changed meaningful fields. previousValues
+        // comes from the task snapshot taken before .update() ran (line ~1727).
+        const previousValues = {};
+        const newValues = {};
+        for (const f of changedFields) {
+          previousValues[f] = (f === 'status') ? previousStatus
+            : (f === 'assignedTo') ? previousAssignee
+              : (f === 'dueDate') ? previousDueDate
+                : fullTask?._previousDataValues?.[f] ?? null;
+          newValues[f] = updates[f];
+        }
+        require('../services/workflowEngine').processWorkflows('task_updated', {
+          task: fullTask,
+          changedFields,
+          previousValues,
+          newValues,
+          userId: actorId,
+          actorId,
+          originSource: 'user',
+        });
+      }
     }
 
     // Realtime — fans out to board + assignees / supervisors / owners /

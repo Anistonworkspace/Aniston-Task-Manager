@@ -163,7 +163,16 @@ function RunRow({ run, isExpanded, onToggle }) {
   const pill = STATUS_STYLES[run.status] || defaultPill();
   const Icon = pill.Icon;
   const started = run.startedAt ? new Date(run.startedAt) : null;
+  const finished = run.finishedAt ? new Date(run.finishedAt) : null;
   const startedRel = started ? formatDistanceToNow(started, { addSuffix: true }) : '';
+  // May-19 audit P0-3 surface — the engine writes "[skipped] kind (nodeId):
+  // reason" lines into the `error` column when an action is denied by the
+  // runtime permission gate. We sniff for that prefix so the UI can call
+  // it out distinctly from a "real" engine error.
+  const hasPermissionSkip = typeof run.error === 'string' && /\[skipped\]/.test(run.error);
+  // Wait-resume marker — engine writes trigger='wait_resume' on continuation
+  // runs after the cron picks up a paused WorkflowWait row.
+  const isResume = run.trigger === 'wait_resume';
 
   return (
     <li className="rounded-md border border-border-light bg-surface">
@@ -184,6 +193,11 @@ function RunRow({ run, isExpanded, onToggle }) {
         </span>
         <span className="text-xs text-text-primary font-medium truncate flex-1 min-w-0">
           {run.trigger || 'unknown'}
+          {isResume && (
+            <span className="ml-1.5 text-[9px] uppercase tracking-wide px-1 py-0.5 rounded bg-violet-100 text-violet-700">
+              resumed
+            </span>
+          )}
         </span>
         <span className="text-[10px] text-text-tertiary flex-shrink-0">
           {run.nodesRun || 0} action{(run.nodesRun || 0) === 1 ? '' : 's'} · {run.durationMs || 0}ms
@@ -197,6 +211,42 @@ function RunRow({ run, isExpanded, onToggle }) {
               {startedRel}
             </span>
           </div>
+          {finished && (
+            <div className="flex justify-between gap-2 text-text-tertiary">
+              <span>Finished</span>
+              <span className="text-text-primary" title={finished.toISOString()}>
+                {formatDistanceToNow(finished, { addSuffix: true })}
+              </span>
+            </div>
+          )}
+          {run.actorId && (
+            <div className="flex justify-between gap-2 text-text-tertiary">
+              <span>Triggered by</span>
+              <span className="text-text-primary truncate max-w-[180px]" title={run.actorId}>
+                {run.actorId}
+              </span>
+            </div>
+          )}
+          {run.failedStepId && (
+            <div className="flex justify-between gap-2 text-text-tertiary">
+              <span>Failed step</span>
+              <span className="text-text-primary truncate max-w-[180px]" title={run.failedStepId}>
+                {run.failedStepId.slice(0, 8)}…
+              </span>
+            </div>
+          )}
+          {Number.isFinite(run.retryCount) && run.retryCount > 0 && (
+            <div className="flex justify-between gap-2 text-text-tertiary">
+              <span>Retry count</span>
+              <span className="text-text-primary">{run.retryCount}</span>
+            </div>
+          )}
+          {hasPermissionSkip && (
+            <div className="rounded bg-amber-50 border border-amber-200 px-2 py-1.5 text-[11px] text-amber-800">
+              <strong>One or more actions were skipped because the workflow author no longer holds the required permission.</strong>
+              {' '}Review the creator's role / overrides, or assign a new author.
+            </div>
+          )}
           {run.error && (
             <div className="rounded bg-red-50 border border-red-200 px-2 py-1.5 text-[11px] text-red-700 whitespace-pre-wrap break-words">
               {run.error}

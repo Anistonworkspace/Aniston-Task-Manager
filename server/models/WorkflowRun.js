@@ -68,12 +68,53 @@ const WorkflowRun = sequelize.define(
       allowNull: false,
       defaultValue: DataTypes.NOW,
     },
+    // ── May-19 audit follow-up. All NULL-safe + additive. ─────────────
+    finishedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      comment: 'When the chain finished walking. NULL while running.',
+    },
+    actorId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      comment: 'User who triggered the run (NULL = system / cron / form).',
+    },
+    failedStepId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      comment: 'workflow_nodes.id of the first failed step, if any.',
+    },
+    retryCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Bumped by retry plumbing; 0 means the first attempt.',
+    },
+    idempotencyKey: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      comment:
+        'Dedup key for trigger fires across replicas. '
+        + 'Partial-unique on (workflowId, idempotencyKey) WHERE NOT NULL.',
+    },
+    workflowVersion: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Version tag — reserved for future WorkflowVersion table.',
+    },
   },
   {
     tableName: 'workflow_runs',
     timestamps: true,
     indexes: [
       { fields: ['workflowId', 'startedAt'] },
+      { fields: ['actorId'] },
+      { fields: ['startedAt'] },
+      {
+        unique: true,
+        fields: ['workflowId', 'idempotencyKey'],
+        where: { idempotencyKey: { [require('sequelize').Op.ne]: null } },
+      },
     ],
   }
 );

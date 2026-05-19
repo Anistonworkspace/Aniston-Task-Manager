@@ -17,8 +17,11 @@ process.env.NODE_ENV = 'test';
 
 jest.mock('../../models', () => ({
   Workflow: { findAll: jest.fn(), findByPk: jest.fn(), create: jest.fn() },
-  WorkflowNode: { findByPk: jest.fn(), create: jest.fn() },
-  WorkflowEdge: { findByPk: jest.fn(), create: jest.fn() },
+  // findAll added in May-19 audit — publish validation reads the full
+  // graph before flipping isActive=true. Default empty array keeps every
+  // test that doesn't publish a happy no-op.
+  WorkflowNode: { findByPk: jest.fn(), create: jest.fn(), findAll: jest.fn().mockResolvedValue([]) },
+  WorkflowEdge: { findByPk: jest.fn(), create: jest.fn(), findAll: jest.fn().mockResolvedValue([]) },
   WorkflowRun: { findAll: jest.fn() },
   Workspace: { findByPk: jest.fn() },
   User: {},
@@ -260,6 +263,16 @@ describe('updateWorkflow', () => {
     Workflow.findByPk.mockResolvedValue(wf);
     Workspace.findByPk.mockResolvedValue(makeWorkspace());
 
+    // May-19 audit — provide a valid graph so workflowValidationService
+    // doesn't reject the publish. Simple linear chain: 1 trigger → 1 action.
+    WorkflowNode.findAll.mockResolvedValue([
+      { id: 't1', workflowId: 'wf-1', type: 'trigger', kind: 'task_created', config: {} },
+      { id: 'a1', workflowId: 'wf-1', type: 'action',  kind: 'change_status', config: { to: 'done' } },
+    ]);
+    WorkflowEdge.findAll.mockResolvedValue([
+      { id: 'e1', workflowId: 'wf-1', sourceNodeId: 't1', targetNodeId: 'a1', branch: null },
+    ]);
+
     const req = {
       user: MANAGER,
       params: { id: 'wf-1' },
@@ -270,6 +283,25 @@ describe('updateWorkflow', () => {
 
     expect(wf.update).toHaveBeenCalledWith(expect.objectContaining({ isActive: true }));
     expect(res.status).not.toHaveBeenCalledWith(403);
+  });
+
+  test('publish (isActive=true) — 400 when graph is invalid (no trigger)', async () => {
+    const wf = makeWorkflow({ createdBy: 'someone-else' });
+    Workflow.findByPk.mockResolvedValue(wf);
+    Workspace.findByPk.mockResolvedValue(makeWorkspace());
+    // Empty graph → NO_TRIGGER from validator.
+    WorkflowNode.findAll.mockResolvedValue([]);
+    WorkflowEdge.findAll.mockResolvedValue([]);
+
+    const req = { user: MANAGER, params: { id: 'wf-1' }, body: { isActive: true } };
+    const res = mockRes();
+    await ctrl.updateWorkflow(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(wf.update).not.toHaveBeenCalled();
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.code).toBe('WORKFLOW_PUBLISH_INVALID');
+    expect(Array.isArray(payload.errors)).toBe(true);
   });
 });
 

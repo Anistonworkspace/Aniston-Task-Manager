@@ -11,6 +11,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { Languages } from 'lucide-react';
 import api from '../services/api';
 import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
+import DesktopUpdateSettings from '../components/profile/DesktopUpdateSettings';
 import SOPViewer from '../components/common/SOPViewer';
 import DepartmentSelect from '../components/common/DepartmentSelect';
 import { TIER_1, TIER_2, TIER_3, TIER_4, resolveTier, tierLabel } from '../utils/tiers';
@@ -744,6 +745,12 @@ export default function ProfilePage({ variant = 'page', onClose }) {
               </button>
             </div>
           </Card>
+
+          {/* Desktop App Updates (Slice 9) — only renders inside the
+              Electron desktop wrapper. Returns null on web. Anchored under
+              the notifications section so it sits between Teams-notif
+              prefs and the Integrations panel; no new section tab required. */}
+          <DesktopUpdateSettings />
 
           {/* Integrations: TeamsIntegrationSettings — full panel width */}
           <div id="integrations" className="scroll-mt-16">

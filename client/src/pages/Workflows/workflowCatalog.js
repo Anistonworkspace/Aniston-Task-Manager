@@ -21,9 +21,12 @@
  *     }>,
  *   }
  *
- * The schema is intentionally tiny — v1 is "linear chain of one trigger to N
- * actions". Conditions, branches, loops, and per-field expression-language
- * support are scoped for v2; their UI is "coming soon" pills only.
+ * v1 was "linear chain of one trigger to N actions". v2 (W2) adds first-
+ * class condition nodes + branch edges. Phase 7a (May-19 audit) adds the
+ * three "safe" mutating actions — add_label, remove_label, add_comment —
+ * each gated by a per-action permission re-check at runtime in
+ * workflowEngine.executeWorkflow. Loops + per-field expression DSL remain
+ * scoped for v3.
  */
 
 export const TRIGGERS = [
@@ -117,6 +120,41 @@ export const ACTIONS = [
     description: 'Pause the workflow before the next action (max 5 min in v2)',
     configFields: [
       { key: 'minutes', label: 'Minutes (capped at 5)', type: 'number' },
+    ],
+  },
+  // ── Phase 7a — safe new actions (May-19 audit) ─────────────────────
+  //
+  // Permissions are re-checked at runtime in workflowEngine — a workflow
+  // whose creator was demoted past labels.add_to_task / labels.remove_from_task
+  // / comments.create will skip that action and log a 'skipped — permission
+  // denied at runtime' entry in run history instead of mutating data.
+  {
+    kind: 'add_label',
+    label: 'Add label',
+    description: 'Attach a label to the triggering task (board-scoped)',
+    configFields: [
+      { key: 'labelId', label: 'Label', type: 'text', placeholder: 'Label ID (board-scoped)' },
+    ],
+  },
+  {
+    kind: 'remove_label',
+    label: 'Remove label',
+    description: 'Detach a label from the triggering task',
+    configFields: [
+      { key: 'labelId', label: 'Label', type: 'text', placeholder: 'Label ID (board-scoped)' },
+    ],
+  },
+  {
+    kind: 'add_comment',
+    label: 'Add comment',
+    description: 'Post a comment on the triggering task as the workflow author',
+    configFields: [
+      {
+        key: 'content',
+        label: 'Comment',
+        type: 'textarea',
+        placeholder: 'e.g. Workflow flagged this task as overdue: {{task.title}}',
+      },
     ],
   },
 ];

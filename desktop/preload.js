@@ -72,6 +72,38 @@ ipcRenderer.on('aniston:navigate', (_event, payload) => {
   }
 });
 
+// -------- SSO completion (Slice 8) --------------------------------------
+//
+// Belt-and-suspenders signal to the renderer that the desktop SSO flow
+// completed successfully. The primary success channel is the resolution
+// of the openSso() Promise the renderer awaits, but if the renderer was
+// destroyed/recreated between starting openSso and the main process's
+// finish() (e.g. renderer crash mid-OAuth), that promise's resolution
+// lands on a dead webContents. This event is sent from main BEFORE the
+// promise resolution arrives, with a one-shot buffer so a listener
+// registering after the event still receives it.
+//
+// Payload is intentionally minimal: `{ ok: true }`. No tokens, no user
+// data — those live in the httpOnly cookies the main process already
+// verified via /api/auth/me. The renderer reacts by re-fetching auth
+// state (via its own AuthContext.loadUser) and navigating to '/'.
+let ssoCompleteCallback = null;
+let pendingSsoComplete = false;
+
+ipcRenderer.on('aniston:sso-complete', (_event, payload) => {
+  // The main process only sends ok:true today; we still narrow the
+  // shape so a future expansion (e.g. carrying a reason) can't widen
+  // what we expose to the renderer without code review.
+  const ok = !!(payload && payload.ok === true);
+  if (!ok) return;
+  if (ssoCompleteCallback) {
+    try { ssoCompleteCallback(); }
+    catch { /* renderer bug; swallow so preload stays healthy */ }
+  } else {
+    pendingSsoComplete = true;
+  }
+});
+
 /**
  * Renderer-side input clamp. The main process re-validates these strings
  * (sanitisation, URL guardrails, dedup) -- doing it here as well makes
@@ -137,6 +169,98 @@ function onNavigate(cb) {
   return () => { if (navigateCallback === cb) navigateCallback = null; };
 }
 
+/**
+ * Register a one-shot callback for 'sso-complete' events from main.
+ * The callback is invoked with no arguments — payload validation
+ * happens in the preload's ipcRenderer.on handler above so the
+ * renderer never sees a malformed shape. Mirrors `onNavigate`:
+ * one-event buffer so a registration after the event still fires;
+ * unregister by passing null/undefined OR by calling the returned
+ * dispose function.
+ */
+function onSsoComplete(cb) {
+  if (typeof cb !== 'function') {
+    ssoCompleteCallback = null;
+    return () => {};
+  }
+  ssoCompleteCallback = cb;
+  if (pendingSsoComplete) {
+    pendingSsoComplete = false;
+    try { cb(); } catch { /* renderer-side bug; swallow */ }
+  }
+  return () => { if (ssoCompleteCallback === cb) ssoCompleteCallback = null; };
+}
+
+// -------- Auto-update surface (Slice 9) ---------------------------------
+//
+// Renderer reads update state for Settings → Desktop UI. The renderer
+// can:
+//   - read the current state (snapshot)
+//   - subscribe to state changes (one listener at a time)
+//   - request a check
+//   - request an install (only meaningful when status === 'available')
+//
+// State shape (broadcast on every change):
+//   {
+//     status: 'idle' | 'checking' | 'up-to-date' | 'available' |
+//             'declined' | 'downloading' | 'verifying' | 'ready' |
+//             'launching' | 'error',
+//     currentVersion: string|null,
+//     latestVersion: string|null,
+//     releaseNotes: string,
+//     sizeBytes: number,
+//     mandatory: boolean,
+//     progress: number,         // 0..1 during download
+//     error: string|null,
+//     lastCheckedAt: string|null
+//   }
+let updateStateCallback = null;
+let lastUpdateState = null;
+
+ipcRenderer.on('aniston:update-state', (_event, payload) => {
+  // Defensive shape narrowing — only forward known fields and types.
+  if (!payload || typeof payload !== 'object') return;
+  const next = {
+    status: typeof payload.status === 'string' ? payload.status : 'idle',
+    currentVersion: typeof payload.currentVersion === 'string' ? payload.currentVersion : null,
+    latestVersion: typeof payload.latestVersion === 'string' ? payload.latestVersion : null,
+    releaseNotes: typeof payload.releaseNotes === 'string' ? payload.releaseNotes : '',
+    sizeBytes: Number.isFinite(payload.sizeBytes) ? payload.sizeBytes : 0,
+    mandatory: !!payload.mandatory,
+    progress: Number.isFinite(payload.progress) ? Math.max(0, Math.min(1, payload.progress)) : 0,
+    error: typeof payload.error === 'string' ? payload.error : null,
+    lastCheckedAt: typeof payload.lastCheckedAt === 'string' ? payload.lastCheckedAt : null,
+  };
+  lastUpdateState = next;
+  if (updateStateCallback) {
+    try { updateStateCallback(next); }
+    catch { /* swallow */ }
+  }
+});
+
+function getUpdateStatus() {
+  return ipcRenderer.invoke('aniston:update:get-status');
+}
+function checkForUpdates() {
+  return ipcRenderer.invoke('aniston:update:check');
+}
+function installUpdate() {
+  return ipcRenderer.invoke('aniston:update:install');
+}
+function onUpdateState(cb) {
+  if (typeof cb !== 'function') {
+    updateStateCallback = null;
+    return () => {};
+  }
+  updateStateCallback = cb;
+  // Replay the most recent state on subscribe so a Settings panel
+  // mounted AFTER the startup check has accurate UI on first render.
+  if (lastUpdateState) {
+    try { cb(lastUpdateState); } catch { /* swallow */ }
+  }
+  return () => { if (updateStateCallback === cb) updateStateCallback = null; };
+}
+
 // -------- Expose to the renderer ----------------------------------------
 
 if (runtime) {
@@ -156,7 +280,13 @@ if (runtime) {
       }),
       notify,
       onNavigate,
+      onSsoComplete,
       openSso,
+      // Slice 9 — auto-update surface.
+      getUpdateStatus,
+      checkForUpdates,
+      installUpdate,
+      onUpdateState,
     })
   );
 }

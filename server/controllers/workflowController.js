@@ -38,6 +38,45 @@ const {
 } = require('../models');
 const safeLogger = require('../utils/safeLogger');
 const { sanitizeInput } = require('../utils/sanitize');
+const socketService = require('../services/socketService');
+
+// May-19 audit P1-11 — collaborative invalidation. Emits go to two rooms:
+//   - workflow:<id>     — canvas-level editors (node/edge events, publish)
+//   - workspace:<id>    — workflow list page (create / delete / rename)
+// Both are no-ops when socketService.ioInstance isn't initialised (tests).
+// Wrapped in try/catch so a busted socket layer never breaks the CRUD path.
+//
+// May-26 fix — every mutation that emits a socket event now threads the
+// originating request's `req.body._clientMutationId` (a UUID stamped by the
+// canvas client per mutation) into the payload. The same tab subscribed to
+// the room uses it to suppress echoes of its own saves, instead of showing
+// "another editor saved changes" every time the user drags a node.
+function readClientMutationId(req) {
+  // Accept it in either body or header for flexibility. Bound to 64 chars
+  // so a malicious client can't bloat the payload.
+  const fromBody = req?.body?._clientMutationId;
+  const fromHeader = req?.get?.('X-Client-Mutation-Id');
+  const raw = (typeof fromBody === 'string' && fromBody) || (typeof fromHeader === 'string' && fromHeader) || null;
+  return raw ? String(raw).slice(0, 64) : null;
+}
+
+function emitWorkflowEvent(wf, event, extra = {}, req = null) {
+  if (!wf) return;
+  try {
+    const clientMutationId = req ? readClientMutationId(req) : null;
+    const payload = {
+      workflowId: wf.id,
+      workspaceId: wf.workspaceId,
+      clientMutationId,
+      ...extra,
+      ts: Date.now(),
+    };
+    if (wf.id) socketService.emitToRoom(`workflow:${wf.id}`, event, payload);
+    if (wf.workspaceId) socketService.emitToRoom(`workspace:${wf.workspaceId}`, event, payload);
+  } catch (err) {
+    safeLogger.warn('[Workflow] emit socket event failed (non-fatal)', { err: err.message, event });
+  }
+}
 
 // ─── trigger / action catalog ─────────────────────────────────────────
 
@@ -56,6 +95,13 @@ const ALLOWED_ACTION_KINDS = new Set([
   'assign_to',
   'send_message',
   'wait',
+  // Phase 7a — safe new actions (May-19 audit). Permissions are re-checked
+  // at runtime in workflowEngine.executeWorkflow via the
+  // ACTION_PERMISSION_REQUIREMENTS map (labels.add_to_task /
+  // labels.remove_from_task / comments.create).
+  'add_label',
+  'remove_label',
+  'add_comment',
 ]);
 const ALLOWED_CONDITION_KINDS = new Set([
   'condition_field',
@@ -178,6 +224,7 @@ async function createWorkflow(req, res) {
       createdBy: req.user.id,
       isActive: false, // canvas always starts as a draft
     });
+    emitWorkflowEvent(wf, 'workflow:created', { actorId: req.user.id }, req);
     res.status(201).json({ success: true, data: { workflow: serializeWorkflow(wf) } });
   } catch (err) {
     safeLogger.error('[Workflow] createWorkflow error', { err });
@@ -236,9 +283,39 @@ async function updateWorkflow(req, res) {
         });
       }
       updates.isActive = !!body.isActive;
+
+      // May-19 audit P0-4 — server-side graph validation on publish.
+      // Only runs on the false → true transition; demoting to draft is
+      // always allowed (no shape requirements on a draft).
+      if (updates.isActive === true && wf.isActive !== true) {
+        const { validateWorkflowGraph } = require('../services/workflowValidationService');
+        const [nodes, edges] = await Promise.all([
+          WorkflowNode.findAll({ where: { workflowId: wf.id } }),
+          WorkflowEdge.findAll({ where: { workflowId: wf.id } }),
+        ]);
+        const validation = validateWorkflowGraph({ workflow: wf, nodes, edges });
+        if (!validation.valid) {
+          return res.status(400).json({
+            success: false,
+            code: 'WORKFLOW_PUBLISH_INVALID',
+            message: 'This workflow can\'t be published yet — fix the issues below.',
+            errors: validation.errors,
+          });
+        }
+      }
     }
 
     await wf.update(updates);
+    // Publish flip and rename/scope changes go to two events so clients
+    // can differentiate "remote saved a node" from "someone just hit
+    // Publish" without re-fetching to compare isActive.
+    if (updates.isActive !== undefined) {
+      emitWorkflowEvent(wf, 'workflow:published', {
+        actorId: req.user.id,
+        isActive: !!updates.isActive,
+      }, req);
+    }
+    emitWorkflowEvent(wf, 'workflow:updated', { actorId: req.user.id, fields: Object.keys(updates) }, req);
     res.json({ success: true, data: { workflow: serializeWorkflow(wf) } });
   } catch (err) {
     safeLogger.error('[Workflow] updateWorkflow error', { err });
@@ -260,8 +337,12 @@ async function deleteWorkflow(req, res) {
         message: 'You do not have permission to delete this workflow.',
       });
     }
+    // Snapshot IDs BEFORE destroy so the socket payload still references
+    // the deleted record meaningfully.
+    const snapshot = { id: wf.id, workspaceId: wf.workspaceId };
     // FK cascade handles nodes / edges / runs.
     await wf.destroy();
+    emitWorkflowEvent(snapshot, 'workflow:deleted', { actorId: req.user.id }, req);
     res.json({ success: true, message: 'Workflow deleted.' });
   } catch (err) {
     safeLogger.error('[Workflow] deleteWorkflow error', { err });
@@ -305,6 +386,12 @@ async function createNode(req, res) {
       config: config && typeof config === 'object' ? config : {},
       position: position && typeof position === 'object' ? position : { x: 0, y: 0 },
     });
+    emitWorkflowEvent(wf, 'workflow:node-created', {
+      actorId: req.user.id,
+      nodeId: node.id,
+      type: node.type,
+      kind: node.kind,
+    }, req);
     res.status(201).json({ success: true, data: { node: node.toJSON ? node.toJSON() : node } });
   } catch (err) {
     safeLogger.error('[Workflow] createNode error', { err });
@@ -339,6 +426,11 @@ async function updateNode(req, res) {
       updates.position = body.position;
     }
     await node.update(updates);
+    emitWorkflowEvent(wf, 'workflow:node-updated', {
+      actorId: req.user.id,
+      nodeId: node.id,
+      fields: Object.keys(updates),
+    }, req);
     res.json({ success: true, data: { node: node.toJSON ? node.toJSON() : node } });
   } catch (err) {
     safeLogger.error('[Workflow] updateNode error', { err });
@@ -360,7 +452,12 @@ async function deleteNode(req, res) {
     if (!node || node.workflowId !== wf.id) {
       return res.status(404).json({ success: false, message: 'Node not found.' });
     }
+    const deletedNodeId = node.id;
     await node.destroy(); // FK cascade wipes incoming/outgoing edges
+    emitWorkflowEvent(wf, 'workflow:node-deleted', {
+      actorId: req.user.id,
+      nodeId: deletedNodeId,
+    }, req);
     res.json({ success: true, message: 'Node deleted.' });
   } catch (err) {
     safeLogger.error('[Workflow] deleteNode error', { err });
@@ -416,6 +513,13 @@ async function createEdge(req, res) {
       condition: condition === undefined ? null : condition,
       branch: normalizedBranch,
     });
+    emitWorkflowEvent(wf, 'workflow:edge-created', {
+      actorId: req.user.id,
+      edgeId: edge.id,
+      sourceNodeId,
+      targetNodeId,
+      branch: normalizedBranch,
+    }, req);
     res.status(201).json({ success: true, data: { edge: edge.toJSON ? edge.toJSON() : edge } });
   } catch (err) {
     safeLogger.error('[Workflow] createEdge error', { err });
@@ -437,7 +541,12 @@ async function deleteEdge(req, res) {
     if (!edge || edge.workflowId !== wf.id) {
       return res.status(404).json({ success: false, message: 'Edge not found.' });
     }
+    const deletedEdgeId = edge.id;
     await edge.destroy();
+    emitWorkflowEvent(wf, 'workflow:edge-deleted', {
+      actorId: req.user.id,
+      edgeId: deletedEdgeId,
+    }, req);
     res.json({ success: true, message: 'Edge deleted.' });
   } catch (err) {
     safeLogger.error('[Workflow] deleteEdge error', { err });

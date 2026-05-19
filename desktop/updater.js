@@ -34,7 +34,51 @@
 const { app, dialog, net, session, shell, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
+
+// ── In-process update state (Slice 9 — OTA status surface) ────────────
+//
+// `state` is the single source of truth for "what does the renderer
+// show in Settings → Desktop?" Every transition pushes to subscribers
+// (the renderer registers via preload's onUpdateState). State is
+// strictly observable — never directly mutated from the renderer.
+//
+// Statuses:
+//   'idle'                — no check in progress, no update queued
+//   'checking'            — manifest fetch in flight
+//   'up-to-date'          — manifest fetched, no newer version
+//   'available'           — newer version found; user has NOT accepted yet
+//   'declined'            — user clicked Later this session
+//   'downloading'         — installer download in flight (progress 0..1)
+//   'verifying'           — SHA-256 hash check running
+//   'ready'               — verified installer staged on disk; launching imminent
+//   'launching'           — child installer process spawned; app about to quit
+//   'error'               — fatal at any step; `error` field carries message
+let state = {
+  status: 'idle',
+  currentVersion: null,
+  latestVersion: null,
+  releaseNotes: '',
+  sizeBytes: 0,
+  mandatory: false,
+  progress: 0,           // 0..1 download progress
+  error: null,
+  lastCheckedAt: null,   // ISO timestamp
+};
+const subscribers = new Set();
+function setState(patch) {
+  state = { ...state, ...patch };
+  for (const cb of subscribers) {
+    try { cb(state); } catch { /* swallow subscriber error */ }
+  }
+}
+function getState() { return { ...state }; }
+function subscribe(cb) {
+  if (typeof cb !== 'function') return () => {};
+  subscribers.add(cb);
+  return () => subscribers.delete(cb);
+}
 
 const PROD_HOST = 'monday.anistonav.com';
 const MANIFEST_URL = `https://${PROD_HOST}/api/desktop/manifest`;
@@ -124,6 +168,52 @@ function fetchManifest(diag) {
 }
 
 /**
+ * SHA-256 verify a downloaded installer against the manifest's
+ * `sha256` field. Returns true on match (or when the manifest doesn't
+ * carry a hash — backward-compat with v1.1.0 and earlier manifests).
+ * False on mismatch or read error.
+ *
+ * Why: the manifest sits behind authenticate middleware and is delivered
+ * over TLS, but the EXE is large enough that a partial download (network
+ * blip, server restart, antivirus mid-stream truncation) can leave a
+ * truncated file that LOOKS like a valid PE binary. Spawning that file
+ * would either fail silently or, worst case, run partial installer
+ * logic. Hash verification turns this into a deterministic refusal.
+ */
+function verifyInstallerHash(filePath, expectedSha256, diag) {
+  return new Promise((resolve) => {
+    if (!expectedSha256 || typeof expectedSha256 !== 'string') {
+      diag('updater: manifest has no sha256 — skipping verification (legacy manifest)');
+      resolve(true);
+      return;
+    }
+    const expected = expectedSha256.toLowerCase().trim();
+    if (!/^[0-9a-f]{64}$/.test(expected)) {
+      diag(`updater: manifest sha256 looks malformed (${expected.slice(0, 16)}...) — refusing`);
+      resolve(false);
+      return;
+    }
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => {
+      const actual = hash.digest('hex');
+      const ok = actual === expected;
+      if (!ok) {
+        diag(`updater: sha256 MISMATCH expected=${expected.slice(0, 16)}... actual=${actual.slice(0, 16)}...`);
+      } else {
+        diag(`updater: sha256 OK (${actual.slice(0, 16)}...)`);
+      }
+      resolve(ok);
+    });
+    stream.on('error', (err) => {
+      diag(`updater: sha256 read error: ${err && err.message ? err.message : err}`);
+      resolve(false);
+    });
+  });
+}
+
+/**
  * Stream the new installer into the OS temp directory. Resolves with the
  * file path on success, rejects on any failure. We delete any stale
  * download first so partial files from a previous attempt don't fool us.
@@ -180,16 +270,19 @@ function downloadInstaller(diag, onProgress) {
 let checkInFlight = false;
 let updateDeclinedForVersion = null;
 
-async function checkForUpdates({ mainWindow, diag, triggeredByUser = false }) {
+async function checkForUpdates({ mainWindow, diag, triggeredByUser = false, autoInstall = null }) {
   if (checkInFlight) {
     diag('updater: check already in flight — skipping');
     return;
   }
   checkInFlight = true;
+  const currentVersion = app.getVersion();
+  setState({ status: 'checking', currentVersion, error: null, lastCheckedAt: new Date().toISOString() });
   try {
     const manifest = await fetchManifest(diag);
     if (!manifest) {
       diag('updater: no manifest (offline, not logged in, or server unreachable)');
+      setState({ status: 'idle', error: 'unreachable' });
       if (triggeredByUser && mainWindow && !mainWindow.isDestroyed()) {
         // Manual check — tell the user we couldn't reach the server
         // instead of silently doing nothing.
@@ -203,12 +296,18 @@ async function checkForUpdates({ mainWindow, diag, triggeredByUser = false }) {
       }
       return;
     }
-    const current = app.getVersion();
+    const current = currentVersion;
     const latest = manifest.version;
     const cmp = compareVersions(latest, current);
     diag(`updater: current=${current} latest=${latest} cmp=${cmp}`);
 
     if (cmp <= 0) {
+      setState({
+        status: 'up-to-date',
+        latestVersion: latest,
+        releaseNotes: manifest.releaseNotes || '',
+        sizeBytes: manifest.sizeBytes || 0,
+      });
       if (triggeredByUser && mainWindow && !mainWindow.isDestroyed()) {
         dialog.showMessageBox(mainWindow, {
           type: 'info',
@@ -220,47 +319,74 @@ async function checkForUpdates({ mainWindow, diag, triggeredByUser = false }) {
       return;
     }
 
+    // Publish the "available" state to the renderer Settings panel
+    // BEFORE we open the modal dialog. This way the Settings UI shows
+    // the available version even if the user dismisses the dialog by
+    // clicking elsewhere.
+    setState({
+      status: 'available',
+      latestVersion: latest,
+      releaseNotes: manifest.releaseNotes || '',
+      sizeBytes: manifest.sizeBytes || 0,
+      mandatory: !!manifest.mandatory,
+      progress: 0,
+    });
+
     // Auto-trigger has a "don't keep nagging" guard: if we already
     // asked about THIS specific version in this session and the user
     // said Later, leave them alone until they restart or click the
     // tray's "Check for updates" item.
-    if (!triggeredByUser && updateDeclinedForVersion === latest) {
+    if (!triggeredByUser && !autoInstall && updateDeclinedForVersion === latest) {
       diag(`updater: user already declined ${latest} this session`);
+      setState({ status: 'declined' });
       return;
     }
 
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['Update Now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update available',
-      message: `Monday Aniston ${latest} is available`,
-      detail: (manifest.releaseNotes && manifest.releaseNotes.trim())
-        ? `What's new:\n\n${manifest.releaseNotes}\n\nYou are currently running ${current}.`
-        : `You are currently running ${current}.\n\nThe app will close and the installer will run.`,
-    });
-    if (choice.response !== 0) {
-      diag('updater: user clicked Later');
-      updateDeclinedForVersion = latest;
-      return;
+    // `autoInstall: true` is passed by the renderer's "Install update"
+    // button in Settings → Desktop. The user has ALREADY confirmed
+    // intent via the Settings UI, so we skip the modal dialog and go
+    // straight to download. For the startup auto-check + tray manual
+    // check, we still show the modal so the user can see release notes
+    // and choose Update Now / Later.
+    if (!autoInstall) {
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        buttons: ['Update Now', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Update available',
+        message: `Monday Aniston ${latest} is available`,
+        detail: (manifest.releaseNotes && manifest.releaseNotes.trim())
+          ? `What's new:\n\n${manifest.releaseNotes}\n\nYou are currently running ${current}.`
+          : `You are currently running ${current}.\n\nThe app will close and the installer will run.`,
+      });
+      if (choice.response !== 0) {
+        diag('updater: user clicked Later');
+        updateDeclinedForVersion = latest;
+        setState({ status: 'declined' });
+        return;
+      }
     }
 
-    // Download with taskbar progress.
-    diag('updater: user clicked Update Now — starting download');
+    // Download with taskbar progress + renderer progress events.
+    diag('updater: starting download');
+    setState({ status: 'downloading', progress: 0 });
     if (mainWindow && !mainWindow.isDestroyed()) {
       try { mainWindow.setProgressBar(0); } catch { /* ignore */ }
     }
     let exePath;
     try {
       exePath = await downloadInstaller(diag, (fraction) => {
+        const clamped = Math.max(0, Math.min(1, fraction));
+        setState({ progress: clamped });
         if (mainWindow && !mainWindow.isDestroyed()) {
-          try { mainWindow.setProgressBar(Math.max(0, Math.min(1, fraction))); }
+          try { mainWindow.setProgressBar(clamped); }
           catch { /* ignore */ }
         }
       });
     } catch (err) {
       diag(`updater: download failed: ${err.message}`);
+      setState({ status: 'error', error: `Download failed: ${err.message}` });
       if (mainWindow && !mainWindow.isDestroyed()) {
         try { mainWindow.setProgressBar(-1); } catch { /* ignore */ }
         dialog.showMessageBox(mainWindow, {
@@ -277,11 +403,39 @@ async function checkForUpdates({ mainWindow, diag, triggeredByUser = false }) {
       try { mainWindow.setProgressBar(-1); } catch { /* ignore */ }
     }
 
+    // Slice 9 — SHA-256 integrity verification BEFORE we spawn the
+    // installer. A hash mismatch means: partial/corrupted download, or
+    // a manifest/payload swap. Either way, refusing to execute is the
+    // only safe response; surface a clear error and STAY on the
+    // current version.
+    setState({ status: 'verifying' });
+    const hashOk = await verifyInstallerHash(exePath, manifest.sha256, diag);
+    if (!hashOk) {
+      setState({ status: 'error', error: 'Installer integrity check failed (SHA-256 mismatch).' });
+      try { fs.unlinkSync(exePath); } catch { /* ignore */ }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          buttons: ['OK'],
+          title: 'Update failed',
+          message: 'The downloaded installer did not pass integrity verification.',
+          detail: 'The file may be corrupted or has been tampered with in transit. '
+            + 'No installation was performed. Please try again later, and if the '
+            + 'problem persists contact your administrator.',
+        });
+      }
+      return;
+    }
+
+    // Verified — installer ready to spawn.
+    setState({ status: 'ready' });
+
     // Spawn the installer detached so we can quit immediately. The
     // installer is NSIS `oneClick: false` so it shows a wizard; user
     // confirms install path, NSIS replaces our running EXE, then the
     // `runAfterFinish: true` config relaunches the new version.
     diag(`updater: spawning installer ${exePath}`);
+    setState({ status: 'launching' });
     try {
       const child = spawn(exePath, [], { detached: true, stdio: 'ignore' });
       child.unref();
@@ -308,4 +462,4 @@ async function checkForUpdates({ mainWindow, diag, triggeredByUser = false }) {
   }
 }
 
-module.exports = { checkForUpdates, compareVersions };
+module.exports = { checkForUpdates, compareVersions, getState, subscribe };

@@ -1490,6 +1490,39 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_time
         ON workflow_runs("workflowId", "startedAt" DESC)`);
 
+      // May-19 audit follow-up — run-history enrichment. Each column is
+      // additive + NULL-safe so a partial replay or a prior hot-patch
+      // leaves the table in the same final state. Mirrors migration
+      // server/migrations/022_workflows.sql.
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "finishedAt" TIMESTAMP WITH TIME ZONE`);
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "actorId" UUID`);
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "failedStepId" UUID`);
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "retryCount" INTEGER NOT NULL DEFAULT 0`);
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(255)`);
+      await sequelize.query(`ALTER TABLE workflow_runs
+        ADD COLUMN IF NOT EXISTS "workflowVersion" INTEGER`);
+      // Partial unique — only non-NULL keys get the uniqueness guarantee.
+      // Matches the idx_notifications_idempotency pattern.
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_idempotency
+        ON workflow_runs("workflowId", "idempotencyKey")
+        WHERE "idempotencyKey" IS NOT NULL`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_started
+        ON workflow_runs("startedAt" DESC)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_actor
+        ON workflow_runs("actorId")`);
+
+      // May-19 audit — explicit per-FK indexes on workflow_edges for cascade
+      // performance on node deletion.
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_edges_source
+        ON workflow_edges("sourceNodeId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_edges_target
+        ON workflow_edges("targetNodeId")`);
+
       // W3 — pending wait queue for resumable wait actions (>5 min).
       await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_waits (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

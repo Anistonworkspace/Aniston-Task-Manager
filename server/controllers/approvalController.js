@@ -1022,7 +1022,13 @@ exports.getApprovalPreview = async (req, res) => {
       data: {
         autoApprove: false,
         nextApprover: primary
-          ? { userId: primary.userId, userName: primary.userName, role: primary.role }
+          ? {
+              userId: primary.userId,
+              userName: primary.userName,
+              role: primary.role,
+              isSuperAdmin: !!primary.isSuperAdmin,
+              tier: primary.tier ?? null,
+            }
           : null,
         nextStage: {
           stage: next.stage,
@@ -1032,6 +1038,7 @@ exports.getApprovalPreview = async (req, res) => {
             userName: a.userName,
             role: a.role,
             isSuperAdmin: !!a.isSuperAdmin,
+            tier: a.tier ?? null,
           })),
         },
       },

@@ -22,12 +22,32 @@ jest.mock('../../models', () => ({
   WorkflowNode: { findAll: jest.fn() },
   WorkflowEdge: { findAll: jest.fn() },
   WorkflowRun: { create: jest.fn() },
+  WorkflowWait: { create: jest.fn() },
   Task: { update: jest.fn() },
+  // May-19 audit P0-3 — runtime permission re-check now reads the workflow
+  // creator via User.findByPk. Default mock returns a happy super-admin so
+  // every legacy test still sees actions execute. Tests that want to exercise
+  // the "creator demoted" path should override User.findByPk + the
+  // permissionEngine mock below in their own beforeEach.
+  User: { findByPk: jest.fn().mockResolvedValue({
+    id: 'creator-1', role: 'admin', tier: 2, isSuperAdmin: false, isActive: true,
+  }) },
+  Comment: { create: jest.fn() },
+  Label: { findByPk: jest.fn() },
+  TaskLabel: { findOrCreate: jest.fn(), destroy: jest.fn() },
 }));
 
 jest.mock('../../services/notificationService', () => ({
   createNotification: jest.fn().mockResolvedValue(undefined),
   buildIdempotencyKey: (...parts) => parts.filter(Boolean).join(':'),
+}));
+
+// May-19 audit P0-3 — every action node now re-checks the creator's
+// effective permission at runtime. Legacy tests want actions to execute,
+// so the default mock is "everything allowed". Tests that want to exercise
+// the deny path override this in their own beforeEach.
+jest.mock('../../services/permissionEngine', () => ({
+  hasPermission: jest.fn().mockResolvedValue(true),
 }));
 
 jest.mock('../../utils/safeLogger', () => ({
@@ -69,6 +89,7 @@ function makeWorkflow(overrides = {}) {
     name: 'Test WF',
     boardId: 'b-1',
     workspaceId: 'w-1',
+    createdBy: 'creator-1', // May-19 audit — actor resolution reads this
     isActive: true,
     update: jest.fn().mockResolvedValue(undefined),
     ...overrides,

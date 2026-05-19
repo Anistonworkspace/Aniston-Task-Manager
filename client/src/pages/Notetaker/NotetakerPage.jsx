@@ -16,22 +16,20 @@ import { isUpcomingMeeting } from './notetakerHelpers';
 import useRealtimeQuery from '../../realtime/useRealtimeQuery';
 
 /**
- * NotetakerPage — `/notetaker` landing surface (skill §§1–4).
+ * NotetakerPage — `/notetaker` landing surface.
  *
- * Two states:
- *   - Empty: user has no connected calendar AND no meetings → hero CTA.
- *   - Populated: upcoming card grid + tabbed summaries table.
+ * Always renders the populated layout (header + Recent recordings +
+ * upcoming grid + tabs). Each sub-section owns its own empty state, so
+ * a brand-new user with zero meetings still sees their saved voice
+ * notes via RecentRecordings, and a compact orientation banner that
+ * surfaces the "Record meeting" CTA + the calendar-coming-soon notice.
  *
- * Sits alongside the existing /meetings list view; both pull from
- * GET /api/meetings/my so they stay coherent. The new page adds:
- *   - The "Recorded" status column (data placeholder until backend ships)
- *   - The 4-up upcoming card grid
- *   - The Personal preferences + Connected calendars settings modal
- *
- * Calendar OAuth (Google + Outlook) is gated by a backend endpoint that
- * doesn't exist yet — the "Connect Google Calendar" / "Connect Outlook"
- * buttons in the empty state surface a Toast for now and skip the OAuth
- * round-trip. Wiring those endpoints is a separate slice.
+ * Previously this page short-circuited into a full-screen hero when
+ * there were no meetings and no calendar connection. That hid saved
+ * voice notes from any user without a connected calendar (i.e. every
+ * local-dev account) and made it look like recordings were being lost.
+ * Both UIs (local + production) now match because the branchy hero is
+ * gone.
  */
 
 const CALENDAR_OAUTH_NOT_READY_MESSAGE = (
@@ -107,72 +105,17 @@ export default function NotetakerPage() {
     }));
   }
 
-  // Empty state — only shown when there are absolutely no meetings AND
-  // calendar isn't connected. Otherwise we show the regular populated layout.
-  const isFullyEmpty = !loading && !error && meetings.length === 0 && !calendarConnected;
-
-  if (isFullyEmpty) {
-    return (
-      <div className="h-full flex items-center justify-center px-6 py-12">
-        <div className="max-w-xl w-full text-center">
-          <div className="mx-auto w-20 h-20 rounded-2xl inline-flex items-center justify-center mb-5 text-white"
-            style={{ backgroundImage: 'linear-gradient(135deg, #9d50dd 0%, #579bfc 100%)' }}
-          >
-            <Mic size={28} />
-          </div>
-          <h1 className="text-2xl font-bold text-text-primary">
-            Let AI take meeting notes for you
-          </h1>
-          <p className="mt-2 text-sm text-text-secondary">
-            Hit record now, or connect your calendar to automatically capture meeting
-            notes and action items, seamlessly integrated into your workflow.
-          </p>
-
-          {/* Primary CTA — start recording immediately. Multi-speaker
-              Deepgram pipeline is already configured; this just opens the
-              floating recorder pre-flipped to Meeting Mode. */}
-          <div className="mt-6">
-            <button
-              type="button"
-              onClick={handleStartRecording}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 rounded-md bg-primary text-white text-sm font-semibold hover:bg-primary-600 transition-colors shadow"
-            >
-              <Mic size={16} /> Start recording now
-            </button>
-            <p className="mt-2 text-[11px] text-text-tertiary">
-              Opens the recorder in multi-speaker meeting mode. Works on phone or laptop.
-            </p>
-          </div>
-
-          {/* Calendar OAuth — flagged as theater in the May-17 audit:
-              backend endpoints don't exist yet so clicks only fire a toast.
-              Replaced with a clearly-labeled "coming soon" notice so users
-              don't waste a click. When the OAuth slice lands, restore the
-              buttons + delete this notice. The grid stays so the layout
-              doesn't reflow when we add it back. */}
-          <div className="mt-6 rounded-md border-2 border-dashed border-border bg-surface/40 px-4 py-3 text-[12px] text-text-tertiary text-center">
-            <span className="font-semibold text-text-secondary">Auto-record from calendar</span>
-            {' — '}coming in a future release.
-            For now, use{' '}
-            <span className="font-semibold text-text-secondary">Start recording now</span>
-            {' '}above whenever you're in a meeting.
-          </div>
-
-          <p className="mt-6 text-xs text-text-tertiary">
-            Already have meetings in Aniston?{' '}
-            <button
-              type="button"
-              onClick={() => navigate('/meetings')}
-              className="text-primary hover:underline"
-            >
-              Open the classic Meetings view
-            </button>
-            .
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // First-time orientation banner: shown only when the page has no
+  // meetings AND no calendar connected. Replaces the full-screen hero
+  // (which hid RecentRecordings — a saved voice note would not appear
+  // on this page until the user got at least one calendar meeting). The
+  // banner sits inside the populated layout so saved recordings are
+  // always visible below it. Note: doesn't gate on recordings count —
+  // a brand-new user gets the orientation copy even after their first
+  // recording, which is fine because the banner remains useful (it's
+  // also where the calendar-coming-soon notice lives) until they have
+  // at least one meeting on file.
+  const showFirstRunBanner = !loading && !error && meetings.length === 0 && !calendarConnected;
 
   return (
     <div className="flex flex-col h-full">
@@ -211,6 +154,53 @@ export default function NotetakerPage() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-4">
+        {/* First-run orientation banner — surfaces the "Record meeting"
+            CTA and the calendar-coming-soon notice for users without
+            any meetings or a connected calendar. Sits ABOVE the recent
+            recordings list so saved notes are never hidden behind it. */}
+        {showFirstRunBanner && (
+          <section className="mb-6 rounded-lg border border-border bg-surface/60 px-4 py-4">
+            <div className="flex items-start gap-3">
+              <span
+                className="w-10 h-10 rounded-lg inline-flex items-center justify-center text-white flex-shrink-0"
+                style={{ backgroundImage: 'linear-gradient(135deg, #9d50dd 0%, #579bfc 100%)' }}
+              >
+                <Mic size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-text-primary">
+                  Let AI take meeting notes for you
+                </h2>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Hit record now, or connect your calendar to automatically capture
+                  meeting notes and action items.{' '}
+                  <span className="text-text-tertiary">
+                    Auto-record from calendar is coming in a future release — for now,
+                    use <span className="font-semibold text-text-secondary">Record meeting</span> above
+                    whenever you're in a meeting.
+                  </span>
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleStartRecording}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-white text-xs font-semibold hover:bg-primary-600 transition-colors"
+                  >
+                    <Mic size={13} /> Start recording now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/meetings')}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Open the classic Meetings view
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Recordings the user has made from anywhere in the app. Auto-
             refreshes via the 'notes:changed' event VoiceNotes dispatches. */}
         <RecentRecordings />

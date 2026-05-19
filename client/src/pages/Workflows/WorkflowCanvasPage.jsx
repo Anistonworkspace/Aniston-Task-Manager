@@ -35,6 +35,25 @@ import WorkflowNodePalette, { DRAG_MIME } from './WorkflowNodePalette';
 import NodeConfigSidebar from './NodeConfigSidebar';
 import RunHistoryDrawer from './RunHistoryDrawer';
 import { findCatalogEntry } from './workflowCatalog';
+import { emit as socketEmit, subscribe as socketSubscribe, onConnect as socketOnConnect } from '../../services/socket';
+import { useAuth } from '../../context/AuthContext';
+
+// May-26 fix — every canvas mutation gets a fresh `clientMutationId` that
+// rides along on the request AND comes back on the server's socket
+// broadcast. The page tracks the last few it emitted so the same tab can
+// suppress echoes of its own saves instead of triggering the
+// "another editor saved changes" banner.
+//
+// crypto.randomUUID() is available in every browser ≥ 2022; fall back to a
+// timestamp+random combo for the rare jsdom-without-crypto test path.
+function makeClientMutationId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch { /* noop */ }
+  return `cmid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /**
  * WorkflowCanvasPage — reactflow-backed visual canvas for editing a single
@@ -204,6 +223,23 @@ function WorkflowCanvasInner() {
   const { id: workflowId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  // May-26 fix — currentUserId drives the echo filter alongside the
+  // clientMutationId set. Auth context exposes `user` after the initial
+  // hydrate; we tolerate it being undefined briefly during mount.
+  const { user: currentUser } = useAuth();
+  const currentUserId = currentUser?.id || null;
+
+  // Set of clientMutationIds we've sent within the last 10s. Any incoming
+  // workflow:* socket event whose payload.clientMutationId matches one of
+  // these is silently dropped — it's our own save coming back through the
+  // room broadcast. Each id auto-expires after 10s so the Set never grows
+  // unbounded over a long editing session.
+  const pendingMutationIds = useRef(new Set());
+  const trackMutation = useCallback((cmid) => {
+    if (!cmid) return;
+    pendingMutationIds.current.add(cmid);
+    setTimeout(() => pendingMutationIds.current.delete(cmid), 10000);
+  }, []);
 
   const [workflow, setWorkflow] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -225,12 +261,87 @@ function WorkflowCanvasInner() {
 
   const [selectedNodeId, setSelectedNodeId] = useState(null);
 
+  // May-19 audit P0-4 — publish validation errors. Populated from the
+  // 400 response on PATCH /api/workflows/:id { isActive: true } when the
+  // server-side workflowValidationService rejects the graph. UI surfaces
+  // a banner listing each issue (per-node when nodeId is present).
+  const [publishErrors, setPublishErrors] = useState([]);
+
+  // May-19 audit P1-11 — remote-change banner. When another editor saves
+  // a node/edge/publish, the server emits workflow:* on the workflow:<id>
+  // room. We don't replay the patch automatically (avoids fighting an
+  // in-flight local edit); we just show "Remote changes received — reload"
+  // so the user can refresh on their own terms.
+  const [remoteChange, setRemoteChange] = useState(null); // { event, actorId, ts } | null
+
   // Debounce buffer: when reactflow reports position changes during a drag,
   // we accumulate the latest position per-node and flush 500ms after the
   // user stops moving. Avoids one PATCH per pixel.
   const positionFlushTimers = useRef({}); // { [nodeId]: timeoutId }
 
   const wrapperRef = useRef(null);
+
+  // ─── Socket: join workflow room + subscribe to remote events ─────
+  useEffect(() => {
+    if (!workflowId) return undefined;
+    const doJoin = () => socketEmit('workflow:join', { workflowId });
+    doJoin();
+    // Re-join after every reconnect — same pattern as joinBoard().
+    const offReconnect = socketOnConnect(doJoin);
+
+    const handler = (event) => (payload) => {
+      // ── Layer 1: clientMutationId echo suppression ──
+      // The originating tab stamped a UUID on the request; the server
+      // round-trips it onto the socket payload. If we recognise it, this
+      // is our own save coming back — drop it silently.
+      if (payload?.clientMutationId && pendingMutationIds.current.has(payload.clientMutationId)) {
+        return;
+      }
+      // ── Layer 2: actor-id fallback ──
+      // A multi-tab same-user editor will have the same actorId on every
+      // broadcast. Without an explicit clientMutationId match, suppress
+      // events authored by THIS user on THIS tab to avoid the banner
+      // flashing for our own work. Same-user, different-tab edits are
+      // still visible via the timer-based dedup below (the second tab's
+      // clientMutationId won't match this tab's pending set, so it would
+      // fire — but we cap to one banner per 3s using `setRemoteChange`
+      // with a freshness guard).
+      if (payload?.actorId && currentUserId && payload.actorId === currentUserId) {
+        return;
+      }
+      // ── Layer 3: position-only updates from anyone are ignored ──
+      // A `workflow:node-updated` whose payload.fields === ['position']
+      // is a remote user dragging — visually irrelevant to local editing.
+      if (event === 'workflow:node-updated'
+        && Array.isArray(payload?.fields)
+        && payload.fields.length === 1
+        && payload.fields[0] === 'position') {
+        return;
+      }
+      setRemoteChange((prev) => {
+        // Collapse rapid bursts into one banner: if a banner is already
+        // visible from <3s ago, keep the existing entry so we don't
+        // re-trigger any animations/scroll-into-view.
+        const now = Date.now();
+        if (prev && now - prev.ts < 3000) return prev;
+        return { event, actorId: payload?.actorId || null, ts: payload?.ts || now };
+      });
+    };
+    const unsubs = [
+      socketSubscribe('workflow:updated',      handler('workflow:updated')),
+      socketSubscribe('workflow:node-created', handler('workflow:node-created')),
+      socketSubscribe('workflow:node-updated', handler('workflow:node-updated')),
+      socketSubscribe('workflow:node-deleted', handler('workflow:node-deleted')),
+      socketSubscribe('workflow:edge-created', handler('workflow:edge-created')),
+      socketSubscribe('workflow:edge-deleted', handler('workflow:edge-deleted')),
+      socketSubscribe('workflow:published',    handler('workflow:published')),
+    ];
+    return () => {
+      socketEmit('workflow:leave', { workflowId });
+      offReconnect();
+      unsubs.forEach((u) => u && u());
+    };
+  }, [workflowId, currentUserId]);
 
   // ─── Load workflow on mount ────────────────────────────────────────
   useEffect(() => {
@@ -245,6 +356,10 @@ function WorkflowCanvasInner() {
         setTitleDraft(wf?.name || '');
         setNodes(srvNodes.map(toRfNode));
         setEdges(srvEdges.map(toRfEdge));
+        // Always drop any cached publish-validation errors on load — the
+        // graph we're seeing is fresh, so previous error messages may
+        // reference deleted/renamed nodes.
+        setPublishErrors([]);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -279,6 +394,34 @@ function WorkflowCanvasInner() {
     [nodes]
   );
 
+  // May-26 fix — when the persisted graph has more than one trigger node we
+  // surface a clear warning. The audit's reported "false validation errors"
+  // were all this case: duplicates the user couldn't see because the cards
+  // were stacked at the same coords. Counting all triggers up front lets us
+  // call it out before the user hits Publish.
+  const triggerNodes = useMemo(
+    () => nodes.filter((n) => n.type === 'trigger'),
+    [nodes]
+  );
+
+  // Set of node IDs that participate in at least one edge (incoming OR
+  // outgoing). Anything NOT in this set gets a "Not connected" indicator —
+  // the user is one drag away from a valid workflow but the page wasn't
+  // surfacing that before.
+  const connectedNodeIds = useMemo(() => {
+    const s = new Set();
+    for (const e of edges) {
+      if (e.source) s.add(e.source);
+      if (e.target) s.add(e.target);
+    }
+    return s;
+  }, [edges]);
+
+  const disconnectedCount = useMemo(
+    () => nodes.filter((n) => !connectedNodeIds.has(n.id)).length,
+    [nodes, connectedNodeIds]
+  );
+
   // ─── Title rename ─────────────────────────────────────────────────
   const commitTitle = useCallback(async () => {
     if (!editingTitle) return;
@@ -288,15 +431,17 @@ function WorkflowCanvasInner() {
       setTitleDraft(workflow?.name || '');
       return;
     }
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      const { workflow: updated } = await updateWorkflowApi(workflowId, { name: trimmed });
+      const { workflow: updated } = await updateWorkflowApi(workflowId, { name: trimmed }, { clientMutationId: cmid });
       setWorkflow((w) => ({ ...w, ...updated }));
       toast.success('Renamed');
     } catch (err) {
       setTitleDraft(workflow?.name || '');
       toast.error(getErrorMessage(err));
     }
-  }, [editingTitle, titleDraft, workflow?.name, workflowId, toast]);
+  }, [editingTitle, titleDraft, workflow?.name, workflowId, toast, trackMutation]);
 
   // ─── Publish toggle ───────────────────────────────────────────────
   const handleTogglePublish = useCallback(async () => {
@@ -307,16 +452,30 @@ function WorkflowCanvasInner() {
       return;
     }
     setPublishBusy(true);
+    setPublishErrors([]);
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      const { workflow: updated } = await updateWorkflowApi(workflowId, { isActive: next });
+      const { workflow: updated } = await updateWorkflowApi(workflowId, { isActive: next }, { clientMutationId: cmid });
       setWorkflow((w) => ({ ...w, ...updated }));
       toast.success(next ? 'Workflow published' : 'Workflow set to draft');
     } catch (err) {
-      toast.error(getErrorMessage(err));
+      // May-19 audit P0-4 — server-side validation errors. The publish
+      // endpoint returns { code: 'WORKFLOW_PUBLISH_INVALID', errors:
+      // [{ code, message, nodeId?, edgeId?, severity }] } on a structurally
+      // invalid graph. Surface the per-issue list as a banner; the toast
+      // gives the one-line "fix the issues" cue.
+      const data = err?.response?.data;
+      if (data?.code === 'WORKFLOW_PUBLISH_INVALID' && Array.isArray(data.errors)) {
+        setPublishErrors(data.errors);
+        toast.error(data.message || 'Publish failed — fix the issues below.');
+      } else {
+        toast.error(getErrorMessage(err));
+      }
     } finally {
       setPublishBusy(false);
     }
-  }, [workflow, hasTriggerNode, workflowId, toast]);
+  }, [workflow, hasTriggerNode, workflowId, toast, trackMutation]);
 
   // ─── Drag-and-drop from palette ──────────────────────────────────
   const onDragOver = useCallback((e) => {
@@ -353,18 +512,21 @@ function WorkflowCanvasInner() {
       ? { x: e.clientX - bounds.left - 90, y: e.clientY - bounds.top - 25 }
       : { x: 200, y: 120 };
 
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      const { node: serverNode } = await createNodeApi(workflowId, {
-        type,
-        kind,
-        config: {},
-        position,
-      });
+      const { node: serverNode } = await createNodeApi(
+        workflowId,
+        { type, kind, config: {}, position },
+        { clientMutationId: cmid },
+      );
       setNodes((nds) => nds.concat(toRfNode(serverNode)));
+      // Graph changed — drop any stale publish-validation banner.
+      setPublishErrors([]);
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
-  }, [hasTriggerNode, workflowId, setNodes, toast]);
+  }, [hasTriggerNode, workflowId, setNodes, toast, trackMutation]);
 
   // ─── Edge connect (user dragged from one handle to another) ────────
   const onConnect = useCallback(async (params) => {
@@ -391,17 +553,22 @@ function WorkflowCanvasInner() {
       else if (fromSource === 1) branch = 'false';
     }
 
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      const { edge: serverEdge } = await createEdgeApi(workflowId, {
-        sourceNodeId: params.source,
-        targetNodeId: params.target,
-        branch,
-      });
+      const { edge: serverEdge } = await createEdgeApi(
+        workflowId,
+        { sourceNodeId: params.source, targetNodeId: params.target, branch },
+        { clientMutationId: cmid },
+      );
       setEdges((eds) => addEdge(toRfEdge(serverEdge), eds));
+      // Adding an edge often fixes a "NODE_ORPHAN" or "TRIGGER_DEAD_END"
+      // validation error — clear the banner so the user can re-publish.
+      setPublishErrors([]);
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
-  }, [edges, nodes, workflowId, setEdges, toast]);
+  }, [edges, nodes, workflowId, setEdges, toast, trackMutation]);
 
   // ─── Test run (Phase W2) ─────────────────────────────────────────
   const handleTestRun = useCallback(async () => {
@@ -430,13 +597,15 @@ function WorkflowCanvasInner() {
     if (timers[nodeId]) clearTimeout(timers[nodeId]);
     timers[nodeId] = setTimeout(async () => {
       delete timers[nodeId];
+      const cmid = makeClientMutationId();
+      trackMutation(cmid);
       try {
-        await updateNodeApi(workflowId, nodeId, { position });
+        await updateNodeApi(workflowId, nodeId, { position }, { clientMutationId: cmid });
       } catch (err) {
         safeLog.warn('[WorkflowCanvasPage] node position save failed', err);
       }
     }, POSITION_DEBOUNCE_MS);
-  }, [workflowId]);
+  }, [workflowId, trackMutation]);
 
   const onNodeDragStop = useCallback((_e, node) => {
     if (!node) return;
@@ -454,31 +623,44 @@ function WorkflowCanvasInner() {
 
   const onNodesDelete = useCallback(async (deleted) => {
     for (const n of deleted) {
+      const cmid = makeClientMutationId();
+      trackMutation(cmid);
       try {
-        await deleteNodeApi(workflowId, n.id);
+        await deleteNodeApi(workflowId, n.id, { clientMutationId: cmid });
         if (selectedNodeId === n.id) setSelectedNodeId(null);
       } catch (err) {
         toast.error(getErrorMessage(err));
       }
     }
-  }, [workflowId, selectedNodeId, toast]);
+    // Any error referencing a now-deleted node is stale by definition.
+    setPublishErrors((prev) => {
+      const deletedIds = new Set(deleted.map((n) => n.id));
+      const next = prev.filter((e) => !(e.nodeId && deletedIds.has(e.nodeId)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [workflowId, selectedNodeId, toast, trackMutation]);
 
   const onEdgesDelete = useCallback(async (deleted) => {
     for (const e of deleted) {
+      const cmid = makeClientMutationId();
+      trackMutation(cmid);
       try {
-        await deleteEdgeApi(workflowId, e.id);
+        await deleteEdgeApi(workflowId, e.id, { clientMutationId: cmid });
       } catch (err) {
         toast.error(getErrorMessage(err));
       }
     }
-  }, [workflowId, toast]);
+    setPublishErrors([]);
+  }, [workflowId, toast, trackMutation]);
 
   // ─── Sidebar config save ─────────────────────────────────────────
   const handleConfigChange = useCallback(async ({ config }) => {
     if (!selectedNodeId) return;
     setSavingNode(true);
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      const { node: updated } = await updateNodeApi(workflowId, selectedNodeId, { config });
+      const { node: updated } = await updateNodeApi(workflowId, selectedNodeId, { config }, { clientMutationId: cmid });
       // Mirror back into reactflow state so the (currently invisible) node
       // body stays in sync if we ever surface config preview in the card.
       setNodes((nds) => nds.map((n) => (
@@ -486,27 +668,33 @@ function WorkflowCanvasInner() {
           ? { ...n, data: { ...n.data, config: updated?.config ?? config } }
           : n
       )));
+      // Filling a previously-missing config field commonly clears the
+      // ACTION_MISSING_CONFIG / CONDITION_MISSING_VALUE error for THIS node.
+      setPublishErrors((prev) => prev.filter((e) => e.nodeId !== selectedNodeId));
       toast.success('Saved');
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
       setSavingNode(false);
     }
-  }, [selectedNodeId, workflowId, setNodes, toast]);
+  }, [selectedNodeId, workflowId, setNodes, toast, trackMutation]);
 
   const handleSidebarDelete = useCallback(async () => {
     if (!selectedNodeId) return;
     const ok = window.confirm('Delete this node?');
     if (!ok) return;
+    const cmid = makeClientMutationId();
+    trackMutation(cmid);
     try {
-      await deleteNodeApi(workflowId, selectedNodeId);
+      await deleteNodeApi(workflowId, selectedNodeId, { clientMutationId: cmid });
       setNodes((nds) => nds.filter((n) => n.id !== selectedNodeId));
       setEdges((eds) => eds.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId));
+      setPublishErrors((prev) => prev.filter((e) => e.nodeId !== selectedNodeId));
       setSelectedNodeId(null);
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
-  }, [selectedNodeId, workflowId, setNodes, setEdges, toast]);
+  }, [selectedNodeId, workflowId, setNodes, setEdges, toast, trackMutation]);
 
   // ─── Render ──────────────────────────────────────────────────────
   if (loading) {
@@ -621,6 +809,119 @@ function WorkflowCanvasInner() {
           </button>
         </div>
       </header>
+
+      {/* ── Remote-change banner (P1-11) ─────────────────────────
+          Another editor saved something on this workflow. We don't
+          auto-merge their patch (avoids fighting an in-flight local
+          edit); the banner gives the user a clear "reload to pick up
+          remote changes" cue. Dismissible. */}
+      {remoteChange && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 px-4 py-2 text-xs bg-amber-50 border-b border-amber-200 text-amber-900"
+          data-testid="workflow-remote-change-banner"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} />
+            <span>Another editor just saved changes ({remoteChange.event}). Reload to see them.</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="text-amber-900 underline font-semibold"
+            >Reload</button>
+            <button
+              type="button"
+              onClick={() => setRemoteChange(null)}
+              className="text-amber-900/70 hover:text-amber-900"
+              aria-label="Dismiss"
+            >×</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Duplicate-trigger warning (May-26 audit follow-up) ───
+          The canvas occasionally stacks multiple trigger cards at the
+          same drop coords, making them look like one. Surfacing the
+          count up front lets the user spot + delete the dupes BEFORE
+          clicking Publish and getting a confusing per-trigger error
+          list. We don't auto-delete — user opens the selection sidebar
+          and decides which to remove. */}
+      {triggerNodes.length > 1 && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 px-4 py-2 text-xs bg-amber-50 border-b border-amber-200 text-amber-900"
+          data-testid="workflow-duplicate-trigger-banner"
+        >
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} />
+            <span>
+              {triggerNodes.length} trigger nodes detected. A workflow needs exactly one — open each card and delete the extras.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedNodeId(triggerNodes[0]?.id || null)}
+            className="text-amber-900 underline font-semibold"
+          >Show first</button>
+        </div>
+      )}
+
+      {/* ── Disconnected-nodes hint (May-26 audit follow-up) ─────
+          The audit revealed users were dropping nodes onto the canvas
+          and expecting them to "auto-link" by visual stacking. Show a
+          gentle hint listing how many nodes have no edges, with the
+          fix recipe so they can connect them. */}
+      {nodes.length > 0 && disconnectedCount > 0 && (
+        <div
+          role="status"
+          className="px-4 py-2 text-[11px] bg-blue-50 border-b border-blue-200 text-blue-900"
+          data-testid="workflow-disconnected-hint"
+        >
+          <span className="font-semibold">{disconnectedCount} node{disconnectedCount === 1 ? ' is' : 's are'} not connected.</span>
+          {' '}Drag from the bottom handle of one node to the top handle of another to link them.
+        </div>
+      )}
+
+      {/* ── Publish validation errors banner (P0-4) ──────────────
+          Server-side workflowValidationService rejected the graph on
+          publish. List each issue; clicking selects the affected node. */}
+      {publishErrors.length > 0 && (
+        <div
+          role="alert"
+          className="px-4 py-2 text-xs bg-red-50 border-b border-red-200 text-red-900"
+          data-testid="workflow-publish-errors-banner"
+        >
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <strong className="flex items-center gap-2">
+              <AlertCircle size={14} /> Workflow can't be published yet — fix the issues below:
+            </strong>
+            <button
+              type="button"
+              onClick={() => setPublishErrors([])}
+              className="text-red-900/70 hover:text-red-900"
+              aria-label="Dismiss"
+            >×</button>
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {publishErrors.map((e, i) => (
+              <li key={`${e.code}-${i}`}>
+                {e.nodeId ? (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedNodeId(e.nodeId)}
+                    className="underline font-medium hover:text-red-700"
+                  >{e.message}</button>
+                ) : (
+                  <span>{e.message}</span>
+                )}
+                {e.severity === 'warning' && <span className="ml-2 text-amber-700">(warning)</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* ── Three-column body ───────────────────────────────────── */}
       <div className="flex-1 flex min-h-0">

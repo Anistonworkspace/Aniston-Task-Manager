@@ -40,14 +40,21 @@ describe('PlanWeekModal', () => {
     expect(screen.queryByText('Plan my week')).not.toBeInTheDocument();
   });
 
-  it('calls /ai/plan-week with the user task ids on open', async () => {
+  it('calls /ai/plan-week without a frontend task-id hint', async () => {
+    // May 2026 — the backend now loads the user's canonical open-task
+    // list itself (loadPlanningTaskList) and uses it as the single source
+    // of truth for both prompt context AND ID validation. The frontend
+    // hint list (loaded from /tasks?assignedTo=me&limit=100 with no status
+    // filter) used to disagree with the backend's filter, confusing the
+    // LLM and triggering "No task IDs from the provided list match the
+    // current open tasks". The modal should NO LONGER send a taskIds hint.
     aiSummary.planWeek.mockResolvedValue({ schedule: [], notes: 'no plan' });
     render(<PlanWeekModal isOpen onClose={() => {}} tasks={TASKS} />);
     await waitFor(() => {
-      expect(aiSummary.planWeek).toHaveBeenCalledWith(
-        expect.objectContaining({ taskIds: ['t1', 't2', 't3'] })
-      );
+      expect(aiSummary.planWeek).toHaveBeenCalled();
     });
+    const callArg = aiSummary.planWeek.mock.calls[0][0] || {};
+    expect(callArg.taskIds).toBeUndefined();
   });
 
   it('renders day columns with task titles when schedule is returned', async () => {
@@ -68,7 +75,11 @@ describe('PlanWeekModal', () => {
     expect(screen.getByText(/Looks balanced/)).toBeInTheDocument();
   });
 
-  it('renders empty-day message for days with no tasks', async () => {
+  it('renders the notes-driven empty state when every day has no tasks', async () => {
+    // After the May 2026 fix the all-days-empty case shows the backend's
+    // notes string directly (e.g. "No open tasks to plan — your queue is
+    // empty.") instead of five "Nothing scheduled." cards, because the
+    // backend now provides a clear human-readable reason.
     aiSummary.planWeek.mockResolvedValue({
       schedule: [
         { dayKey: 'mon', taskIds: [], reason: '' },
@@ -77,11 +88,11 @@ describe('PlanWeekModal', () => {
         { dayKey: 'thu', taskIds: [], reason: '' },
         { dayKey: 'fri', taskIds: [], reason: '' },
       ],
+      notes: 'No open tasks to plan — your queue is empty.',
     });
     render(<PlanWeekModal isOpen onClose={() => {}} tasks={TASKS} />);
     await waitFor(() => {
-      const emptyHints = screen.getAllByText('Nothing scheduled.');
-      expect(emptyHints.length).toBe(5);
+      expect(screen.getByText(/queue is empty/)).toBeInTheDocument();
     });
   });
 
@@ -91,11 +102,10 @@ describe('PlanWeekModal', () => {
     await waitFor(() => expect(screen.getByText('AI quota exhausted')).toBeInTheDocument());
   });
 
-  it('shows fallback panel when AI returns an empty schedule with a notes line', async () => {
+  it('shows the notes line as the empty-state body when AI returns an empty schedule', async () => {
     aiSummary.planWeek.mockResolvedValue({ schedule: [], notes: 'AI returned no plan.' });
     render(<PlanWeekModal isOpen onClose={() => {}} tasks={TASKS} />);
-    await waitFor(() => expect(screen.getByText(/didn't suggest a structured plan/)).toBeInTheDocument());
-    expect(screen.getByText('AI returned no plan.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('AI returned no plan.')).toBeInTheDocument());
   });
 
   it('regenerate button re-triggers the plan call', async () => {

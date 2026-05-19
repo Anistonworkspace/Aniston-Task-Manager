@@ -582,8 +582,14 @@ export default function Sidebar({ collapsed, onToggle }) {
             <NavItem icon={BookOpen} label="Docs" path="/docs" tourId="nav-docs" />
             {/* Workflow Canvas (Phase W1) — visual trigger → action automations.
                 Sits between Docs and Reviews because it pairs with collaborative
-                editing surfaces, not the analytics ones below. */}
-            <NavItem icon={Workflow} label="Workflows" path="/workflows" tourId="nav-workflows" />
+                editing surfaces, not the analytics ones below. May-19 audit:
+                T1/T2 see this row by default (canManage); T3/T4 must hold an
+                explicit `workflows.view` grant. The backend enforces the same
+                rule via requirePermission('workflows', 'view') on every
+                /api/workflows endpoint — this flag is purely UX. */}
+            {(canManage || !!granularPermissions['workflows.view']) && (
+              <NavItem icon={Workflow} label="Workflows" path="/workflows" tourId="nav-workflows" />
+            )}
             {/* Forms (Phase F1) — public & internal intake forms. Same band as
                 Workflows / Docs since they share the "build a thing once,
                 use it many times" mental model. */}

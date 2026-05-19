@@ -67,11 +67,182 @@ function getTeamsWebhook() {
   return _teamsWebhook;
 }
 
+let _permissionEngine;
+function getPermissionEngine() {
+  if (!_permissionEngine) _permissionEngine = require('./permissionEngine');
+  return _permissionEngine;
+}
+
+// ─── runtime permission check (May-19 audit P0-3) ──────────────────────
+//
+// Every action node is gated through this map before its handler runs. The
+// audit's headline risk is "a workflow created by an admin keeps mutating
+// data even after the admin is demoted." We close that by re-fetching the
+// creator from the DB on every run and asking the canonical permission
+// engine whether they STILL hold the underlying permission — at *this*
+// moment, not at publish time.
+//
+// Notes:
+//  - `tasks.edit_status` / `tasks.edit_priority` / `tasks.assign_others`
+//    are the granular Phase-7 actions. The engine's umbrella fallback
+//    means an existing `tasks.change_status` / `tasks.set_priority` /
+//    `tasks.assign_others` grant still covers them — so this is non-
+//    breaking for current grant rows.
+//  - `tasks.view` is the floor for `notify_user` (and any future passive
+//    action): if the actor can't even see the task, sending a message
+//    about it shouldn't be allowed.
+//  - `wait` and `send_message` have NO per-action check — `wait` is pure
+//    control flow, `send_message` is a webhook to a channel that's already
+//    workspace-scoped at config time.
+const ACTION_PERMISSION_REQUIREMENTS = {
+  notify_user:     { resource: 'tasks',  action: 'view' },
+  change_status:   { resource: 'tasks',  action: 'edit_status' },
+  change_priority: { resource: 'tasks',  action: 'edit_priority' },
+  assign_to:       { resource: 'tasks',  action: 'assign_others' },
+  // Phase 7a additions — safe new actions.
+  add_label:       { resource: 'labels', action: 'add_to_task' },
+  remove_label:    { resource: 'labels', action: 'remove_from_task' },
+  add_comment:     { resource: 'comments', action: 'create' },
+  // Pure control-flow / webhook side effects — no per-action gate. The
+  // workflow's existence + isActive=true is already gated by the publish
+  // check on workflows.publish.
+  send_message:    null,
+  wait:            null,
+};
+
+/**
+ * Load the user that should be evaluated for runtime permission checks.
+ * Always the workflow's `createdBy` — re-fetched fresh so a demoted /
+ * deactivated creator's workflows stop mutating data.
+ *
+ * Returns the User instance (with tier, role, isSuperAdmin) or null if
+ * the creator is missing / deactivated / has no tier resolvable.
+ */
+async function resolveExecutionActor(workflow) {
+  try {
+    const { User } = getModels();
+    if (!workflow?.createdBy) return null;
+    const actor = await User.findByPk(workflow.createdBy, {
+      attributes: [
+        'id', 'role', 'tier', 'isSuperAdmin', 'isActive', 'email', 'name',
+      ],
+    });
+    if (!actor) return null;
+    if (actor.isActive === false) return null;
+    return actor;
+  } catch (err) {
+    safeLogger.error('[Workflow] resolveExecutionActor failed', {
+      err,
+      workflowId: workflow?.id,
+    });
+    return null;
+  }
+}
+
+/**
+ * Re-check the configured execution actor's CURRENT effective permission
+ * for the resource/action pair this node kind requires.
+ *
+ * Returns `{ allowed, reason }`. When `allowed === false`, the walker
+ * MUST NOT call the action handler — it logs a "permission denied" skip
+ * to the run output instead.
+ */
+async function checkActionPermission(actor, node) {
+  const requirement = ACTION_PERMISSION_REQUIREMENTS[node.kind];
+  // No requirement registered (wait / send_message) → always allowed at
+  // the engine layer.
+  if (requirement === null || requirement === undefined) {
+    return { allowed: true };
+  }
+  if (!actor) {
+    return {
+      allowed: false,
+      reason: 'workflow creator missing or deactivated',
+    };
+  }
+  try {
+    const ok = await getPermissionEngine().hasPermission(
+      actor,
+      requirement.resource,
+      requirement.action,
+    );
+    if (ok) return { allowed: true };
+    return {
+      allowed: false,
+      reason: `creator lacks ${requirement.resource}.${requirement.action}`,
+    };
+  } catch (err) {
+    safeLogger.error('[Workflow] checkActionPermission threw', {
+      err,
+      kind: node.kind,
+      resource: requirement.resource,
+      action: requirement.action,
+    });
+    // Fail closed — if the permission engine errors out, treat as denied
+    // rather than silently allow privileged action.
+    return { allowed: false, reason: 'permission engine error (fail-closed)' };
+  }
+}
+
 // Phase W2 — wait cap. setTimeout-based waits hold a Node.js coroutine in
 // memory; longer waits would survive a deploy only with a DB-backed scheduler
 // (Phase W3). Until then, anything beyond 5 minutes is silently clamped down
 // and a warning is logged so the author isn't surprised by silent truncation.
 const WAIT_MAX_MS = 5 * 60 * 1000;
+
+// May-19 audit P0-6 — cross-workflow chain depth cap. When workflow A's
+// action mutates a task whose mutation triggers workflow B, the engine
+// plumbs `context._chain` (the list of {workflowId, trigger} pairs already
+// fired in this causal chain). If the chain hits MAX_WORKFLOW_CHAIN_DEPTH,
+// further fan-out is refused with a loud log so the author can see they've
+// built a loop. Today's single-workflow visited-Set guard inside
+// executeWorkflow handles cycles inside ONE graph; this guard is for
+// inter-workflow loops. 5 is the published default; lift via env if needed.
+const MAX_WORKFLOW_CHAIN_DEPTH = Number(process.env.WORKFLOW_MAX_CHAIN_DEPTH) || 5;
+
+// May-19 audit P0-5 — in-memory LRU for trigger-idempotency fast path.
+// Multi-replica safety still relies on the DB unique index, but in single
+// process the LRU is a much cheaper dedup for same-event bursts (e.g.
+// React StrictMode firing the same status PATCH twice in dev). Keys live
+// 5 minutes; cap at 1000 entries so a noisy producer can't OOM the box.
+const IDEMP_LRU_TTL_MS = 5 * 60 * 1000;
+const IDEMP_LRU_MAX = 1000;
+const _idempLru = new Map();
+function _lruHas(key) {
+  const entry = _idempLru.get(key);
+  if (!entry) return false;
+  if (entry.expiresAt < Date.now()) {
+    _idempLru.delete(key);
+    return false;
+  }
+  // Refresh recency by re-inserting.
+  _idempLru.delete(key);
+  _idempLru.set(key, entry);
+  return true;
+}
+function _lruPut(key) {
+  if (_idempLru.size >= IDEMP_LRU_MAX) {
+    // Evict the oldest entry (Map iteration order = insertion order).
+    const firstKey = _idempLru.keys().next().value;
+    if (firstKey !== undefined) _idempLru.delete(firstKey);
+  }
+  _idempLru.set(key, { expiresAt: Date.now() + IDEMP_LRU_TTL_MS });
+}
+
+/**
+ * Compute a per-event idempotency key. Same event fired twice within a
+ * minute bucket → same key → DB unique index rejects the second insert.
+ *
+ * Bucket size is 60s (Math.floor(now / 60000)) which is tight enough that
+ * a stale dedup never blocks legitimate same-trigger re-fires, but wide
+ * enough that React-StrictMode or a retried Axios PATCH won't fire twice.
+ */
+function buildTriggerIdempotencyKey(workflowId, trigger, context) {
+  const entityId = context?.task?.id || context?.form?.id || '';
+  const actorId = context?.actorId || context?.userId || '';
+  const minuteBucket = Math.floor(Date.now() / 60000);
+  return `${workflowId}|${trigger}|${entityId}|${actorId}|${minuteBucket}`;
+}
 
 // Phase W2 — condition node evaluation. Reads node.config:
 //   { field: 'task.status' | 'task.priority' | 'task.assignedTo' | 'task.dueDate',
@@ -182,6 +353,24 @@ function matchesTriggerNode(node, trigger, context) {
  */
 async function processWorkflows(trigger, context) {
   try {
+    // May-19 audit P0-6 — chain depth + workflow-origin guards. Refuse to
+    // fan out further when:
+    //   - the inbound context is marked `originSource: 'workflow'` (the
+    //     event came from a workflow action's side effect — we never
+    //     trigger a workflow off of itself unless the chain budget allows
+    //     it, and even then we increment depth); OR
+    //   - the chain depth has hit MAX_WORKFLOW_CHAIN_DEPTH.
+    // Both branches log loudly so authors can spot their loop.
+    const chain = Array.isArray(context?._chain) ? context._chain : [];
+    if (chain.length >= MAX_WORKFLOW_CHAIN_DEPTH) {
+      safeLogger.warn('[Workflow] processWorkflows: chain depth cap hit — refusing further fan-out', {
+        trigger,
+        depth: chain.length,
+        chain: chain.map((c) => `${c.workflowId}:${c.trigger}`),
+      });
+      return;
+    }
+
     const { Workflow, WorkflowNode } = getModels();
     const { Op } = require('sequelize');
 
@@ -220,8 +409,28 @@ async function processWorkflows(trigger, context) {
         const triggerNodes = nodes.filter((n) => n.type === 'trigger');
         for (const tn of triggerNodes) {
           if (!matchesTriggerNode(tn, trigger, context)) continue;
+
+          // May-19 audit P0-5 — per-event idempotency. Single-process LRU
+          // fast path; multi-replica safety via the DB partial unique
+          // index on (workflowId, idempotencyKey).
+          const idempotencyKey = buildTriggerIdempotencyKey(wf.id, trigger, context);
+          if (_lruHas(idempotencyKey)) {
+            safeLogger.info('[Workflow] processWorkflows: deduped by in-memory idempotency', {
+              workflowId: wf.id,
+              trigger,
+              idempotencyKey,
+            });
+            continue;
+          }
+          _lruPut(idempotencyKey);
+
+          // Plumb the chain into the per-workflow run so downstream
+          // workflow-originated events keep their depth bookkeeping.
+          const nextChain = [...chain, { workflowId: wf.id, trigger }];
+          const nextContext = { ...context, _chain: nextChain };
+
           // Fire the chain starting from this trigger node.
-          await executeWorkflow(wf, tn, context);
+          await executeWorkflow(wf, tn, nextContext, { idempotencyKey });
         }
       } catch (err) {
         safeLogger.error('[Workflow] processWorkflows: workflow failed', {
@@ -255,6 +464,22 @@ async function executeWorkflow(workflow, startNode, context, options = {}) {
   let anyError = false;
   let anySkipped = false;
   let lastError = null;
+  // First failed step persisted as `failedStepId` (NULLable column added in
+  // migration 022). Subsequent failures still log but only the first is
+  // surfaced in the column — the textual summary in `error` carries the
+  // rest. Mirrors the "first cause" pattern used by approvalLifecycleService.
+  let firstFailedStepId = null;
+  // Compact per-step audit list. Kept in-memory only — the textual digest
+  // below is what lands in `workflow_runs.error` so the UI can show a
+  // human-readable reason for partial / failed runs without a separate
+  // table.
+  const stepAudit = [];
+
+  // May-19 audit P0-3 — re-resolve the workflow's execution actor on every
+  // run. If the creator was demoted, deactivated, or deleted since publish,
+  // privileged actions will now correctly fail the per-action permission
+  // check below rather than silently proceeding.
+  const actor = await resolveExecutionActor(workflow);
 
   try {
     // Load every edge + node for this workflow up-front so the walker
@@ -334,6 +559,34 @@ async function executeWorkflow(workflow, startNode, context, options = {}) {
         }
 
         if (target.type === 'action') {
+          // May-19 audit P0-3 — runtime permission gate. Every action node
+          // re-checks the workflow's execution actor's CURRENT effective
+          // permission against the canonical engine. A demoted / deactivated
+          // creator's workflows now correctly skip privileged mutations
+          // instead of silently bypassing RBAC.
+          const permCheck = await checkActionPermission(actor, target);
+          if (!permCheck.allowed) {
+            anySkipped = true;
+            if (!firstFailedStepId) firstFailedStepId = target.id;
+            stepAudit.push({
+              nodeId: target.id,
+              kind: target.kind,
+              status: 'skipped',
+              reason: permCheck.reason,
+            });
+            safeLogger.warn('[Workflow] action skipped — permission denied at runtime', {
+              workflowId: workflow.id,
+              nodeId: target.id,
+              kind: target.kind,
+              actorId: actor?.id || null,
+              reason: permCheck.reason,
+            });
+            // Walk past the skipped action so downstream nodes still run —
+            // mirrors how a failure in one action leaves the chain going.
+            queue.push(target.id);
+            continue;
+          }
+
           let actionResult;
           try {
             actionResult = await executeActionNode(target, context, workflow);
@@ -341,6 +594,13 @@ async function executeWorkflow(workflow, startNode, context, options = {}) {
           } catch (err) {
             anyError = true;
             lastError = err;
+            if (!firstFailedStepId) firstFailedStepId = target.id;
+            stepAudit.push({
+              nodeId: target.id,
+              kind: target.kind,
+              status: 'failed',
+              reason: String(err?.message || err).slice(0, 200),
+            });
             safeLogger.error('[Workflow] action node failed', {
               err,
               workflowId: workflow.id,
@@ -371,7 +631,19 @@ async function executeWorkflow(workflow, startNode, context, options = {}) {
   }
 
   const status = anyError ? 'error' : anySkipped ? 'partial' : 'ok';
-  const durationMs = Date.now() - t0;
+  const finishedAtDate = new Date();
+  const durationMs = finishedAtDate.getTime() - t0;
+
+  // Build a compact textual digest of skipped/failed steps for the `error`
+  // column. The run-history UI parses this back out when present; consumers
+  // that just want a one-line summary read the first line. Truncated to
+  // 2000 chars so a pathological run can't blow up the row.
+  let errorDigest = lastError ? String(lastError.message || lastError) : null;
+  if (stepAudit.length > 0) {
+    const digestLines = stepAudit.map((s) => `[${s.status}] ${s.kind} (${s.nodeId}): ${s.reason}`);
+    errorDigest = (errorDigest ? `${errorDigest}\n` : '') + digestLines.join('\n');
+  }
+  if (errorDigest) errorDigest = errorDigest.slice(0, 2000);
 
   // Persist the run record + bump lastRunAt on the workflow. Both are
   // wrapped — a failed write here must not propagate.
@@ -385,11 +657,30 @@ async function executeWorkflow(workflow, startNode, context, options = {}) {
       status,
       nodesRun,
       durationMs,
-      error: lastError ? String(lastError.message || lastError).slice(0, 2000) : null,
+      error: errorDigest,
       startedAt: new Date(t0),
+      // May-19 audit follow-up — richer run history. NULL-safe; legacy code
+      // paths that don't populate these still write fine.
+      finishedAt: finishedAtDate,
+      actorId: context?.actorId || context?.userId || null,
+      failedStepId: firstFailedStepId,
+      retryCount: Number.isFinite(options.retryCount) ? options.retryCount : 0,
+      idempotencyKey: options.idempotencyKey || null,
     });
   } catch (err) {
-    safeLogger.warn('[Workflow] WorkflowRun.create failed', { err, workflowId: workflow.id });
+    // A unique-index violation on (workflowId, idempotencyKey) is the
+    // expected outcome when the same trigger event fires twice within the
+    // dedup window (multi-replica + same-event burst). Log at info level
+    // and continue — the duplicate has effectively been deduped at the DB
+    // boundary.
+    if (err && err.name === 'SequelizeUniqueConstraintError') {
+      safeLogger.info('[Workflow] WorkflowRun deduped by idempotency key', {
+        workflowId: workflow.id,
+        idempotencyKey: options.idempotencyKey,
+      });
+    } else {
+      safeLogger.warn('[Workflow] WorkflowRun.create failed', { err, workflowId: workflow.id });
+    }
   }
 
   try {
@@ -506,6 +797,85 @@ async function executeActionNode(node, context, workflow) {
           nodeId: node.id,
         });
       }
+      return;
+    }
+    // ── Phase 7a (May-19 audit follow-up) — safe new actions ─────────
+    //
+    // Each action is gated through ACTION_PERMISSION_REQUIREMENTS at the
+    // walker layer (see executeWorkflow above), so a workflow whose creator
+    // was demoted past the required permission silently no-ops with a
+    // 'skipped' run-history entry instead of mutating data.
+    //
+    // Idempotency for these mutating actions piggybacks on the
+    // run-level idempotency key — the partial unique index on
+    // workflow_runs(workflowId, idempotencyKey) rejects duplicate run
+    // rows, which means a duplicate trigger fire never reaches this
+    // dispatch the second time. For the very rare same-run re-fire (e.g.
+    // a chain visits the same action twice via a cycle, which the
+    // walker's `visited` Set already prevents), we rely on the underlying
+    // operations being naturally idempotent: TaskLabel uses (taskId,
+    // labelId) composite PK so a duplicate insert is a no-op via
+    // findOrCreate; Comment.create + idempotencyKey would be a future
+    // extension. For now, add_comment is single-fire per run.
+    case 'add_label': {
+      if (!cfg.labelId || !task?.id) {
+        safeLogger.warn('[Workflow] add_label: missing labelId or task', {
+          workflowId: workflow.id, nodeId: node.id,
+        });
+        return;
+      }
+      const { TaskLabel, Label } = getModels();
+      // Verify label exists and is on the same board as the task — labels
+      // are board-scoped, so cross-board label assignment is a config bug
+      // by the workflow author. Skip silently with a warn.
+      const label = await Label.findByPk(cfg.labelId);
+      if (!label || (task.boardId && label.boardId && label.boardId !== task.boardId)) {
+        safeLogger.warn('[Workflow] add_label: label missing or board mismatch', {
+          workflowId: workflow.id, nodeId: node.id,
+          labelId: cfg.labelId, taskBoardId: task.boardId,
+        });
+        return;
+      }
+      await TaskLabel.findOrCreate({
+        where: { taskId: task.id, labelId: cfg.labelId },
+        defaults: { taskId: task.id, labelId: cfg.labelId },
+      });
+      return;
+    }
+    case 'remove_label': {
+      if (!cfg.labelId || !task?.id) return;
+      const { TaskLabel } = getModels();
+      // destroy is naturally idempotent — zero rows deleted is fine.
+      await TaskLabel.destroy({ where: { taskId: task.id, labelId: cfg.labelId } });
+      return;
+    }
+    case 'add_comment': {
+      if (!cfg.content || !task?.id) {
+        safeLogger.warn('[Workflow] add_comment: missing content or task', {
+          workflowId: workflow.id, nodeId: node.id,
+        });
+        return;
+      }
+      const { Comment } = getModels();
+      // The workflow creator is the comment author — same actor we used
+      // for the runtime permission check. Falls back to context.userId
+      // (e.g. test-run initiator) when creator can't be resolved.
+      const userId = workflow.createdBy || context?.userId || null;
+      if (!userId) {
+        safeLogger.warn('[Workflow] add_comment: no author resolvable', {
+          workflowId: workflow.id, nodeId: node.id,
+        });
+        return;
+      }
+      // Render template tokens the same way send_message does so authors
+      // can reference {{task.title}} etc. in the comment body.
+      const rendered = renderMessageTemplate(String(cfg.content), { task, workflow });
+      await Comment.create({
+        content: rendered.slice(0, 5000),
+        attachments: [],
+        taskId: task.id,
+        userId,
+      });
       return;
     }
     case 'wait': {

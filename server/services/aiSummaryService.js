@@ -28,7 +28,7 @@
  */
 
 const aiService = require('./aiService');
-const { buildScopeContext } = require('./aiScopeContextService');
+const { buildScopeContext, loadPlanningTaskList } = require('./aiScopeContextService');
 const safeLogger = require('../utils/safeLogger');
 
 class AiNotConfiguredError extends Error {
@@ -327,20 +327,33 @@ async function suggestPriorityWithAI(user, { taskTitle, taskDescription, boardId
 
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri'];
 
-async function planWeekWithAI(user, { taskIds } = {}, opts = {}) {
-  // Always reload from the caller's planning context so the AI's plan is
-  // grounded in real priorities / due dates / status. We ignore the
-  // caller-supplied `taskIds` for visibility — they're only used to bound
-  // the response to a relevant subset.
-  const ctx = await buildScopeContext(user, { scope: 'planning' });
-  if (!ctx) {
-    return { kind: 'structured', schedule: emptySchedule(), notes: 'No open tasks to plan.' };
+async function planWeekWithAI(user, _payload = {}, opts = {}) {
+  // Load the canonical open-task list ONCE. We use the same data for:
+  //   1. building the planning context the LLM sees, and
+  //   2. validating that every taskId the LLM emits actually exists.
+  //
+  // Previously the frontend sent a separate "bias hint" list of task IDs
+  // (loaded by /tasks?assignedTo=me&limit=100 with NO status filter) while
+  // the backend independently re-queried with a status filter and limit:40.
+  // The two lists disagreed, the LLM was instructed to "use only IDs in
+  // the planning context" but also "bias to these hint IDs", and it
+  // gave up with notes like "No task IDs from the provided list match the
+  // current open tasks." Using one source of truth eliminates the mismatch.
+  let planning;
+  try {
+    planning = await loadPlanningTaskList(user);
+  } catch (err) {
+    safeLogger.warn('[aiSummary] planWeek: loadPlanningTaskList failed', { err });
+    return { kind: 'structured', schedule: emptySchedule(), notes: 'Could not load your open tasks. Try again in a moment.' };
   }
 
-  const system = buildPlanWeekSystemPrompt(user, ctx);
-  const userPrompt = Array.isArray(taskIds) && taskIds.length
-    ? `Bias the plan to cover these tasks first when reasonable (IDs): ${taskIds.slice(0, 20).join(', ')}.\nReturn ONLY a JSON object inside a fenced block.`
-    : `Plan a realistic Mon-Fri schedule from my open tasks. Honor priorities and due dates. Return ONLY a JSON object inside a fenced block.`;
+  if (!planning || !Array.isArray(planning.tasks) || planning.tasks.length === 0) {
+    return { kind: 'structured', schedule: emptySchedule(), notes: 'No open tasks to plan — your queue is empty.' };
+  }
+
+  const { context, allowedIds, tasks } = planning;
+  const system = buildPlanWeekSystemPrompt(user, context);
+  const userPrompt = 'Plan a realistic Mon-Fri schedule from my open tasks. Honor priorities and due dates. Return ONLY a JSON object inside a fenced block. Every taskId you output MUST appear verbatim in the PLANNING CONTEXT above.';
 
   const reply = await aiService.chat(
     [{ role: 'user', content: userPrompt }],
@@ -350,23 +363,170 @@ async function planWeekWithAI(user, { taskIds } = {}, opts = {}) {
 
   const parsed = parseFencedJSON(reply);
   if (!parsed || !Array.isArray(parsed.schedule)) {
-    safeLogger.warn('[aiSummary] planWeek: AI returned non-JSON; falling back to empty schedule', { reply: truncate(reply, 200) });
-    return { kind: 'structured', schedule: emptySchedule(), notes: 'AI did not return a structured plan.' };
+    safeLogger.warn('[aiSummary] planWeek: AI returned non-JSON; falling back to deterministic schedule', { reply: truncate(reply, 200) });
+    return {
+      kind: 'structured',
+      schedule: buildDeterministicSchedule(tasks),
+      notes: 'AI response was unstructured — showing a priority-based fallback plan.',
+    };
   }
 
+  // Validate every taskId against the canonical allowed-ID set. This is the
+  // safety net that prevents hallucinated IDs from rendering as empty chips
+  // in the UI and prevents the modal from showing a confusing "no IDs match"
+  // empty state when the AI returned something genuinely useful.
+  const seen = new Set();
+  let droppedCount = 0;
+  let keptCount = 0;
   const cleaned = parsed.schedule
     .filter((d) => d && DAY_KEYS.includes(d.dayKey))
-    .map((d) => ({
-      dayKey: d.dayKey,
-      taskIds: Array.isArray(d.taskIds) ? d.taskIds.filter((x) => typeof x === 'string').slice(0, 20) : [],
-      reason: typeof d.reason === 'string' ? d.reason.slice(0, 240) : '',
-    }));
+    .map((d) => {
+      const rawIds = Array.isArray(d.taskIds) ? d.taskIds : [];
+      const validIds = [];
+      for (const raw of rawIds) {
+        if (typeof raw !== 'string') { droppedCount++; continue; }
+        const id = raw.trim();
+        if (!id || !allowedIds.has(id) || seen.has(id)) { droppedCount++; continue; }
+        seen.add(id);
+        validIds.push(id);
+        if (validIds.length >= 20) break;
+      }
+      keptCount += validIds.length;
+      return {
+        dayKey: d.dayKey,
+        taskIds: validIds,
+        reason: typeof d.reason === 'string' ? d.reason.slice(0, 240) : '',
+      };
+    });
+
+  // If the AI returned a structured plan but every ID was invalid (e.g.
+  // hallucinated UUIDs, or it echoed back stale task references), fall
+  // back to the deterministic schedule rather than showing the user
+  // empty day columns and an unhelpful note.
+  if (keptCount === 0) {
+    safeLogger.warn('[aiSummary] planWeek: AI returned 0 valid task IDs after validation; using deterministic fallback', {
+      dropped: droppedCount,
+      allowedCount: allowedIds.size,
+    });
+    return {
+      kind: 'structured',
+      schedule: buildDeterministicSchedule(tasks),
+      notes: 'AI suggested tasks not in your current open list — showing a priority-based fallback plan instead.',
+    };
+  }
+
+  const aiNotes = typeof parsed.notes === 'string' ? parsed.notes.slice(0, 600) : '';
+  const notes = droppedCount > 0
+    ? (aiNotes ? `${aiNotes} (${droppedCount} suggested item${droppedCount === 1 ? '' : 's'} not in your open list and skipped.)` : `${droppedCount} suggested item${droppedCount === 1 ? '' : 's'} not in your open list — skipped.`)
+    : aiNotes;
 
   return {
     kind: 'structured',
     schedule: cleaned,
-    notes: typeof parsed.notes === 'string' ? parsed.notes.slice(0, 600) : '',
+    notes,
   };
+}
+
+// Deterministic Mon-Fri schedule built straight from the user's open tasks.
+// Used when the AI ignores the schema or hallucinates IDs. The shape mirrors
+// what the LLM should have returned, so the UI renders identically.
+//
+// Distribution policy (no AI involved):
+//   - Overdue + due-today go onto Mon/Tue (front-loaded so the user clears
+//     the backlog).
+//   - Due-this-week spread across Wed/Thu.
+//   - Everything else (later / no due date), highest priority first, on Fri.
+//   - Cap at 3 tasks per day to keep the day card readable.
+function buildDeterministicSchedule(tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return emptySchedule();
+
+  const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+  function rankOf(t) {
+    return PRIORITY_RANK[t?.priority] ?? 4;
+  }
+  function byPriorityThenDueDate(a, b) {
+    const r = rankOf(a) - rankOf(b);
+    if (r !== 0) return r;
+    const ad = a?.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+    const bd = b?.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+    return ad - bd;
+  }
+
+  const today0 = new Date(); today0.setHours(0, 0, 0, 0);
+  const tomorrow0 = new Date(today0.getTime() + 86400000);
+  const endOfWeek = new Date(today0.getTime() + 7 * 86400000);
+
+  const overdue = [];
+  const dueToday = [];
+  const dueThisWeek = [];
+  const rest = [];
+  for (const t of tasks) {
+    if (!t?.dueDate) { rest.push(t); continue; }
+    const d = new Date(t.dueDate);
+    if (d < today0) overdue.push(t);
+    else if (d < tomorrow0) dueToday.push(t);
+    else if (d < endOfWeek) dueThisWeek.push(t);
+    else rest.push(t);
+  }
+  overdue.sort(byPriorityThenDueDate);
+  dueToday.sort(byPriorityThenDueDate);
+  dueThisWeek.sort(byPriorityThenDueDate);
+  rest.sort(byPriorityThenDueDate);
+
+  const MAX_PER_DAY = 3;
+  function take(list, n) {
+    return list.splice(0, Math.max(0, n)).map((t) => String(t.id));
+  }
+
+  // Front-load Mon/Tue with overdue + due-today.
+  const monIds = take([...overdue], MAX_PER_DAY);
+  // Remove monIds from overdue
+  for (const id of monIds) {
+    const idx = overdue.findIndex((t) => String(t.id) === id);
+    if (idx >= 0) overdue.splice(idx, 1);
+  }
+  const tueSeed = [...overdue, ...dueToday];
+  tueSeed.sort(byPriorityThenDueDate);
+  const tueIds = take(tueSeed, MAX_PER_DAY);
+  // Remove tueIds from overdue/dueToday
+  for (const id of tueIds) {
+    let idx = overdue.findIndex((t) => String(t.id) === id);
+    if (idx >= 0) overdue.splice(idx, 1);
+    idx = dueToday.findIndex((t) => String(t.id) === id);
+    if (idx >= 0) dueToday.splice(idx, 1);
+  }
+
+  const wedSeed = [...overdue, ...dueToday, ...dueThisWeek];
+  wedSeed.sort(byPriorityThenDueDate);
+  const wedIds = take(wedSeed, MAX_PER_DAY);
+  for (const id of wedIds) {
+    [overdue, dueToday, dueThisWeek].forEach((list) => {
+      const idx = list.findIndex((t) => String(t.id) === id);
+      if (idx >= 0) list.splice(idx, 1);
+    });
+  }
+
+  const thuSeed = [...overdue, ...dueToday, ...dueThisWeek];
+  thuSeed.sort(byPriorityThenDueDate);
+  const thuIds = take(thuSeed, MAX_PER_DAY);
+  for (const id of thuIds) {
+    [overdue, dueToday, dueThisWeek].forEach((list) => {
+      const idx = list.findIndex((t) => String(t.id) === id);
+      if (idx >= 0) list.splice(idx, 1);
+    });
+  }
+
+  const friSeed = [...overdue, ...dueToday, ...dueThisWeek, ...rest];
+  friSeed.sort(byPriorityThenDueDate);
+  const friIds = take(friSeed, MAX_PER_DAY);
+
+  return [
+    { dayKey: 'mon', taskIds: monIds, reason: monIds.length ? 'Overdue items first.' : '' },
+    { dayKey: 'tue', taskIds: tueIds, reason: tueIds.length ? 'Remaining overdue and due-today work.' : '' },
+    { dayKey: 'wed', taskIds: wedIds, reason: wedIds.length ? 'Mid-week — keep clearing this week\'s work.' : '' },
+    { dayKey: 'thu', taskIds: thuIds, reason: thuIds.length ? 'Continue this week\'s priorities.' : '' },
+    { dayKey: 'fri', taskIds: friIds, reason: friIds.length ? 'Wrap up with remaining priorities.' : '' },
+  ];
 }
 
 function emptySchedule() {
@@ -437,12 +597,18 @@ ${boardCtx ? `\n########## BOARD CONTEXT (for calibration) ##########\n${boardCt
 function buildPlanWeekSystemPrompt(user, planningCtx) {
   return `You are planning a realistic Monday-to-Friday schedule for the caller from their existing open tasks.
 
-Rules:
-- Use only the task IDs that appear in the PLANNING CONTEXT below.
+CRITICAL ID rules — read carefully:
+- Each task line in the PLANNING CONTEXT below begins with "id=<uuid>" — that uuid is the task's database ID. Use those exact ID strings in your "taskIds" arrays.
+- Example: a line like \`• id=7f3a... [high] Ship launch email (status: working_on_it) due 2026-05-20 · board: Q3 Launch\` means you should output the string "7f3a..." in taskIds when you schedule this task.
+- DO NOT use task titles, made-up slugs, board names, or invented UUIDs in the output. Only the exact id= values shown.
+- A given task ID should appear on at most one day across the whole schedule.
+- If you cannot find a relevant ID in the context, leave that day's taskIds empty. An empty day is better than a fabricated ID.
+
+Scheduling rules:
 - Mon = today's working start. Spread overdue + due-today onto Mon/Tue. Spread this-week onto Wed/Thu/Fri.
 - Do NOT recommend more than 4 tasks per day. Prefer 2-3.
 - Reflect priority: critical/high tasks first.
-- If the caller has very little work, leave days empty rather than padding.
+- A given task ID should appear on at most one day.
 
 OUTPUT FORMAT — return ONLY a JSON object inside a single \`\`\`json fenced block:
 
@@ -538,4 +704,5 @@ module.exports = {
   // Exposed for tests:
   __parseFencedJSON: parseFencedJSON,
   __stripFences: stripFences,
+  __buildDeterministicSchedule: buildDeterministicSchedule,
 };

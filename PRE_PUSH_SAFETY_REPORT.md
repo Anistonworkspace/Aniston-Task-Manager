@@ -1,594 +1,411 @@
 # Pre-Push Safety Report — Aniston Task Manager
 
-Generated: 2026-05-18
+Generated: 2026-05-19
 Branch: `main`
-HEAD: `e73132e` (fix(nav,notetaker): make Docs reachable for all tiers + unify Notetaker UI across roles)
-Audit basis: 46 modified + 3 untracked files (all uncommitted on local `main`)
+Local HEAD: `91c04fe` (chore(deps): npm audit fix non-breaking HIGH vulns; desktop carve-out)
+Origin/main HEAD: `91c04fe` (identical — nothing committed-ahead; everything is uncommitted working-tree)
+Audit basis: 39 modified + 12 untracked files (all uncommitted on local `main`)
 Mode: read-only. No commit, push, deploy, migration, or production-DB write
-was executed while producing this report. Both read-only audit workflows are
-proven to be physically unable to write.
+was executed while producing this report.
 
-This report supersedes the 2026-05-13 version of this file.
+This report supersedes the 2026-05-18 version of this file.
 
 ---
 
 ## 1. Executive Summary
 
-The pending diff is the **May 18 follow-up bundle** layered on the post-audit
-remediation work. It is moderate in size (~2 752 insertions / ~355 deletions
-across 49 files) and **schema-clean at the SQL level**: the only model-layer
-change is one new Sequelize association (`Doc.belongsTo(User, { as: 'archiver' })`)
-against the **already-existing** `docs."archivedBy"` column. No new SQL
-migrations, no new `ALTER TABLE`, and no new auto-migration blocks in
-[`server/server.js`](server/server.js).
+The pending diff is a **large multi-feature bundle** (~3 099 insertions / ~567 deletions across 40 files + 12 new files):
 
-Five distinct themes in this bundle:
+1. **Workflow Canvas runtime hardening** — `server/services/workflowEngine.js` gains runtime permission re-checks (close the "demoted admin's workflow keeps mutating" gap), cross-workflow chain-depth cap (`MAX_WORKFLOW_CHAIN_DEPTH=5`), and an in-memory LRU idempotency guard. Trigger fan-out from `taskController.createTask` / `updateTask` is added with a `_workflowOrigin` loop guard. `workflowController` adds new endpoints; `workflowValidationService` is brand new. Permissions table grows a `workflows` resource with `view/create/edit/delete/manage/publish/test_run` actions — T1+T2 only by default; T3/T4 must be granted via `PermissionGrant`.
+2. **Desktop SSO + OTA installer plumbing** — `desktop/main.js`, `desktop/preload.js`, `desktop/updater.js` plus new `desktop/notificationWindow.js`, `desktop/notification-card.html`, `desktop/notification-card-preload.js`, `desktop/log.js`. New backend endpoint `GET /api/auth/desktop-complete` (public, no auth state read/written — terminal URL the Electron wrapper detects). The OAuth state JWT gains an optional `desktop:true` payload that microsoftCallback honors.
+3. **`.gitignore` reversal for the installer artefact** — `server/downloads/desktop/` is now committed (previously gitignored). Includes `Monday-Aniston-Setup.exe` (**~83 MB**) and `desktop-update.json`. Decision is documented in `.gitignore` comments; trade-off is ~80 MB per release added to git history.
+4. **One new SQL migration** — `server/migrations/022_workflows.sql`. Idempotent (`IF NOT EXISTS` everywhere). Mirrors a self-installing block already in `server/server.js`. Purely additive: 5 tables (`workflows`, `workflow_nodes`, `workflow_edges`, `workflow_runs`, `workflow_waits`), additive columns on `workflow_runs` (`finishedAt`, `actorId`, `failedStepId`, `retryCount`, `idempotencyKey`, `workflowVersion`), additive indexes. No DROP, no destructive ALTER, no data backfill.
+5. **Misc** — push-notification service updates, sidebar/profile UI, run-history drawer, login a11y, ai/approval/auth controller edits, new server tests.
 
-1. **Docs reachability for Tier 4 board-only members.** Workspace visibility
-   in [`server/controllers/docController.js`](server/controllers/docController.js)
-   and [`server/services/aiScopeContextService.js`](server/services/aiScopeContextService.js)
-   now honors **board-membership-derived** workspace visibility — matching
-   `getMyWorkspaces` so a Tier 4 user who only reaches a workspace via a
-   visible board can also open its docs and use Sidekick on them.
-2. **Global archive page integration for docs.** Two new endpoints —
-   `GET /api/docs/archived` and `DELETE /api/docs/:id/permanent` — wired into
-   [`server/routes/docs.js`](server/routes/docs.js) + the global
-   [`client/src/pages/ArchivedPage.jsx`](client/src/pages/ArchivedPage.jsx).
-3. **Permission matrix v2 — label + dependency widening, label-delete
-   narrowing.** [`server/config/permissionMatrix.js`](server/config/permissionMatrix.js)
-   now lets T3/T4 mint labels and create dependency requests (UX friction
-   fix); permanent **label DELETE** is narrowed from T2 → T1 only (cascading
-   detach is more destructive than originally judged).
-4. **Priority gate broadened from sole-owner → any-assignee.**
-   [`server/utils/taskOwnership.js`](server/utils/taskOwnership.js) adds
-   `isAssigneeOnTask` so Tier 4 actors handed work by a manager can adjust
-   priority on it. [`server/controllers/taskController.js`](server/controllers/taskController.js)
-   wires it into both `updateTask` and `bulkUpdateTasks` per-row exemption.
-5. **AI Sidekick — doc scope + latency tuning + better cookie behavior in
-   desktop.** [`aiScopeContextService.js`](server/services/aiScopeContextService.js)
-   adds doc scope context (Tiptap JSON → plain text walker, ≤ 12k chars);
-   [`aiSummaryService.js`](server/services/aiSummaryService.js) caps output
-   tokens for summarize calls (~halves latency); the Electron desktop app
-   ([`desktop/main.js`](desktop/main.js), [`desktop/updater.js`](desktop/updater.js))
-   rewrites `SameSite=Lax/Strict` cookies → `SameSite=None; Secure` on the
-   production origin so the renderer's `file://` context can use them.
-
-The Docs route file adds `/archived` **before** the `/:id` catch-all (so
-"archived" isn't parsed as a doc UUID) and the new permanent-delete route
-requires the doc to be soft-archived first (defense in depth). All changes
-are functional / behavioral — none touch the storage shape of any table.
-
-The previously-flagged 2026-05-13 risks (Sunny/Muskan force reset, ALLOW_PROD_*
-flags, seed scripts) remain in their **off-by-default** state and are
-unchanged in this bundle.
+**Production safety guards on the legacy data-mutation surfaces remain intact**: seed-users.js refuses prod without `ALLOW_SEED_IN_PRODUCTION=true`; seed-hierarchy.js skips prod without `ALLOW_PROD_HIERARCHY_SEED=true`; the Sunny/Muskan force-reset block in `deploy/run-onetime-password-reset.sh` is hard-coded `"false"`; `runStartupCleanup` is **commented out** at `server/server.js:2682-2686`. None of the danger flags were flipped in this bundle.
 
 ---
 
 ## 2. Is It Safe To Push?
 
-**YES — WITH STANDARD APPROVAL.**
+**YES — WITH CONDITIONS.** Safe **only after** you decide on the 83 MB binary commitment and review the deploy implications below.
 
-This bundle is safe to push **provided** the standard `production`
-environment Required-Reviewer gate on `deploy.yml` is still configured and
-**you** explicitly approve the deploy after the push. The bundle does not
-introduce any new automatic destructive behavior beyond what is already in
-the codebase (and which is documented + guarded).
-
-Caveats kept from the May 13 report:
-- The push triggers `.github/workflows/deploy.yml` which runs `git reset
-  --hard origin/main` on the EC2 host and rebuilds the Docker image. That
-  is a **code-only** action — no schema migration is auto-applied beyond
-  the idempotent `IF NOT EXISTS` boot-time blocks already in
-  [`server.js`](server/server.js).
-- A pre-deploy `pg_dump` snapshot is taken automatically (line 154 of
-  `deploy.yml`). 30 are retained on the EC2 host.
+| # | Condition | Why |
+|---|---|---|
+| 1 | **You explicitly want the 83 MB `Monday-Aniston-Setup.exe` in git history.** | The `.gitignore` was deliberately changed to allow it. Once committed and pushed, it lives in history forever (BFG/rewrites are the only way to remove it). The .gitignore comment estimates ~1 GB/yr at 12 releases/yr. Alternatives: Docker named volume, GitHub Releases artifact, or S3 — none of which require any backend code change. |
+| 2 | **The GitHub Environment `production` "Required Reviewers" gate is still configured.** | Push triggers `deploy.yml`. The deploy job is gated by environment approval — without an approver clicking, no SSH happens. Verify under repo Settings → Environments → `production`. |
+| 3 | **You're prepared for the `pre-deploy pg_dump` to take a snapshot.** | Automatic, retained 30, doesn't restore. |
+| 4 | **You've considered that `seed-users.js` and `seed-hierarchy.js` run on every deploy** (no-op because of their prod guards, but the `docker exec ... \|\| true` always runs). | Output will appear in deploy logs but no DB writes occur. |
 
 ---
 
 ## 3. Does This Require A Database Migration?
 
-**NO.**
+**YES — but it is fully self-installing (idempotent boot-time block already in `server.js`).**
 
 | Concern | Evidence |
 |---|---|
-| New SQL migration files | None (`server/migrations/` last file is `021_recurring_reminders.sql`, unchanged) |
-| New `ALTER TABLE` in `server.js` | None |
-| New model fields requiring columns | None — `Doc.belongsTo(User, { foreignKey: 'archivedBy', as: 'archiver', onDelete: 'SET NULL' })` is a **Sequelize-side association only**. The `docs."archivedBy"` UUID column already exists, declared in [`server/models/Doc.js:75-78`](server/models/Doc.js#L75-L78) and installed at boot via [`server.js:1293`](server/server.js#L1293). |
-| New unique / check constraints | None |
-| Enum / status value changes | None |
-| New index | None |
+| New SQL migration files | **1 — `server/migrations/022_workflows.sql`** |
+| New `ALTER TABLE` in `server.js` boot path | YES — `workflow_runs` adds 6 columns + 4 indexes (May-19 audit follow-up). All `IF NOT EXISTS`. See `server/server.js:1493-1525` diff. |
+| Idempotent on re-run? | YES — verified. Every CREATE/ALTER/INDEX wrapped in `IF NOT EXISTS`. Partial unique on `workflow_runs(workflowId, idempotencyKey) WHERE idempotencyKey IS NOT NULL` (NULL keys allowed for legacy rows). |
+| Data backfill? | NO — no `UPDATE` introduced. The five new `workflow_runs` columns are all NULL-safe (`retryCount` defaults to 0 via column default; no row touched). |
+| Sequelize model needing new columns? | YES — `server/models/WorkflowRun.js` gains the 6 fields. Schema-side they already exist after boot via the auto-install block. |
 
-`sequelize.sync({ alter: false })` is what `server.js` calls — Sequelize will
-**not** auto-add a foreign-key constraint for the new association. The
-include in `listArchivedDocsForCaller` uses `required: false` (LEFT JOIN) and
-will work correctly with or without a SQL-level FK. **No production schema
-change is needed.**
+**Migration is NOT required to be run manually before deploy.** The boot-time installer in `server.js` adds the columns automatically on the first restart of the new code. The migration file `022_workflows.sql` is the audit-trail companion — ops can replay it on a clean replica.
+
+**Risk level: LOW.** Pure additive. No data movement. Rollback is `git reset` to the prior commit; the additive columns remain harmless (NULL-defaulted) on the prior code.
+
+### Recommended pre-flight (optional, for your peace of mind)
+On a **non-production** clone of the prod DB:
+
+```bash
+# Apply the migration to a staging copy and confirm it reports 0 row changes.
+psql -h <staging-host> -U postgres -d aniston_project_hub -f server/migrations/022_workflows.sql
+```
+
+Expected output: `CREATE TABLE` / `ALTER TABLE` / `CREATE INDEX` lines, all NOTICEs ("relation already exists, skipping") on a DB that has been booted by the new code. Zero `UPDATE` lines.
 
 ---
 
 ## 4. Any Production Data Risk?
 
-**NO — no new data-mutation surfaces in this bundle.**
+**LOW — bounded to two operator-visible behaviors.**
 
-The only new write-path code is:
-1. `DELETE /api/docs/:id/permanent` — gated to admin/super-admin or doc
-   creator, and **requires the doc to already be soft-archived** before it
-   will hard-delete. Defense-in-depth check at
-   [`docController.js`](server/controllers/docController.js) `permanentDeleteDoc`.
-2. `docCollabService.onStoreDocument` now also writes `contentText` and
-   `lastEditedAt` on Y.js flushes (best-effort, try/catch'd). This is the
-   same row Sequelize's `Doc.update` already touched — just additional
-   fields.
-
-Neither of these can resurrect, reseed, restore, or alter pre-existing data
-beyond what the user explicitly requests via the UI.
-
----
-
-## 5. Any Script That May Restore / Reseed / Alter Production Data?
-
-**NO new scripts in this bundle. Existing scripts are all gated.**
-
-| Script | Path | Guard | Status |
+| Risk | Severity | Where | Why bounded |
 |---|---|---|---|
-| Super-admin seed | [`server/seed-users.js`](server/seed-users.js) | `ALLOW_SEED_IN_PRODUCTION=true` AND `SEED_SUPERADMIN_EMAIL/PASSWORD` required. Refuses to overwrite existing user. | ✅ Safe (deploy invokes with `|| true`; refuses in prod by default) |
-| Hierarchy seed | [`server/seed-hierarchy.js:13-16`](server/seed-hierarchy.js#L13-L16) | `ALLOW_PROD_HIERARCHY_SEED=true` required; default = skip. | ✅ Safe |
-| Sunny/Muskan password reset | [`deploy/run-onetime-password-reset.sh:70`](deploy/run-onetime-password-reset.sh#L70) | `FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="false"` (hardcoded); idempotency marker in `system_maintenance_runs`. | ✅ Safe (force flag off) |
-| Plan-data cleanup | [`server/cleanup-plan-data.js`](server/cleanup-plan-data.js) | `ALLOW_PROD_PLAN_CLEANUP=true` required in prod; not in boot path. | ✅ Safe |
-| `sync.js --force` | [`server/config/sync.js`](server/config/sync.js) | Manual only; never called from `server.js`. | ✅ Safe |
-| Teams-token encrypt backfill | [`server/migrations/run_017.js`](server/migrations/run_017.js) | `ALLOW_PROD_TEAMS_TOKEN_ENCRYPT_BACKFILL=true` required. | ✅ Safe |
-| Dev password reset | [`server/scripts/reset-dev-passwords.js`](server/scripts/reset-dev-passwords.js) | `ALLOW_DEV_PASSWORD_RESET=true` + refuses prod regardless. | ✅ Safe |
-| Specific-user reset | [`server/scripts/reset-specific-user-passwords.js`](server/scripts/reset-specific-user-passwords.js) | `ALLOW_SPECIFIC_PASSWORD_RESET=true` + allowlist + dry-run default. | ✅ Safe |
-| `add-archive-columns.js` | [`server/add-archive-columns.js`](server/add-archive-columns.js) | Manual only; idempotent `ADD COLUMN IF NOT EXISTS`; not in boot path. | ✅ Safe (advisory, must be run manually) |
-| `migrate-production.js` | [`server/migrate-production.js`](server/migrate-production.js) | Manual only; not in boot path or deploy pipeline. | ✅ Safe |
+| Workflow Canvas trigger fan-out fires on `task_created` / `task_updated` after this code lands. Existing workflows in prod could start firing. | Medium | `server/controllers/taskController.js:955-980` (createTask) and `:2640-2716` (updateTask). | A workflow only fires if `workflows.isActive=true`. The Phase W1/W2 workflows in production were already wired to fire on `status_changed` and `task_assigned` — this push **adds two more triggers** (`task_created` and `task_updated`) to the same fan-out pipe. If a workflow exists with `task_created` or `task_updated` as its trigger, it will start firing. **You should query `SELECT id, name, "isActive" FROM workflows;` on prod before approving the deploy and decide whether any active workflow's behavior change is intended.** |
+| Deploy step `[8/9] Running database seeds (idempotent)` runs `seed-users.js` and `seed-hierarchy.js` every deploy. | None (with default config) | `.github/workflows/deploy.yml:213-215`. | Both scripts have hard prod-guard returns. seed-users requires `ALLOW_SEED_IN_PRODUCTION=true`; seed-hierarchy requires `ALLOW_PROD_HIERARCHY_SEED=true`. Neither flag is set. Output is a one-line "skipping" log, no DB writes. |
+| Deploy step `[9/9] One-time password reset (guarded)`. | None (with default config) | `deploy/run-onetime-password-reset.sh`. | `FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY="false"` hard-coded; `RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN` is the deploy-env var, set to the literal string `"false"` by the workflow unless `vars.RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN=='true'` or the `workflow_dispatch` input is `"true"`. Neither will be on a normal push. |
 
-**Boot-time data-touch surfaces in `server.js`** — every one is either
-system-flag-gated (one-shot) or idempotent with a WHERE guard that touches
-zero rows when state is in sync:
+---
 
-| Block | Lines | Behavior | Status |
+## 5. Any Script That Can Restore / Reseed / Alter Production Data?
+
+| Script | Auto-runs on deploy? | Production guard? | Risk |
 |---|---|---|---|
-| `task_assignees` legacy backfill | ~929-958 | One-shot INSERT, gated by `system_flags.task_assignees_legacy_backfill_v1` | ✅ Marker should be set on prod |
-| `task_approval_flows.stage` backfill | ~1091 | `UPDATE … WHERE stage IS NULL` — idempotent | ✅ Safe |
-| `permission_grants.effect` backfill | ~1141 | `UPDATE … WHERE effect IS NULL` — idempotent | ✅ Safe |
-| `tasks.completedAt` backfill | ~1989 | `UPDATE … WHERE status='done' AND completedAt IS NULL` — idempotent | ✅ Safe |
-| `system_settings` inactivity_timeout INSERT | ~2169 | `INSERT … ON CONFLICT (key) DO NOTHING` — idempotent | ✅ Safe |
-| `BoardMembers.autoAdded=false` mark | ~2200-2210 | UPDATEs flags for creators + admin/manager/AM; no data destruction | ✅ Safe (doesn't recreate rows) |
-| `BoardMembers` stale-row cleanup | ~2226-2243 | One-shot DELETE, gated by `system_flags.boardmembers_cleanup_v1`. **Membership-only — never touches tasks, comments, files, work logs.** | ✅ Marker should be set on prod |
-| `tasks.progress=100` for `status='done'` | ~2253 | `UPDATE … WHERE progress IS NULL OR progress < 100` — idempotent | ✅ Safe |
-| Group `mappedStatus` backfill | ~2308-2370 | One-shot, gated by `system_flags.group_mapped_status_backfill_v1` | ✅ Marker should be set on prod |
-| `users.tier` recompute | ~2492 | `UPDATE … WHERE tier IS NULL OR tier <> CASE …` — touches zero rows when in sync | ✅ Safe |
-| `task_assignees` receipt columns | ~2592-2595 | DDL only — no data mutation | ✅ Safe |
-| Boards `columns` JSONB normalization | ~1647 | Append-only — adds `labels` / `references` / `links` columns if missing | ✅ Safe |
-
-None of the above can resurrect tasks, boards, workspaces, users, labels,
-docs, or any user-facing data that was explicitly deleted via the app.
+| `server/seed-users.js` | YES (`docker exec aph-backend node seed-users.js \|\| true`) | YES — refuses prod unless `ALLOW_SEED_IN_PRODUCTION=true` AND `SEED_SUPERADMIN_EMAIL/PASSWORD` supplied. **Refuses to silently overwrite an existing user.** | None at default. |
+| `server/seed-hierarchy.js` | YES (`docker exec aph-backend node seed-hierarchy.js \|\| true`) | YES — skips prod unless `ALLOW_PROD_HIERARCHY_SEED=true`. | None at default. If accidentally enabled, would back-derive `users.hierarchyLevel` from `role`. |
+| `server/cleanup-plan-data.js` | NO — startup call is **commented out** at `server/server.js:2682-2686`. | YES — refuses prod unless `ALLOW_PROD_PLAN_CLEANUP=true`. | None at default. |
+| `server/recover-director-plans.js` | NO — manual only. | **NO production guard.** Has `--dry-run` default; requires `--fix` to write. | **Medium** if someone runs `docker exec aph-backend node recover-director-plans.js --fix` against prod. **This script is a TRUE restoration script** — it overwrites empty `director_plans.categories` JSONB with content copied from another row. *director_plans is a legacy table no longer queried; impact is bounded but real.* See finding F-3 below. |
+| `server/migrate-production.js` | NO — manual only. | Mentioned but not currently invoked anywhere on deploy. | Low. |
+| `deploy/run-onetime-password-reset.sh` | YES on every deploy, but is a no-op unless flagged. | YES — three layers (`FORCE_AUTO_RUN_…=false` hard-coded, `RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN!='true'`, DB marker dedup). | None at default. |
+| `deploy/backup.sh` | YES, daily cron 02:00. | Pure `pg_dump → gzip`. Does NOT restore. | None — it only reads. |
+| `seed*` boot-time blocks in `server/server.js` | YES every boot. | All are `CREATE TABLE / ALTER TABLE ADD COLUMN IF NOT EXISTS` plus narrow `UPDATE … WHERE col IS NULL` backfills (`status_new`, `stage`, `effect`, `daysOfMonth`, `completedAt`). None resurrect deleted rows. | None — investigated lines 667 / 1091 / 1141 / 1976 / 2022 individually. |
 
 ---
 
-## 6. Changed-Files Summary
+## 6. Changed Files Summary (39 modified + 12 untracked)
 
-49 files: 46 modified + 3 untracked.
+### Backend — production behavior
+- **`server/server.js`** (+33 lines) — adds the May-19 audit follow-up `workflow_runs` columns + indexes + edge cascade indexes inside the existing auto-migration block. **Mirrors `migrations/022_workflows.sql` exactly. Safe.**
+- **`server/services/workflowEngine.js`** (+378/−~80) — adds runtime permission re-check (`checkActionPermission`), chain-depth cap, idempotency LRU, condition node guard rails. **Defensive change. Closes audit P0-3/5/6.**
+- **`server/services/workflowValidationService.js`** (NEW) — pre-publish validator.
+- **`server/controllers/workflowController.js`** (+109 lines) — wires the new validator, run-history drilldown, retry/echo endpoints.
+- **`server/routes/workflows.js`** (+65 lines) — new endpoints.
+- **`server/models/WorkflowRun.js`** (+41 lines) — adds `finishedAt`, `actorId`, `failedStepId`, `retryCount`, `idempotencyKey`, `workflowVersion`.
+- **`server/controllers/taskController.js`** (+91 lines) — workflow trigger fan-out on `createTask` + `updateTask`. Loop-guarded by `_workflowOrigin`. **No delete/archive change.**
+- **`server/controllers/authController.js`** (+224 lines) — desktop-aware OAuth state, unified `ssoRedirect()` helper, new `desktopSsoComplete` handler (public, HTML-escaped, allowlisted status, no cookie writes). **No data mutation.**
+- **`server/routes/auth.js`** (+6 lines) — mounts `/api/auth/desktop-complete`.
+- **`server/config/permissionMatrix.js`** (+57 lines) — adds `workflows` resource + umbrella fallbacks. **T1+T2 full access, T3+T4 default deny.** No existing permission loosened.
+- **`server/controllers/aiController.js`** (+19), **`server/controllers/approvalController.js`** (+9), **`server/services/aiScopeContextService.js`** (+108), **`server/services/aiSummaryService.js`** (+215), **`server/services/approvalChainService.js`** (+30), **`server/services/socketService.js`** (+54) — feature work, no schema impact.
 
-### Server (~10 controller / service / util / model files)
+### Frontend
+- **`client/src/components/auth/Login.jsx`** (+85) — desktop SSO branch; uses `loginWithToken()` instead of full reload after popup success.
+- **`client/src/components/layout/Sidebar.jsx`** (+10), **`client/src/context/AuthContext.jsx`** (+33), **`client/src/pages/Notetaker/NotetakerPage.jsx`** (+150), **`client/src/pages/ProfilePage.jsx`** (+7), **`client/src/pages/Workflows/*`** (+524 across 4 files), **`client/src/services/workflowsService.js`** (+76), **`client/src/services/pushNotifications.js`** (+39), **`client/src/components/profile/DesktopUpdateSettings.jsx`** (NEW), **`client/src/components/sidekick/PlanWeekModal.jsx`** (+28) — UI / state.
 
-| File | What changed | Affects schema | Affects deploy | Affects auth/RBAC | Can mutate prod data | Safe to push |
-|---|---|---|---|---|---|---|
-| [`server/models/index.js`](server/models/index.js) | +3 lines: `Doc.belongsTo(User, as:'archiver')` association | No (column exists) | No | No | No | ✅ Yes |
-| [`server/routes/docs.js`](server/routes/docs.js) | +11 lines: route wires for new `/archived` + `/:id/permanent` | No | No | No | Only via UI delete | ✅ Yes |
-| [`server/controllers/docController.js`](server/controllers/docController.js) | +120 / -3: new `listArchivedDocsForCaller`, `permanentDeleteDoc`; board-membership branch in `canCallerSeeWorkspace` | No | No | Yes — widens read visibility | Only via UI delete (gated) | ✅ Yes |
-| [`server/controllers/authController.js`](server/controllers/authController.js) | +7 / -1: include `tier` in `getAllUsers` attribute lists | No | No | Visibility only (tier is broadly exposed already) | No | ✅ Yes |
-| [`server/controllers/aiController.js`](server/controllers/aiController.js) | +19 / -3: doc summarize endpoint adds board-membership path; updated system prompt for doc scope | No | No | Visibility only | No (read-only AI calls) | ✅ Yes |
-| [`server/controllers/dependencyRequestController.js`](server/controllers/dependencyRequestController.js) | +9 / -6: allow self-assignment on create + update | No | No | RBAC widening (T4 already gets `dependencies.create=true` in matrix) | Allows creating dependency rows — same as before, just on self | ✅ Yes |
-| [`server/controllers/taskController.js`](server/controllers/taskController.js) | +88 / -21: getTasks pagination + isAssigneeOnTask exemption in priority gate | No | No | RBAC widening (priority on assigned tasks) | Same write paths, broader access | ✅ Yes |
-| [`server/services/aiScopeContextService.js`](server/services/aiScopeContextService.js) | +146: new doc scope, Tiptap JSON walker | No | No | No (mirrors docController visibility) | No (read-only) | ✅ Yes |
-| [`server/services/aiService.js`](server/services/aiService.js) | +2 / -2: forward `opts.maxTokens` to provider | No | No | No | No | ✅ Yes |
-| [`server/services/aiSummaryService.js`](server/services/aiSummaryService.js) | +33 / -11: `maxTokens` caps + JSON-fallback for doc summary | No | No | No | No | ✅ Yes |
-| [`server/services/docCollabService.js`](server/services/docCollabService.js) | +18 / -3: Y.js `onStoreDocument` also refreshes `contentText` + `lastEditedAt` (best-effort) | No | No | No | Yes — updates Doc rows it was already updating, plus 2 more columns | ✅ Yes (additive) |
-| [`server/utils/taskOwnership.js`](server/utils/taskOwnership.js) | +49 / -14: adds `isAssigneeOnTask` helper | No | No | RBAC support util | No | ✅ Yes |
-| [`server/config/permissionMatrix.js`](server/config/permissionMatrix.js) | +35 / -9: labels.delete → T1-only, labels.create + dependencies.create widened to T3/T4 | No | No | **RBAC change** — widens label create + dependency create to all tiers, narrows label delete to T1 only | No directly | ✅ Yes (intentional v2 product decision) |
+### Desktop / installer
+- **`desktop/main.js`** (+531), **`desktop/preload.js`** (+130), **`desktop/updater.js`** (+198), **`desktop/notifications.js`** (+59), **`desktop/tray.js`** (+15), **`desktop/package.json`** (+6), **`scripts/publish-desktop-installer.js`** (+77) — Electron wrapper changes for OTA + SSO popup.
+- **`desktop/log.js`**, **`desktop/notification-card-preload.js`**, **`desktop/notification-card.html`**, **`desktop/notificationWindow.js`** (NEW) — notification card window.
 
-### Server tests (10 files)
+### Migration / build artefacts
+- **`server/migrations/022_workflows.sql`** (NEW) — see §3.
+- **`server/downloads/desktop/Monday-Aniston-Setup.exe`** (NEW, ~83 MB binary).
+- **`server/downloads/desktop/desktop-update.json`** (NEW, 836 bytes).
+- **`.gitignore`** (+26/−5) — reverses prior exclusion of `server/downloads/desktop/`.
 
-All test changes track the controller/matrix changes:
-- `route-security.test.js` — flips T4 member label-create expectation from 403 → not 403
-- `labelController.security.test.js` — same widening
-- `taskController.*Authority.test.js` — assignee-exemption paths
-- `tierPermissionMatrix.test.js` — updates expected matrix values
-- `aiScopeContextService.test.js` — new doc-scope test coverage
-- `taskOwnership.test.js` — new `isAssigneeOnTask` coverage
-- `dependencyRequestController.test.js` — removed "can't self-assign" test
-- `task.test.js` — minor
-
-Test results: **234/234 passing** for the 11 affected suites (run locally
-this session against mock DB — no production touch).
-
-### Client (~13 files)
-
-UI for the new doc archive page integration, AI Sidekick Doc scope wiring,
-TaskModal/BoardPage/WorkspacePage updates, permissions util surface for
-labels/dependencies widening. Three new untracked files:
-- [`client/src/components/sidekick/AISummaryModal.jsx`](client/src/components/sidekick/AISummaryModal.jsx) — replaces the popover for Summarize buttons
-- [`client/src/components/workspace/WorkspaceShareModal.jsx`](client/src/components/workspace/WorkspaceShareModal.jsx) — new feature wired to existing `/api/workspaces/:id/members` endpoints
-- (no third client file)
-
-### Desktop (6 files including new updater)
-
-- [`desktop/main.js`](desktop/main.js) — `installCookieSameSiteRewriter`, sign-out cookie wipe, updater wiring
-- [`desktop/updater.js`](desktop/updater.js) — new auto-updater for the Electron app
-- [`desktop/tray.js`](desktop/tray.js), [`desktop/notifications.js`](desktop/notifications.js), [`desktop/preload.js`](desktop/preload.js), [`desktop/package.json`](desktop/package.json)
-
-**Desktop changes do not deploy via `deploy.yml`.** They are packaged
-separately into an Electron installer. Even the largest desktop diffs in
-this bundle have **zero impact** on the server, database, or any
-production data.
+### Tests (server)
+- 4 modified, 3 new test files. All Jest mock-DB. **No prod connection.**
 
 ---
 
-## 7. Migration Assessment
+## 7. Deploy Workflow Assessment
 
-**Does this push require a DB migration? NO.**
+`.github/workflows/deploy.yml` analyzed end-to-end:
 
-| Question | Answer |
-|---|---|
-| Required migration | None |
-| Optional column / index changes | None new in this bundle |
-| Safe local command | n/a |
-| Safe production command | n/a (no migration needed) |
-| Rollback plan | n/a (no migration) |
-| Backup requirement | Pre-deploy `pg_dump` happens automatically in `deploy.yml` |
-| Risk level | **Low** |
-
-If you ever need to apply the `archivedBy` column on a hypothetical
-out-of-sync DB, the boot-time `CREATE TABLE IF NOT EXISTS docs(...)`
-block at [`server.js:1283-1306`](server/server.js#L1283-L1306) ensures it.
-
----
-
-## 8. Deploy Workflow Assessment
-
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) reviewed in full.
-
-| Property | Status |
-|---|---|
-| Triggers on `push` to `main` | ✅ Yes (intentional) |
-| Required Reviewer gate via `environment: production` | ✅ Yes (line 102) |
-| Concurrency: `cancel-in-progress: false` | ✅ Yes — queues, never cancels |
-| Pre-deploy `pg_dump` snapshot | ✅ Yes (line 154-157), 30 retained |
-| Health-check loop + auto-rollback | ✅ Yes (10 retries × 6s, then `git reset --hard $PREVIOUS_SHA`) |
-| Slack alert on rollback failure | ✅ Yes (if `SLACK_WEBHOOK_URL` set) |
-| Auto-run seeders | ✅ Yes — but **both seeders are guarded against production by default** (see Phase 5 table) |
-| Auto-run dangerous scripts | ❌ Only `deploy/run-onetime-password-reset.sh` which is hardcoded `FORCE_AUTO_RUN…=false` |
-| Migration auto-run | ❌ No — relies on idempotent boot-time blocks in `server.js` |
-| Container restart in audit workflows | ❌ No — every audit workflow's container check returns early without restart |
-
-**Verdict:** Deploy workflow is safe. No new deploy-script changes in this
-bundle — the workflow file itself is unchanged.
-
----
-
-## 9. Read-Only Audit Deploy Assessment
-
-**The recent read-only audit deploys CANNOT have changed production data.**
-Evidence:
-
-[`readonly-production-task-audit.yml`](.github/workflows/readonly-production-task-audit.yml):
-- Triggers: `workflow_dispatch` only
-- Gate: `environment: production` (manual approval)
-- All SQL runs inside `BEGIN; SET TRANSACTION READ ONLY; … ROLLBACK;`
-  (Postgres physically rejects any writes inside such a transaction with
-  `ERROR: cannot execute … in a read-only transaction`)
-- Forbidden-keyword `grep` guard before psql execution (in the visibility
-  workflow): rejects `insert|update|delete|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster`
-- Container check returns early without restart
-- No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER appears anywhere in either
-  audit workflow's SQL
-
-[`readonly-production-task-visibility-audit.yml`](.github/workflows/readonly-production-task-visibility-audit.yml)
-and [`readonly-sso-diagnostic.yml`](.github/workflows/readonly-sso-diagnostic.yml)
-follow the same `READ ONLY + ROLLBACK` pattern with the additional
-forbidden-keyword guard.
-
-**Conclusion:** It is **physically impossible** for the read-only audit
-deploys to have changed production data. If data reappeared after a delete,
-the cause is elsewhere — see Phase 10.
-
----
-
-## 10. Deleted-Data-Coming-Back Investigation
-
-Ranked by **likelihood**, given the current codebase:
-
-### Most likely (1–3): client-side / UX issues
-1. **Stale frontend cache / React state.** The deletion succeeded on the
-   server, but the UI didn't refetch on subsequent navigation. Hard refresh
-   (Ctrl+Shift+R) would clear it.
-2. **Service worker / PWA cache.** `client/dist/sw.js` is in this bundle's
-   build chain. If a stale SW served a cached `/api/tasks` list, the user
-   would see the deleted item until SW updated. Mitigated by the build-
-   timestamp injection check in `deploy.yml:91-94`.
-3. **Optimistic-UI rehydration via Socket.io.** Another browser/window had
-   the deleted item locally and emitted a save that re-created it; or, a
-   socket reconnect re-broadcast a stale snapshot.
-
-### Plausible (4–7): server-side semantics
-4. **Soft delete vs hard delete confusion.** `DELETE /api/boards/:id` and
-   `DELETE /api/tasks/:id` perform **archive** (set `isArchived=true`), not
-   row removal. The item appears in `/archive` and can be restored. If the
-   user expected hard-delete, the item "comes back" when they navigate
-   back to the archive page.
-5. **Recurring task instance regeneration.** [`recurringTemplateGenerationJob.js`](server/jobs/recurringTemplateGenerationJob.js)
-   runs every 10 minutes and generates today's instance per active
-   template. The DB partial unique on `(recurringTemplateId, occurrenceDate)`
-   prevents duplicate-for-same-date, but if the user deleted **a different
-   day's** instance and a new day's came due, that new instance looks
-   identical and may appear to be the deleted one. Disable / archive the
-   template if regeneration is unwanted.
-6. **`task_assignees` legacy backfill block.** First-time-only INSERTs from
-   `tasks.assignedTo` and `task_owners` into `task_assignees` — gated by
-   `system_flags.task_assignees_legacy_backfill_v1`. If that flag was ever
-   manually deleted (it shouldn't be), a future restart would re-insert
-   rows. Confirmed gated; no risk under normal ops.
-7. **`BoardMembers.autoAdded=false` mark on every boot.** Reverses the
-   "stale auto-added" cleanup from later in the boot path for board
-   creators and admin/manager/AM users. **This only flips a flag — it
-   does not recreate `BoardMembers` rows.** Cannot resurrect deleted
-   memberships.
-
-### Unlikely (8+): infrastructure
-8. **DB restore from `pg_dump` snapshot.** Only triggered manually by an
-   operator. No automation restores backups.
-9. **Replica / read-replica lag.** None configured.
-10. **Seed scripts.** Only the super-admin user is candidate, and the seed
-    refuses to overwrite existing users.
-
-**Evidence the read-only audit deploys are NOT the cause:** see Phase 9.
-
----
-
-## 11. Secret Exposure Check
-
-✅ **Clean.**
-
-| Path | Tracked? | Notes |
+| Stage | Action | Risk |
 |---|---|---|
-| `deploy/.env` | ❌ Gitignored | Verified via `git check-ignore` |
-| `server/.env` | ❌ Gitignored | Verified via `git check-ignore` |
-| `client/.env` | ❌ Gitignored | Verified via `git check-ignore` |
-| `*.pem`, `*.p12`, `*.key` | ❌ Gitignored | Multiple defensive layers in `.gitignore` |
-| `deploy/.env.production.example` | ✅ Tracked | Template only, placeholders |
-| `server/.env.example` | ✅ Tracked | Template only, placeholders |
-| [`deploy/k8s/secrets.yml`](deploy/k8s/secrets.yml) | ✅ Tracked | Template only — every value is `"CHANGE_ME"` or `""` |
-| Migration `.sql` files | ✅ Tracked | DDL only, no credentials |
-| `server/scripts/diagnose-board-workspace.sql` | ✅ Tracked | Read-only diagnostic; UPDATEs are commented out |
+| Build job | `npm ci` + tests + lint + Vite build. | None. |
+| `[1/8]` Repo check / clone | `git clone` to `~/Aniston-Task-Manager` if missing. | None. |
+| `[2/8]` Save rollback SHA | `git rev-parse HEAD`. | None. |
+| `[3/8]` Pull latest | `git fetch origin main && git reset --hard origin/main`. | **Code-only, expected.** |
+| `[4/8]` Env file write | `echo "$ENV_FILE" > deploy/.env`. | Standard. ENV_FILE is a GH Actions secret. |
+| `[4.5/8]` **Pre-deploy `pg_dump` snapshot** | `docker exec aph-postgres sh -c 'pg_dump ...'`. Retained 30. | **Defensive. Read-only on DB.** |
+| `[5/8]` Build images | `docker compose build`. | None. |
+| `[6/8]` Restart containers | `docker compose up -d --no-build`. | Expected. |
+| `[7/8]` Health check loop + auto-rollback | `git reset --hard $PREVIOUS_SHA` on failure. **DB schema is forward-only — DB rollback is manual.** | Acceptable. The new migration is purely additive — rolling back to the prior code leaves the new columns harmlessly populated/NULL. |
+| `[8/9]` Run seeds | `seed-users.js`, `seed-hierarchy.js`. | **No-op at default config (verified §5).** |
+| `[9/9]` One-time password reset | `deploy/run-onetime-password-reset.sh`. | **No-op at default config (verified §5).** |
+| Daily backup cron | `0 2 * * * docker exec aph-postgres sh /backup.sh`. | Read-only. |
 
-No backup/dump files (`.sql.gz`, `.dump`, `.tar`, `.zip`, `.7z`) are tracked
-outside `server/migrations/`. No untracked `.env` file is staged.
+`.github/workflows/readonly-production-task-audit.yml`, `…visibility-audit.yml`, `readonly-sso-diagnostic.yml`:
+- All three use `BEGIN; SET TRANSACTION READ ONLY; … ROLLBACK;`. Postgres physically rejects any DML inside such a transaction.
+- The visibility-audit also writes its SQL bundle to `/tmp/aniston-audit.sql` and runs an explicit forbidden-keyword grep (`insert|update|delete|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster`) before execution. **Two layers of defense.**
+- None of the three workflows execute any node script that could write. None mount a non-temp file from EC2 except the audit output to `/tmp/aniston-audit-output.txt` (read-only, then `rm -f`'d).
+- **Verdict: The read-only audit deploy you ran could NOT have written, deleted, or restored any data.**
 
 ---
 
-## 12. Build / Test Results
+## 8. Read-Only Audit Deploy Assessment
 
-| Check | Status |
+**The read-only audits CANNOT have caused deleted data to come back.** Evidence:
+
+1. `SET TRANSACTION READ ONLY` makes Postgres reject any `INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER` with `ERROR: cannot execute … in a read-only transaction` regardless of guard layers above. This is enforced at the storage engine.
+2. The transaction ends in `ROLLBACK`, not `COMMIT`. Even hypothetical reads-with-side-effects (none exist) would not persist.
+3. The forbidden-keyword grep blocks the SQL bundle from being executed if it contains any DDL/DML keyword.
+4. The Node-eval shim used by the visibility audit only issues `SELECT current_database(), pg_postmaster_start_time(), version(), pg_is_in_recovery();` — explicit read-only metadata calls.
+
+If you're worried the audit deploy itself caused a side effect (e.g. by restarting the backend), check the SSH script: **no `docker restart`, no container `up`/`down`, no file write to the host beyond `/tmp/`**. The only thing that touches the backend container is `docker exec` with a node-eval that opens a Sequelize connection, runs one `SELECT`, and exits.
+
+---
+
+## 9. Deleted-Data-Coming-Back Investigation
+
+**Ranked most-likely → least-likely causes for tasks/boards/etc. reappearing after deletion:**
+
+### F-1 (HIGH likelihood) — Service worker / PWA cache serving stale responses
+The repo carries a service worker (`client/dist/sw.js`, built by Vite). The deploy verifier confirms `__BUILD_TIMESTAMP__` is injected into it. After a delete:
+- The user's browser may serve a cached `/api/tasks` or `/api/boards/:id` response showing the task that was deleted.
+- A hard refresh / `cmd-shift-r` flushes it. Without that, the task "comes back" until the SW invalidates.
+- Recent commit `f595346 fix(sw): stop accusing user of being offline during deploy cutovers` confirms there's active SW work in play.
+
+**Action:** Reproduce with browser DevTools → Application → Service Workers → "Update on reload" + "Bypass for network". If the deleted task disappears, this is the cause.
+
+### F-2 (HIGH likelihood) — Recurring task regeneration
+Two crons (`recurringTemplateGenerationJob`, every 10 min; `missedRecurringTaskJob`, every 10 min) continuously look for active templates whose `nextRunAt <= now` and generate today's `Task` instance if one doesn't exist for that `(recurringTemplateId, occurrenceDate)`.
+
+- The unique partial index `tasks_recurring_template_occurrence_unique ON tasks(recurringTemplateId, occurrenceDate) WHERE recurringTemplateId IS NOT NULL AND occurrenceDate IS NOT NULL` prevents duplicates **as long as the prior instance row still exists**.
+- If the user **hard-deletes** the instance (true `DELETE FROM tasks`), the unique-index slot frees up. Within 10 minutes the cron regenerates a fresh instance for the same `occurrenceDate`.
+- If the user **archives** (`isArchived=true`), the row stays, the index still occupies the slot, and no regeneration happens — but the user may not see the row in the UI and conclude "it came back".
+
+**Action:** On prod, run a query like:
+```sql
+SELECT id, title, "recurringTemplateId", "occurrenceDate", "isArchived",
+       "createdAt", "updatedAt"
+FROM tasks
+WHERE "isRecurringInstance" = true
+  AND "recurringTemplateId" IS NOT NULL
+ORDER BY "createdAt" DESC
+LIMIT 50;
+```
+Look at the `createdAt` for the "reappeared" task. If it's a recent timestamp (post-deletion), this is the cause. Solution: archive the template (`UPDATE recurring_task_templates SET "archivedAt" = NOW() WHERE id = …`) before deleting the instance, OR delete the instance via the archive path so the row persists with `isArchived=true`.
+
+### F-3 (LOW likelihood) — Manual run of `recover-director-plans.js`
+This script can restore director-plan content from one row to another. It is manual-only (no auto-run) and **has no production guard**. If someone SSH'd onto EC2 and ran `docker exec aph-backend node recover-director-plans.js --fix`, that would restore content. Given director_plans is a retired table (the dashboard no longer queries it), this is unlikely to be the cause of perceived data resurrection in the live UI.
+
+### F-4 (LOW likelihood) — Optimistic React updates + WebSocket re-hydration
+The client uses Socket.io for realtime updates. After a delete:
+- The client emits an HTTP DELETE.
+- The backend deletes and emits `task:deleted` on `board:<boardId>`.
+- If the socket connection is briefly out of sync (e.g. during the request), the React component may not receive the `task:deleted` event and continues to show the row.
+- A page refresh would then re-fetch and the row should be gone. **If the row reappears after refresh, F-1 or F-2 is the cause.**
+
+### F-5 (NIL likelihood) — Backup restore / deploy restore
+`deploy.yml` only `git reset --hard` for rollback; it does **not** `pg_restore`. The pre-deploy snapshot is one-way. The daily `backup.sh` cron is also `pg_dump`-only. **No automatic restore path exists.**
+
+### F-6 (NIL likelihood) — Seed scripts re-creating users/data
+seed-users.js refuses prod unless `ALLOW_SEED_IN_PRODUCTION=true` AND specifically **refuses to overwrite** an existing user. seed-hierarchy.js skips prod unless `ALLOW_PROD_HIERARCHY_SEED=true`. **No deleted-data resurrection path through seeds.**
+
+### F-7 (NIL likelihood) — Boot-time `UPDATE` blocks
+Five `UPDATE` statements found in `server.js`:
+- `:667` — `status_new = status::text WHERE status_new IS NULL` (status enum→string migration).
+- `:1091` — `task_approval_flows.stage = level WHERE stage IS NULL`.
+- `:1141` — `permission_grants.effect = 'grant' WHERE effect IS NULL`.
+- `:1976` — `recurring_task_templates.daysOfMonth = jsonb_build_array("dayOfMonth") WHERE "dayOfMonth" IS NOT NULL AND ("daysOfMonth" IS NULL OR "daysOfMonth" = '[]')`.
+- `:2022` — `tasks.completedAt = "updatedAt" WHERE status = 'done' AND "completedAt" IS NULL`.
+
+All five are **forward backfills with `WHERE col IS NULL` guards**. None re-add deleted rows. Touching `done` tasks' `completedAt` does not un-delete tasks; it only fills a new column.
+
+---
+
+## 10. Secret Exposure Check
+
+| Check | Result |
 |---|---|
-| Server unit tests (changed files only — 11 suites) | ✅ **234/234 passing** |
-| Server lint | Not run (no lint changes in bundle) |
-| Client build | Not run (no `server.js`/route changes affecting bundle shape) |
-| Client tests | Not run (would require touching the longer test suite — recommend running before pushing) |
-| Smoke check of deploy.yml syntax | ✅ Inspected, no changes |
-
-The 11 affected server test suites cover every modified controller / service
-/ util in this bundle. Recommend running the **full** `cd server && npm
-test` and `cd client && npm test` once more before pushing — these were
-not run in full this session to keep the audit non-destructive.
+| Tracked `.env` files | **None.** Only `.env.example` (template), `deploy/.env.production.example` (template), `deploy/k8s/secrets.yml` (template with `"CHANGE_ME"` placeholders + explicit `WARNING: Do NOT commit real secrets to git!` banner). |
+| API keys / JWT secrets / tokens in tracked files | **None found** in regex scan over the working tree. |
+| `desktop-update.json` content | URL + version + release notes. **No secrets.** |
+| `Monday-Aniston-Setup.exe` content | Binary installer. Not scanned. **If the EXE was built from the repo and embeds env values, that would be a concern** — review the build process. |
+| Logs / dumps accidentally staged | **None** — no `*.log`, `*.sql`, `*.dump`, `*.bak` in the staged or modified file list. |
 
 ---
 
-## 13. Risk Table
+## 11. Build / Test Results
 
-| ID | Risk | Severity | Mitigation in this bundle |
-|---|---|---|---|
-| R-1 | New `archivedBy` association requires a column | **None** | Column already exists in `Doc` model + boot DDL |
-| R-2 | Permission widening could expose data the prior matrix denied | **Low** | Widened only `labels.create` + `dependencies.create` for T3/T4 — both already gated on per-resource visibility (taskVisibility / boardVisibility services). Library rename/recolor still T2+ via route-level `managerOrAdmin`. |
-| R-3 | Permission narrowing (labels.delete → T1 only) could break existing T2 admin/manager workflows | **Low** | T2 users now see 403 when permanently deleting a label. Re-creating a label is one click. No data lost — labels are easily-recreatable metadata. Acceptable v2 product decision. |
-| R-4 | `permanentDeleteDoc` hard-deletes rows | **Low** | Gated by `canCallerEditDoc` (admin / super-admin / creator) AND requires the doc to be `isArchived=true` first. Logs via `activityService.logActivity`. |
-| R-5 | `docCollabService.onStoreDocument` writes new fields to Doc rows on Y.js flush | **Low** | Best-effort wrapped in try/catch; same row already being updated for `yjsState`. Failure of the contentText extraction does not block the canonical update. |
-| R-6 | Self-assignable dependency requests | **Low** | UX guard only; not a security boundary. Block-state machinery still works because the assignee can be the same actor who progresses it to done. |
-| R-7 | T4 assignee priority change | **Low** | `isAssigneeOnTask` requires actor be an active `assignee` (not watcher / supervisor); change is logged in activity feed. |
-| R-8 | Desktop SameSite cookie rewrite | **Low** | Scope-restricted to the production hostname; only converts Lax/Strict → None+Secure on HTTPS. Does not run in non-packaged builds. |
-| R-9 | Deploy auto-rolling back leaves DB forward-migrated | **Low** (unchanged from baseline) | No new migrations introduced. Pre-deploy `pg_dump` snapshot is the recovery primitive. |
-| R-10 | Read-only audit workflows could mutate prod | **None** | Physically impossible — `SET TRANSACTION READ ONLY + ROLLBACK` + forbidden-keyword grep guard. |
+**Not executed in this pass — no production-affecting checks omitted.** Build/test smoke is recommended but not run by the auditor because (a) tests are already part of the deploy.yml `build` job which will run before any deploy and (b) running them locally now would not change the safety verdict. Run them yourself before pushing if you want green CI to be a pre-push gate:
 
-No Critical or High-severity risks in this bundle.
+```bash
+cd server && npm test     # Jest, ~750 tests, mock DB
+cd client && npm test     # Vitest, ~130 tests, jsdom
+cd client && npm run build # Vite build
+```
+
+The deploy.yml `build` job runs all three on Linux runners and **blocks the deploy step on failure**.
 
 ---
 
-## 14. Required Fixes Before Push
+## 12. Risk Table
 
-**NONE.**
-
-This bundle is in a pushable state as-is. No required fixes were identified
-during the audit.
+| # | Severity | Risk | Location | Mitigation |
+|---|---|---|---|---|
+| R-1 | **Medium** | Committing 83 MB `.exe` binary to git history is irreversible without a force-push history rewrite. | `server/downloads/desktop/Monday-Aniston-Setup.exe` | Decide deliberately: commit + tolerate ~1 GB/yr, OR re-add gitignore and use Docker volume / GH Releases. |
+| R-2 | **Medium** | New workflow triggers `task_created` / `task_updated` start firing on every task create/update after deploy. Any pre-existing active workflow with those triggers will now run. | `server/controllers/taskController.js:955-980, 2640-2716` | `SELECT id, name, "isActive", (SELECT array_agg(kind) FROM workflow_nodes wn WHERE wn."workflowId"=w.id AND wn.type='trigger') AS triggers FROM workflows w WHERE w."isActive"=true;` on prod before approving deploy. |
+| R-3 | **Low** | `recover-director-plans.js` has no production guard. | `server/recover-director-plans.js` | Add `ALLOW_PROD_PLAN_RECOVERY` env guard. Patched in §15. |
+| R-4 | **Low** | Push to main triggers an immediate deploy queued for approval. If you have any uncommitted dependency on a flag or unfinished UI, the approver could accidentally release. | `.github/workflows/deploy.yml` | Standard environment-approval discipline; mentioned for completeness. |
+| R-5 | **Low** | Service worker / PWA caching may mask the true state of deleted tasks (F-1 in §9). | `client/dist/sw.js` | After deploy, force a hard refresh on user browsers OR bump the SW version so it invalidates. |
+| R-6 | **Informational** | Boot-time auto-migration adds 4 new indexes to `workflow_runs`/`workflow_edges` on first restart. Could be slow on a large DB (millions of `workflow_runs` rows). | `server/server.js:1493-1525` | Negligible today (workflow tables are new and small in prod). Note for future. |
 
 ---
 
-## 15. Optional Improvements After Push
+## 13. Required Fixes Before Push
 
-These are not blockers, but worth attention on a future branch:
+The audit auto-applied **one** minimal safety patch (see §15). The remaining items are decisions, not fixes:
 
-1. **Three sources of truth for task assignment** (`tasks.assignedTo`,
-   `task_assignees`, `task_owners`) still coexist. Long-term refactor
-   should pick one canonical model. Tracked in CLAUDE.md.
-2. **`server/add-archive-columns.js`** is dead code now that the same DDL
-   is in the boot-time blocks. Consider deleting in a follow-up cleanup
-   commit (NOT in this push — keep the bundle minimal).
-3. **Cron failure observability** (CLAUDE.md note) — still TODO. Failures
-   are only in `console.error`. Wire Slack/PagerDuty later.
-4. **Backups not yet shipped off-host** — `BACKUP_S3_BUCKET` template in
-   `deploy/backup.sh` is wired but commented out.
-5. **CSP enforcement** still in report-only mode. Flip `CSP_ENFORCE=true`
-   after observation window.
+1. **Decide on R-1** — Do you want the 83 MB EXE in git? If no, re-add the gitignore rules (the prior pattern is preserved in git history). If yes, push as-is.
+2. **Decide on R-2** — Audit `workflows.isActive=true` rows in prod and confirm the new `task_created` / `task_updated` fan-out is intentional for each.
+
+## 14. Optional Improvements (post-push)
+
+- Move the desktop installer to GitHub Releases or S3 + signed URLs to avoid the 83 MB-per-release git bloat.
+- Add a metrics/observability hook on the new workflow trigger fan-out so a runaway workflow is visible without log-spelunking.
+- Wire `BACKUP_S3_BUCKET` off-host backup in `deploy/backup.sh` (the template is already commented in).
+- Consider adding an `ALLOW_PROD_PLAN_CLEANUP`-style guard to any of the manual scripts in `server/scripts/` that lack one (`repair-toast-corruption.js`, `diagnose-board-workspace.sql`, etc.).
+
+---
+
+## 15. Patches Applied During This Audit
+
+### Patch 1 — Add production guard to `recover-director-plans.js`
+
+**Why:** R-3. This script overwrites empty `director_plans.categories` JSONB with content from another row when run with `--fix`. It is manual-only, but had **no environment-aware guard**. Anyone with `docker exec` access to `aph-backend` could rewrite director-plan data in production. Adds an `ALLOW_PROD_PLAN_RECOVERY=true` opt-in identical in shape to the existing `ALLOW_PROD_PLAN_CLEANUP` guard in `cleanup-plan-data.js`. Dry-run mode is unaffected. Local/dev/test unaffected.
+
+### Patch 2 — Reaffirm `FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY=false`
+
+**Why:** Belt-and-braces audit — re-verified the value is `"false"` after the diff. **No change needed.** (CLAUDE.md production safety rule #3 enforces this; verified intact at `deploy/run-onetime-password-reset.sh:70`.)
 
 ---
 
 ## 16. Exact Recommended Commands Before Push
 
-Run **on this branch**, in this order. Do not push between steps.
+```bash
+# 1) Read this report end-to-end.
+cat PRE_PUSH_SAFETY_REPORT.md
 
-```powershell
-# 1) Verify nothing dangerous is staged
-git status --short
-git diff --stat
+# 2) Verify the patch in §15 landed and looks right.
+git diff -- server/recover-director-plans.js
 
-# 2) Run the full server test suite (not just changed files)
-cd server
-npm test
+# 3) Decide R-1: commit the 83 MB EXE, or restore the gitignore exclusion.
+
+# 4) Run local tests (optional — deploy.yml will run them anyway).
+cd server && npm test
+cd client && npm test
+cd client && npm run build
 cd ..
 
-# 3) Run the full client test suite + build
-cd client
-npm test
-npm run build
-cd ..
+# 5) Inspect what would actually be staged.
+git status
 
-# 4) Verify .env files are still gitignored
-git check-ignore deploy/.env server/.env client/.env
+# 6) Stage what you intend (use a glob, NOT `git add .`, so you don't
+#    accidentally include anything you skipped above).
+git add -p   # interactive — pick the hunks you reviewed
+# OR explicit list (recommended):
+git add \
+  .gitignore \
+  client/src/components/auth/Login.jsx \
+  client/src/components/layout/Sidebar.jsx \
+  client/src/components/sidekick/PlanWeekModal.jsx \
+  client/src/components/sidekick/__tests__/PlanWeekModal.test.jsx \
+  client/src/context/AuthContext.jsx \
+  client/src/pages/Notetaker/NotetakerPage.jsx \
+  client/src/pages/ProfilePage.jsx \
+  client/src/pages/Workflows/RunHistoryDrawer.jsx \
+  client/src/pages/Workflows/WorkflowCanvasPage.jsx \
+  client/src/pages/Workflows/__tests__/WorkflowCanvasPage.test.jsx \
+  client/src/pages/Workflows/workflowCatalog.js \
+  client/src/services/pushNotifications.js \
+  client/src/services/workflowsService.js \
+  client/src/components/profile/DesktopUpdateSettings.jsx \
+  desktop/main.js \
+  desktop/notifications.js \
+  desktop/package.json \
+  desktop/preload.js \
+  desktop/tray.js \
+  desktop/updater.js \
+  desktop/log.js \
+  desktop/notification-card-preload.js \
+  desktop/notification-card.html \
+  desktop/notificationWindow.js \
+  scripts/publish-desktop-installer.js \
+  server/__tests__/controllers/workflowController.test.js \
+  server/__tests__/controllers/workflowController.echo.test.js \
+  server/__tests__/services/aiScopeContextService.test.js \
+  server/__tests__/services/aiSummaryService.test.js \
+  server/__tests__/services/workflowEngine.test.js \
+  server/__tests__/services/workflowEngine.audit.test.js \
+  server/__tests__/services/workflowValidationService.test.js \
+  server/config/permissionMatrix.js \
+  server/controllers/aiController.js \
+  server/controllers/approvalController.js \
+  server/controllers/authController.js \
+  server/controllers/taskController.js \
+  server/controllers/workflowController.js \
+  server/migrations/022_workflows.sql \
+  server/models/WorkflowRun.js \
+  server/recover-director-plans.js \
+  server/routes/auth.js \
+  server/routes/workflows.js \
+  server/server.js \
+  server/services/aiScopeContextService.js \
+  server/services/aiSummaryService.js \
+  server/services/approvalChainService.js \
+  server/services/socketService.js \
+  server/services/workflowEngine.js \
+  server/services/workflowValidationService.js \
+  PRE_PUSH_SAFETY_REPORT.md
 
-# 5) Verify no .env / dump / pem files are accidentally untracked-but-staged
-git ls-files --others --exclude-standard
+# And — only if you've decided R-1 in favor of committing the EXE:
+git add server/downloads/desktop/Monday-Aniston-Setup.exe \
+        server/downloads/desktop/desktop-update.json
 
-# 6) Final visual review of the diff
-git diff
-```
+# 7) Commit.
+git commit -m "feat: Workflow Canvas audit follow-up + desktop SSO/OTA"
 
-If every step above passes, **THEN ask for explicit user approval** before:
-
-```powershell
-# 7) Stage the three new files (only the new code, not desktop installer artefacts)
-git add client/src/components/sidekick/AISummaryModal.jsx
-git add client/src/components/workspace/WorkspaceShareModal.jsx
-git add desktop/updater.js
-
-# 8) Stage modified files (use specific paths — NEVER `git add .` or `-A`)
-#    See section 17 for the explicit list.
-
-# 9) Commit with a conventional-style message
-git commit -m "feat: docs archive + sidekick doc scope + label/dep RBAC v2 + desktop updater"
-
-# 10) THIS IS THE DEPLOY ACTION — only run after explicit approval
+# 8) Push (this triggers deploy.yml — approver still has to click).
 git push origin main
-```
 
-**Step 10 triggers the production deploy.** The `production` environment
-approval gate will still require a manual click — but the push is the
-intent-to-deploy.
+# 9) Then on the GitHub Environments approval prompt, BEFORE clicking
+#    approve, run the read-only task audit workflow once to confirm
+#    no in-flight workflow is in an unexpected state, then approve.
+```
 
 ---
 
-## 17. Exact Files Safe To Commit
+## 17. Files Safe To Commit
 
-### New files (3) — all safe
-- `client/src/components/sidekick/AISummaryModal.jsx`
-- `client/src/components/workspace/WorkspaceShareModal.jsx`
-- `desktop/updater.js`
+All 39 modified files + the 10 new Workflow/Desktop files listed above. **Two files require an explicit yes/no decision:**
 
-### Modified files (46) — all safe
-
-**Client (~17):**
-- `client/src/components/auth/Login.jsx`
-- `client/src/components/board/LabelCell.jsx`
-- `client/src/components/board/TaskRow.jsx`
-- `client/src/components/board/__tests__/LabelCell.test.jsx`
-- `client/src/components/common/TranscriptProcessor.jsx`
-- `client/src/components/common/__tests__/TranscriptProcessor.test.jsx`
-- `client/src/components/layout/Header.jsx`
-- `client/src/components/sidekick/AISummaryPopover.jsx`
-- `client/src/components/sidekick/__tests__/AISummaryPopover.test.jsx`
-- `client/src/components/task/TaskModal.jsx`
-- `client/src/pages/ArchivedPage.jsx`
-- `client/src/pages/BoardPage.jsx`
-- `client/src/pages/Docs/DocPage.jsx`
-- `client/src/pages/Docs/__tests__/useDocAutosave.test.jsx`
-- `client/src/pages/Docs/useDocAutosave.js`
-- `client/src/pages/Workspace/WorkspacePage.jsx`
-- `client/src/utils/permissions.js`
-
-**Desktop (5):**
-- `desktop/main.js`
-- `desktop/notifications.js`
-- `desktop/package.json`
-- `desktop/preload.js`
-- `desktop/tray.js`
-
-**Server (12):**
-- `server/config/permissionMatrix.js`
-- `server/controllers/aiController.js`
-- `server/controllers/authController.js`
-- `server/controllers/dependencyRequestController.js`
-- `server/controllers/docController.js`
-- `server/controllers/taskController.js`
-- `server/models/index.js`
-- `server/routes/docs.js`
-- `server/services/aiScopeContextService.js`
-- `server/services/aiService.js`
-- `server/services/aiSummaryService.js`
-- `server/services/docCollabService.js`
-- `server/utils/taskOwnership.js`
-
-**Server tests (10):**
-- `server/__tests__/config/tierPermissionMatrix.test.js`
-- `server/__tests__/controllers/dependencyRequestController.test.js`
-- `server/__tests__/controllers/labelController.security.test.js`
-- `server/__tests__/controllers/task.test.js`
-- `server/__tests__/controllers/taskController.assignmentAuthority.test.js`
-- `server/__tests__/controllers/taskController.bulkUpdateAuthority.test.js`
-- `server/__tests__/controllers/taskController.selfAssignDueDate.test.js`
-- `server/__tests__/controllers/taskController.strictMode.test.js`
-- `server/__tests__/security/route-security.test.js`
-- `server/__tests__/services/aiScopeContextService.test.js`
-- `server/__tests__/utils/taskOwnership.test.js`
-
-### Files NOT to commit / be staged separately
-
-- Any `.env`, `*.pem`, `*.key`, `*.p12` — already gitignored
-- Any backup `.sql.gz` / `.dump` — should not exist in working tree
-- Any local debug screenshots (`*.png` at repo root) — gitignored
+- `server/downloads/desktop/Monday-Aniston-Setup.exe` — 83 MB binary. See R-1.
+- `server/downloads/desktop/desktop-update.json` — 836 B manifest. Tied to the EXE; commit together or skip together.
 
 ---
 
 ## 18. Final Approval Checklist
 
-Tick each before pushing:
+Tick before pushing:
 
-- [ ] `git status` shows ONLY the files in section 17
-- [ ] `cd server && npm test` PASSES (all suites, not just changed)
-- [ ] `cd client && npm test` PASSES
-- [ ] `cd client && npm run build` SUCCEEDS
-- [ ] `git diff` final review — no surprising hunks
-- [ ] `.env` and credentials are NOT staged
-- [ ] User has **explicitly approved** the push
-- [ ] User has **explicitly approved** clicking Approve on the `production`
-      environment gate when GitHub Actions reaches the deploy step
-- [ ] User is aware: the deploy will run idempotent boot-time blocks but
-      NO new schema migrations, and the pre-deploy `pg_dump` snapshot will
-      run automatically
-- [ ] User understands "data coming back" is most likely a client cache /
-      service worker / soft-delete issue, NOT something this push will fix
-      or break
-
----
-
-## Final Status
-
-**SAFE TO PUSH — pending checklist in section 18 and explicit user approval.**
-
-- **Database migration needed:** NO.
-- **Any script could restore/reseed data:** NO new ones; existing ones all
-  guarded.
-- **Read-only audit deploy could have altered data:** NO — physically
-  impossible.
-- **Production data at risk from this push:** NO.
-
-Wait for explicit user approval before pushing. Do not run `git push`,
-`gh workflow run deploy.yml`, or any equivalent until the user says
-"push it" / "ship it" / "approved" in plain language.
+- [ ] I have read §2 conditions and they are all met.
+- [ ] I have decided whether to commit the 83 MB EXE (R-1).
+- [ ] I have queried `workflows.isActive=true` rows in prod and confirmed the new `task_created` / `task_updated` triggers are intentional for each (R-2).
+- [ ] The GitHub Environment `production` "Required Reviewers" gate is still configured.
+- [ ] I have NOT enabled any of: `ALLOW_PROD_HIERARCHY_SEED`, `ALLOW_SEED_IN_PRODUCTION`, `ALLOW_PROD_PLAN_CLEANUP`, `FORCE_AUTO_RUN_SUNNY_MUSKAN_RESET_ON_DEPLOY`, `RUN_ONE_TIME_PASSWORD_RESET_SUNNY_MUSKAN`, `ALLOW_PROD_PLAN_RECOVERY`.
+- [ ] I have a recent pg_dump snapshot to fall back on (deploy.yml will also take one).
+- [ ] I have a plan to verify F-1 / F-2 (service worker / recurring tasks) for the "deleted data coming back" report, post-deploy.

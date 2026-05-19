@@ -225,14 +225,47 @@ export async function unsubscribeFromPush() {
  *      activation, and as the safety net for any SW-path failure.
  */
 export async function showLocalNotification(title, options = {}) {
-  if (typeof Notification === 'undefined') return;
-  if (Notification.permission !== 'granted') return;
-
   const tag = options.tag || `aniston-${Date.now()}`;
   const body = options.body || '';
   const url = options.url || '/';
   const icon = options.icon || '/icons/anistonlogo.png';
   const badge = options.badge || '/icons/anistonlogo.png';
+
+  // Slice 10 — Desktop bridge path (P0 fix from the prior audit).
+  //
+  // When running inside the Electron desktop wrapper, prefer the main-
+  // process notification adapter. It:
+  //   - works regardless of `Notification.permission` (web permission
+  //     state is unreliable for file:// renderers),
+  //   - fires Teams-style cards via the custom notification window when
+  //     available, falling back to Windows Toast XML on failure,
+  //   - SURVIVES the main window being hidden to the tray (the renderer
+  //     stays alive thanks to backgroundThrottling:false, but the OS
+  //     toast originates in the main process where lifecycle is
+  //     simpler).
+  //
+  // The bridge returns { ok: true } on dispatch (incl. deduped) or
+  // { ok: false, reason } on failure. We treat any non-ok response as
+  // signal to fall through to the web paths below so the user is never
+  // silently dropped.
+  try {
+    if (typeof window !== 'undefined'
+        && window.anistonDesktop
+        && typeof window.anistonDesktop.notify === 'function') {
+      const result = await window.anistonDesktop.notify({ title, body, tag, url });
+      if (result && result.ok) return;
+      safeLog.warn('[showLocalNotification] desktop bridge declined, falling back', result);
+    }
+  } catch (err) {
+    safeLog.warn('[showLocalNotification] desktop bridge threw, falling back', err);
+  }
+
+  // Web paths beyond this point. They require Notification API + granted
+  // permission. The desktop path above does NOT need either (it goes
+  // through the main process).
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+
   const swOpts = {
     body, icon, badge, tag,
     renotify: false,

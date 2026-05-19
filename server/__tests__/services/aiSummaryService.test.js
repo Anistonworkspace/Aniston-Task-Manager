@@ -23,6 +23,7 @@ jest.mock('../../services/aiService', () => ({
 
 jest.mock('../../services/aiScopeContextService', () => ({
   buildScopeContext: jest.fn(),
+  loadPlanningTaskList: jest.fn(),
 }));
 
 jest.mock('../../utils/safeLogger', () => ({
@@ -32,7 +33,7 @@ jest.mock('../../utils/safeLogger', () => ({
 }));
 
 const aiService = require('../../services/aiService');
-const { buildScopeContext } = require('../../services/aiScopeContextService');
+const { buildScopeContext, loadPlanningTaskList } = require('../../services/aiScopeContextService');
 const {
   summarizeTaskWithAI, summarizeBoardWithAI,
   suggestPriorityWithAI, planWeekWithAI,
@@ -181,16 +182,38 @@ describe('suggestPriorityWithAI', () => {
 // ─── planWeekWithAI ─────────────────────────────────────────
 
 describe('planWeekWithAI', () => {
-  it('returns an empty schedule when planning context is empty', async () => {
-    buildScopeContext.mockResolvedValue('');
+  // Helper — build a planning fixture with N tasks. The IDs are stringified
+  // numerals so the AI response in each test can name them by hand.
+  function makePlanning(ids, opts = {}) {
+    const tasks = ids.map((id, i) => ({
+      id: String(id),
+      title: `Task ${id}`,
+      status: 'not_started',
+      priority: opts.priorities?.[i] || 'medium',
+      dueDate: opts.dueDates?.[i] || null,
+      board: { name: 'Board' },
+    }));
+    return {
+      tasks,
+      buckets: { overdue: [], today: [], thisWeek: [], later: [], noDate: tasks },
+      counts: { total: tasks.length, overdue: 0, today: 0, thisWeek: 0, later: 0, noDate: tasks.length },
+      allowedIds: new Set(tasks.map((t) => t.id)),
+      context: 'PLANNING SCOPE — fake',
+      sampleCapped: false,
+    };
+  }
+
+  it('returns an empty schedule when the user has no open tasks', async () => {
+    loadPlanningTaskList.mockResolvedValue({ tasks: [], buckets: {}, counts: {}, allowedIds: new Set(), context: '', sampleCapped: false });
     const out = await planWeekWithAI(USER, {});
     expect(out.kind).toBe('structured');
     expect(out.schedule).toHaveLength(5);
     expect(out.schedule.every((d) => d.taskIds.length === 0)).toBe(true);
+    expect(out.notes).toMatch(/queue is empty|No open tasks/);
   });
 
-  it('parses a valid AI JSON schedule', async () => {
-    buildScopeContext.mockResolvedValue('PLANNING SCOPE — fake');
+  it('parses a valid AI JSON schedule and keeps IDs that are in the allowed set', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['a', 'b', 'c']));
     aiService.chat.mockResolvedValue(`\`\`\`json
 {
   "schedule": [
@@ -209,30 +232,90 @@ describe('planWeekWithAI', () => {
     expect(out.notes).toBe('light week');
   });
 
-  it('drops unknown dayKey entries', async () => {
-    buildScopeContext.mockResolvedValue('PLANNING SCOPE');
-    aiService.chat.mockResolvedValue('```json\n{"schedule":[{"dayKey":"sun","taskIds":["x"]}]}\n```');
+  it('drops AI-returned IDs that are not in the canonical allowed set', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['real-1', 'real-2']));
+    aiService.chat.mockResolvedValue(`\`\`\`json
+{
+  "schedule": [
+    { "dayKey": "mon", "taskIds": ["real-1", "hallucinated"], "reason": "" }
+  ],
+  "notes": ""
+}
+\`\`\``);
     const out = await planWeekWithAI(USER, {});
-    // No valid days remain.
-    expect(out.schedule.length).toBe(0);
+    const mon = out.schedule.find((d) => d.dayKey === 'mon');
+    expect(mon.taskIds).toEqual(['real-1']);
+    // The drop should be surfaced in notes so the UI can explain the gap.
+    expect(out.notes).toMatch(/not in your open list|skipped/);
   });
 
-  it('returns an empty schedule when AI returns malformed JSON', async () => {
-    buildScopeContext.mockResolvedValue('PLANNING SCOPE');
+  it('drops duplicate IDs across days', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['a', 'b']));
+    aiService.chat.mockResolvedValue(`\`\`\`json
+{
+  "schedule": [
+    { "dayKey": "mon", "taskIds": ["a"] },
+    { "dayKey": "tue", "taskIds": ["a", "b"] }
+  ]
+}
+\`\`\``);
+    const out = await planWeekWithAI(USER, {});
+    const mon = out.schedule.find((d) => d.dayKey === 'mon');
+    const tue = out.schedule.find((d) => d.dayKey === 'tue');
+    expect(mon.taskIds).toEqual(['a']);
+    // 'a' was already used on Mon, so Tue keeps only 'b'.
+    expect(tue.taskIds).toEqual(['b']);
+  });
+
+  it('drops unknown dayKey entries', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['x']));
+    aiService.chat.mockResolvedValue('```json\n{"schedule":[{"dayKey":"sun","taskIds":["x"]}]}\n```');
+    const out = await planWeekWithAI(USER, {});
+    // The 'sun' day is dropped → no valid days remain → 0 kept IDs → deterministic fallback fires.
+    expect(out.schedule).toHaveLength(5);
+    expect(out.schedule.some((d) => d.taskIds.includes('x'))).toBe(true);
+  });
+
+  it('falls back to a deterministic schedule when AI returns malformed JSON', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['t1', 't2', 't3']));
     aiService.chat.mockResolvedValue('not json');
     const out = await planWeekWithAI(USER, {});
+    // Deterministic fallback distributes the real tasks across Mon-Fri.
     expect(out.schedule).toHaveLength(5);
-    expect(out.schedule.every((d) => d.taskIds.length === 0)).toBe(true);
-    expect(out.notes).toMatch(/did not return/);
+    const allIds = out.schedule.flatMap((d) => d.taskIds);
+    expect(allIds.length).toBeGreaterThan(0);
+    // Every emitted id must come from the allowed set.
+    expect(allIds.every((id) => ['t1', 't2', 't3'].includes(id))).toBe(true);
+    expect(out.notes).toMatch(/fallback|unstructured/i);
+  });
+
+  it('falls back deterministically when the AI returns only hallucinated IDs', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['real-1', 'real-2']));
+    aiService.chat.mockResolvedValue('```json\n{"schedule":[{"dayKey":"mon","taskIds":["fake-1","fake-2"]}]}\n```');
+    const out = await planWeekWithAI(USER, {});
+    const allIds = out.schedule.flatMap((d) => d.taskIds);
+    expect(allIds.length).toBeGreaterThan(0);
+    expect(allIds.every((id) => ['real-1', 'real-2'].includes(id))).toBe(true);
+    expect(out.notes).toMatch(/not in your current open list|fallback/i);
   });
 
   it('caps taskIds per day at 20 to prevent runaway responses', async () => {
-    buildScopeContext.mockResolvedValue('PLANNING SCOPE');
     const ids = Array.from({ length: 50 }, (_, i) => `t${i}`);
+    loadPlanningTaskList.mockResolvedValue(makePlanning(ids));
     aiService.chat.mockResolvedValue(`\`\`\`json\n{"schedule":[{"dayKey":"mon","taskIds":${JSON.stringify(ids)}}]}\n\`\`\``);
     const out = await planWeekWithAI(USER, {});
     const mon = out.schedule.find((d) => d.dayKey === 'mon');
     expect(mon.taskIds.length).toBeLessThanOrEqual(20);
+  });
+
+  it('ignores the legacy taskIds payload from the frontend (single source of truth = loadPlanningTaskList)', async () => {
+    loadPlanningTaskList.mockResolvedValue(makePlanning(['a', 'b']));
+    aiService.chat.mockResolvedValue('```json\n{"schedule":[{"dayKey":"mon","taskIds":["a"]}]}\n```');
+    // The frontend may still send taskIds during the rollout window; the
+    // service should simply ignore them and rely on the canonical loader.
+    const out = await planWeekWithAI(USER, { taskIds: ['ignored-1', 'ignored-2'] });
+    const mon = out.schedule.find((d) => d.dayKey === 'mon');
+    expect(mon.taskIds).toEqual(['a']);
   });
 });
 

@@ -29,6 +29,7 @@ const RESOURCES = {
   labels:                { label: 'Labels',                category: 'Task Management' },
   status_templates:      { label: 'Status Templates',      category: 'Task Management' },
   automations:           { label: 'Automations',           category: 'Task Management' },
+  workflows:             { label: 'Workflow Canvas',        category: 'Task Management' },
   dependencies:          { label: 'Dependencies',          category: 'Task Management' },
   comments:              { label: 'Comments',              category: 'Collaboration' },
   recurring_work:        { label: 'Recurring Work',        category: 'Task Management' },
@@ -173,6 +174,10 @@ const ACTIONS = {
 
   // ── Time planning ───────────────────────────────────────────────────
   edit_team:               { label: 'Edit team time plan',        description: 'Edit other users\' time plans' },
+
+  // ── Workflow Canvas ────────────────────────────────────────────────
+  publish:                 { label: 'Publish',                    description: 'Flip a draft workflow to active so the engine picks it up' },
+  test_run:                { label: 'Test run',                   description: 'Author-driven synthetic run for canvas validation' },
 };
 
 // ── Valid actions for each resource ─────────────────────────────────────
@@ -248,6 +253,11 @@ const RESOURCE_ACTIONS = {
   // re-submitting the whole template).
   status_templates:      ['view', 'create', 'edit', 'delete', 'set_default'],
   automations:           ['view', 'create', 'edit', 'delete'],
+  // Workflow Canvas — visual node-graph automation. `manage` is the umbrella
+  // (mirrors api_keys/boards/integrations) so existing grant rows that use
+  // `manage` continue to confer publish + test_run; the per-action surface
+  // exists for finer overrides.
+  workflows:             ['view', 'create', 'edit', 'delete', 'manage', 'publish', 'test_run'],
   dependencies:          [
     'view', 'create', 'edit', 'delete',
     'request', 'approve', 'reject', 'delegate',
@@ -416,6 +426,12 @@ const UMBRELLA_FALLBACKS = {
   'tasks.reject_completion':   { resource: 'tasks', action: 'approve' },
   'tasks.reorder':             { resource: 'tasks', action: 'edit' },
 
+  // Workflow Canvas — finer actions umbrella to workflows.manage so any
+  // existing manage grant carries publish + test_run by default. edit/create/
+  // delete/view stay on the specific action.
+  'workflows.publish':         { resource: 'workflows', action: 'manage' },
+  'workflows.test_run':        { resource: 'workflows', action: 'manage' },
+
   // Files / comments granular delete_any
   'task_files.view':           { resource: 'tasks', action: 'view' },
   'task_files.delete_any':     { resource: 'task_files', action: 'delete' },
@@ -541,6 +557,19 @@ const ACTION_META = {
     create: { enforcement: 'pending' },
     edit: { enforcement: 'pending' },
     delete: { enforcement: 'pending' },
+  },
+  // Workflow Canvas — Phase W1 + audit follow-up. All actions are wired
+  // through routes/workflows.js + workflowController + workflowEngine.
+  // `publish` and `test_run` are flagged dangerous because they cause real
+  // side effects (engine fan-out to notifications / task mutations / Teams).
+  workflows: {
+    view:     { enforcement: 'wired' },
+    create:   { enforcement: 'wired' },
+    edit:     { enforcement: 'wired' },
+    delete:   { enforcement: 'wired', dangerous: true },
+    manage:   { enforcement: 'wired' },
+    publish:  { enforcement: 'wired', dangerous: true },
+    test_run: { enforcement: 'wired', dangerous: true },
   },
   recurring_work: {
     view:         { enforcement: 'wired' },                              // Phase B
@@ -671,6 +700,7 @@ const ROLE_PERMISSIONS = {
     labels:           { view: true, create: true, edit: true, delete: false },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
+    workflows:        { view: true, create: true, edit: true, delete: true, manage: true, publish: true, test_run: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
     reports:          { view: true, export: true },
@@ -706,6 +736,7 @@ const ROLE_PERMISSIONS = {
     labels:           { view: true, create: true, edit: true, delete: false },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
+    workflows:        { view: true, create: true, edit: true, delete: true, manage: true, publish: true, test_run: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
     reports:          { view: true, export: true },
@@ -748,6 +779,9 @@ const ROLE_PERMISSIONS = {
     labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
+    // Workflow Canvas — T3 default = no access. Sidebar entry hidden unless
+    // an explicit `workflows.view` grant is issued via PermissionGrant.
+    workflows:        { view: false, create: false, edit: false, delete: false, manage: false, publish: false, test_run: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
     reports:          { view: true, export: false },
@@ -796,6 +830,9 @@ const ROLE_PERMISSIONS = {
     labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
+    // Workflow Canvas — T4 default = no access (same as T3). Sidebar entry
+    // hidden unless an explicit `workflows.view` grant is issued.
+    workflows:        { view: false, create: false, edit: false, delete: false, manage: false, publish: false, test_run: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: false, export: false },
     reports:          { view: true, export: false },
@@ -863,6 +900,7 @@ const TIER_PERMISSIONS = {
     labels:           { view: true, create: true, edit: true, delete: true },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
+    workflows:        { view: true, create: true, edit: true, delete: true, manage: true, publish: true, test_run: true },
     dependencies:     { view: true, create: true, delete: true },
     dashboard:        { view: true, export: true },
     reports:          { view: true, export: true },
@@ -905,6 +943,10 @@ const TIER_PERMISSIONS = {
     labels:           { view: true, create: true, edit: true, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: false },
+    // Workflow Canvas — T2 keeps full functional access EXCEPT delete is
+    // tightened to false to match decision #4 ("Tier 2 must not delete
+    // anything, anywhere"). Publish + test_run remain true.
+    workflows:        { view: true, create: true, edit: true, delete: false, manage: true, publish: true, test_run: true },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: true },
     reports:          { view: true, export: true },
@@ -953,6 +995,9 @@ const TIER_PERMISSIONS = {
     labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
+    // Workflow Canvas — T3 default = no access (matches automations row).
+    // Sidebar entry hidden. A `workflows.view` PermissionGrant can lift this.
+    workflows:        { view: false, create: false, edit: false, delete: false, manage: false, publish: false, test_run: false },
     dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: true, export: false },
     reports:          { view: true, export: false },
@@ -1001,6 +1046,9 @@ const TIER_PERMISSIONS = {
     labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
+    // Workflow Canvas — T4 default = no access. Same shape as T3. Sidebar
+    // entry hidden unless an explicit `workflows.view` grant is issued.
+    workflows:        { view: false, create: false, edit: false, delete: false, manage: false, publish: false, test_run: false },
     // Dependencies — Tier 4 can create dependency requests (May 2026 v2
     // product decision). Every contributor can request blocking work from
     // a teammate. The middleware `dependencyRequestPermissions.canCreateOnTask`
@@ -1240,6 +1288,15 @@ const GRANTABILITY = {
   // library end-to-end including deletes.
   status_templates: { view: T1_T2, create: T1_T2, edit: T1_T2, delete: T1_T2, set_default: T1_T2 },
   automations:   { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
+  // Workflow Canvas — T1/T2 can grant view/create/edit/manage/publish/test_run
+  // to a lower-tier user (the common case: give a T3 contributor canvas
+  // access via PermissionGrant). `delete` is NON_GRANTABLE because deleting
+  // a published workflow is destructive (cascades wipe nodes/edges/runs).
+  workflows: {
+    view: T1_T2, create: T1_T2, edit: T1_T2,
+    delete: NON_GRANTABLE,
+    manage: T1_T2, publish: T1_T2, test_run: T1_T2,
+  },
   dependencies:  { view: T1_T2, create: T1_T2, delete: NON_GRANTABLE },
 
   // ── Reporting ─────────────────────────────────────────────────

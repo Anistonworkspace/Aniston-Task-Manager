@@ -307,6 +307,39 @@ export function AuthProvider({ children }) {
 
   useEffect(() => { loadUser(); }, [loadUser]);
 
+  // Slice 8 — Desktop SSO completion listener (belt-and-suspenders).
+  //
+  // The desktop wrapper's main process sends 'aniston:sso-complete' AFTER
+  // it has authoritatively verified the new session via /api/auth/me.
+  // Login.jsx's openSso promise resolution is the primary trigger for
+  // refreshing AuthContext, but if Login.jsx is unmounted at that moment
+  // (renderer crashed and rebooted between starting SSO and the popup
+  // finishing) the resolution would be lost. This subscription catches
+  // the event regardless of which page is mounted and refreshes auth
+  // state + bounces to '/' the same way Login.jsx would have.
+  //
+  // The handler is idempotent — if Login.jsx ALSO ran loadUser+navigate
+  // for this completion, our second loadUser is just an extra /auth/me
+  // round-trip and navigateHard('/') is a no-op (already at '/').
+  //
+  // The bridge is only present in desktop mode (preload exposes it),
+  // so the effect is a no-op on the web bundle. No risk of double-
+  // execution in the browser.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const bridge = window.anistonDesktop;
+    if (!bridge || typeof bridge.onSsoComplete !== 'function') return;
+    const dispose = bridge.onSsoComplete(async () => {
+      try {
+        await loadUser();
+        navigateHard('/');
+      } catch (err) {
+        safeLog.warn('[Auth] onSsoComplete loadUser failed', err);
+      }
+    });
+    return () => { if (typeof dispose === 'function') dispose(); };
+  }, [loadUser]);
+
   // Multi-tab logout sync. When another tab in the same browser logs out,
   // tear down our local state too (no need to call the backend again — that
   // tab already did it). We pass broadcast=false to avoid an echo storm.

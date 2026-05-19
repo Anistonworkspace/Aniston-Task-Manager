@@ -31,7 +31,7 @@ function resolveTrayIconPath() {
   return path.join(iconsRoot(), 'icon-192.png');
 }
 
-function buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, quit }) {
+function buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, testNotification, quit }) {
   return Menu.buildFromTemplate([
     {
       label: 'Open Monday Aniston',
@@ -52,6 +52,15 @@ function buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates,
       // nothing newer, so the click feels acknowledged either way.
       label: 'Check for updates',
       click: () => checkForUpdates(),
+    },
+    {
+      // Slice 11: deterministic verification that the custom Teams-style
+      // notification window is wired correctly. Fires a hardcoded sample
+      // notification through the same code path real notifications use.
+      // If THIS does not show a Teams card, the user's running EXE does
+      // not contain the slice-10 code (rebuild + reinstall needed).
+      label: 'Send test notification',
+      click: () => testNotification && testNotification(),
     },
     { type: 'separator' },
     {
@@ -77,7 +86,7 @@ function buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates,
  * a narrow, well-typed surface: it never reaches into BrowserWindow state on
  * its own.
  */
-function createTray({ showMainWindow, refresh, clearData, checkForUpdates, quit }) {
+function createTray({ showMainWindow, refresh, clearData, checkForUpdates, testNotification, quit }) {
   if (tray) return tray;
 
   const iconPath = resolveTrayIconPath();
@@ -95,7 +104,7 @@ function createTray({ showMainWindow, refresh, clearData, checkForUpdates, quit 
 
   tray = new Tray(image);
   tray.setToolTip('Monday Aniston');
-  tray.setContextMenu(buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, quit }));
+  tray.setContextMenu(buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, testNotification, quit }));
 
   // Left-click on the tray icon opens/focuses the window. macOS Tray ignores
   // bare click events in favor of context-menu popup, which is the platform

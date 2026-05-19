@@ -171,6 +171,45 @@ const initializeSocket = (server) => {
       }
     });
 
+    // ── Workflow Canvas rooms (May-19 audit P1-11) ──
+    //
+    // `workflow:<id>` carries per-canvas collaboration events (node/edge
+    // create/update/delete, publish flip) so two open editors don't
+    // silently overwrite each other. `workspace:<id>` carries
+    // workflow-list invalidation (new/deleted workflow in this workspace)
+    // for the WorkflowsListPage.
+    //
+    // Membership is gated by permissionEngine.hasPermission('workflows',
+    // 'view') with the user's *current* effective permissions. A T4 user
+    // with no grant rejoining after demotion will silently fail the join
+    // and stop receiving canvas updates.
+    socket.on('workflow:join', async ({ workflowId }) => {
+      if (!workflowId) return;
+      try {
+        const { hasPermission } = require('./permissionEngine');
+        const allowed = await hasPermission(socket.user, 'workflows', 'view');
+        if (allowed) socket.join(`workflow:${workflowId}`);
+      } catch (err) {
+        console.error(`[Socket] workflow:join error for ${socket.user?.name}:`, err.message);
+      }
+    });
+    socket.on('workflow:leave', ({ workflowId }) => {
+      if (workflowId) socket.leave(`workflow:${workflowId}`);
+    });
+    socket.on('workspace:join', async ({ workspaceId }) => {
+      if (!workspaceId) return;
+      try {
+        const { hasPermission } = require('./permissionEngine');
+        const allowed = await hasPermission(socket.user, 'workflows', 'view');
+        if (allowed) socket.join(`workspace:${workspaceId}`);
+      } catch (err) {
+        console.error(`[Socket] workspace:join error for ${socket.user?.name}:`, err.message);
+      }
+    });
+    socket.on('workspace:leave', ({ workspaceId }) => {
+      if (workspaceId) socket.leave(`workspace:${workspaceId}`);
+    });
+
     // ── Rate limiting for socket events ──
     const eventCounts = {};
     const RATE_LIMIT = 30; // max events per 10 seconds
@@ -226,6 +265,20 @@ const getIO = () => {
 const emitToBoard = (boardId, event, data) => {
   if (ioInstance) {
     ioInstance.to(`board:${boardId}`).emit(event, data);
+  }
+};
+
+/**
+ * Emit an event to an arbitrary named Socket.io room. Used for feature-
+ * scoped rooms that aren't board / user (e.g. `workflow:<id>` for canvas
+ * collaboration, `workspace:<id>` for workflow-list invalidation).
+ *
+ * Caller is responsible for naming the room. We don't enforce a prefix
+ * here because different features own their namespaces.
+ */
+const emitToRoom = (room, event, data) => {
+  if (ioInstance && room) {
+    ioInstance.to(room).emit(event, data);
   }
 };
 
@@ -445,6 +498,7 @@ module.exports = {
   initializeSocket,
   getIO,
   emitToBoard,
+  emitToRoom,
   emitToUser,
   emitToUsers,
   emitToBoardAndUsers,

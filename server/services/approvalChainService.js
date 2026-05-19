@@ -106,7 +106,7 @@ async function walkManagerChain(startUserId) {
     seen.add(nextId);
 
     const next = await User.findByPk(nextId, {
-      attributes: ['id', 'name', 'role', 'isActive', 'isSuperAdmin'],
+      attributes: ['id', 'name', 'role', 'isActive', 'isSuperAdmin', 'tier'],
     });
     if (!next) {
       warnings.push(`Manager ${nextId} not found in users table; chain ends.`);
@@ -130,6 +130,7 @@ async function walkManagerChain(startUserId) {
         userName: next.name,
         role: next.role,
         isSuperAdmin: !!next.isSuperAdmin,
+        tier: next.tier ?? null,
       };
       break;
     }
@@ -140,6 +141,7 @@ async function walkManagerChain(startUserId) {
       userName: next.name,
       role: next.role,
       isSuperAdmin: !!next.isSuperAdmin,
+      tier: next.tier ?? null,
     });
     cursorId = next.id;
   }
@@ -172,7 +174,7 @@ function rankOf(user) {
 async function findFallbackTopApprover(excludeIds = new Set(), minRank = 0) {
   const supers = await User.findAll({
     where: { isSuperAdmin: true, isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of supers) {
@@ -183,7 +185,7 @@ async function findFallbackTopApprover(excludeIds = new Set(), minRank = 0) {
 
   const admins = await User.findAll({
     where: { role: 'admin', isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of admins) {
@@ -202,7 +204,7 @@ async function findFallbackTopApprover(excludeIds = new Set(), minRank = 0) {
 async function findFirstActiveAdmin(excludeIds = new Set()) {
   const admins = await User.findAll({
     where: { role: 'admin', isActive: true, isSuperAdmin: false },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of admins) {
@@ -218,7 +220,7 @@ async function findFirstActiveAdmin(excludeIds = new Set()) {
 async function findFirstActiveSuperAdmin(excludeIds = new Set()) {
   const supers = await User.findAll({
     where: { isSuperAdmin: true, isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of supers) {
@@ -271,6 +273,7 @@ async function collectFinalStageMembers({ submitterId, anchor, excludeIds = new 
       userName: u.userName || u.name,
       role: u.role,
       isSuperAdmin: !!u.isSuperAdmin,
+      tier: u.tier ?? null,
     });
   }
 
@@ -278,21 +281,21 @@ async function collectFinalStageMembers({ submitterId, anchor, excludeIds = new 
 
   const managerRows = await User.findAll({
     where: { role: 'manager', isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of managerRows) add(u);
 
   const adminRows = await User.findAll({
     where: { role: 'admin', isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of adminRows) add(u);
 
   const superRows = await User.findAll({
     where: { isSuperAdmin: true, isActive: true },
-    attributes: ['id', 'name', 'role', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isSuperAdmin', 'tier'],
     order: [['createdAt', 'ASC']],
   });
   for (const u of superRows) add(u);
@@ -330,7 +333,7 @@ async function collectFinalStageMembers({ submitterId, anchor, excludeIds = new 
  */
 async function deriveApprovalChain(submitterUserId) {
   const submitter = await User.findByPk(submitterUserId, {
-    attributes: ['id', 'name', 'role', 'isActive', 'isSuperAdmin'],
+    attributes: ['id', 'name', 'role', 'isActive', 'isSuperAdmin', 'tier'],
   });
   if (!submitter) {
     throw new Error(`Submitter user ${submitterUserId} not found.`);
@@ -348,6 +351,8 @@ async function deriveApprovalChain(submitterUserId) {
       userId: submitter.id,
       userName: submitter.name,
       role: submitter.role,
+      tier: submitter.tier ?? null,
+      isSuperAdmin: !!submitter.isSuperAdmin,
       isSubmitter: true,
       isParallel: false,
     },
@@ -365,6 +370,8 @@ async function deriveApprovalChain(submitterUserId) {
       userId: a.userId,
       userName: a.userName,
       role: a.role,
+      tier: a.tier ?? null,
+      isSuperAdmin: !!a.isSuperAdmin,
       isSubmitter: false,
       isParallel: false,
     });
@@ -393,6 +400,7 @@ async function deriveApprovalChain(submitterUserId) {
         userName: fallback.name,
         role: fallback.role,
         isSuperAdmin: !!fallback.isSuperAdmin,
+        tier: fallback.tier ?? null,
       });
     } else if (sequentialApprovers.length === 0) {
       warnings.push('No approvers reachable; submission will be auto-approved.');
@@ -415,6 +423,8 @@ async function deriveApprovalChain(submitterUserId) {
         userId: m.userId,
         userName: m.userName,
         role: m.role,
+        tier: m.tier ?? null,
+        isSuperAdmin: !!m.isSuperAdmin,
         isSubmitter: false,
         isParallel: true,
       };
@@ -460,6 +470,7 @@ async function previewNextApprover(submitterUserId) {
         userName: m.userName,
         role: m.role,
         isSuperAdmin: !!m.isSuperAdmin,
+        tier: m.tier ?? null,
       })),
     };
   }
@@ -471,6 +482,7 @@ async function previewNextApprover(submitterUserId) {
       userName: firstApprover.userName,
       role: firstApprover.role,
       isSuperAdmin: !!firstApprover.isSuperAdmin,
+      tier: firstApprover.tier ?? null,
     }],
   };
 }

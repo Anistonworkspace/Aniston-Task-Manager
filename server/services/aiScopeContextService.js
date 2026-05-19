@@ -35,7 +35,13 @@ const MAX_COMMENTS = 12;
 const MAX_WORKLOGS = 8;
 const MAX_ACTIVITY = 10;
 const MAX_BOARD_TASKS = 30;
-const MAX_PLANNING_TASKS = 40;
+// Was 40 (May 2026 bug — Sidekick reported 38 overdue while My Work UI showed
+// 50 because the planning sample was truncated below the user's open-task
+// count). Bumped to 200 so a busy user's full backlog fits in one sample —
+// counts derived from this list now match the My Work UI for anyone under
+// the cap. The sampleCapped footnote in the prompt covers the rare
+// >200-open-task case.
+const MAX_PLANNING_TASKS = 200;
 // Per-doc body budget when the Sidekick asks about a specific doc. Tiptap
 // JSON walks down to plain text; we cap at ~12k chars (~3k tokens) so the
 // prompt envelope stays bounded even on long meeting-notes docs.
@@ -391,11 +397,16 @@ function extractDocBodyText(contentJson, contentTextFallback) {
 
 // ─── Planning scope ───────────────────────────────────────────────
 
-async function buildPlanningScope(user, params = {}) {
-  // "Plan my week" / "Suggest order for today" — load the caller's open tasks
-  // across all boards they have access to. The /api/tasks?assignedTo=me
-  // controller already enforces RBAC; we reuse its WHERE clause via direct
-  // Sequelize lookup keyed on assignedTo / TaskOwner / TaskAssignee.
+// Open-work loader for "My Work" / "Plan my week" / "Suggest order for today".
+//
+// We split this into a data layer (loadPlanningTaskList) and a text layer
+// (buildPlanningScope) for one specific reason: planWeekWithAI needs the
+// canonical "allowed task IDs" to validate the LLM's reply, not just the
+// human-readable text dump. Building the text from the same data avoids
+// the bug where two independent queries (one by the frontend for the hint
+// list, one by the backend for the prompt context) returned different
+// rows and the LLM gave up because the IDs disagreed.
+async function loadPlanningTaskList(user, _params = {}) {
   const tasks = await Task.findAll({
     where: {
       isArchived: false,
@@ -420,6 +431,40 @@ async function buildPlanningScope(user, params = {}) {
     subQuery: false,
   });
 
+  const sampleCapped = tasks.length >= MAX_PLANNING_TASKS;
+
+  // Bucketize against local midnight (matches My Work UI's parseISO + isPast/isSameDay).
+  const today0 = startOfDay(new Date());
+  const tomorrow0 = new Date(today0.getTime() + 86400000);
+  const endOfWeek = new Date(today0); endOfWeek.setDate(endOfWeek.getDate() + 7);
+
+  const buckets = { overdue: [], today: [], thisWeek: [], later: [], noDate: [] };
+  for (const t of tasks) {
+    if (!t.dueDate) { buckets.noDate.push(t); continue; }
+    const d = new Date(t.dueDate);
+    if (d < today0) buckets.overdue.push(t);
+    else if (d < tomorrow0) buckets.today.push(t);
+    else if (d < endOfWeek) buckets.thisWeek.push(t);
+    else buckets.later.push(t);
+  }
+
+  const counts = {
+    total: tasks.length,
+    overdue: buckets.overdue.length,
+    today: buckets.today.length,
+    thisWeek: buckets.thisWeek.length,
+    later: buckets.later.length,
+    noDate: buckets.noDate.length,
+  };
+
+  const allowedIds = new Set(tasks.map((t) => String(t.id)));
+
+  const context = renderPlanningContext({ tasks, buckets, counts, sampleCapped });
+
+  return { tasks, buckets, counts, allowedIds, context, sampleCapped };
+}
+
+function renderPlanningContext({ tasks, buckets, counts, sampleCapped }) {
   const lines = [];
   lines.push(`PLANNING SCOPE — the user is asking about their own workload.`);
   lines.push('');
@@ -429,23 +474,20 @@ async function buildPlanningScope(user, params = {}) {
     return lines.join('\n');
   }
 
-  const today0 = startOfDay(new Date());
-  const endOfWeek = new Date(today0); endOfWeek.setDate(endOfWeek.getDate() + 7);
-
-  const overdue = [];
-  const today = [];
-  const thisWeek = [];
-  const later = [];
-  const noDate = [];
-
-  for (const t of tasks) {
-    if (!t.dueDate) { noDate.push(t); continue; }
-    const d = new Date(t.dueDate);
-    if (d < today0) overdue.push(t);
-    else if (d < new Date(today0.getTime() + 86400000)) today.push(t);
-    else if (d < endOfWeek) thisWeek.push(t);
-    else later.push(t);
+  // AUTHORITATIVE COUNTS — the LLM should quote these for "how many"
+  // questions instead of counting items in the detail list below. Placed
+  // first so it sits in the highest-attention region of the context.
+  lines.push('AUTHORITATIVE COUNTS (use these for "how many" / count questions — these are the exact totals for this user\'s open workload):');
+  lines.push(`  Total open: ${counts.total}`);
+  lines.push(`  Overdue: ${counts.overdue}`);
+  lines.push(`  Due today: ${counts.today}`);
+  lines.push(`  Due this week: ${counts.thisWeek}`);
+  lines.push(`  Later (this month or beyond): ${counts.later}`);
+  lines.push(`  No due date: ${counts.noDate}`);
+  if (sampleCapped) {
+    lines.push(`  (note: the detail list below shows the top ${tasks.length} by priority; the authoritative counts above reflect this sample.)`);
   }
+  lines.push('');
 
   function dumpBucket(label, list) {
     if (list.length === 0) return;
@@ -456,20 +498,30 @@ async function buildPlanningScope(user, params = {}) {
     lines.push('');
   }
 
-  dumpBucket('OVERDUE', overdue);
-  dumpBucket('DUE TODAY', today);
-  dumpBucket('DUE THIS WEEK', thisWeek);
-  dumpBucket('LATER (this month or beyond)', later);
-  dumpBucket('NO DUE DATE', noDate);
+  dumpBucket('OVERDUE', buckets.overdue);
+  dumpBucket('DUE TODAY', buckets.today);
+  dumpBucket('DUE THIS WEEK', buckets.thisWeek);
+  dumpBucket('LATER (this month or beyond)', buckets.later);
+  dumpBucket('NO DUE DATE', buckets.noDate);
 
   lines.push(`Total open tasks: ${tasks.length}`);
   return lines.join('\n');
+}
+
+async function buildPlanningScope(user, params = {}) {
+  const out = await loadPlanningTaskList(user, params);
+  return out.context;
 }
 
 // ─── Formatting helpers ─────────────────────────────────────────
 
 function formatTaskLine(t, opts = {}) {
   const parts = [];
+  // Print the task id FIRST so it sits on the same line as the title. The
+  // planWeek system prompt instructs the LLM to use these IDs verbatim in
+  // its output; before this fix the IDs were absent from the context, the
+  // AI invented IDs that didn't exist, and the response failed validation.
+  if (t.id) parts.push(`id=${t.id}`);
   parts.push(`[${t.priority || 'no-pri'}]`);
   parts.push(t.title || '(untitled)');
   parts.push(`(status: ${t.status || '?'})`);
@@ -505,4 +557,4 @@ function truncate(s, n) {
   return text.slice(0, n - 1) + '…';
 }
 
-module.exports = { buildScopeContext };
+module.exports = { buildScopeContext, loadPlanningTaskList };

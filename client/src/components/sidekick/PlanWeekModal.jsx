@@ -55,11 +55,15 @@ export default function PlanWeekModal({ isOpen, onClose, tasks = [] }) {
     setStatus('loading');
     setError('');
     try {
-      const out = await aiSummary.planWeek({
-        // Cap the hint to 30 ids — the backend only uses this to bias the
-        // plan, not as a hard filter, so we don't need every task.
-        taskIds: (tasks || []).slice(0, 30).map((t) => t.id).filter(Boolean),
-      });
+      // The backend now loads the caller's canonical open-task list itself
+      // (loadPlanningTaskList) and uses that as the single source of truth
+      // for both prompt context and ID validation. We deliberately do NOT
+      // send taskIds anymore — the previous "bias hint" list was loaded
+      // from /tasks?assignedTo=me&limit=100 with no status filter and
+      // disagreed with the backend's planning query, causing the LLM to
+      // return an empty schedule with notes like "No task IDs from the
+      // provided list match the current open tasks."
+      const out = await aiSummary.planWeek({});
       setData(out || {});
       setStatus('ok');
     } catch (err) {
@@ -83,6 +87,12 @@ export default function PlanWeekModal({ isOpen, onClose, tasks = [] }) {
   }, [isOpen]);
 
   const schedule = Array.isArray(data?.schedule) ? data.schedule : [];
+  // A schedule is "empty" if no day has any tasks — covers both the
+  // "no parsed schedule at all" case (schedule.length === 0) and the
+  // "5 empty days returned by the backend" case (user has no open work
+  // OR all returned IDs failed validation).
+  const allDaysEmpty = schedule.length === 0
+    || schedule.every((d) => !Array.isArray(d?.taskIds) || d.taskIds.length === 0);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Plan my week" size="lg">
@@ -131,13 +141,15 @@ export default function PlanWeekModal({ isOpen, onClose, tasks = [] }) {
           </div>
         )}
 
-        {status === 'ok' && schedule.length === 0 && (
+        {status === 'ok' && allDaysEmpty && (
           <div className="p-6 rounded-md border border-dashed border-border text-center text-sm text-text-secondary">
-            AI didn&apos;t suggest a structured plan. {data?.notes ? <span className="block mt-1 text-xs">{data.notes}</span> : null}
+            {data?.notes
+              ? <span>{data.notes}</span>
+              : <span>No tasks were scheduled — your open work list may be empty.</span>}
           </div>
         )}
 
-        {status === 'ok' && schedule.length > 0 && (
+        {status === 'ok' && !allDaysEmpty && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
               {schedule.map((day) => (
