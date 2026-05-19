@@ -3,16 +3,25 @@
 /**
  * Task-ownership helpers shared between controllers and tests.
  *
- * These predicates answer "is this task wholly owned by `userId`?" — used by
- * the priority gate to grant Tier 4 (member) actors permission to set priority
- * on tasks they created and self-assigned, while keeping the global
- * `tasks.set_priority` denial intact for tasks delegated to them by others.
+ * Two flavours of "ownership" exist:
  *
- * Design notes:
- *   - "Sole owner" = creator AND no foreign role='assignee' rows. Supervisors
- *     do NOT count as assignees, but a task with a foreign supervisor is still
- *     considered self-owned (supervisors are oversight, not ownership).
- *   - Returns false on missing data — fail-closed.
+ *   1. SOLE-OWNER (`isSelfOwnedTask` / `isSelfOwnedCreate`) — the actor
+ *      created the task AND no other user is on it as an assignee. Kept for
+ *      legacy carve-outs that need the stricter shape.
+ *
+ *   2. ASSIGNEE (`isAssigneeOnTask`) — the actor is on the task as an
+ *      assignee, regardless of who created it or whether co-assignees exist.
+ *      Used by the priority gate so a Tier 4 actor can adjust priority on
+ *      work that their manager delegated to them — priority is a planning
+ *      concern owned by the person doing the work, and the prior strict
+ *      "creator + sole assignee" rule generated daily "please change my
+ *      priority" friction whenever a manager handed work down.
+ *
+ * Supervisors are oversight, not ownership — a task with a foreign
+ * supervisor is still self-owned for `isSelfOwnedTask`, and a user who is
+ * ONLY a supervisor on a task is NOT an assignee for `isAssigneeOnTask`.
+ *
+ * Returns false on missing data — fail-closed.
  */
 
 /**
@@ -67,7 +76,43 @@ function isSelfOwnedCreate(userId, assigneeIds) {
   return assigneeIds.every((id) => !id || id === userId);
 }
 
+/**
+ * Returns true when `userId` is an assignee on the task — via either the
+ * scalar `task.assignedTo` column, the legacy `assignedTo` array carrier,
+ * or the `task_assignees` join row with role='assignee'. Co-assignees and
+ * a foreign creator are both fine; this answers "is the actor on the hook
+ * for delivering this task?", not "is the actor the sole owner?".
+ *
+ * Used by the priority gate (createTask / updateTask / bulkUpdateTasks) so
+ * a Tier 4 actor who was handed work by a manager can still raise/lower
+ * priority on that work. Supervisors and watchers are NOT assignees and
+ * therefore do not get the exemption here.
+ *
+ * @param {string} userId
+ * @param {object} task            Task row or createTask payload shape.
+ * @param {Array}  [taskAssignees] Optional explicit list — prefer this when
+ *                                 the caller already loaded the join table.
+ * @returns {boolean}
+ */
+function isAssigneeOnTask(userId, task, taskAssignees) {
+  if (!userId || !task) return false;
+
+  const assignedTo = task.assignedTo;
+  if (typeof assignedTo === 'string' && assignedTo === userId) return true;
+  if (Array.isArray(assignedTo) && assignedTo.some((id) => id === userId)) return true;
+
+  const arr = Array.isArray(taskAssignees)
+    ? taskAssignees
+    : (Array.isArray(task.taskAssignees) ? task.taskAssignees : []);
+  return arr.some((ta) => {
+    if (!ta) return false;
+    const uid = ta.userId || (ta.user && ta.user.id);
+    return uid === userId && ta.role === 'assignee';
+  });
+}
+
 module.exports = {
   isSelfOwnedTask,
   isSelfOwnedCreate,
+  isAssigneeOnTask,
 };

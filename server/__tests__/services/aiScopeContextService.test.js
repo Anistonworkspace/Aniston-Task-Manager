@@ -27,6 +27,9 @@ jest.mock('../../models', () => ({
   TaskAssignee:   { findAll: jest.fn() },
   TaskOwner:      { findAll: jest.fn() },
   Subtask:        { findAll: jest.fn() },
+  Doc:            { findByPk: jest.fn() },
+  Workspace:      { findByPk: jest.fn() },
+  DocComment:     { findAll: jest.fn() },
 }));
 
 jest.mock('../../services/boardVisibilityService', () => ({
@@ -39,7 +42,7 @@ jest.mock('../../utils/safeLogger', () => ({
   info: jest.fn(),
 }));
 
-const { Task, Board, Comment, WorkLog, Activity } = require('../../models');
+const { Task, Board, Comment, WorkLog, Activity, Doc, Workspace, DocComment } = require('../../models');
 const { canUserSeeBoard } = require('../../services/boardVisibilityService');
 const { buildScopeContext } = require('../../services/aiScopeContextService');
 
@@ -55,6 +58,7 @@ beforeEach(() => {
   Comment.findAll.mockResolvedValue([]);
   WorkLog.findAll.mockResolvedValue([]);
   Activity.findAll.mockResolvedValue([]);
+  DocComment.findAll.mockResolvedValue([]);
 });
 
 describe('buildScopeContext', () => {
@@ -209,5 +213,95 @@ describe('buildScopeContext', () => {
     Task.findByPk.mockRejectedValue(new Error('db down'));
     const text = await buildScopeContext(USER, { scope: 'task', scopeId: 't1' });
     expect(text).toBe('');
+  });
+
+  // ─── doc scope ───────────────────────────────────────────────
+
+  it('doc scope returns empty when scopeId is missing', async () => {
+    expect(await buildScopeContext(USER, { scope: 'doc' })).toBe('');
+  });
+
+  it('doc scope returns empty when the doc is not found', async () => {
+    Doc.findByPk.mockResolvedValue(null);
+    expect(await buildScopeContext(USER, { scope: 'doc', scopeId: 'd1' })).toBe('');
+  });
+
+  it('doc scope returns empty when the caller cannot see the workspace', async () => {
+    Doc.findByPk.mockResolvedValue({
+      id: 'd1', title: 'Hidden', workspaceId: 'w1',
+      contentJson: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'private' }] }] },
+    });
+    // Member without membership and without board access → cannot see.
+    Workspace.findByPk.mockResolvedValue({
+      id: 'w1', name: 'WS', createdBy: 'someone-else',
+      workspaceMembers: [],
+    });
+    // No board-membership path either.
+    const boardVis = require('../../services/boardVisibilityService');
+    boardVis.canUserSeeBoard = jest.fn();
+    // canSeeDocWorkspace calls getVisibleBoardIdsForUser which isn't on the mock
+    // → falls through to false; the visibility check should reject.
+    const text = await buildScopeContext(USER, { scope: 'doc', scopeId: 'd1' });
+    expect(text).toBe('');
+  });
+
+  it('doc scope includes title, body, and metadata for a visible doc', async () => {
+    Doc.findByPk.mockResolvedValue({
+      id: 'd1',
+      title: 'Project alpha launch plan',
+      workspaceId: 'w1',
+      contentJson: {
+        type: 'doc',
+        content: [
+          { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Launch goals' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'Ship by Q3 end of quarter.' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'Owners: @Sara, @Mike.' }] },
+        ],
+      },
+      contentText: 'Launch goals Ship by Q3 end of quarter. Owners: @Sara, @Mike.',
+      lastEditedAt: new Date('2026-05-18T10:00:00Z'),
+      creator: { id: 'u9', name: 'Sunny Mehta' },
+      lastEditor: { id: 'u9', name: 'Sunny Mehta' },
+      workspace: { id: 'w1', name: 'Engineering' },
+    });
+
+    const SUPER = { id: 'super-1', role: 'admin', isSuperAdmin: true };
+    const text = await buildScopeContext(SUPER, { scope: 'doc', scopeId: 'd1' });
+
+    expect(text).toContain('DOC SCOPE');
+    expect(text).toContain('Project alpha launch plan');
+    expect(text).toContain('Engineering'); // workspace name
+    expect(text).toContain('Sunny Mehta'); // creator
+    expect(text).toContain('Launch goals');
+    expect(text).toContain('Ship by Q3 end of quarter');
+    expect(text).toContain('Owners: @Sara, @Mike');
+  });
+
+  it('doc scope falls back to contentText when contentJson is missing', async () => {
+    Doc.findByPk.mockResolvedValue({
+      id: 'd1',
+      title: 'Legacy doc',
+      workspaceId: 'w1',
+      contentJson: null,
+      contentText: 'this is the legacy plain-text shadow stored by the controller',
+      creator: { id: 'u9', name: 'Sara' },
+    });
+    const SUPER = { id: 'super-1', role: 'admin', isSuperAdmin: true };
+    const text = await buildScopeContext(SUPER, { scope: 'doc', scopeId: 'd1' });
+    expect(text).toContain('legacy plain-text shadow');
+  });
+
+  it('doc scope marks archived docs in the body so the AI knows', async () => {
+    Doc.findByPk.mockResolvedValue({
+      id: 'd1',
+      title: 'Old plan',
+      workspaceId: 'w1',
+      isArchived: true,
+      contentJson: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'old content' }] }] },
+      creator: { id: 'u9', name: 'Sara' },
+    });
+    const SUPER = { id: 'super-1', role: 'admin', isSuperAdmin: true };
+    const text = await buildScopeContext(SUPER, { scope: 'doc', scopeId: 'd1' });
+    expect(text).toContain('ARCHIVED');
   });
 });

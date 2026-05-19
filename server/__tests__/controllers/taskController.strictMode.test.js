@@ -154,6 +154,7 @@ jest.mock('../../services/notificationService', () => ({
 jest.mock('../../utils/taskOwnership', () => ({
   isSelfOwnedTask: jest.fn(() => true),
   isSelfOwnedCreate: jest.fn(() => true),
+  isAssigneeOnTask: jest.fn(() => false),
 }));
 jest.mock('../../services/recurringTaskService', () => ({
   spawnDueInstances: jest.fn().mockResolvedValue(null),

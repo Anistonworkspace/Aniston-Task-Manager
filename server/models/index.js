@@ -558,6 +558,9 @@ Board.hasMany(StatusTemplate, { foreignKey: 'boardId', as: 'statusTemplates' });
 Doc.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspace', onDelete: 'CASCADE' });
 Doc.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 Doc.belongsTo(User, { foreignKey: 'lastEditedBy', as: 'lastEditor', onDelete: 'SET NULL' });
+// Used by the global /archive page to render "archived by X" attribution.
+// Mirrors the pattern on HelpRequest / TaskDependency / DependencyRequest.
+Doc.belongsTo(User, { foreignKey: 'archivedBy', as: 'archiver', onDelete: 'SET NULL' });
 Workspace.hasMany(Doc, { foreignKey: 'workspaceId', as: 'docs' });
 Doc.hasMany(DocVersion, { foreignKey: 'docId', as: 'versions', onDelete: 'CASCADE' });
 DocVersion.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });

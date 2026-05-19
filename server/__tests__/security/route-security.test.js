@@ -406,19 +406,26 @@ describe('Label CRUD role restriction (labels.js)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('rejects member from creating a BOARD-LIBRARY label (no assignToTaskId)', async () => {
-    // Post-May-12 RBAC widening: members CAN create labels when they're
-    // attaching one to a task they can see (the task-scoped path tested
-    // below). What they cannot do is mint a stand-alone "library" label on
-    // a board they don't manage — that's still the audit's S-H6 boundary.
+  it('allows member to create a BOARD-LIBRARY label (May 2026 v2 widening)', async () => {
+    // May 2026 v2 product decision: every tier (including T4 members) can
+    // mint labels — both via the task-scoped path AND the stand-alone
+    // library path. canManageBoard now consults permissionEngine.hasPermission
+    // for labels.create, and T4 base is true after the matrix update. The
+    // route-level gate is just `authenticate`; canManageBoard's engine call
+    // is what authorises the create. Permanent label DELETE remains
+    // Tier 1 only (covered by the separate "rejects member from deleting
+    // labels" test below).
+    const pe = require('../../services/permissionEngine');
+    pe.hasPermission.mockResolvedValue(true);
     mockModels.User.findByPk.mockResolvedValue(makeUser({ role: 'member' }));
     mockModels.Board.findByPk.mockResolvedValue({ id: BOARD_ID, createdBy: 'someone-else' });
+    mockModels.Label.create = jest.fn().mockResolvedValue({ id: 'lbl-1', name: 'Bug' });
     const token = generateToken(USER_ID, 'member');
     const res = await request(app)
       .post('/api/labels')
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'Bug', color: '#ff0000', boardId: BOARD_ID });
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
   });
 
   it('rejects member from deleting labels', async () => {

@@ -116,19 +116,19 @@ describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => 
   // rule. Each entry MUST link to the product decision that authorised it.
   // Adding to this list is a deliberate policy change, not a bug fix.
   const TIER_2_DELETE_CARVEOUTS = new Set([
-    // labels — May 2026 product decision: managers may curate their team's
-    // label library end-to-end, including deletion. Labels are easily-
-    // recreatable metadata, not work product. Controller-level
-    // `canManageBoard` and `permissionEngine.hasPermission` still gate per
-    // request; this carveout only widens the base default.
-    'labels',
-    // status_templates — Phase 2 product decision (mirrors labels): status
-    // tile groups are board-config metadata, not work product. Tasks created
-    // from a template snapshot the statuses into their own `statusConfig`
-    // JSONB, so deletion never breaks historical tasks. T1/T2 manage the
-    // library end-to-end. See server/config/permissionMatrix.js
-    // GRANTABILITY block for the matching grantability rule.
+    // status_templates — Phase 2 product decision (mirrors the original
+    // labels carveout): status tile groups are board-config metadata, not
+    // work product. Tasks created from a template snapshot the statuses
+    // into their own `statusConfig` JSONB, so deletion never breaks
+    // historical tasks. T1/T2 manage the library end-to-end. See
+    // server/config/permissionMatrix.js GRANTABILITY block for the
+    // matching grantability rule.
     'status_templates',
+    // NOTE: `labels` was previously listed here (May 2026 v1 decision).
+    // Reversed in May 2026 v2 — permanent label deletion is now Tier 1
+    // only because the cascade-detach across every task referencing the
+    // label is genuinely destructive for cross-team boards. Curation
+    // (rename / recolor) remains T2 via labels.edit base.
   ]);
 
   it('every `delete` action is FALSE across every resource (except documented carveouts)', () => {
@@ -142,12 +142,15 @@ describe('Tier 2 — broad management, NO destructive ops (decision #4)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('labels.delete + status_templates.delete are the only T2 destructive carveouts (regression guard)', () => {
-    expect(TIER_PERMISSIONS[2].labels.delete).toBe(true);
+  it('status_templates.delete is the only T2 destructive carveout (regression guard)', () => {
+    // labels.delete is NOT a carveout anymore — permanent label deletion
+    // is Tier 1 only (May 2026 v2 product decision). The cascade-detach
+    // makes it destructive enough to require a strict-admin actor.
+    expect(TIER_PERMISSIONS[2].labels.delete).toBe(false);
     expect(TIER_PERMISSIONS[2].status_templates.delete).toBe(true);
     // If you find yourself adding a new entry to TIER_2_DELETE_CARVEOUTS,
     // make sure you've got an explicit product decision recorded.
-    expect(TIER_2_DELETE_CARVEOUTS.size).toBe(2);
+    expect(TIER_2_DELETE_CARVEOUTS.size).toBe(1);
   });
 
   it('archive.manage is FALSE (manage = restore + permanent-delete = destructive)', () => {

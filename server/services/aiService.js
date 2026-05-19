@@ -105,7 +105,7 @@ function isOpenRouterUrl(url) {
  * @param {string} [providerId] - Optional specific provider ID to use
  * @returns {string} The assistant's reply text
  */
-async function chat(messages, systemPrompt, providerId) {
+async function chat(messages, systemPrompt, providerId, opts = {}) {
   let config;
   if (providerId) {
     config = await getProviderById(providerId);
@@ -116,7 +116,7 @@ async function chat(messages, systemPrompt, providerId) {
   if (!config) throw new Error('AI is not configured. Ask an admin to set up AI in Integrations.');
 
   try {
-    return await callProviderWithRetry(config, messages, systemPrompt);
+    return await callProviderWithRetry(config, messages, systemPrompt, opts);
   } catch (err) {
     // Attach provider metadata to the error so controllers can report which provider failed
     err._providerInfo = {

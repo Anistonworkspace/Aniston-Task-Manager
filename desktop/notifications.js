@@ -18,6 +18,7 @@
 
 const { Notification } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { iconsRoot } = require('./paths');
 
 // In-memory dedup. Same `notif-<id>` tag arriving twice within DEDUP_WINDOW_MS
@@ -79,6 +80,75 @@ function shouldDedup(tag) {
 }
 
 /**
+ * XML attribute / text escaper. Toast XML is parsed by Windows
+ * ToastNotificationManager as XML, so any of these five characters in a
+ * user-supplied title/body would otherwise break the XML or open a content
+ * injection. We never serialise user content as anything but plain text
+ * inside an element body, but defence-in-depth: escape always.
+ */
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Build a Microsoft-Teams-style Windows Toast XML payload.
+ *
+ * The vanilla `new Notification({ title, body, icon })` produces a default
+ * ToastGeneric binding — a small, two-line card at the bottom-right of the
+ * screen. Teams uses a richer toast: a circular app-logo avatar on the
+ * left, a one-line bold title, a longer (up to four lines) body, and a
+ * footer attribution row. The card sits visually higher on the screen
+ * just because it's taller, and `duration="long"` makes it stay ~25s
+ * instead of the default ~5s. Hover-to-pause is built into the Windows
+ * Action Center renderer and applies to every toast regardless of XML.
+ *
+ * AppUserModelId (set in main.js) must match the value baked into the
+ * Start-menu / desktop shortcut by electron-builder — without that
+ * Windows refuses to render custom toast XML and falls back to silence.
+ * The installer wires this up automatically when `nsis.shortcutName` and
+ * `appId` are both present in package.json (slice 5 config).
+ */
+function buildToastXml({ title, body, iconUrl }) {
+  // BUG FIX (Slice 6.5): the previous version of this function set
+  // `scenario="default"` on the <toast> element. That is NOT a valid
+  // value in Microsoft's Toast XML schema — the only accepted scenarios
+  // are `reminder`, `alarm`, `incomingCall`, `urgent`. Windows
+  // ToastNotificationManager silently rejects the entire XML when it
+  // fails schema validation, with no `failed` event surfaced to Electron
+  // — which is exactly what users saw: every assigned task notification
+  // disappeared into the void.
+  //
+  // The `scenario` attribute is optional. Omitting it gives the default
+  // ~5 s presentation, which we override to ~25 s via `duration="long"`.
+  // That's all we wanted in the first place.
+  //
+  // `hint-maxLines` limits each <text> block; default is 1 for title and
+  // 3 for subsequent texts. We allow up to 4 body lines so notifications
+  // like "Task assigned: <title>. Deadline: <date>. Assigned by: <name>."
+  // fit without being truncated mid-sentence.
+  return [
+    '<toast duration="long">',
+      '<visual>',
+        '<binding template="ToastGeneric">',
+          `<image placement="appLogoOverride" hint-crop="circle" src="${escapeXml(iconUrl)}"/>`,
+          `<text hint-maxLines="1">${escapeXml(title)}</text>`,
+          `<text hint-maxLines="4">${escapeXml(body)}</text>`,
+          '<text placement="attribution">Monday Aniston</text>',
+        '</binding>',
+      '</visual>',
+      // ms-winsoundevent:Notification.IM — the soft chime Windows uses for
+      // instant-messaging style alerts. Matches Teams' notification sound.
+      '<audio src="ms-winsoundevent:Notification.IM"/>',
+    '</toast>',
+  ].join('');
+}
+
+/**
  * Show an OS notification.
  *
  * @param {object} args
@@ -105,36 +175,83 @@ function notify({ payload, onClick }) {
   if (shouldDedup(tag)) return { ok: true, deduped: true };
   if (tag) rememberTag(tag);
 
-  let n;
-  try {
-    n = new Notification({
+  // Resolve the bundled app icon. Slice 5: iconsRoot() handles both
+  // packaged (process.resourcesPath/icons/) and dev (in-repo
+  // client/public/icons/) cases. Slice 6.3: we also need the icon as a
+  // file:// URL for embedding in the Windows Toast XML — pathToFileURL
+  // handles spaces (`Monday Aniston`) and any other char that needs
+  // percent-encoding in a URL.
+  const iconFsPath = path.join(iconsRoot(), 'icon-512.png');
+  const iconUrl = pathToFileURL(iconFsPath).href;
+
+  // Slice 6.5 — log every notification attempt so the next time toasts
+  // silently stop firing we can see exactly what happened. Values are
+  // structural (title length, has-url, platform) — never the raw title
+  // or body, which can contain user content.
+  console.log(`[Aniston Desktop] notify: title-len=${title.length} body-len=${body.length} tag=${tag || 'none'} hasUrl=${!!url} platform=${process.platform}`);
+
+  // Helper: build a Notification with the bells-and-whistles toast XML
+  // on Windows, or the plain options elsewhere. Returns the constructed
+  // Notification or throws.
+  function buildNotification({ useToastXml }) {
+    const ctorOptions = {
       title,
       body,
-      // Bundled app icon. Slice 5: iconsRoot() handles both packaged
-      // (process.resourcesPath/icons/) and dev (in-repo client/public/icons/)
-      // cases so this code path is identical regardless of how Electron
-      // was launched.
-      icon: path.join(iconsRoot(), 'icon-512.png'),
+      icon: iconFsPath,
       silent: false,
+    };
+    if (useToastXml && process.platform === 'win32') {
+      ctorOptions.toastXml = buildToastXml({ title, body, iconUrl });
+    }
+    return new Notification(ctorOptions);
+  }
+
+  // Helper: attach click + failed listeners to a notification instance.
+  // Used for both the primary and the fallback path so behaviour is
+  // identical regardless of which one ends up firing.
+  function attachListeners(n, label) {
+    n.on('click', () => {
+      try { if (onClick) onClick({ url }); }
+      catch (err) { console.warn('[Aniston Desktop] notify onClick threw:', err && err.message); }
     });
+    n.on('failed', (_event, error) => {
+      console.warn(`[Aniston Desktop] notification(${label}) failed:`, error);
+    });
+    n.on('show', () => {
+      console.log(`[Aniston Desktop] notification(${label}) shown`);
+    });
+  }
+
+  // Primary path: try the rich Teams-style toast XML on Windows.
+  // Two failure modes are guarded:
+  //   (a) constructor throws — happens when toastXml is malformed
+  //       (electron does some pre-flight validation).
+  //   (b) show() throws — extremely rare but possible if Windows
+  //       rejects the toast before queueing it.
+  // BOTH fall through to the basic Notification path below, so a user
+  // ALWAYS sees the notification even if our toast XML breaks in some
+  // unforeseen way. The fallback is the same shape that worked
+  // pre-Slice-6.3 and pre-dates any custom XML.
+  if (process.platform === 'win32') {
+    try {
+      const n = buildNotification({ useToastXml: true });
+      attachListeners(n, 'rich');
+      n.show();
+      return { ok: true };
+    } catch (err) {
+      console.warn('[Aniston Desktop] rich toast failed, falling back to basic:', err && err.message);
+      // fall through to the basic path below
+    }
+  }
+
+  // Fallback / non-Windows path: vanilla Electron Notification.
+  let n;
+  try {
+    n = buildNotification({ useToastXml: false });
   } catch (err) {
     return { ok: false, reason: 'construct-failed', error: String(err && err.message || err) };
   }
-
-  // Click -> renderer navigation. Wrapped in try/catch so a callback bug
-  // never bubbles up to Electron's main loop.
-  n.on('click', () => {
-    try { if (onClick) onClick({ url }); }
-    catch (err) { console.warn('[Aniston Desktop] notify onClick threw:', err && err.message); }
-  });
-
-  // OS-level failure (Focus Assist suppression, app excluded from
-  // notifications in Settings, action-center disabled, etc.). Logged only
-  // -- there is no programmatic recovery available.
-  n.on('failed', (_event, error) => {
-    console.warn('[Aniston Desktop] notification failed:', error);
-  });
-
+  attachListeners(n, 'basic');
   try { n.show(); }
   catch (err) {
     return { ok: false, reason: 'show-failed', error: String(err && err.message || err) };

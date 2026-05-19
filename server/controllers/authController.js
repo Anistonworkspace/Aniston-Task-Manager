@@ -748,14 +748,20 @@ const getAllUsers = async (req, res) => {
     //
     // Phase B — also honour the granular `users.view_sensitive` action.
     // Even Tier 1/2 see redacted fields if explicitly denied via override.
+    //
+    // `tier` is included in BOTH lists: it's the canonical privilege column
+    // (1..4), already broadly exposed via PILL_ATTRIBUTES across the app, and
+    // the frontend uses it to render "Tier N" badges in assignee dropdowns.
+    // Omitting it caused resolveTier() to fall back to legacy `role` (which
+    // is also redacted for T3/T4), mis-labeling a Super Admin as Tier 4.
     const { hasTierAtLeast } = require('../config/tiers');
     const { hasPermission: enginePermissionUsers } = require('../services/permissionEngine');
     const tierAllowsSensitive = hasTierAtLeast(req.user, 2);
     const grantAllowsSensitive = await enginePermissionUsers(req.user, 'users', 'view_sensitive');
     const showSensitive = tierAllowsSensitive && grantAllowsSensitive;
     const attributes = showSensitive
-      ? ['id', 'name', 'email', 'avatar', 'role', 'department']
-      : ['id', 'name', 'avatar', 'department'];
+      ? ['id', 'name', 'email', 'avatar', 'role', 'tier', 'department']
+      : ['id', 'name', 'avatar', 'tier', 'department'];
 
     const users = await User.findAll({
       where,

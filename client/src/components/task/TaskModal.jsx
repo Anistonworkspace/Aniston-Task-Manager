@@ -3,7 +3,7 @@ import {
   X, MessageSquare, Paperclip, Activity, Clock, Tag, Link2, Zap, Shield,
   HelpCircle, Calendar, Check, Lock, Settings, Plus, Pencil,
   ChevronDown, ChevronRight, RefreshCw, Bookmark, Bell, User as UserIcon,
-  UserCheck, Flag, Circle, FileText, ChevronUp, Sparkles,
+  UserCheck, Flag, Circle, FileText, ChevronUp, Sparkles, Loader2,
 } from 'lucide-react';
 import { format, parseISO, formatDistanceToNowStrict } from 'date-fns';
 import { useAuth } from '../../context/AuthContext';
@@ -74,10 +74,12 @@ import PortalDropdown from '../common/PortalDropdown';
 // so it doesn't conflict with the modal's own layout.
 import SidekickPanel from '../sidekick/SidekickPanel';
 // Plan A Slice 3: one-shot inline AI features.
-//   - AISummaryPopover renders the "Summarize this task" result inline.
+//   - AISummaryModal renders the "Summarize this task" result in a
+//     portal-centered modal (May 2026 — replaced AISummaryPopover which
+//     was invisible in some user environments).
 //   - aiSummary calls the dedicated POST /api/ai/summarize/task/:id and
 //     /api/ai/suggest-priority endpoints (Slice 2 backend).
-import AISummaryPopover from '../sidekick/AISummaryPopover';
+import AISummaryModal from '../sidekick/AISummaryModal';
 import SuggestPriorityChip from '../sidekick/SuggestPriorityChip';
 import aiSummary from '../../services/aiSummaryService';
 // Doc Editor Phase A: the description field now uses Tiptap so users get
@@ -738,6 +740,11 @@ export default function TaskModal({
   // header button. The panel reads scope='task' / scopeId=task.id so the
   // backend prepends the task-specific context to the system prompt.
   const [sidekickOpen, setSidekickOpen] = useState(false);
+  // May 2026 — task Summarize moved off the popover variant to a centered
+  // modal. preparingTaskSummary gives the trigger button an immediate
+  // spinner so the user sees feedback the instant they click.
+  const [taskSummaryOpen, setTaskSummaryOpen] = useState(false);
+  const [preparingTaskSummary, setPreparingTaskSummary] = useState(false);
   const [recurringTemplate, setRecurringTemplate] = useState(
     task?.recurringTemplate || (task?.isRecurringInstance ? null : false)
   );
@@ -1587,26 +1594,36 @@ export default function TaskModal({
                 <span className="w-px h-4 bg-border mx-1" aria-hidden="true" />
               </>
             )}
-            {/* Plan A Slice 3 — One-shot "Summarize" button calls the
-                dedicated POST /ai/summarize/task/:id endpoint and renders
-                the result inline in a Popover. This is the fastest path to
-                "what is going on with this task" — one click, no chat. */}
+            {/* Plan A Slice 3 — One-shot "Summarize" button.
+                May 2026: portal-centered AISummaryModal instead of the
+                popover variant (which was invisible in some user
+                environments). Trigger shows an immediate spinner so the
+                click registers visibly even before the modal mounts. */}
             {task?.id && (
-              <AISummaryPopover
-                title="Task summary"
-                placement="bottom-end"
-                run={() => aiSummary.summarizeTask(task.id)}
-                emptyText="The AI returned an empty summary. Try Regenerate."
-                trigger={
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors v3-lift"
-                    title="Summarize this task"
-                  >
+              <button
+                type="button"
+                onClick={() => {
+                  if (preparingTaskSummary || taskSummaryOpen) return;
+                  setPreparingTaskSummary(true);
+                  setTimeout(() => {
+                    setTaskSummaryOpen(true);
+                    setPreparingTaskSummary(false);
+                  }, 0);
+                }}
+                disabled={preparingTaskSummary}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors v3-lift disabled:opacity-70 disabled:cursor-wait"
+                title="Summarize this task"
+              >
+                {preparingTaskSummary ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" /> Preparing…
+                  </>
+                ) : (
+                  <>
                     <Sparkles size={12} /> Summarize
-                  </button>
-                }
-              />
+                  </>
+                )}
+              </button>
             )}
             {/* Plan A Slice 1 — "Ask AI" opens the task-scoped Sidekick.
                 Use this when you want a conversation (e.g. "what should the
@@ -2532,9 +2549,12 @@ export default function TaskModal({
                     && granularPermissions?.['labels.create'] !== false
                   }
                   // canManage exposes per-label delete (trash) controls in
-                  // the picker — T1 / T2 only. Backend's canManageBoard is
-                  // still the authoritative gate.
-                  canManage={isSuperAdmin || isTier1 || isTier2}
+                  // the picker. May 2026 v2 product decision narrowed
+                  // permanent label deletion to Tier 1 only (reversed the
+                  // earlier T2 carveout). Backend's canManageBoard +
+                  // labels.delete engine check is still the authoritative
+                  // gate; this just hides the affordance from non-T1 users.
+                  canManage={isSuperAdmin || isTier1}
                   // Propagate the new label list back into the parent
                   // task object so the board row's LabelCell (mounted
                   // simultaneously when the modal is open over the
@@ -3029,6 +3049,19 @@ export default function TaskModal({
           scopeLabel="this task"
           pageContext={`Task: ${task.title || '(untitled)'}${task.board?.name ? ` on ${task.board.name}` : ''}`}
           pageState={{ route: `/tasks/${task.id}`, taskId: task.id, boardId: task.boardId }}
+        />
+      )}
+
+      {/* May 2026 — task Summarize. Portal-centered modal with visible
+          loader, elapsed-time counter, 45s hard timeout. Replaces the
+          inline popover that proved invisible in some browsers. */}
+      {task?.id && (
+        <AISummaryModal
+          isOpen={taskSummaryOpen}
+          onClose={() => setTaskSummaryOpen(false)}
+          title="Task summary"
+          subtitle={task.title || 'Task'}
+          run={() => aiSummary.summarizeTask(task.id)}
         />
       )}
 

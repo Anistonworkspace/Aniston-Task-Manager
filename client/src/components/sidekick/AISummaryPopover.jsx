@@ -42,6 +42,11 @@ export default function AISummaryPopover({
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState('');
   const [copied, setCopied] = useState(false);
+  // May 2026 — elapsed-time counter for the loading state so the user
+  // can tell the call is still alive vs. wedged. AI providers (DeepSeek,
+  // OpenRouter) routinely take 5-15s on a longish summary; the previous
+  // static "Reading the data and writing the summary…" gave no signal.
+  const [elapsed, setElapsed] = useState(0);
   const requestRef = useRef(0);
   const toast = useToast();
 
@@ -51,8 +56,17 @@ export default function AISummaryPopover({
     setData(null);
     setError('');
     setErrorCode('');
+    setElapsed(0);
+    // Belt-and-suspenders timeout: even though the api layer has its
+    // own 30s timeout, surface a clear failure if the whole pipeline
+    // (flush + AI call + render) exceeds 45s. Prevents the popover from
+    // sitting in "loading" forever if some upstream layer hangs.
+    const timeoutMs = 45000;
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('AI took too long — please try again')), timeoutMs);
+    });
     try {
-      const out = await run();
+      const out = await Promise.race([run(), timeoutPromise]);
       if (myReq !== requestRef.current) return; // a newer run started; drop result
       setData(out || {});
       setStatus('ok');
@@ -69,6 +83,18 @@ export default function AISummaryPopover({
   useEffect(() => {
     if (open && status === 'idle') startRun();
   }, [open, status, startRun]);
+
+  // Elapsed-time tick while the AI request is in flight. Stops as soon
+  // as we leave the 'loading' state (success, error, or popover close).
+  useEffect(() => {
+    if (status !== 'loading') return undefined;
+    const start = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => {
+      setElapsed(Math.round((Date.now() - start) / 1000));
+    }, 500);
+    return () => clearInterval(id);
+  }, [status]);
 
   async function handleCopy() {
     const text = data?.summary || (typeof data === 'string' ? data : '');
@@ -145,9 +171,41 @@ export default function AISummaryPopover({
               <p className="text-text-tertiary">Ready to summarize…</p>
             )}
             {status === 'loading' && (
-              <div className="flex items-center gap-2 text-text-secondary">
-                <Sparkles size={13} className="text-primary animate-pulse" />
-                <span>Reading the data and writing the summary…</span>
+              <div className="flex flex-col gap-1.5 text-text-secondary">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={13} className="text-primary animate-pulse" />
+                  <span>
+                    {elapsed < 3
+                      ? 'Reading the doc…'
+                      : elapsed < 10
+                        ? 'Writing the summary…'
+                        : elapsed < 20
+                          ? 'Still working on it…'
+                          : 'AI is slow today, hang on…'}
+                  </span>
+                  <span className="ml-auto text-[10px] text-text-tertiary tabular-nums">
+                    {elapsed}s
+                  </span>
+                </div>
+                {/* Indeterminate progress bar — gives a visible "alive"
+                    signal while the provider thinks. Pure CSS keyframes
+                    so we don't pull in a JS animation lib. */}
+                <div className="h-0.5 w-full rounded overflow-hidden" style={{ backgroundColor: 'var(--surface-100, #f0f2f5)' }}>
+                  <div
+                    className="h-full"
+                    style={{
+                      width: '40%',
+                      background: 'linear-gradient(90deg, transparent, var(--primary, #0073ea), transparent)',
+                      animation: 'aiSummaryProgress 1.4s linear infinite',
+                    }}
+                  />
+                </div>
+                <style>{`
+                  @keyframes aiSummaryProgress {
+                    0%   { transform: translateX(-100%); }
+                    100% { transform: translateX(350%); }
+                  }
+                `}</style>
               </div>
             )}
             {status === 'error' && (

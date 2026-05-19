@@ -80,16 +80,14 @@ export default function TranscriptProcessor({
     setSummaryStatus('loading');
     setSummaryError('');
     try {
-      // Inline summary call — we don't have a "summarize this transcript
-      // directly" endpoint, so we use transformInline with the 'improve'
-      // mode prompt, which works well for one-shot text input. (Doc
-      // summarize requires a doc id.)
+      // /api/ai/chat expects a `messages` array of {role, content} turns
+      // and returns `{ data: { message } }`. Sending a single `prompt`
+      // string would trip the "Messages array is required" 400.
+      const userPrompt = `Summarize this meeting transcript in 3-5 sentences. Lead with the bottom line; call out decisions and unresolved questions.\n\nTranscript:\n${transcript.slice(0, 8000)}`;
       const res = await api.post('/ai/chat', {
-        prompt: `Summarize this meeting transcript in 3-5 sentences. Lead with the bottom line; call out decisions and unresolved questions.\n\nTranscript:\n${transcript.slice(0, 8000)}`,
-        scope: null,
-        history: [],
+        messages: [{ role: 'user', content: userPrompt }],
       });
-      const text = res?.data?.data?.reply || res?.data?.reply || '';
+      const text = res?.data?.data?.message || res?.data?.message || '';
       setSummary(String(text).trim());
       setSummaryStatus('ok');
     } catch (err) {

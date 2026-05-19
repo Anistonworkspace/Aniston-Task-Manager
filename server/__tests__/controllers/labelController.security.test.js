@@ -314,29 +314,25 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
     expect(Label.create).toHaveBeenCalled();
   });
 
-  test('Tier 4 member: BOARD-LIBRARY create (no assignToTaskId) is blocked by canManageBoard', async () => {
-    // Post-May-12 widening: T4 CAN create labels on a task they own (see
-    // task-scoped tests below). What they CANNOT do is mint a stand-alone
-    // library label that affects every task on a board they don't manage —
-    // that path still hits canManageBoard and 403s, matching the audit's
-    // S-H6 boundary. Same expectation applies to T3.
+  test('Tier 4 member: BOARD-LIBRARY create (no assignToTaskId) is allowed (May 2026 v2 widening)', async () => {
+    // May 2026 v2 product decision: every contributor (T1..T4) can mint
+    // labels, both via the task-scoped path and the stand-alone library
+    // path. canManageBoard now consults permissionEngine.hasPermission
+    // for labels.create — T4 base is true after the matrix update.
     //
-    // Phase A (May 2026) — canManageBoard is now engine-backed and
-    // action-aware. The blanket engine mock at the top of this file
-    // resolves `hasPermission` to true for every action, which would
-    // wrongly let T4 through. Override JUST this call so the engine
-    // returns the matrix truth (labels.create=false for tier 4).
-    const enginePermission = require('../../services/permissionEngine');
-    enginePermission.hasPermission.mockResolvedValueOnce(false);
+    // What T4 still CANNOT do is permanently delete a label from the
+    // global label library (labels.delete is T1 only). The delete-side
+    // test below pins that contract.
     Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
+    Label.create.mockResolvedValue({ id: 'l-new', name: 'sneaky', color: '#579bfc', boardId: 'b1', createdBy: 'u-member' });
     const req = {
       user: { id: 'u-member', isSuperAdmin: false, role: 'member', tier: 4 },
       body: { name: 'sneaky', color: '#579bfc', boardId: 'b1' }, // no assignToTaskId — library path
     };
     const res = mockRes();
     await labelCtrl.createLabel(req, res);
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(Label.create).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(Label.create).toHaveBeenCalled();
   });
 
   // ── Task-scoped path: every tier passes when they can see the task ─────

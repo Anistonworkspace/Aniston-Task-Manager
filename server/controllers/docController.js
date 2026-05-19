@@ -25,9 +25,16 @@
  */
 
 const { Op } = require('sequelize');
-const { Doc, DocVersion, DocMention, DocTaskReference, Task, Workspace, User } = require('../models');
+const { Doc, DocVersion, DocMention, DocTaskReference, Task, Workspace, User, Board } = require('../models');
 const safeLogger = require('../utils/safeLogger');
 const { logActivity } = require('../services/activityService');
+// Doc visibility must match `/workspaces/mine` visibility: a Tier 4 user
+// who only reaches a workspace via board membership (no explicit
+// WorkspaceMember row) still sees the workspace in the sidebar, so they
+// must be able to open its docs too. The board-visibility service is the
+// single source of truth for "which boards can this user see"; we project
+// that into "which workspaces" by union over the boards' workspaceIds.
+const boardVisibility = require('../services/boardVisibilityService');
 let xssFn;
 try { xssFn = require('xss'); } catch { xssFn = (s) => s; }
 // Notification service is loaded lazily so doc controller unit tests that
@@ -55,7 +62,27 @@ async function canCallerSeeWorkspace(user, workspaceId) {
   if (user?.role === 'admin' || user?.role === 'manager') return true;
   if (ws.createdBy === user.id) return true;
   const memberIds = (ws.workspaceMembers || []).map((m) => m.id);
-  return memberIds.includes(user.id);
+  if (memberIds.includes(user.id)) return true;
+
+  // Board-membership path. Aligns docs visibility with `getMyWorkspaces`
+  // (server/controllers/workspaceController.js) so a Tier 4 user who only
+  // reaches a workspace via board access can still open its docs.
+  // Without this, the workspace shows up in the sidebar but every docs
+  // request returns 403 — the bug the May 2026 audit flagged.
+  try {
+    const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+    if (visibleBoardIds && visibleBoardIds.size > 0) {
+      const wsBoards = await Board.findAll({
+        where: { workspaceId, isArchived: false },
+        attributes: ['id'],
+        raw: true,
+      });
+      if (wsBoards.some((b) => visibleBoardIds.has(b.id))) return true;
+    }
+  } catch (err) {
+    safeLogger.warn('[Doc] canCallerSeeWorkspace board-visibility fallback failed', { err, workspaceId, userId: user.id });
+  }
+  return false;
 }
 
 function canCallerEditDoc(user, doc) {
@@ -303,6 +330,118 @@ function serializeDoc(doc, opts = {}) {
 }
 
 // ─── endpoints ──────────────────────────────────────────────
+
+/**
+ * GET /api/docs/archived — archived docs across every workspace the caller
+ * can see. Used by the global /archive page so docs share the same
+ * archive UX as boards / tasks / dependencies / help requests instead of
+ * living as a hidden toggle on each workspace's Docs list.
+ *
+ * Visibility rule mirrors canCallerSeeWorkspace (including the
+ * board-membership branch added in May 2026) — the caller only sees
+ * archived docs for workspaces they could open the active docs list of.
+ */
+async function listArchivedDocsForCaller(req, res) {
+  try {
+    // Build the set of workspaceIds the caller can see. For T1+T2 this
+    // is "every workspace"; for T3+T4 we union the workspace-member set
+    // with the board-membership-derived set so the rule matches the
+    // sidebar exactly.
+    const user = req.user;
+    let workspaceIds;
+    if (user?.isSuperAdmin || user?.role === 'admin' || user?.role === 'manager') {
+      const all = await Workspace.findAll({ where: { isActive: true }, attributes: ['id'], raw: true });
+      workspaceIds = all.map((w) => w.id);
+    } else {
+      const memberRows = await Workspace.findAll({
+        where: { isActive: true },
+        include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
+      });
+      const memberSet = new Set();
+      for (const ws of memberRows) {
+        if (ws.createdBy === user.id) memberSet.add(ws.id);
+        else if ((ws.workspaceMembers || []).some((m) => m.id === user.id)) memberSet.add(ws.id);
+      }
+      // Board-membership union — same path as canCallerSeeWorkspace.
+      try {
+        const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+        if (visibleBoardIds && visibleBoardIds.size > 0) {
+          const boards = await Board.findAll({
+            where: { id: { [Op.in]: Array.from(visibleBoardIds) }, isArchived: false },
+            attributes: ['workspaceId'],
+            raw: true,
+          });
+          boards.forEach((b) => { if (b.workspaceId) memberSet.add(b.workspaceId); });
+        }
+      } catch (err) {
+        safeLogger.warn('[Doc] listArchivedDocsForCaller boardVisibility fallback failed', { err });
+      }
+      workspaceIds = Array.from(memberSet);
+    }
+
+    if (workspaceIds.length === 0) {
+      return res.json({ success: true, data: { docs: [] } });
+    }
+
+    const docs = await Doc.findAll({
+      where: { isArchived: true, workspaceId: { [Op.in]: workspaceIds } },
+      include: [
+        { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'archiver', attributes: USER_PILL_ATTRS, required: false },
+        { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color'] },
+      ],
+      order: [['archivedAt', 'DESC'], ['updatedAt', 'DESC']],
+      limit: 200,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        docs: docs.map((d) => serializeDoc(d, { includeContent: false })),
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] listArchivedDocsForCaller error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load archived docs.' });
+  }
+}
+
+/**
+ * DELETE /api/docs/:id/permanent — permanent delete an already-archived
+ * doc. Mirrors the affordance the global /archive page surfaces for
+ * boards & tasks. Only doc owner / admins / super-admins; the doc must
+ * already be soft-archived (defense in depth so a misclick doesn't drop
+ * a live doc).
+ */
+async function permanentDeleteDoc(req, res) {
+  try {
+    const { id } = req.params;
+    const doc = await Doc.findByPk(id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
+    if (!canCallerEditDoc(req.user, doc)) {
+      return res.status(403).json({ success: false, message: 'Only doc owner or admins can delete a doc.' });
+    }
+    if (!doc.isArchived) {
+      return res.status(400).json({
+        success: false,
+        message: 'Archive the doc first before permanent deletion.',
+      });
+    }
+    await doc.destroy();
+    logActivity({
+      action: 'deleted',
+      description: `Permanently deleted doc: ${doc.title}`,
+      entityType: 'doc',
+      entityId: doc.id,
+      userId: req.user.id,
+    });
+    res.json({ success: true, data: { id } });
+  } catch (err) {
+    safeLogger.error('[Doc] permanentDeleteDoc error', { err });
+    res.status(500).json({ success: false, message: 'Failed to delete doc.' });
+  }
+}
 
 async function listDocs(req, res) {
   try {
@@ -995,6 +1134,9 @@ module.exports = {
   listDocReferencesForTask,
   // Phase G follow-up — opt-in migrate-to-collab
   migrateDocToCollab,
+  // May 2026 — global /archive page integration.
+  listArchivedDocsForCaller,
+  permanentDeleteDoc,
   // Exposed for unit tests
   __extractMentions: extractMentions,
   __extractTaskRefs: extractTaskRefs,

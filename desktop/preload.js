@@ -100,6 +100,25 @@ function notify(rawPayload) {
   return ipcRenderer.invoke('aniston:notify', safe);
 }
 
+/**
+ * Slice 6.2 — open Microsoft / SSO OAuth in an in-app child window.
+ *
+ * The renderer cannot create BrowserWindows itself (no node integration);
+ * this IPC asks the main process to open the OAuth URL in a child window
+ * that shares the desktop's persist:aniston session partition. The
+ * promise resolves once the OAuth flow completes (Microsoft redirects
+ * back to monday.anistonav.com with `?sso=success`) or the user closes
+ * the child window. Validation of the URL happens on both sides: here we
+ * reject anything that isn't a non-empty string, main re-validates that
+ * the protocol is https.
+ */
+function openSso(authUrl) {
+  if (typeof authUrl !== 'string' || authUrl.length === 0) {
+    return Promise.resolve({ ok: false, reason: 'invalid-url' });
+  }
+  return ipcRenderer.invoke('aniston:open-sso', authUrl);
+}
+
 function onNavigate(cb) {
   if (typeof cb !== 'function') {
     // Allow null/undefined to clear an existing subscription.
@@ -137,6 +156,7 @@ if (runtime) {
       }),
       notify,
       onNavigate,
+      openSso,
     })
   );
 }

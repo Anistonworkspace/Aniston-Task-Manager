@@ -3,12 +3,15 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Filter, SortAsc, Plus, Columns3, Calendar, Settings,
   LayoutGrid, Zap, Download, Upload, Eye, EyeOff, Archive, ChevronDown, GanttChart, MoreHorizontal,
-  AlertCircle, Sparkles,
+  AlertCircle, Sparkles, Loader2,
 } from 'lucide-react';
 // Plan A Slice 1: board-scoped Sidekick mounted at the bottom of this page.
 import SidekickPanel from '../components/sidekick/SidekickPanel';
-// Plan A Slice 3: one-shot "Summarize" button + AISummaryPopover.
-import AISummaryPopover from '../components/sidekick/AISummaryPopover';
+// Plan A Slice 3: one-shot "Summarize" button.
+// May 2026 — moved off AISummaryPopover (invisible in some user
+// environments — see bug report) to AISummaryModal: portal-rendered,
+// centered, with a visible loader and a 45s hard timeout.
+import AISummaryModal from '../components/sidekick/AISummaryModal';
 import aiSummary from '../services/aiSummaryService';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import api from '../services/api';
@@ -234,6 +237,10 @@ export default function BoardPage() {
   // the header — opens with scope='board' / scopeId=board.id so the backend
   // prepends a focused board context (statuses, overdue, stuck, in-flight).
   const [boardSidekickOpen, setBoardSidekickOpen] = useState(false);
+  // May 2026 — board Summarize modal + transient "preparing" flag so the
+  // trigger button shows immediate spinner feedback on click.
+  const [boardSummaryOpen, setBoardSummaryOpen] = useState(false);
+  const [preparingBoardSummary, setPreparingBoardSummary] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState([]);
   const [sortConfig, setSortConfig] = useState(null);
   const [showCSVImport, setShowCSVImport] = useState(false);
@@ -1264,26 +1271,39 @@ export default function BoardPage() {
               <Settings size={16} />
             </button>
           )}
-          {/* Plan A Slice 3 — One-shot "Summarize" inline button. Calls the
-              dedicated POST /ai/summarize/board/:id endpoint and renders the
-              result inline. Faster than opening the chat panel when you
-              just want "where is this board at?" */}
+          {/* Plan A Slice 3 — One-shot "Summarize" button. May 2026:
+              moved off AISummaryPopover (invisible in some browsers) onto
+              AISummaryModal (portal-rendered, centered, with a visible
+              loader). The trigger shows an immediate spinner so the user
+              has feedback even before the modal mounts. */}
           {board?.id && (
-            <AISummaryPopover
-              title={`${board.name || 'Board'} — summary`}
-              placement="bottom-end"
-              run={() => aiSummary.summarizeBoard(board.id)}
-              emptyText="The AI returned an empty summary. Try Regenerate."
-              trigger={
-                <button
-                  type="button"
-                  className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors"
-                  title="Summarize this board"
-                >
+            <button
+              type="button"
+              onClick={() => {
+                if (preparingBoardSummary || boardSummaryOpen) return;
+                setPreparingBoardSummary(true);
+                // A short flip to spinner gives the user instant feedback;
+                // the modal mounts in the same tick so by the time React
+                // paints, both the button spinner and the modal are visible.
+                setTimeout(() => {
+                  setBoardSummaryOpen(true);
+                  setPreparingBoardSummary(false);
+                }, 0);
+              }}
+              disabled={preparingBoardSummary}
+              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors disabled:opacity-70 disabled:cursor-wait"
+              title="Summarize this board"
+            >
+              {preparingBoardSummary ? (
+                <>
+                  <Loader2 size={13} className="animate-spin" /> Preparing…
+                </>
+              ) : (
+                <>
                   <Sparkles size={13} /> Summarize
-                </button>
-              }
-            />
+                </>
+              )}
+            </button>
           )}
           {/* Plan A Slice 1 — "Ask AI" opens a board-scoped Sidekick. Use
               this for conversation; use "Summarize" for the one-line answer. */}
@@ -1674,6 +1694,19 @@ export default function BoardPage() {
           scopeLabel="this board"
           pageContext={`Board: ${board.name || '(unnamed)'} in ${board.workspace?.name || 'workspace'}`}
           pageState={{ route: `/boards/${board.id}`, boardId: board.id }}
+        />
+      )}
+
+      {/* May 2026 — board Summarize. Centered, portal-rendered, with a
+          visible loader. Replaces the prior AISummaryPopover which was
+          invisible in some user environments. */}
+      {board?.id && (
+        <AISummaryModal
+          isOpen={boardSummaryOpen}
+          onClose={() => setBoardSummaryOpen(false)}
+          title="Board summary"
+          subtitle={board.name || 'Board'}
+          run={() => aiSummary.summarizeBoard(board.id)}
         />
       )}
 

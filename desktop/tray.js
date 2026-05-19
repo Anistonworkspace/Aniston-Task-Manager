@@ -31,7 +31,7 @@ function resolveTrayIconPath() {
   return path.join(iconsRoot(), 'icon-192.png');
 }
 
-function buildContextMenu({ showMainWindow, refresh, quit }) {
+function buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, quit }) {
   return Menu.buildFromTemplate([
     {
       label: 'Open Monday Aniston',
@@ -44,6 +44,24 @@ function buildContextMenu({ showMainWindow, refresh, quit }) {
       // reload, once the notification adapter ships.
       label: 'Refresh',
       click: () => refresh(),
+    },
+    {
+      // Slice 7: Manual update check. Auto-check fires 60 s after launch;
+      // this lets the user pull a new version on demand without restarting.
+      // The handler reports "you're up to date" in a dialog when there's
+      // nothing newer, so the click feels acknowledged either way.
+      label: 'Check for updates',
+      click: () => checkForUpdates(),
+    },
+    { type: 'separator' },
+    {
+      // Slice 6.7: "Clear data & sign out" — nuclear option for stuck
+      // states. Wipes the persist:aniston session (cookies, localStorage,
+      // IndexedDB, cache, service workers) and reloads the renderer.
+      // The user has to log in again afterwards, but it recovers from any
+      // corrupted-session or stale-cookie symptom in one click.
+      label: 'Clear data & sign out',
+      click: () => clearData(),
     },
     { type: 'separator' },
     {
@@ -59,7 +77,7 @@ function buildContextMenu({ showMainWindow, refresh, quit }) {
  * a narrow, well-typed surface: it never reaches into BrowserWindow state on
  * its own.
  */
-function createTray({ showMainWindow, refresh, quit }) {
+function createTray({ showMainWindow, refresh, clearData, checkForUpdates, quit }) {
   if (tray) return tray;
 
   const iconPath = resolveTrayIconPath();
@@ -77,7 +95,7 @@ function createTray({ showMainWindow, refresh, quit }) {
 
   tray = new Tray(image);
   tray.setToolTip('Monday Aniston');
-  tray.setContextMenu(buildContextMenu({ showMainWindow, refresh, quit }));
+  tray.setContextMenu(buildContextMenu({ showMainWindow, refresh, clearData, checkForUpdates, quit }));
 
   // Left-click on the tray icon opens/focuses the window. macOS Tray ignores
   // bare click events in favor of context-menu popup, which is the platform
@@ -93,33 +111,24 @@ function createTray({ showMainWindow, refresh, quit }) {
 }
 
 /**
- * Show the first-time hint balloon so the user knows the app is still
- * running after they close the window. Windows-only; macOS and most Linux
- * desktops don't have an equivalent native balloon API exposed by Electron.
+ * Slice 6.2: the close-to-tray balloon has been suppressed.
  *
- * `firstHideHintShown` is in-memory only — a fresh launch shows the hint
- * once again. That keeps the implementation dependency-free (no JSON file
- * to maintain) and the cost of re-showing once per launch is acceptable.
- * A future improvement could persist the seen-flag to userData if user
- * feedback suggests the hint is noisy.
+ * The original Slice 2 design popped a Windows balloon ("Monday Aniston is
+ * still running…") on the first hide-to-tray of each launch, so users would
+ * understand why the X button didn't kill the process. In practice users
+ * report this notification as noise: it fires on every fresh launch +
+ * close, and the tray icon itself is already a strong "this is running"
+ * signal. We keep the function as a no-op so the call site in `main.js`
+ * doesn't need to be removed — if telemetry ever shows users are confused,
+ * we can bring it back with a persistent "seen once ever" flag in
+ * userData rather than the per-launch in-memory flag we originally had.
  */
 function showHideToTrayHint() {
   if (!tray) return;
-  if (firstHideHintShown) return;
-  if (process.platform !== 'win32') return;
-  firstHideHintShown = true;
-  try {
-    tray.displayBalloon({
-      title: 'Monday Aniston is still running',
-      content:
-        'The app was minimised to the system tray so notifications keep working. '
-        + 'Right-click the tray icon and choose "Quit" to exit fully.',
-      iconType: 'info',
-    });
-  } catch {
-    // displayBalloon throws on legacy Windows builds without the toast API.
-    // Non-fatal — the user just doesn't see the hint.
-  }
+  // Intentionally empty — see comment above. `firstHideHintShown` is kept
+  // referenced so eslint's no-unused-vars doesn't flag it; the variable
+  // remains in case a future toggle wants to restore the legacy behaviour.
+  void firstHideHintShown;
 }
 
 function destroyTray() {

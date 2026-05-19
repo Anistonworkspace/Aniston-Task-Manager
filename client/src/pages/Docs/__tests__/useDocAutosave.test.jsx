@@ -153,13 +153,50 @@ describe('useDocAutosave', () => {
     );
 
     // Same flake-mitigation as the success case above — flush() instead
-    // of scheduleSave() avoids the timer/poll race.
+    // of scheduleSave() avoids the timer/poll race. flush() re-throws on
+    // failure (May 2026: lets Ctrl+S surface a precise error toast); we
+    // catch here because the assertions below own the verification.
     await act(async () => {
-      await captureRef.current.flush({ contentJson: { v: 1 } });
+      await captureRef.current.flush({ contentJson: { v: 1 } }).catch(() => { /* expected */ });
     });
 
     await waitFor(() => expect(getByTestId('status').textContent).toBe('error'));
     expect(getByTestId('error').textContent).toBe('Save blew up');
+  });
+
+  it('flush() re-throws on failure so Ctrl+S can show an error toast', async () => {
+    updateDoc.mockRejectedValue({ response: { data: { message: 'Network down' } } });
+    const captureRef = React.createRef();
+    render(<Harness hookProps={{ docId: 'd1', debounceMs: 10000 }} captureRef={captureRef} />);
+
+    let captured = null;
+    await act(async () => {
+      try {
+        await captureRef.current.flush({ contentJson: { v: 1 } });
+      } catch (err) {
+        captured = err;
+      }
+    });
+    expect(captured).toBeTruthy();
+  });
+
+  it('onError callback fires with the user-facing message on failed save', async () => {
+    updateDoc.mockRejectedValue({ response: { data: { message: 'Boom' } } });
+    const onError = vi.fn();
+    const captureRef = React.createRef();
+    render(
+      <Harness
+        hookProps={{ docId: 'd1', debounceMs: 10000, onError }}
+        captureRef={captureRef}
+      />
+    );
+
+    await act(async () => {
+      await captureRef.current.flush({ contentJson: { v: 1 } }).catch(() => { /* expected */ });
+    });
+
+    expect(onError).toHaveBeenCalled();
+    expect(onError.mock.calls[0][0]).toBe('Boom');
   });
 
   it('flush({title}) bypasses the debounce timer and saves immediately', async () => {

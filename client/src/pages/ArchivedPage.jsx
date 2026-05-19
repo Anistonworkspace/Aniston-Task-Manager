@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Archive, RotateCcw, Trash2, Search, FolderKanban, ListTodo, AlertTriangle, X, Building2, Layers, Link2, HelpCircle, Shield, ShieldCheck, ArrowRight, Calendar as CalIcon, Filter } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Archive, RotateCcw, Trash2, Search, FolderKanban, ListTodo, AlertTriangle, X, Building2, Layers, Link2, HelpCircle, Shield, ShieldCheck, ArrowRight, Calendar as CalIcon, Filter, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { formatDistanceToNow, parseISO, differenceInDays } from 'date-fns';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -9,6 +10,10 @@ import { STATUS_CONFIG, PRIORITY_CONFIG } from '../utils/constants';
 import { useToast } from '../components/common/Toast';
 
 const PROTECTION_DAYS = 90;
+// Server-paginated tasks tab. Page size is fixed because the archive page
+// shows compact rows — 25 fits the viewport without scrolling and matches
+// the size used elsewhere in the app. Bump cautiously: server clamps at 100.
+const TASKS_PER_PAGE = 25;
 
 function ProtectionBadge({ archivedAt }) {
   if (!archivedAt) return null;
@@ -69,6 +74,7 @@ function ConfirmDeleteModal({ item, type, onConfirm, onCancel, canDelete }) {
 
 export default function ArchivedPage() {
   const t = useT();
+  const navigate = useNavigate();
   const { canManage, isAdmin, user, granularPermissions, isSuperAdmin } = useAuth();
   // Phase A.2 follow-up — affordance gates must also honour explicit
   // PermissionGrant rows, not just tier. Before this, an admin who granted
@@ -90,6 +96,10 @@ export default function ArchivedPage() {
   const [workspaces, setWorkspaces] = useState([]);
   const [dependencies, setDependencies] = useState([]);
   const [helpRequests, setHelpRequests] = useState([]);
+  // May 2026 — docs join the global archive surface. Previously docs had
+  // their own "Show archived" toggle inside DocsListPage; integrating them
+  // here keeps every archivable entity in one place.
+  const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('tasks');
   const [search, setSearch] = useState('');
@@ -99,25 +109,48 @@ export default function ArchivedPage() {
   const [dateTo, setDateTo] = useState('');
   const [showFilters, setShowFilters] = useState(false);
 
+  // Server-paginated tasks tab. The previous version loaded `limit=200`
+  // in one shot and the server clamped to 100, hiding any archived tasks
+  // beyond the first 100. We now fetch one page at a time so the full
+  // archive is reachable regardless of size.
+  const [tasksPage, setTasksPage] = useState(1);
+  const [tasksTotal, setTasksTotal] = useState(0);
+  const [tasksTotalPages, setTasksTotalPages] = useState(1);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const tasksRequestSeq = useRef(0);
+
   useEffect(() => { loadArchived(); }, []);
+
+  // Tasks fetch — re-runs whenever the active tab is `tasks`, the search
+  // term changes, or the user clicks a different page. Search is debounced
+  // 300 ms so typing doesn't fire a request per keystroke.
+  useEffect(() => {
+    if (tab !== 'tasks') return;
+    const handle = setTimeout(() => { loadTasks(tasksPage, search); }, search ? 300 : 0);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, search, tasksPage]);
 
   async function loadArchived() {
     setLoading(true);
     try {
-      const [boardsRes, allBoardsRes, tasksRes, wsRes, depsRes, helpRes] = await Promise.all([
+      const [boardsRes, allBoardsRes, wsRes, depsRes, helpRes, docsRes] = await Promise.all([
         api.get('/boards?archived=true'),
         api.get('/boards'),
-        api.get('/tasks?archived=true&limit=200'),
         canManage ? api.get('/workspaces/archived').catch(() => ({ data: { data: { workspaces: [] } } })) : Promise.resolve({ data: { data: { workspaces: [] } } }),
         api.get(`/archive/dependencies${buildFilterQuery()}`).catch(() => ({ data: { data: { dependencies: [] } } })),
         api.get(`/archive/help-requests${buildFilterQuery()}`).catch(() => ({ data: { data: { helpRequests: [] } } })),
+        // Docs archive — visibility is enforced server-side
+        // (canCallerSeeWorkspace honors board-membership), so the same
+        // call returns the right rows for every tier.
+        api.get('/docs/archived').catch(() => ({ data: { data: { docs: [] } } })),
       ]);
       setBoards((boardsRes.data.boards || boardsRes.data || []).filter(b => b.isArchived));
-      setTasks(tasksRes.data.tasks || tasksRes.data || []);
       const wsData = wsRes.data?.data || wsRes.data;
       setWorkspaces(wsData?.workspaces || []);
       setDependencies((depsRes.data?.data || depsRes.data)?.dependencies || []);
       setHelpRequests((helpRes.data?.data || helpRes.data)?.helpRequests || []);
+      setDocs((docsRes.data?.data || docsRes.data)?.docs || []);
 
       // Collect archived groups from all non-archived boards
       const allBoards = allBoardsRes.data.boards || allBoardsRes.data || [];
@@ -136,6 +169,43 @@ export default function ArchivedPage() {
     setLoading(false);
   }
 
+  async function loadTasks(page, searchTerm) {
+    // Sequence guard — if a slow request resolves after a newer one (user
+    // typing fast, or fast page clicks), we ignore its result.
+    const seq = ++tasksRequestSeq.current;
+    setTasksLoading(true);
+    try {
+      const params = new URLSearchParams({
+        archived: 'true',
+        page: String(page),
+        limit: String(TASKS_PER_PAGE),
+      });
+      if (searchTerm) params.set('search', searchTerm);
+      const res = await api.get(`/tasks?${params.toString()}`);
+      if (seq !== tasksRequestSeq.current) return;
+      const fetched = res.data.tasks || [];
+      const pagination = res.data.pagination;
+      if (pagination) {
+        setTasksTotal(pagination.total || 0);
+        setTasksTotalPages(pagination.totalPages || 1);
+        // After a delete or restore on the last page, the page index may
+        // exceed totalPages — rewind once and refetch.
+        if (page > pagination.totalPages && pagination.totalPages >= 1 && page > 1) {
+          setTasksPage(pagination.totalPages);
+          return;
+        }
+      } else {
+        setTasksTotal(fetched.length);
+        setTasksTotalPages(1);
+      }
+      setTasks(fetched);
+    } catch (err) {
+      console.error('Failed to load archived tasks:', err);
+    } finally {
+      if (seq === tasksRequestSeq.current) setTasksLoading(false);
+    }
+  }
+
   function buildFilterQuery() {
     const params = [];
     if (search) params.push(`search=${encodeURIComponent(search)}`);
@@ -147,7 +217,13 @@ export default function ArchivedPage() {
   function clearFilters() { setDateFrom(''); setDateTo(''); setSearch(''); }
 
   async function restoreTask(id) {
-    try { await api.put(`/tasks/${id}`, { isArchived: false }); setTasks(prev => prev.filter(t => t.id !== id)); toastSuccess('Task restored'); } catch (e) { console.error('Restore task failed:', e); toastError('Failed to restore task'); }
+    try {
+      await api.put(`/tasks/${id}`, { isArchived: false });
+      // Optimistic remove + refetch to keep pagination + total accurate.
+      setTasks(prev => prev.filter(t => t.id !== id));
+      toastSuccess('Task restored');
+      loadTasks(tasksPage, search);
+    } catch (e) { console.error('Restore task failed:', e); toastError('Failed to restore task'); }
   }
   async function restoreBoard(id) {
     try { await api.put(`/boards/${id}`, { isArchived: false }); setBoards(prev => prev.filter(b => b.id !== id)); toastSuccess('Board restored'); } catch (e) { console.error('Restore board failed:', e); toastError('Failed to restore board'); }
@@ -160,6 +236,9 @@ export default function ArchivedPage() {
   }
   async function restoreHelp(id) {
     try { await api.put(`/archive/help-requests/${id}/restore`); setHelpRequests(prev => prev.filter(h => h.id !== id)); toastSuccess('Help request restored'); } catch (e) { console.error('Restore help request failed:', e); toastError('Failed to restore help request'); }
+  }
+  async function restoreDoc(id) {
+    try { await api.post(`/docs/${id}/restore`); setDocs(prev => prev.filter(d => d.id !== id)); toastSuccess('Doc restored'); } catch (e) { console.error('Restore doc failed:', e); toastError('Failed to restore doc'); }
   }
   async function restoreGroup(group) {
     try {
@@ -207,9 +286,14 @@ export default function ArchivedPage() {
       } else if (deleteType === 'helpRequest') {
         await api.delete(`/archive/help-requests/${deleteItem.id}`);
         setHelpRequests(prev => prev.filter(h => h.id !== deleteItem.id));
+      } else if (deleteType === 'doc') {
+        await api.delete(`/docs/${deleteItem.id}/permanent`);
+        setDocs(prev => prev.filter(d => d.id !== deleteItem.id));
       } else {
         await api.delete(`/tasks/${deleteItem.id}`);
         setTasks(prev => prev.filter(t => t.id !== deleteItem.id));
+        // Refresh the current page so totals + page-fill stay correct.
+        loadTasks(tasksPage, search);
       }
     } catch (err) {
       const msg = err?.response?.data?.message;
@@ -229,10 +313,15 @@ export default function ArchivedPage() {
   const filteredBoards = search ? boards.filter(b => b.name.toLowerCase().includes(search.toLowerCase())) : boards;
   const filteredWorkspaces = search ? workspaces.filter(w => w.name.toLowerCase().includes(search.toLowerCase())) : workspaces;
 
+  const filteredDocs = search ? docs.filter(d => (d.title || '').toLowerCase().includes(search.toLowerCase())) : docs;
+
   const tabs = [
-    { id: 'tasks', label: 'Tasks', icon: ListTodo, count: tasks.length },
+    // Tasks count comes from the paginated total — `tasks.length` would
+    // only show the current page (≤ TASKS_PER_PAGE).
+    { id: 'tasks', label: 'Tasks', icon: ListTodo, count: tasksTotal },
     { id: 'boards', label: 'Boards', icon: FolderKanban, count: boards.length },
     { id: 'workspaces', label: 'Workspaces', icon: Building2, count: workspaces.length },
+    { id: 'docs', label: 'Docs', icon: BookOpen, count: docs.length },
     { id: 'dependencies', label: 'Dependencies', icon: Link2, count: dependencies.length },
     { id: 'helpRequests', label: 'Help Requests', icon: HelpCircle, count: helpRequests.length },
   ];
@@ -270,9 +359,9 @@ export default function ArchivedPage() {
       <div className="flex items-center gap-2 mb-5">
         <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 flex-1 max-w-md">
           <Search size={15} className="text-gray-400" />
-          <input type="text" placeholder={`Search archived ${tab}...`} value={search} onChange={e => setSearch(e.target.value)}
+          <input type="text" placeholder={`Search archived ${tab}...`} value={search} onChange={e => { setSearch(e.target.value); setTasksPage(1); }}
             className="bg-transparent border-none outline-none text-sm w-full placeholder:text-gray-300" />
-          {search && <button onClick={() => setSearch('')}><X size={14} className="text-gray-300" /></button>}
+          {search && <button onClick={() => { setSearch(''); setTasksPage(1); }}><X size={14} className="text-gray-300" /></button>}
         </div>
         <button onClick={() => setShowFilters(!showFilters)}
           className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-xl border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
@@ -301,10 +390,25 @@ export default function ArchivedPage() {
 
       {/* ═══ TASKS TAB ═══ */}
       {tab === 'tasks' && (
-        tasks.length === 0 && archivedGroups.length === 0 ? (
-          <EmptyState icon={ListTodo} title="No archived tasks" subtitle="Tasks you archive will appear here." />
+        tasksTotal === 0 && tasks.length === 0 && archivedGroups.length === 0 && !tasksLoading ? (
+          <EmptyState
+            icon={ListTodo}
+            title={search ? 'No archived tasks match your search' : 'No archived tasks'}
+            subtitle={search ? 'Try a different keyword.' : 'Tasks you archive will appear here.'}
+          />
         ) : (
           <div className="space-y-4">
+            {/* Pagination summary — only render when there's something to count. */}
+            {tasksTotal > 0 && (
+              <div className="flex items-center justify-between text-[11px] text-gray-500 px-1">
+                <span>
+                  Showing {Math.min((tasksPage - 1) * TASKS_PER_PAGE + 1, tasksTotal)}
+                  {'–'}
+                  {Math.min(tasksPage * TASKS_PER_PAGE, tasksTotal)} of {tasksTotal} archived tasks
+                </span>
+                {tasksLoading && <span className="text-gray-400 italic">Loading…</span>}
+              </div>
+            )}
             {/* Archived Groups */}
             {archivedGroups.length > 0 && (
               <div className="mb-4">
@@ -336,17 +440,19 @@ export default function ArchivedPage() {
               </div>
             )}
             {Object.entries(tasksByBoard).map(([boardName, boardTasks]) => {
-              const filtered = search ? boardTasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase())) : boardTasks;
-              if (filtered.length === 0) return null;
+              // Server already filters by `search` (title / description /
+              // labels) — no client-side title-only filter, which used to
+              // drop description-only matches.
+              if (boardTasks.length === 0) return null;
               return (
                 <div key={boardName}>
                   <div className="flex items-center gap-2 mb-2 px-1">
                     <FolderKanban size={13} className="text-gray-400" />
                     <span className="text-[12px] font-semibold text-gray-500 uppercase tracking-wide">{boardName}</span>
-                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{filtered.length}</span>
+                    <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{boardTasks.length}</span>
                   </div>
                   <div className="space-y-1.5">
-                    {filtered.map(task => {
+                    {boardTasks.map(task => {
                       const statusCfg = STATUS_CONFIG[task.status] || {};
                       const priorityCfg = PRIORITY_CONFIG[task.priority] || {};
                       const deletable = canDeleteItem(user, task.archivedAt);
@@ -381,6 +487,16 @@ export default function ArchivedPage() {
                 </div>
               );
             })}
+            {/* Pagination controls — only render when there's more than one
+                page. Total pages comes from the server's findAndCountAll. */}
+            {tasksTotalPages > 1 && (
+              <TasksPagination
+                page={tasksPage}
+                totalPages={tasksTotalPages}
+                disabled={tasksLoading}
+                onChange={(next) => setTasksPage(next)}
+              />
+            )}
           </div>
         )
       )}
@@ -472,6 +588,72 @@ export default function ArchivedPage() {
                       ))}
                     </div>
                   )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      )}
+
+      {/* ═══ DOCS TAB ═══ */}
+      {tab === 'docs' && (
+        filteredDocs.length === 0 ? (
+          <EmptyState icon={BookOpen} title="No archived docs" subtitle="Docs you archive will appear here." />
+        ) : (
+          <div className="space-y-2">
+            {filteredDocs.map(d => {
+              const deletable = canDeleteItem(user, d.archivedAt);
+              const canManageDoc = isSuperAdmin || canManage || d.createdBy === user?.id;
+              return (
+                <div key={d.id} className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-sm transition-shadow flex items-center gap-4">
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ backgroundColor: 'rgba(87, 155, 252, 0.15)', color: '#579bfc' }}
+                  >
+                    <BookOpen size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 truncate">{d.title || 'Untitled doc'}</p>
+                    <p className="text-xs text-gray-400 truncate">{d.contentText ? d.contentText.slice(0, 140) : 'No content'}</p>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      {d.workspace?.name && (
+                        <span className="text-[10px] text-gray-400">Workspace: {d.workspace.name}</span>
+                      )}
+                      {d.creator?.name && (
+                        <span className="text-[10px] text-gray-400">by {d.creator.name}</span>
+                      )}
+                      {d.archiver?.name && (
+                        <span className="text-[10px] text-gray-400">archived by {d.archiver.name}</span>
+                      )}
+                      {d.archivedAt && (
+                        <span className="text-[10px] text-gray-400">Archived {formatDistanceToNow(parseISO(d.archivedAt), { addSuffix: true })}</span>
+                      )}
+                      <ProtectionBadge archivedAt={d.archivedAt} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {d.workspaceId && (
+                      <button
+                        onClick={() => navigate(`/workspaces/${d.workspaceId}/docs/${d.id}`)}
+                        className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 rounded-lg border border-gray-200 transition-colors"
+                        title="Open archived doc"
+                      >
+                        Open
+                      </button>
+                    )}
+                    {canManageDoc && canRestoreArchived && (
+                      <button onClick={() => restoreDoc(d.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors">
+                        <RotateCcw size={12} /> Restore
+                      </button>
+                    )}
+                    {canManageDoc && canPermanentDelete && (
+                      <button onClick={() => { setDeleteItem(d); setDeleteType('doc'); }}
+                        disabled={!deletable && !user?.isSuperAdmin}
+                        className={`flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${deletable || user?.isSuperAdmin ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-300 border-gray-200 cursor-not-allowed'}`}>
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -599,6 +781,63 @@ function EmptyState({ icon: Icon, title, subtitle }) {
       <Icon size={36} className="mx-auto text-gray-200 mb-3" />
       <p className="text-sm text-gray-500 font-medium">{title}</p>
       <p className="text-xs text-gray-400 mt-1">{subtitle}</p>
+    </div>
+  );
+}
+
+function TasksPagination({ page, totalPages, onChange, disabled }) {
+  // Build a compact list of page numbers: always show first / last / current
+  // ± 1 and collapse the rest into ellipses. Caps at 7 visible items so the
+  // bar doesn't overflow on large archives.
+  const items = [];
+  const push = (v) => { if (items[items.length - 1] !== v) items.push(v); };
+  push(1);
+  if (page - 1 > 2) push('…l');
+  for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p++) push(p);
+  if (page + 1 < totalPages - 1) push('…r');
+  if (totalPages > 1) push(totalPages);
+
+  const btnBase = 'inline-flex items-center justify-center min-w-[28px] h-7 px-2 text-[11px] font-medium rounded-md border transition-colors';
+  const btnIdle = 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50';
+  const btnActive = 'bg-blue-50 border-blue-200 text-blue-600';
+  const btnDisabled = 'bg-gray-50 border-gray-100 text-gray-300 cursor-not-allowed';
+
+  return (
+    <div className="flex items-center justify-center gap-1 pt-3">
+      <button
+        type="button"
+        disabled={disabled || page <= 1}
+        onClick={() => onChange(page - 1)}
+        className={`${btnBase} ${disabled || page <= 1 ? btnDisabled : btnIdle}`}
+        aria-label="Previous page"
+      >
+        <ChevronLeft size={13} />
+      </button>
+      {items.map((it, idx) => (
+        typeof it === 'string'
+          ? <span key={`e-${idx}`} className="px-1 text-gray-300 text-[11px]">…</span>
+          : (
+            <button
+              key={it}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(it)}
+              className={`${btnBase} ${disabled ? btnDisabled : (it === page ? btnActive : btnIdle)}`}
+              aria-current={it === page ? 'page' : undefined}
+            >
+              {it}
+            </button>
+          )
+      ))}
+      <button
+        type="button"
+        disabled={disabled || page >= totalPages}
+        onClick={() => onChange(page + 1)}
+        className={`${btnBase} ${disabled || page >= totalPages ? btnDisabled : btnIdle}`}
+        aria-label="Next page"
+      >
+        <ChevronRight size={13} />
+      </button>
     </div>
   );
 }

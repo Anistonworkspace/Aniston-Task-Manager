@@ -80,9 +80,11 @@ const createDependencyRequest = async (req, res) => {
 
     if (!title)             return res.status(400).json({ success: false, message: 'Title is required.' });
     if (!assignedToUserId)  return res.status(400).json({ success: false, message: 'assignedToUserId is required.' });
-    if (assignedToUserId === req.user.id) {
-      return res.status(400).json({ success: false, message: 'You cannot assign a dependency to yourself.' });
-    }
+    // Self-assignment is allowed (May 2026 v2 product decision). A contributor
+    // who wants to formally track "I owe myself this prerequisite work" can
+    // do so — the dependency block-state machinery still works because the
+    // assignee can be the same actor who progresses it to done. The earlier
+    // self-assignment block was a UX guard, not a security boundary.
     if (!DependencyRequest.PRIORITIES.includes(priority)) {
       return res.status(400).json({ success: false, message: `priority must be one of: ${DependencyRequest.PRIORITIES.join(', ')}` });
     }
@@ -451,9 +453,10 @@ const updateDetails = async (req, res) => {
       if (newAssignee.isActive === false) {
         return res.status(400).json({ success: false, message: 'Dependency assignee is inactive. Please choose another user.' });
       }
-      if (newAssignee.id === req.user.id && !perm.isElevated(req.user)) {
-        return res.status(400).json({ success: false, message: 'You cannot reassign a dependency to yourself.' });
-      }
+      // Self-reassignment is allowed for every tier (May 2026 v2 product
+      // decision — matches the create path). A requester pulling work back
+      // onto themselves is a legitimate flow and was previously blocked
+      // only for non-elevated users as a UX guard, not a security one.
       updates.assignedToUserId = newAssignee.id;
       reassigned = true;
     }

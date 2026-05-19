@@ -10,6 +10,10 @@ const {
   listSearchableTasks,
   // Phase G follow-up — admin migration to Y.js collab.
   migrateDocToCollab,
+  // May 2026 — archive-page integration. Returns archived docs across
+  // every workspace the caller can see + a permanent-delete affordance.
+  listArchivedDocsForCaller,
+  permanentDeleteDoc,
 } = require('../controllers/docController');
 // Phase F — selection-anchored doc comments (Notion/Google Docs style).
 const {
@@ -40,10 +44,17 @@ router.get('/mentionable', listMentionableUsers);
 // Also BEFORE the /:id catch-all. Requires ?workspaceId= and optional &q=.
 router.get('/searchable-tasks', listSearchableTasks);
 
+// May 2026 — global archive integration. MUST sit before the /:id family
+// so "archived" isn't parsed as a doc UUID by getDoc.
+router.get('/archived', listArchivedDocsForCaller);
+
 router.get('/:id',     getDoc);
 router.patch('/:id',   updateDoc);   // autosave entry point
 router.delete('/:id',  archiveDoc);
 router.post('/:id/restore', restoreDoc);
+// May 2026 — global archive integration. The base DELETE soft-archives;
+// /permanent is the explicit destructive action surfaced from /archive.
+router.delete('/:id/permanent', permanentDeleteDoc);
 
 router.get('/:id/versions', listVersions);
 router.post('/:id/versions/:versionId/restore', restoreVersion);

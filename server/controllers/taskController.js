@@ -34,7 +34,7 @@ const { isValidStatus, isValidStatusForTask } = require('../utils/statusConfig')
 const { buildPendingPriorityOrder, findGroupForStatus } = require('../utils/taskPrioritization');
 const boardMembershipService = require('../services/boardMembershipService');
 const { hasPermission: enginePermission } = require('../services/permissionEngine');
-const { isSelfOwnedTask, isSelfOwnedCreate } = require('../utils/taskOwnership');
+const { isSelfOwnedTask, isSelfOwnedCreate, isAssigneeOnTask } = require('../utils/taskOwnership');
 const recurringTaskService = require('../services/recurringTaskService');
 const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
 
@@ -960,7 +960,15 @@ const createTask = async (req, res) => {
 
 /**
  * GET /api/tasks
- * Query params: boardId (required), status, priority, assignedTo, groupId, search, sortBy, sortOrder
+ * Query params: boardId (required), status, priority, assignedTo, groupId, search, sortBy, sortOrder,
+ *   limit, offset, page, archived.
+ *
+ * Pagination: pass `page` (1-based) or `offset` to opt in. When opted in, the
+ * response includes `pagination: { page, limit, offset, total, totalPages }`
+ * alongside `tasks`, and the controller uses findAndCountAll(distinct: true)
+ * so the total count is correct in the presence of the labels/subtasks/board
+ * includes. Direct `?limit=` callers without page/offset keep the legacy
+ * findAll behavior (no count, no pagination object).
  */
 const getTasks = async (req, res) => {
   try {
@@ -969,7 +977,8 @@ const getTasks = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid user session' });
     }
 
-    const { boardId, status, priority, assignedTo, groupId, search, sortBy, sortOrder, limit, archived, context } = req.query;
+    const { boardId, status, priority, assignedTo, groupId, search, sortBy, sortOrder, limit, offset, page, archived, context } = req.query;
+    const paginated = page !== undefined || offset !== undefined;
 
     const where = {};
     // By default exclude archived tasks, unless ?archived=true is passed
@@ -1100,6 +1109,11 @@ const getTasks = async (req, res) => {
       include: [...taskIncludes, ...extraIncludes],
       order,
     };
+    // Resolve limit. When the caller paginates (page or offset present), we
+    // also need a default page size — pick 25 so the archive UI gets a
+    // reasonable default. Direct `?limit=` callers (board view etc.) keep
+    // the old behavior: no limit unless they pass one.
+    let safeLimit = null;
     if (limit !== undefined && limit !== null && limit !== '') {
       // Defensive parse: negative, zero, NaN, or non-numeric values would
       // make Sequelize emit `LIMIT <bad>` which Postgres rejects with 500
@@ -1107,13 +1121,39 @@ const getTasks = async (req, res) => {
       // [1, 100] so any garbage from the query string is normalised before
       // it reaches the planner.
       const parsedLimit = parseInt(limit, 10);
-      const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+      safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
         ? Math.min(parsedLimit, 100)
         : 50;
-      queryOpts.limit = safeLimit;
+    } else if (paginated) {
+      safeLimit = 25;
     }
+    if (safeLimit !== null) queryOpts.limit = safeLimit;
 
-    const tasks = await Task.findAll(queryOpts);
+    // Resolve offset. Prefer explicit `offset`, else derive from `page`.
+    let safeOffset = 0;
+    if (offset !== undefined && offset !== null && offset !== '') {
+      const parsedOffset = parseInt(offset, 10);
+      safeOffset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+    } else if (page !== undefined && page !== null && page !== '' && safeLimit !== null) {
+      const parsedPage = parseInt(page, 10);
+      const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+      safeOffset = (safePage - 1) * safeLimit;
+    }
+    if (safeOffset > 0) queryOpts.offset = safeOffset;
+
+    // When pagination is requested, use findAndCountAll so we can return
+    // the total row count for "X-Y of Z" UI and totalPages math. `distinct:
+    // true` is required because the includes (subtasks, board, labels, etc.)
+    // produce JOINs that would otherwise inflate the count.
+    let tasks;
+    let totalCount = null;
+    if (paginated) {
+      const result = await Task.findAndCountAll({ ...queryOpts, distinct: true });
+      tasks = result.rows;
+      totalCount = result.count;
+    } else {
+      tasks = await Task.findAll(queryOpts);
+    }
 
     // Add subtask counts, Board info, and receipt summary to each task
     const tasksWithCounts = tasks.map(t => {
@@ -1174,7 +1214,19 @@ const getTasks = async (req, res) => {
       }
     })();
 
-    res.json({ success: true, data: { tasks: tasksWithCounts } });
+    const payload = { tasks: tasksWithCounts };
+    if (paginated) {
+      const pageSize = safeLimit || tasksWithCounts.length || 1;
+      const currentPage = pageSize > 0 ? Math.floor(safeOffset / pageSize) + 1 : 1;
+      payload.pagination = {
+        page: currentPage,
+        limit: pageSize,
+        offset: safeOffset,
+        total: totalCount,
+        totalPages: Math.max(1, Math.ceil((totalCount || 0) / pageSize)),
+      };
+    }
+    res.json({ success: true, data: payload });
   } catch (error) {
     // safeLogger redacts Bearer tokens, JWT-shaped strings, and Axios-error
     // config headers before the log line is serialized to disk.
@@ -1402,19 +1454,32 @@ const updateTask = async (req, res) => {
     // ON TOP OF the existing assign_self / assign_others / unassign_*
     // gates so admins can revoke the "edit the assignee field" capability
     // without revoking assign authority.
+    //
+    // Self vs. others awareness (May 2026 fix): `tasks.edit_assignee` has an
+    // umbrella fallback to `tasks.assign_others` in the permission matrix,
+    // which means a Tier 4 user (assign_others=false by default) was being
+    // 403'd even on a pure self-assign gesture. The fix mirrors the split
+    // already present in `checkAssignmentAuthority`: when the incoming
+    // assignment targets the actor themselves, route the deny-override hook
+    // through `tasks.assign_self` instead. Admins can still revoke either
+    // granular action explicitly without breaking the other.
     if (req.body.assignedTo !== undefined) {
       const currentAssignedTo = task.assignedTo;
       const incomingAssignedTo = Array.isArray(req.body.assignedTo)
         ? req.body.assignedTo[0] || null
         : req.body.assignedTo;
       if (String(incomingAssignedTo || '') !== String(currentAssignedTo || '')) {
-        const canEditAssignee = await enginePermission(req.user, 'tasks', 'edit_assignee');
+        const isSelfTarget = !!incomingAssignedTo && incomingAssignedTo === req.user.id;
+        const granularAction = isSelfTarget ? 'assign_self' : 'edit_assignee';
+        const canEditAssignee = await enginePermission(req.user, 'tasks', granularAction);
         if (!canEditAssignee) {
           return res.status(403).json({
             success: false,
             code: 'PERMISSION_DENIED',
-            permission: 'tasks.edit_assignee',
-            message: 'You do not have permission to change task assignees.',
+            permission: `tasks.${granularAction}`,
+            message: isSelfTarget
+              ? 'You do not have permission to assign tasks to yourself.'
+              : 'You do not have permission to change task assignees.',
           });
         }
       }
@@ -1472,18 +1537,50 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // If user can't edit at all, check if they can at least update status
+    // If user can't edit at all, check if they can at least update status.
+    // Then, as a narrower fallback, check if the request is a pure
+    // self-assign attempt — a Tier 4 actor claiming a task they can see but
+    // aren't yet on. This restores the "I can put myself on a teammate's
+    // task" UX without widening the `edit` action to non-linked viewers in
+    // general; the carve-out only applies when the body is exclusively a
+    // self-assign gesture.
     if (!editPermission.allowed) {
       const statusPermission = await checkTaskAction('edit_status', req.user, task, taskAssignees, req);
-      if (!statusPermission.allowed) {
-        return res.status(403).json({
-          success: false,
-          message: 'You do not have permission to update this task.',
-        });
+      if (statusPermission.allowed) {
+        editPermission.allowed = true;
+        editPermission.allowedFields = ['status', 'progress'];
+      } else {
+        // Pure self-assign detection — request body must contain assignedTo
+        // and that field must target the actor themselves, with no other
+        // editable fields piggybacked alongside. The `position` field is
+        // tolerated because some clients always include it (it's harmless
+        // — controller derives position from the group on insert/move).
+        const bodyHasAssignedTo = req.body && Object.prototype.hasOwnProperty.call(req.body, 'assignedTo');
+        let selfAssignOnly = false;
+        if (bodyHasAssignedTo) {
+          const target = req.body.assignedTo;
+          const targetsSelf = (typeof target === 'string' && target === req.user.id)
+            || (Array.isArray(target) && target.length === 1 && target[0] === req.user.id);
+          if (targetsSelf) {
+            const benignKeys = new Set(['assignedTo', 'position', 'boardId']);
+            const otherKeys = Object.keys(req.body).filter((k) => !benignKeys.has(k));
+            selfAssignOnly = otherKeys.length === 0;
+          }
+        }
+        if (selfAssignOnly) {
+          const sa = await checkTaskAction('self_assign', req.user, task, taskAssignees, req);
+          if (sa.allowed) {
+            editPermission.allowed = true;
+            editPermission.allowedFields = ['assignedTo'];
+          }
+        }
+        if (!editPermission.allowed) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to update this task.',
+          });
+        }
       }
-      // Only allow status/progress fields
-      editPermission.allowed = true;
-      editPermission.allowedFields = ['status', 'progress'];
     }
 
     // ── Due-date lock for Tier 3 / Tier 4 ──────────────────────────────
@@ -2046,16 +2143,19 @@ const updateTask = async (req, res) => {
     // the source of truth; the frontend renders priority read-only when the
     // user lacks the perm, but a forged direct PUT will still hit this gate.
     //
-    // Self-owned exemption: a Tier 4 actor who created the task AND is its
-    // sole assignee may set priority on it even though `tasks.set_priority`
-    // is false at the matrix level. This matches the product rule that
-    // priority is a planning concern owned by the task's owner — when the
-    // owner IS the actor, denying them is just frustrating noise. Tasks
-    // delegated to a member by anyone else (different creator OR another
-    // assignee on the row) still hit the 403.
+    // Assignee exemption: a Tier 4 actor who is an assignee on the task may
+    // set priority on it even though `tasks.set_priority` is false at the
+    // matrix level. Priority is a planning concern owned by the person doing
+    // the work; the prior stricter "creator + sole assignee" exemption left
+    // members locked out of priority on work their manager handed them. The
+    // exemption covers both "I created and own this" (isSelfOwnedTask) and
+    // "I was put on this by someone else" (isAssigneeOnTask). Watchers and
+    // supervisors do NOT qualify — they are oversight, not the worker.
     if (changes.priority !== undefined && changes.priority !== task.priority) {
       const selfOwned = isSelfOwnedTask(req.user.id, task, taskAssignees);
+      const isAssignee = isAssigneeOnTask(req.user.id, task, taskAssignees);
       const canSetPriority = selfOwned
+        || isAssignee
         || (await enginePermission(req.user, 'tasks', 'set_priority'));
       if (!canSetPriority) {
         return res.status(403).json({
@@ -3090,13 +3190,13 @@ const bulkUpdateTasks = async (req, res) => {
 
     // Bulk priority gate — same rule as the single PUT. We check before
     // mutating so a denied user can't slip a priority change in alongside an
-    // otherwise-allowed bulk update (e.g. status change). The self-owned
-    // exemption (Tier 4 owner-creator may set priority on their own task)
-    // applies per-row: every selected task in the bulk must be self-owned
-    // for the bulk to proceed without `tasks.set_priority`. A single
-    // foreign task in the selection collapses the entire bulk back to the
-    // 403 path so the actor cannot piggy-back priority changes on stranger
-    // rows alongside their own.
+    // otherwise-allowed bulk update (e.g. status change). The assignee
+    // exemption (Tier 4 actor on the task may set priority) applies per-row:
+    // every selected task in the bulk must be either self-owned or have the
+    // actor on it as an assignee for the bulk to proceed without
+    // `tasks.set_priority`. A single foreign task in the selection collapses
+    // the entire bulk back to the 403 path so the actor cannot piggy-back
+    // priority changes on stranger rows alongside their own.
     if (safeUpdates.priority !== undefined) {
       let canSetPriority = await enginePermission(req.user, 'tasks', 'set_priority');
       if (!canSetPriority) {
@@ -3105,9 +3205,13 @@ const bulkUpdateTasks = async (req, res) => {
           attributes: ['id', 'createdBy', 'assignedTo'],
           include: [{ model: TaskAssignee, as: 'taskAssignees', attributes: ['userId', 'role'] }],
         });
-        const allSelfOwned = ownershipRows.length === taskIds.length
-          && ownershipRows.every((t) => isSelfOwnedTask(req.user.id, t, t.taskAssignees || []));
-        canSetPriority = allSelfOwned;
+        const allEligible = ownershipRows.length === taskIds.length
+          && ownershipRows.every((t) => {
+            const rowAssignees = t.taskAssignees || [];
+            return isSelfOwnedTask(req.user.id, t, rowAssignees)
+              || isAssigneeOnTask(req.user.id, t, rowAssignees);
+          });
+        canSetPriority = allEligible;
       }
       if (!canSetPriority) {
         return res.status(403).json({

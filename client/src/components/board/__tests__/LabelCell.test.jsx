@@ -38,7 +38,11 @@ describe('LabelCell — read-only mode', () => {
       <LabelCell taskId="t1" boardId="b1" canEdit={false}
         labels={[{ id: 'l1', name: 'Bug', color: '#e2445c' }]} />,
     );
-    expect(screen.getByText('Bug')).toBeInTheDocument();
+    // Each label is now rendered twice — once in the hidden "ghost"
+    // measurement layer (visibility: hidden, aria-hidden) and once in
+    // the visible layer. `getAllByText` confirms presence without
+    // tripping on duplicates.
+    expect(screen.getAllByText('Bug').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Add/)).not.toBeInTheDocument();
   });
 });
@@ -49,7 +53,15 @@ describe('LabelCell — editable mode', () => {
     expect(screen.getByText('Add')).toBeInTheDocument();
   });
 
-  it('renders the first three labels inline with a "+N" badge for the rest', () => {
+  it('renders all labels when the layout has room (no overflow badge)', () => {
+    // The Labels cell now sizes overflow dynamically based on the actual
+    // column width (bug report 2026-05-18). In jsdom there is no real
+    // layout — `clientWidth` and `getBoundingClientRect().width` both
+    // return 0 — so the measurement effect leaves the visible count at
+    // its initial `labels.length`, which means every chip is rendered
+    // and no "+N" badge appears. This is the correct graceful-
+    // degradation behaviour: when the component can't measure, it
+    // doesn't pretend to trim.
     const labels = [
       { id: 'l1', name: 'Bug', color: '#e2445c' },
       { id: 'l2', name: 'Feature', color: '#00c875' },
@@ -58,11 +70,43 @@ describe('LabelCell — editable mode', () => {
       { id: 'l5', name: 'Tech debt', color: '#579bfc' },
     ];
     render(<LabelCell taskId="t1" boardId="b1" labels={labels} canEdit={true} />);
-    expect(screen.getByText('Bug')).toBeInTheDocument();
-    expect(screen.getByText('Feature')).toBeInTheDocument();
-    expect(screen.getByText('Urgent')).toBeInTheDocument();
-    expect(screen.queryByText('Internal')).not.toBeInTheDocument();
-    expect(screen.getByText('+2')).toBeInTheDocument();
+    for (const l of labels) {
+      // Each label name appears twice — once in the ghost (hidden,
+      // for measurement) and once in the visible layer.
+      expect(screen.getAllByText(l.name).length).toBe(2);
+    }
+    expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+  });
+
+  it('renders a hidden "ghost" measurement layer with every label for live resize', () => {
+    // The overflow trimming is decided at layout time by a useLayoutEffect
+    // that measures `chipBarRef.current.clientWidth` and each ghost chip's
+    // `getBoundingClientRect().width`. The ghost layer ALWAYS holds every
+    // label (regardless of the visible trim state) so a wider column can
+    // grow the visible count back up — single-layer approaches could only
+    // shrink, never re-expand. This test pins the ghost contract.
+    //
+    // Trim arithmetic + ResizeObserver behaviour are covered by browser
+    // smoke-tests (bug report 2026-05-18: dynamic column resize).
+    const labels = [
+      { id: 'l1', name: 'Bug', color: '#e2445c' },
+      { id: 'l2', name: 'Feature', color: '#00c875' },
+      { id: 'l3', name: 'Urgent', color: '#fdab3d' },
+    ];
+    const { container } = render(
+      <LabelCell taskId="t1" boardId="b1" labels={labels} canEdit={true} />,
+    );
+    // The ghost chips carry [data-label-chip] and live inside an
+    // [aria-hidden] container. Visible chips do NOT carry the marker.
+    const ghostChips = container.querySelectorAll('[data-label-chip]');
+    expect(ghostChips.length).toBe(3);
+    expect(ghostChips[0].textContent).toBe('Bug');
+    expect(ghostChips[2].textContent).toBe('Urgent');
+    // Every ghost chip is inside an aria-hidden wrapper so AT software
+    // doesn't double-announce the labels.
+    for (const chip of ghostChips) {
+      expect(chip.closest('[aria-hidden="true"]')).not.toBeNull();
+    }
   });
 
   it('opens the picker when clicked and lazy-loads board labels', async () => {

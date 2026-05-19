@@ -38,7 +38,10 @@ describe('AISummaryPopover', () => {
     const run = vi.fn().mockReturnValue(new Promise((r) => { resolveRun = r; }));
     render(<AISummaryPopover trigger={<button>Open</button>} run={run} />);
     fireEvent.click(screen.getByText('Open'));
-    await waitFor(() => expect(screen.getByText(/Reading the data/)).toBeInTheDocument());
+    // May 2026 — copy changed from "Reading the data and writing the summary…"
+    // to a phase-based message that progresses with elapsed time. Match the
+    // first phase here.
+    await waitFor(() => expect(screen.getByText(/Reading the doc/)).toBeInTheDocument());
     resolveRun({ summary: 'done' });
   });
 

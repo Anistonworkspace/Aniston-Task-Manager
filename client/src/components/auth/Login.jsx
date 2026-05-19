@@ -220,12 +220,41 @@ export default function Login() {
     try {
       const res = await api.get('/auth/microsoft');
       const authUrl = res.data?.data?.authUrl || res.data?.authUrl;
-      if (authUrl) {
-        window.location.href = authUrl;
-      } else {
+      if (!authUrl) {
         setError('Could not start Microsoft sign-in.');
         setSsoLoading(false);
+        return;
       }
+      // Desktop branch: a full-page navigation to Microsoft's OAuth URL
+      // would either be blocked by `will-navigate` (cross-origin from
+      // file://) or — in the buggy pre-fix state — open in the user's
+      // default browser, which doesn't share cookies with the Electron
+      // session and leaves the desktop stuck on "Signing in...". The
+      // preload bridge instead opens a child BrowserWindow inside the
+      // app that shares the same persist:aniston session, so the
+      // cookies Microsoft's callback sets are visible to the main
+      // window when we reload below.
+      if (typeof window !== 'undefined'
+          && window.anistonDesktop
+          && typeof window.anistonDesktop.openSso === 'function') {
+        const result = await window.anistonDesktop.openSso(authUrl);
+        if (result?.ok) {
+          // OAuth succeeded; reload so AuthContext re-fetches /auth/me
+          // with the newly-set cookies. A full reload is the simplest
+          // way to flush every stale piece of in-memory state without
+          // hand-rolling a "rebuild auth from cookie" path.
+          window.location.reload();
+        } else {
+          // User closed the window, declined, or the load failed.
+          setError(result?.reason === 'window-closed'
+            ? 'Microsoft sign-in was cancelled.'
+            : 'Microsoft sign-in failed. Please try again.');
+          setSsoLoading(false);
+        }
+        return;
+      }
+      // Web branch: behaves exactly as before — full-page redirect.
+      window.location.href = authUrl;
     } catch (err) {
       setError(getErrorMessage(err) || 'Failed to start Microsoft sign-in.');
       setSsoLoading(false);

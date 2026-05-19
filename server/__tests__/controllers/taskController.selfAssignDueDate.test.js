@@ -169,6 +169,7 @@ jest.mock('../../services/notificationService', () => ({
 jest.mock('../../utils/taskOwnership', () => ({
   isSelfOwnedTask: jest.fn(() => true),
   isSelfOwnedCreate: jest.fn(() => true),
+  isAssigneeOnTask: jest.fn(() => false),
 }));
 // taskController also imports recurringTaskService as a module ref; we don't
 // invoke its members in createTask but the require() must succeed.

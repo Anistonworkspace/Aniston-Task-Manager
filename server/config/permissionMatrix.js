@@ -664,7 +664,11 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
-    labels:           { view: true, create: true, edit: true, delete: true },
+    // labels.delete moved to T1-only (May 2026 v2 product decision). Legacy
+    // admin role maps to T2 in the tier model; the canonical T2 base also
+    // has labels.delete=false, so this legacy row mirrors the new rule for
+    // pre-migration users without a tier column.
+    labels:           { view: true, create: true, edit: true, delete: false },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
     dependencies:     { view: true, create: true, delete: true },
@@ -696,7 +700,10 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
-    labels:           { view: true, create: true, edit: true, delete: true },
+    // labels.delete moved to T1-only (May 2026 v2 product decision).
+    // Manager role maps to T2; canonical T2.labels.delete=false. Legacy
+    // pre-migration users (no tier column) follow the same rule here.
+    labels:           { view: true, create: true, edit: true, delete: false },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: true },
     dependencies:     { view: true, create: true, delete: true },
@@ -735,7 +742,10 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
-    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    // labels.create widened to true (May 2026 v2 — every contributor can
+    // mint labels via the picker; library rename/recolor still T2+ via the
+    // route-level `managerOrAdmin` gate). Mirrors TIER_PERMISSIONS[3].
+    labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
@@ -778,10 +788,15 @@ const ROLE_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    // labels.create + dependencies.create widened to true (May 2026 v2 — every
+    // contributor can mint labels via the picker AND request blocking work
+    // from teammates). Library rename/recolor still T2+ via the route-level
+    // `managerOrAdmin` gate; permanent label/dependency delete still T1-only.
+    // Mirrors TIER_PERMISSIONS[4].
+    labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
-    dependencies:     { view: true, create: false, delete: false },
+    dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: false, export: false },
     reports:          { view: true, export: false },
     exports:          { view: false, export: false },
@@ -881,10 +896,13 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    // Label management — Tier 2 is admitted to delete per product decision
-    // (May 2026). Carved out from the otherwise-strict T2 no-destructive rule
-    // because labels are easily-recreatable metadata, not work product.
-    labels:           { view: true, create: true, edit: true, delete: true, add_to_task: true, remove_from_task: true },
+    // Label management — Tier 2 can create/edit and apply/remove on tasks,
+    // but permanent deletion of a label from the global label list is now
+    // Tier 1 ONLY (May 2026 v2 product decision — reversed the earlier T2
+    // carveout). Rationale: deleting a label cascades-detaches it from every
+    // task that referenced it, which is genuinely destructive for cross-team
+    // boards. Curation (rename / recolor / archive-by-disuse) remains T2.
+    labels:           { view: true, create: true, edit: true, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: true, edit: true, delete: true, set_default: true },
     automations:      { view: true, create: true, edit: true, delete: false },
     dependencies:     { view: true, create: true, delete: false },
@@ -924,12 +942,15 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    // Labels — Tier 3 can apply / remove labels on any task they can see
-    // (visibility is enforced by taskVisibilityService at the controller).
-    // Library mutations (create/edit/delete) remain T1/T2-only via
-    // canManageBoard; the granular add_to_task / remove_from_task gates
-    // are the right level for per-task surfaces.
-    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    // Labels — Tier 3 can mint new labels and apply / remove them on any
+    // task they can see (visibility is enforced by taskVisibilityService at
+    // the controller). May 2026 v2 product decision widened `create` to
+    // T3/T4 so the one-click "create new label and attach to this task"
+    // flow in the label picker works for every contributor; library
+    // rename/recolor remain T2+ via the route-level `managerOrAdmin` gate;
+    // permanent delete is T1-only via the tier base above. The granular
+    // add_to_task / remove_from_task gates remain the per-task surface.
+    labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
     dependencies:     { view: true, create: true, delete: false },
@@ -972,10 +993,21 @@ const TIER_PERMISSIONS = {
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: false, delete: false },
     task_files:       { view: true, upload: true, delete: false },
-    labels:           { view: true, create: false, edit: false, delete: false, add_to_task: true, remove_from_task: true },
+    // Labels — Tier 4 can mint and apply / remove labels on tasks they can
+    // see (May 2026 v2 product decision — every contributor can curate
+    // labels on their own work). Library rename/recolor remain T2+ via the
+    // route-level `managerOrAdmin` gate on PUT /labels/:id; permanent
+    // delete is T1-only via the tier matrix.
+    labels:           { view: true, create: true, edit: false, delete: false, add_to_task: true, remove_from_task: true },
     status_templates: { view: true, create: false, edit: false, delete: false, set_default: false },
     automations:      { view: false, create: false, edit: false, delete: false },
-    dependencies:     { view: true, create: false, delete: false },
+    // Dependencies — Tier 4 can create dependency requests (May 2026 v2
+    // product decision). Every contributor can request blocking work from
+    // a teammate. The middleware `dependencyRequestPermissions.canCreateOnTask`
+    // continues to gate WHICH parent task they can attach a dependency to
+    // (must be linked to it). Permanent deletion of a dependency record
+    // remains T1-only.
+    dependencies:     { view: true, create: true, delete: false },
     dashboard:        { view: false, export: false },
     reports:          { view: true, export: false },
     exports:          { view: false, export: false },

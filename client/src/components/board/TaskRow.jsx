@@ -178,10 +178,15 @@ const TaskRow = React.memo(function TaskRow({
       case 'person': {
         // The picker is editable when:
         //   - the actor has full edit on this task (admin/manager/asst-mgr), OR
-        //   - the actor owns the task (so a member can self-assign).
-        const personEditable = canEditAllFields || isOwnTask;
+        //   - the actor owns the task (so a member can re-confirm self), OR
+        //   - the actor is locked to self-assign and can put themselves on the
+        //     task (May 2026 — opens self-assign on tasks the member can see
+        //     but isn't yet on; the picker is restricted to "self" only via
+        //     `assignSelfOnly`, and the backend mirrors this via the
+        //     `self_assign_only` carve-out in checkTaskAction).
         // If the actor can't assign others, lock the picker to current user.
         const lockToSelf = !canAssignOthers;
+        const personEditable = canEditAllFields || isOwnTask || (lockToSelf && canAssignSelf);
         return (
           <PersonCell
             value={task.assignedTo || task.assignee}
@@ -255,28 +260,36 @@ const TaskRow = React.memo(function TaskRow({
         // one-click flow runs both backend operations in a single
         // transaction — granting only one would leave the user with a
         // Create button that 403s on submit.
-        // Phase A.2 follow-up (May 2026 RBAC hardening — bug report 2026-05-16).
-        // Defensive umbrella check: backend engine propagates a deny on
-        // `labels.create` to `labels.add_to_task` (UMBRELLA_FALLBACKS), and a
-        // deny on `labels.edit` to `labels.remove_from_task`. The same
-        // propagation IS materialised in /auth/me/permissions's effective map
-        // — but a brief window after an admin flips a deny (and before the
-        // socket-driven refresh has landed) the granular key can lag the
-        // umbrella key. Mirroring the umbrella rule here means the picker
-        // hides immediately on the umbrella deny instead of waiting for the
-        // refresh, matching what the backend will enforce.
-        const denyLabelAdd =
-          granularPermissions?.['labels.add_to_task'] === false ||
-          granularPermissions?.['labels.create'] === false;
+        // May 2026 v2 follow-up (bug report 2026-05-18) — only check the
+        // GRANULAR permission key here. The earlier "defensive umbrella
+        // mirror" treated `labels.edit === false` and `labels.create === false`
+        // as if they were admin DENY overrides, but for Tier 3 and Tier 4
+        // the umbrella IS false BY DESIGN in the matrix (T3/T4 can apply
+        // labels via add_to_task / remove_from_task but cannot rename or
+        // recolor library entries via labels.edit). That base-false on the
+        // umbrella was being conflated with an admin DENY, and the cell
+        // collapsed to a read-only "—" for every contributor.
+        //
+        // The backend's permission engine already handles real admin DENY
+        // override propagation via `effectivePermissions` in
+        // /auth/me/permissions — when an admin DENIES `labels.edit`, the
+        // engine propagates the deny down to `labels.remove_from_task` in
+        // the effective map (computeEffectivePermissions). So checking the
+        // granular key alone is correct AND honours admin denies.
+        const denyLabelAdd = granularPermissions?.['labels.add_to_task'] === false;
         const denyLabelCreate = granularPermissions?.['labels.create'] === false;
-        const denyLabelRemove =
-          granularPermissions?.['labels.remove_from_task'] === false ||
-          granularPermissions?.['labels.edit'] === false;
+        const denyLabelRemove = granularPermissions?.['labels.remove_from_task'] === false;
         // labelsCanEdit covers both add and remove on the picker; remove-only
         // surfaces (the per-chip X) inherit the same predicate today.
         const labelsCanEdit = !denyLabelAdd && !denyLabelRemove;
         const labelsCanCreate = !denyLabelAdd && !denyLabelCreate;
-        const labelsCanManage = isSuperAdmin || isTier1 || isTier2;
+        // labelsCanManage exposes the per-label permanent-delete trash icon
+        // inside the picker. May 2026 v2 product decision narrowed permanent
+        // label deletion to Tier 1 only (reversed the earlier T2 carveout).
+        // Backend `canManageBoard('delete')` is the authoritative gate;
+        // this just hides the affordance from non-Tier-1 users so they
+        // don't see a button that 403s on click.
+        const labelsCanManage = isSuperAdmin || isTier1;
         return <LabelCell taskId={task.id} boardId={boardId} labels={task.labels || []} canEdit={labelsCanEdit} canCreate={labelsCanCreate} canManage={labelsCanManage} />;
       }
       case 'references': {

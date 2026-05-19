@@ -388,20 +388,21 @@ export function canSetPriority(isSuperAdmin = false, granularPermissions = {}) {
  * Per-task variant of canSetPriority. Mirrors the backend gate in
  * createTask/updateTask/bulkUpdateTasks: a user without the global
  * `tasks.set_priority` action may still edit priority on a task they
- * created AND solely own. Used by board cells and the task modal so a
- * Tier 4 user editing their own task sees the dropdown, while one editing
- * a task delegated to them stays read-only.
+ * created OR were assigned to. Used by board cells and the task modal so
+ * a Tier 4 user editing their own task — or work their manager handed
+ * them — sees the dropdown, while a supervisor or watcher on the same
+ * task stays read-only.
  *
- * Self-owned == createdBy === user.id AND no foreign role='assignee' rows
- * (supervisors are oversight, not ownership). The legacy scalar
- * `task.assignedTo` is treated as a single assignee row when present.
+ * Eligible when either:
+ *   - Self-owned: createdBy === user.id AND no foreign role='assignee'
+ *     rows (supervisors are oversight, not ownership).
+ *   - Assignee: user.id appears in task.assignedTo or as a role='assignee'
+ *     row in task.taskAssignees, regardless of creator/co-assignees.
+ *
+ * Supervisors and watchers do NOT get the exemption — they are oversight,
+ * not the worker.
  */
-export function canSetPriorityForTask(user, task, isSuperAdmin = false, granularPermissions = {}) {
-  if (isSuperAdmin) return true;
-  if (canSetPriority(isSuperAdmin, granularPermissions)) return true;
-  if (!user || !task) return false;
-  const uid = user.id;
-  if (!uid) return false;
+function isUserSelfOwnedTask(uid, task) {
   if (task.createdBy && task.createdBy !== uid) return false;
   if (!task.createdBy) return false;
   if (typeof task.assignedTo === 'string' && task.assignedTo && task.assignedTo !== uid) return false;
@@ -416,6 +417,30 @@ export function canSetPriorityForTask(user, task, isSuperAdmin = false, granular
     if (foreignAssignee) return false;
   }
   return true;
+}
+
+function isUserAssigneeOnTask(uid, task) {
+  if (typeof task.assignedTo === 'string' && task.assignedTo === uid) return true;
+  if (Array.isArray(task.assignedTo) && task.assignedTo.some((id) => id === uid)) return true;
+  if (Array.isArray(task.taskAssignees)) {
+    return task.taskAssignees.some((ta) => {
+      if (!ta) return false;
+      const taUid = ta.userId || (ta.user && ta.user.id);
+      return taUid === uid && ta.role === 'assignee';
+    });
+  }
+  return false;
+}
+
+export function canSetPriorityForTask(user, task, isSuperAdmin = false, granularPermissions = {}) {
+  if (isSuperAdmin) return true;
+  if (canSetPriority(isSuperAdmin, granularPermissions)) return true;
+  if (!user || !task) return false;
+  const uid = user.id;
+  if (!uid) return false;
+  if (isUserSelfOwnedTask(uid, task)) return true;
+  if (isUserAssigneeOnTask(uid, task)) return true;
+  return false;
 }
 
 // ── Task action helpers (canonical) ────────────────────────────────────

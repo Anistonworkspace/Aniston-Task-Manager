@@ -834,17 +834,18 @@ async function summarizeDocEndpoint(req, res) {
   try {
     const { id } = req.params;
     if (!id) return res.status(400).json({ success: false, message: 'Doc id is required.' });
-    const { Doc } = require('../models');
+    const { Doc, Workspace, User, Board } = require('../models');
     const doc = await Doc.findByPk(id);
     if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
 
-    // Reuse the doc controller's canCallerSeeWorkspace check by re-implementing
-    // the minimum needed (workspace member, creator, admin, manager, or super).
+    // Workspace visibility mirrors docController.canCallerSeeWorkspace —
+    // including the board-membership branch (May 2026) so Tier 4 users
+    // who reach the workspace through any visible board can also use the
+    // doc Summarize action.
     const u = req.user;
     let allowed = false;
     if (u?.isSuperAdmin || u?.role === 'admin' || u?.role === 'manager') allowed = true;
     if (!allowed) {
-      const { Workspace, User } = require('../models');
       const ws = await Workspace.findByPk(doc.workspaceId, {
         include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
       });
@@ -852,6 +853,21 @@ async function summarizeDocEndpoint(req, res) {
         || (ws.workspaceMembers || []).some((m) => m.id === u.id))) {
         allowed = true;
       }
+    }
+    if (!allowed) {
+      // Board-membership path — same rule the docs API uses.
+      try {
+        const boardVisibility = require('../services/boardVisibilityService');
+        const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(u, { includeArchived: false });
+        if (visibleBoardIds && visibleBoardIds.size > 0) {
+          const wsBoards = await Board.findAll({
+            where: { workspaceId: doc.workspaceId, isArchived: false },
+            attributes: ['id'],
+            raw: true,
+          });
+          if (wsBoards.some((b) => visibleBoardIds.has(b.id))) allowed = true;
+        }
+      } catch (_) { /* best-effort */ }
     }
     if (!allowed) {
       return res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
@@ -965,16 +981,18 @@ function buildSystemPrompt(user, staticContext, dataContext, scopeContext = '') 
 
 ## YOUR #1 RULE
 
-${hasScope ? `The section labeled "SCOPED CONTEXT" below is the SPECIFIC thing the user is asking about right now (a particular task, board, or their own workload). Answer questions using THAT data first. The general "LIVE DATA FROM DATABASE" section is supplementary background.
+${hasScope ? `The section labeled "SCOPED CONTEXT" below is the SPECIFIC thing the user is asking about right now (a particular task, board, document, or their own workload). Answer questions using THAT data first. The general "LIVE DATA FROM DATABASE" section is supplementary background. Earlier turns in this chat (if any) may have lacked context — IGNORE any apologies or "I don't have access" statements you made before. The SCOPED CONTEXT below is the current source of truth.
 
 **MANDATORY behavior:**
 - Read the SCOPED CONTEXT below carefully.
 - Answer the user's question using facts from that section.
 - When summarizing, lead with the bottom line in your FIRST sentence (e.g. "This task is stuck waiting on legal review" — not "Sure! Here's a summary…").
 - When suggesting a plan or priority, base it on the dates, statuses, and dependencies actually present in the SCOPED CONTEXT.
+- For DOC SCOPE: quote the user's own words from the doc body when answering — they want to see their content reflected back. If the body is empty, say so plainly ("Your doc is currently empty — write something first.") instead of asking them to paste it.
 
 **FORBIDDEN:**
-- "I don't have access to this task/board" — you do, it's below.
+- "I don't have access to this task/board/doc/note" — you do, it's below.
+- "Could you paste the contents?" / "Share the text you wrote" — the contents ARE the SCOPED CONTEXT below.
 - Asking the user for information that's already in the SCOPED CONTEXT.
 - Generic advice that doesn't reference the specific items below.
 ` : hasLiveData ? `The section labeled "LIVE DATA FROM DATABASE" below contains REAL numbers queried from the database right now. This is not placeholder data. It is live and accurate.

@@ -57,7 +57,7 @@ function installHappyMocks({
 } = {}) {
   api.post.mockImplementation((url) => {
     if (url === '/ai/chat') {
-      return Promise.resolve({ data: { success: true, data: { reply } } });
+      return Promise.resolve({ data: { success: true, data: { message: reply } } });
     }
     if (url === '/tasks') {
       return Promise.resolve({
@@ -81,7 +81,12 @@ describe('TranscriptProcessor', () => {
     expect(screen.getByText(/Finding tasks in the transcript/i)).toBeInTheDocument();
     // Both pane calls fired in parallel — no sequencing.
     expect(api.post).toHaveBeenCalledWith('/ai/chat', expect.objectContaining({
-      prompt: expect.stringContaining('Summarize this meeting transcript'),
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('Summarize this meeting transcript'),
+        }),
+      ]),
     }));
     expect(aiSummary.extractActions).toHaveBeenCalledWith({ text: TRANSCRIPT });
   });
@@ -235,7 +240,7 @@ describe('TranscriptProcessor', () => {
   });
 
   it('shows the actions error state when extractActions rejects', async () => {
-    api.post.mockResolvedValue({ data: { success: true, data: { reply: 'sum' } } });
+    api.post.mockResolvedValue({ data: { success: true, data: { message: 'sum' } } });
     aiSummary.extractActions.mockRejectedValue(new Error('extract failed'));
 
     render(<TranscriptProcessor transcript={TRANSCRIPT} defaultBoardId="board-1" />);

@@ -27,6 +27,7 @@ const safeLogger = require('../utils/safeLogger');
 const {
   User, Task, Board, Comment, WorkLog, Activity,
   TaskAssignee, TaskOwner, Subtask,
+  Doc, Workspace, DocComment,
 } = require('../models');
 const { canUserSeeBoard } = require('./boardVisibilityService');
 
@@ -35,12 +36,18 @@ const MAX_WORKLOGS = 8;
 const MAX_ACTIVITY = 10;
 const MAX_BOARD_TASKS = 30;
 const MAX_PLANNING_TASKS = 40;
+// Per-doc body budget when the Sidekick asks about a specific doc. Tiptap
+// JSON walks down to plain text; we cap at ~12k chars (~3k tokens) so the
+// prompt envelope stays bounded even on long meeting-notes docs.
+const MAX_DOC_BODY_CHARS = 12000;
+const MAX_DOC_COMMENTS = 10;
 
 async function buildScopeContext(user, { scope, scopeId, params = {} } = {}) {
   if (!scope) return '';
   try {
     if (scope === 'task')     return await buildTaskScope(user, scopeId);
     if (scope === 'board')    return await buildBoardScope(user, scopeId);
+    if (scope === 'doc')      return await buildDocScope(user, scopeId);
     if (scope === 'planning') return await buildPlanningScope(user, params);
     return '';
   } catch (err) {
@@ -241,6 +248,145 @@ async function buildBoardScope(user, boardId) {
   }
 
   return lines.join('\n');
+}
+
+// ─── Doc scope ───────────────────────────────────────────────────
+//
+// Used when the Sidekick is opened from inside DocPage with
+// scope='doc' + scopeId=<docId>. Reuses the docController's
+// workspace-visibility rule (which is now broadened to honor
+// board-membership-based access — see canCallerSeeWorkspaceForDocs)
+// so a Tier 4 board member who can see the doc can also chat about it.
+
+async function buildDocScope(user, docId) {
+  if (!docId) return '';
+
+  const doc = await Doc.findByPk(docId, {
+    include: [
+      { model: User, as: 'creator',    attributes: ['id', 'name', 'email'] },
+      { model: User, as: 'lastEditor', attributes: ['id', 'name', 'email'] },
+      { model: Workspace, as: 'workspace', attributes: ['id', 'name'] },
+    ],
+  });
+  if (!doc) return '';
+
+  // Defense-in-depth visibility check. Mirrors docController's helper
+  // without reaching across module boundaries; we keep the rule local so a
+  // future change in docController doesn't silently relax this prompt's
+  // visibility surface.
+  const visible = await canSeeDocWorkspace(user, doc.workspaceId).catch(() => false);
+  if (!visible) {
+    safeLogger.info('[AIScopeContext] doc scope denied — workspace not visible', { docId, userId: user.id });
+    return '';
+  }
+
+  const body = extractDocBodyText(doc.contentJson, doc.contentText);
+
+  let comments = [];
+  if (DocComment) {
+    try {
+      comments = await DocComment.findAll({
+        where: { docId: doc.id, parentId: null },
+        include: [{ model: User, as: 'author', attributes: ['id', 'name'] }],
+        order: [['createdAt', 'DESC']],
+        limit: MAX_DOC_COMMENTS,
+      });
+    } catch (_) { /* doc comments are best-effort context */ }
+  }
+
+  const lines = [];
+  lines.push('DOC SCOPE — the user is asking about ONE specific document.');
+  lines.push('Treat the body below as the authoritative source. Quote it when relevant.');
+  lines.push('');
+  lines.push(`Title: ${doc.title || 'Untitled doc'}`);
+  if (doc.workspace?.name) lines.push(`Workspace: ${doc.workspace.name}`);
+  if (doc.creator?.name) lines.push(`Created by: ${doc.creator.name}`);
+  if (doc.lastEditor?.name) lines.push(`Last edited by: ${doc.lastEditor.name}`);
+  if (doc.lastEditedAt) lines.push(`Last edited: ${formatDate(doc.lastEditedAt)}`);
+  if (doc.isArchived) lines.push('⚠️ This doc is ARCHIVED.');
+  lines.push('');
+  lines.push('Body:');
+  lines.push(body || '(empty doc — no body content yet)');
+
+  if (comments.length > 0) {
+    lines.push('');
+    lines.push(`Recent comments (up to ${MAX_DOC_COMMENTS}):`);
+    for (const c of comments) {
+      const author = c.author?.name || 'Unknown';
+      const snippet = truncate(stripHtml(c.body || ''), 200);
+      const anchor = c.anchorText ? ` (on: "${truncate(c.anchorText, 60)}")` : '';
+      const resolved = c.resolved ? ' [resolved]' : '';
+      lines.push(`  • [${formatDate(c.createdAt)}] ${author}${anchor}${resolved}: ${snippet}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// Mirrors docController.canCallerSeeWorkspace but ALSO honors
+// board-membership-based access (so Tier 4 board members can chat about
+// docs in the workspaces they reach via boards — same rule the sidebar
+// uses).
+async function canSeeDocWorkspace(user, workspaceId) {
+  if (!workspaceId || !user) return false;
+  if (user.isSuperAdmin) return true;
+  if (user.role === 'admin' || user.role === 'manager') return true;
+
+  const ws = await Workspace.findByPk(workspaceId, {
+    include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
+  });
+  if (!ws) return false;
+  if (ws.createdBy === user.id) return true;
+  const memberIds = (ws.workspaceMembers || []).map((m) => m.id);
+  if (memberIds.includes(user.id)) return true;
+
+  // Board-membership path: the caller has any visible board in this workspace.
+  try {
+    const boardVisibility = require('./boardVisibilityService');
+    const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+    if (visibleBoardIds && visibleBoardIds.size > 0) {
+      const wsBoards = await Board.findAll({
+        where: { workspaceId, isArchived: false },
+        attributes: ['id'],
+        raw: true,
+      });
+      if (wsBoards.some((b) => visibleBoardIds.has(b.id))) return true;
+    }
+  } catch (_) { /* best-effort */ }
+  return false;
+}
+
+// Walks Tiptap JSON and concatenates text content, inserting line breaks
+// at paragraph/heading/listItem boundaries so the prompt reads like prose
+// instead of one giant unwrapped line. Caps total length at
+// MAX_DOC_BODY_CHARS — the AI doesn't need the whole novel, just enough
+// to answer questions about the visible structure.
+function extractDocBodyText(contentJson, contentTextFallback) {
+  if (contentJson && typeof contentJson === 'object') {
+    const parts = [];
+    const BREAK_TYPES = new Set([
+      'paragraph', 'heading', 'listItem', 'blockquote', 'codeBlock', 'horizontalRule',
+    ]);
+    function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (typeof node.text === 'string') parts.push(node.text);
+      // Render mentions / task chips inline so prompt context stays readable.
+      if (node.type === 'mention' && node.attrs?.label) {
+        parts.push(`@${node.attrs.label}`);
+      } else if ((node.type === 'taskChip' || node.type === 'task-chip') && node.attrs?.label) {
+        parts.push(`+${node.attrs.label}`);
+      }
+      if (Array.isArray(node.content)) node.content.forEach(walk);
+      if (BREAK_TYPES.has(node.type)) parts.push('\n');
+    }
+    walk(contentJson);
+    const txt = parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+    if (txt) return truncate(txt, MAX_DOC_BODY_CHARS);
+  }
+  // Fallback to the indexed content_text shadow when contentJson is empty
+  // or unparseable. The doc controller stores this on every save.
+  if (contentTextFallback) return truncate(String(contentTextFallback), MAX_DOC_BODY_CHARS);
+  return '';
 }
 
 // ─── Planning scope ───────────────────────────────────────────────

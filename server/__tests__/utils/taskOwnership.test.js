@@ -10,7 +10,7 @@
  * a future refactor can't silently re-tighten or over-permit.
  */
 
-const { isSelfOwnedTask, isSelfOwnedCreate } = require('../../utils/taskOwnership');
+const { isSelfOwnedTask, isSelfOwnedCreate, isAssigneeOnTask } = require('../../utils/taskOwnership');
 
 const ME = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -101,5 +101,76 @@ describe('isSelfOwnedCreate', () => {
   it('fails closed when userId is missing', () => {
     expect(isSelfOwnedCreate(null, [])).toBe(false);
     expect(isSelfOwnedCreate(undefined, [ME])).toBe(false);
+  });
+});
+
+describe('isAssigneeOnTask', () => {
+  it('returns true when the legacy scalar assignedTo is self', () => {
+    expect(isAssigneeOnTask(ME, { assignedTo: ME })).toBe(true);
+  });
+
+  it('returns true when the legacy array assignedTo contains self', () => {
+    expect(isAssigneeOnTask(ME, { assignedTo: [OTHER, ME] })).toBe(true);
+  });
+
+  it('returns true when taskAssignees has a role=assignee row for self', () => {
+    const task = { taskAssignees: [{ userId: ME, role: 'assignee' }] };
+    expect(isAssigneeOnTask(ME, task)).toBe(true);
+  });
+
+  it('returns true for an assignee delegated by someone else (the regression case)', () => {
+    // Task created by a manager and assigned to the member. The member is on
+    // the hook for delivering it, so they get the priority exemption even
+    // though they aren't the creator.
+    const task = {
+      createdBy: OTHER,
+      assignedTo: ME,
+      taskAssignees: [{ userId: ME, role: 'assignee' }],
+    };
+    expect(isAssigneeOnTask(ME, task)).toBe(true);
+  });
+
+  it('returns true when self is one of several assignees', () => {
+    const task = {
+      createdBy: OTHER,
+      taskAssignees: [
+        { userId: OTHER, role: 'assignee' },
+        { userId: ME, role: 'assignee' },
+      ],
+    };
+    expect(isAssigneeOnTask(ME, task)).toBe(true);
+  });
+
+  it('returns false when self is a supervisor but NOT an assignee', () => {
+    // Supervisors are oversight, not the worker — no priority exemption.
+    const task = {
+      createdBy: OTHER,
+      assignedTo: OTHER,
+      taskAssignees: [{ userId: ME, role: 'supervisor' }],
+    };
+    expect(isAssigneeOnTask(ME, task)).toBe(false);
+  });
+
+  it('returns false when self has no row on the task', () => {
+    const task = {
+      createdBy: OTHER,
+      assignedTo: OTHER,
+      taskAssignees: [{ userId: OTHER, role: 'assignee' }],
+    };
+    expect(isAssigneeOnTask(ME, task)).toBe(false);
+  });
+
+  it('prefers the explicit taskAssignees argument over task.taskAssignees', () => {
+    const task = {
+      createdBy: OTHER,
+      taskAssignees: [{ userId: OTHER, role: 'assignee' }], // would say no
+    };
+    expect(isAssigneeOnTask(ME, task, [{ userId: ME, role: 'assignee' }])).toBe(true);
+  });
+
+  it('fails closed for missing arguments', () => {
+    expect(isAssigneeOnTask(null, { assignedTo: ME })).toBe(false);
+    expect(isAssigneeOnTask(ME, null)).toBe(false);
+    expect(isAssigneeOnTask(ME, {})).toBe(false);
   });
 });

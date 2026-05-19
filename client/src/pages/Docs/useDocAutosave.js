@@ -28,7 +28,7 @@ import { getErrorMessage } from '../../utils/errorMap';
  * onUpdate on every keystroke, so without coalescing we'd hammer the
  * backend. The latest patch wins; intermediate patches are discarded.
  */
-export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enabled = true } = {}) {
+export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, onError, enabled = true } = {}) {
   const [status, setStatus] = useState('idle');
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [error, setError] = useState('');
@@ -37,9 +37,11 @@ export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enab
   const inflightRef = useRef(false);
   const timerRef = useRef(null);
   const onSavedRef = useRef(onSaved);
+  const onErrorRef = useRef(onError);
 
-  // Keep latest onSaved without retriggering effects.
+  // Keep latest onSaved / onError without retriggering effects.
   useEffect(() => { onSavedRef.current = onSaved; }, [onSaved]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
   // Cancel any pending timer on unmount AND attempt one final flush so a
   // user navigating away mid-edit doesn't lose 1-2s of typing.
@@ -57,12 +59,27 @@ export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enab
     };
   }, [docId]);
 
-  const send = useCallback(async () => {
+  // `throwOnError` lets `flush()` (Ctrl+S) bubble the failure to its caller
+  // so the doc-page toast layer can render a precise "Couldn't save: …"
+  // message. Scheduled (debounced) saves still swallow errors — the
+  // onError callback + SaveIndicator pill cover those.
+  const send = useCallback(async (throwOnError = false) => {
     if (!docId) return;
     if (inflightRef.current) {
       // A save is already running — let it finish; the timer or the
-      // next scheduleSave will pick up any newer changes.
-      return;
+      // next scheduleSave will pick up any newer changes. For an
+      // explicit flush (Ctrl+S) we wait for the in-flight to settle so
+      // the caller's toast lines up with the real save state.
+      if (throwOnError) {
+        const start = Date.now();
+        while (inflightRef.current && Date.now() - start < 10000) {
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        if (Object.keys(pendingPatchRef.current).length === 0) return;
+      } else {
+        return;
+      }
     }
     const patch = pendingPatchRef.current;
     if (Object.keys(patch).length === 0) return;
@@ -87,10 +104,15 @@ export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enab
       }
     } catch (err) {
       safeLog.error('[useDocAutosave] save failed', err);
-      setError(getErrorMessage(err));
+      const msg = getErrorMessage(err);
+      setError(msg);
       setStatus('error');
-      // Restore the patch so the caller can retry/flush.
+      // Restore the patch so the caller can retry/flush. We re-merge in the
+      // original order so any newer keystrokes that landed while the
+      // request was in flight still win.
       pendingPatchRef.current = { ...patch, ...pendingPatchRef.current };
+      try { onErrorRef.current?.(msg, err); } catch (_) { /* listener swallowed */ }
+      if (throwOnError) throw err;
     } finally {
       inflightRef.current = false;
     }
@@ -117,7 +139,9 @@ export default function useDocAutosave({ docId, debounceMs = 1200, onSaved, enab
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    await send();
+    // Ctrl+S path: re-throw so DocPage's keyboard handler renders an
+    // error toast instead of a misleading "Saved" confirmation.
+    await send(true);
   }, [send]);
 
   return { status, lastSavedAt, error, scheduleSave, flush };

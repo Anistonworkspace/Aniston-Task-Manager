@@ -237,6 +237,7 @@ jest.mock('../../utils/sanitize', () => ({
 jest.mock('../../utils/taskOwnership', () => ({
   isSelfOwnedTask: jest.fn(() => true),
   isSelfOwnedCreate: jest.fn(() => true),
+  isAssigneeOnTask: jest.fn(() => false),
 }));
 
 // ─── Build test app ──────────────────────────────────────────────────────────
@@ -667,6 +668,121 @@ describe('PUT /api/tasks/:id', () => {
     // Post-Tier-refactor: the controller now returns a unified
     // "You do not have permission to update this task." message rather than
     // the older "this task is not assigned to you" wording.
+    expect(res.body.message).toMatch(/permission to update this task/i);
+  });
+
+  it('returns 200 when a member self-assigns themselves to a foreign task they can view', async () => {
+    // Self-assign carve-out (May 2026): a Tier 4 actor may put themselves
+    // on a task they aren't currently linked to, as long as the body is a
+    // pure self-assign (no piggybacked field edits). taskVisibilityService
+    // is mocked to return true above, so the in-subtree gate passes.
+    const memberUser = makeUserRecord({ role: 'member', id: USER_ID });
+    User.findByPk.mockResolvedValueOnce(memberUser);
+
+    const existingTask = makeTaskRecord({
+      assignedTo: OTHER_ID,
+      createdBy: OTHER_ID,
+      taskAssignees: [],
+      dueDate: '2026-12-31', // dueDate set → needsDueDateForAssignment passes
+    });
+    Task.findByPk
+      .mockResolvedValueOnce(existingTask)
+      .mockResolvedValueOnce({
+        ...existingTask,
+        assignedTo: USER_ID,
+        assignee: null,
+        creator: null,
+        board: { id: BOARD_ID, name: 'Test Board' },
+        toJSON: jest.fn().mockReturnValue({ id: TASK_ID, assignedTo: USER_ID }),
+      });
+
+    const token = generateToken(USER_ID, 'member');
+
+    const res = await request(app)
+      .put(`/api/tasks/${TASK_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedTo: USER_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('routes the edit_assignee gate through assign_self for self-target — T4 with assign_others=false still passes', async () => {
+    // Regression: the umbrella mapping in permissionMatrix.js routes
+    // `tasks.edit_assignee` → `tasks.assign_others` when no specific
+    // grant/deny exists. A Tier 4 actor (assign_others=false) was being
+    // 403'd at this gate even on a pure self-assign. The controller now
+    // detects self-target and gates on tasks.assign_self instead.
+    const permissionEngine = require('../../services/permissionEngine');
+    const originalImpl = permissionEngine.hasPermission.getMockImplementation();
+    permissionEngine.hasPermission.mockImplementation(async (user, resource, action) => {
+      if (!user) return false;
+      if (user.isSuperAdmin) return true;
+      // Pin: T4-like ruleset — assign_others false, assign_self true,
+      // edit_assignee falls back to assign_others (false) under the umbrella.
+      if (resource === 'tasks' && action === 'assign_others') return false;
+      if (resource === 'tasks' && action === 'edit_assignee') return false;
+      if (resource === 'tasks' && action === 'assign_self') return true;
+      return true;
+    });
+
+    const memberUser = makeUserRecord({ role: 'member', id: USER_ID });
+    User.findByPk.mockResolvedValueOnce(memberUser);
+
+    const existingTask = makeTaskRecord({
+      assignedTo: null,
+      createdBy: OTHER_ID,
+      taskAssignees: [],
+      dueDate: '2026-12-31',
+    });
+    Task.findByPk
+      .mockResolvedValueOnce(existingTask)
+      .mockResolvedValueOnce({
+        ...existingTask,
+        assignedTo: USER_ID,
+        assignee: null, creator: null,
+        board: { id: BOARD_ID, name: 'Test Board' },
+        toJSON: jest.fn().mockReturnValue({ id: TASK_ID, assignedTo: USER_ID }),
+      });
+
+    const token = generateToken(USER_ID, 'member');
+
+    const res = await request(app)
+      .put(`/api/tasks/${TASK_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedTo: USER_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    // Restore the suite-wide hasPermission impl so subsequent tests aren't
+    // affected by this case's pinned matrix.
+    if (originalImpl) permissionEngine.hasPermission.mockImplementation(originalImpl);
+  });
+
+  it('rejects piggybacked field changes when a non-linked member uses the self-assign path', async () => {
+    // The carve-out is narrow: assignedTo to self ONLY. If the body also
+    // contains e.g. priority or status, the request falls through to the
+    // standard 403 — defense against a member slipping unrelated mutations
+    // alongside a self-assign gesture.
+    const memberUser = makeUserRecord({ role: 'member', id: USER_ID });
+    User.findByPk.mockResolvedValue(memberUser);
+
+    Task.findByPk.mockResolvedValue(makeTaskRecord({
+      assignedTo: OTHER_ID,
+      createdBy: OTHER_ID,
+      taskAssignees: [],
+      dueDate: '2026-12-31',
+    }));
+
+    const token = generateToken(USER_ID, 'member');
+
+    const res = await request(app)
+      .put(`/api/tasks/${TASK_ID}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedTo: USER_ID, priority: 'critical' });
+
+    expect(res.status).toBe(403);
     expect(res.body.message).toMatch(/permission to update this task/i);
   });
 

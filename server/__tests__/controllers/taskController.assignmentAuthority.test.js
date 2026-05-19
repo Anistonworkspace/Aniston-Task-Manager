@@ -89,7 +89,7 @@ jest.mock('../../utils/sanitize', () => ({
 }));
 jest.mock('../../utils/statusConfig', () => ({ isValidStatus: () => true, isValidStatusForTask: () => true }));
 jest.mock('../../utils/taskPrioritization', () => ({ buildPendingPriorityOrder: jest.fn(), findGroupForStatus: jest.fn() }));
-jest.mock('../../utils/taskOwnership', () => ({ isSelfOwnedTask: jest.fn(), isSelfOwnedCreate: jest.fn() }));
+jest.mock('../../utils/taskOwnership', () => ({ isSelfOwnedTask: jest.fn(), isSelfOwnedCreate: jest.fn(), isAssigneeOnTask: jest.fn(() => false) }));
 jest.mock('../../utils/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('express-validator', () => ({
   body: () => ({ trim: () => ({ notEmpty: () => ({ withMessage: () => ({}) }) }) }),

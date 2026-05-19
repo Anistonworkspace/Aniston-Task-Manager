@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Plus, X, Search, Tag, Trash2 } from 'lucide-react';
 import PortalDropdown from '../common/PortalDropdown';
 import api from '../../services/api';
@@ -226,6 +226,97 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
   const filtered = allLabels.filter(l => !search || l.name.toLowerCase().includes(search.toLowerCase()));
   const COLORS = ['#579bfc', '#00c875', '#fdab3d', '#df2f4a', '#9d50dd', '#ff642e', '#cab641', '#ff158a', '#66ccff', '#333'];
 
+  // Dynamic overflow (bug report 2026-05-18 + 2026-05-18 live-resize follow-up):
+  // the row's Labels column has a variable width depending on the board
+  // layout, and the previous static `slice(0, 3)` + `+N` produced cramped,
+  // overlapping chips when names were long or the column was narrow.
+  //
+  // We use a TWO-LAYER approach so the chip overflow reacts to column
+  // resize in real time (not just on refresh):
+  //
+  //   1. A hidden "ghost" layer (visibility: hidden, absolute) always
+  //      renders ALL labels — this is the measurement source. Because it's
+  //      always present, the layout effect can ALWAYS see every chip's
+  //      width, even when the visible layer is currently trimmed. That's
+  //      the key fix: a single-layer approach could only shrink (when more
+  //      chips were trimmed) but never grow back (because trimmed chips
+  //      weren't in the DOM to be re-measured).
+  //
+  //   2. A visible layer renders only `labels.slice(0, visibleCount)`
+  //      followed by a `+N` overflow badge. This is what the user sees.
+  //
+  // The wrapping container (chipBarRef) is what the column sizes via
+  // flex-1. ResizeObserver watches the wrapper and re-runs the fit
+  // computation on every size change — column drag, viewport resize, font
+  // re-render — so the trim updates synchronously during the drag.
+  const chipBarRef = useRef(null);
+  const ghostRef = useRef(null);
+  const [visibleCount, setVisibleCount] = useState(labels.length);
+
+  // Reset visibleCount to "show all" whenever the labels list itself
+  // changes — the layout effect below will trim it again to fit. Without
+  // this reset, adding a new label while the column is wide enough to
+  // hold it would still show stale `+N` until the next resize tick.
+  useEffect(() => {
+    setVisibleCount(labels.length);
+  }, [labels.length]);
+
+  useLayoutEffect(() => {
+    const wrapper = chipBarRef.current;
+    const ghost = ghostRef.current;
+    if (!wrapper || !ghost || labels.length === 0) return;
+
+    const OVERFLOW_RESERVE_PX = 32; // width of the "+N" badge + its gap
+    const GAP_PX = 4;               // matches Tailwind `gap-1` on the row
+
+    const computeFit = () => {
+      const containerWidth = wrapper.clientWidth;
+      if (containerWidth <= 0) return; // pre-layout / hidden / jsdom
+      // Always measure against the GHOST — it holds every chip
+      // regardless of the current trim state, so we can grow back as
+      // well as shrink.
+      const chips = ghost.querySelectorAll('[data-label-chip]');
+      if (chips.length === 0) return;
+
+      let used = 0;
+      let fitCount = 0;
+
+      for (let i = 0; i < chips.length; i++) {
+        const w = chips[i].getBoundingClientRect().width;
+        if (w <= 0) return; // measurement not yet meaningful
+        const gap = i > 0 ? GAP_PX : 0;
+        // Only the LAST chip can claim the full width; every earlier chip
+        // must leave room for the +N badge in case it overflows.
+        const isLast = i === chips.length - 1;
+        const reserve = isLast ? 0 : OVERFLOW_RESERVE_PX;
+
+        if (used + gap + w + reserve > containerWidth) break;
+        used += gap + w;
+        fitCount = i + 1;
+      }
+
+      // Safety floor — if not even one chip fits, still show one so the
+      // user sees *something* rather than just the +N badge.
+      if (fitCount === 0) fitCount = 1;
+
+      setVisibleCount(prev => (prev === fitCount ? prev : fitCount));
+    };
+
+    // Initial run after the all-chips render commits.
+    computeFit();
+
+    // ResizeObserver may be absent in older test runtimes — degrade
+    // gracefully to a one-shot measurement in that case.
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(computeFit);
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labels.length, labels.map(l => l.name).join('|')]);
+
+  const visibleLabels = labels.slice(0, visibleCount);
+  const overflowCount = labels.length - visibleCount;
+
   // Read-only render: no button, just the chips (or em-dash). Keeps the
   // column consistent without dangling an inert "Add" hint that misleads
   // the user about their permission level.
@@ -244,27 +335,66 @@ export default function LabelCell({ taskId, boardId, labels: initialLabels = [],
         aria-label="Edit labels"
       >
         {labels.length > 0 ? (
-          <>
-            {/* Pill UI — bumped from 9px/px-1.5 to 11px/px-2.5/py-1 so the
-                tag is actually readable in the row. max-w increased from
-                80px to 120px; long names truncate with an ellipsis and the
-                full name is shown in the native title tooltip. Row height
-                stays bounded because the cell is fixed-height — pills
-                shrink/wrap-suppressed within. */}
-            {labels.slice(0, 3).map(l => (
-              <span
-                key={l.id}
-                className="inline-flex items-center text-[11px] leading-none font-medium px-2.5 py-1 rounded-full text-white truncate max-w-[120px] shadow-sm"
-                style={{ backgroundColor: l.color }}
-                title={l.name}
-              >
-                {l.name}
-              </span>
-            ))}
-            {labels.length > 3 && (
-              <span className="text-[11px] text-gray-500 dark:text-gray-400 font-semibold ml-0.5">+{labels.length - 3}</span>
-            )}
-          </>
+          <span
+            ref={chipBarRef}
+            className="relative flex-1 min-w-0 flex items-center py-1 overflow-x-clip"
+            style={{ overflowY: 'visible' }}
+          >
+            {/* GHOST measurement layer — always holds every label so the
+                resize observer can grow back as well as shrink. The
+                container is sized by the visible layer below; this layer
+                is absolutely positioned and `visibility: hidden` so it
+                occupies real layout space (chips get measurable widths)
+                but is invisible to the user and to AT software.
+                NOTE: the wrapper purposely does NOT have overflow-hidden
+                — that would clip the chip drop-shadows. The visible row
+                is sized to always fit (layout effect computes fitCount),
+                and the ghost is `position: absolute` + `visibility: hidden`
+                so it never paints even if it extends beyond. */}
+            <span
+              ref={ghostRef}
+              aria-hidden="true"
+              className="invisible pointer-events-none absolute top-1 left-0 flex items-center gap-1 flex-nowrap whitespace-nowrap"
+              style={{ visibility: 'hidden' }}
+            >
+              {labels.map(l => (
+                <span
+                  key={`ghost-${l.id}`}
+                  data-label-chip
+                  className="inline-flex items-center text-[11px] leading-none font-medium px-2.5 py-1 rounded-full text-white truncate max-w-[120px] shadow-sm flex-shrink-0"
+                  style={{ backgroundColor: l.color }}
+                >
+                  {l.name}
+                </span>
+              ))}
+            </span>
+
+            {/* VISIBLE layer — only the chips that fit, followed by +N.
+                The visible layer drives the natural height of the wrapper
+                because the ghost is absolutely positioned. Chips use the
+                same `shadow-sm` as the owner Avatar (common/Avatar.jsx)
+                so the visual depth matches across the row. */}
+            <span className="flex items-center gap-1 flex-nowrap min-w-0">
+              {visibleLabels.map(l => (
+                <span
+                  key={l.id}
+                  className="inline-flex items-center text-[11px] leading-none font-medium px-2.5 py-1 rounded-full text-white truncate max-w-[120px] shadow-sm flex-shrink-0"
+                  style={{ backgroundColor: l.color }}
+                  title={l.name}
+                >
+                  {l.name}
+                </span>
+              ))}
+              {overflowCount > 0 && (
+                <span
+                  className="text-[11px] text-gray-500 dark:text-gray-400 font-semibold ml-0.5 flex-shrink-0"
+                  title={labels.slice(visibleCount).map(l => l.name).join(', ')}
+                >
+                  +{overflowCount}
+                </span>
+              )}
+            </span>
+          </span>
         ) : (
           <span className="text-[12px] text-gray-400 flex items-center gap-1">
             <Tag size={12} /> Add

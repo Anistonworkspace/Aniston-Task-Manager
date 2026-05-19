@@ -27,6 +27,7 @@
       "notifications.js",
       "runtimeConfig.js",
       "paths.js",
+      "updater.js",
       "package.json",
       "!dist/**",
       "!build/**",

@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Archive, RotateCcw,
-  Sparkles, Check, AlertCircle, Loader2, History, MessageSquare,
-} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons.
+  Sparkles, Check, AlertCircle, Loader2, History, MessageSquare, Save,
+} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons. Save — May 2026 manual-save button.
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../../services/api';
 import {
@@ -32,9 +32,11 @@ import { uploadInlineImage } from '../../services/uploadService';
 // Phase D Slice 2b — create-task-from-doc modal + realtime chip refresh.
 import NewTaskFromDocModal from './NewTaskFromDocModal';
 import useRealtimeEvent from '../../realtime/useRealtimeEvent';
-// Slice 2d — one-shot "Summarize this doc" button.
-import AISummaryPopover from '../../components/sidekick/AISummaryPopover';
+// May 2026 — Doc/Board/Task Summarize all use the shared AISummaryModal
+// (portal-centered, backdrop, visible loader). Replaces the inline
+// AISummaryPopover that proved invisible in some user environments.
 import aiSummary from '../../services/aiSummaryService';
+import AISummaryModal from '../../components/sidekick/AISummaryModal';
 // Phase F — side-panel comments anchored to selection.
 import DocCommentsSidebar from '../../components/common/DocCommentsSidebar';
 // Phase H — version history modal + share dropdown (replaces the
@@ -77,6 +79,12 @@ export default function DocPage() {
   // Phase D Slice 2b — editor ref (for live chip-status updates) + new-task modal state.
   const editorRef = useRef(null);
   const [newTaskState, setNewTaskState] = useState(null); // { query, insertChip }
+  // May 2026 — DocSummaryModal visibility + a "preparing" flag for the
+  // trigger button. The "preparing" flag is true between the click and
+  // the modal opening, so the trigger immediately shows a spinner even
+  // if the modal's portal takes a frame to mount.
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [preparingSummary, setPreparingSummary] = useState(false);
   // Phase F — comments sidebar visibility + the selection captured at the
   // moment the user clicked the "Comment" bubble pill. Passed to the
   // sidebar as `pendingAnchor` so the composer can pre-fill the quoted
@@ -272,19 +280,91 @@ export default function DocPage() {
   // and HTTP autosave for body content is disabled.
   const inCollab = collab.status === 'connected' && !collab.error;
 
+  // Track the last error toast we surfaced so we don't spam the user with
+  // identical messages while their network is degraded. Reset on successful
+  // save.
+  const lastSaveErrorRef = useRef('');
+
+  // May 2026 — HTTP autosave runs ALONGSIDE Y.js collab.
+  //
+  // Why: the Hocuspocus server's `onStoreDocument` only persists `yjsState`
+  // (binary CRDT bytes). It NEVER updates the doc's `contentJson` or
+  // `contentText` columns because that would require running a Tiptap
+  // schema server-side. Without an HTTP shadow-save:
+  //   - DocsListPage excerpts are blank (reads `contentText`)
+  //   - AI Sidekick gets empty doc context (reads `contentJson`)
+  //   - Any non-collab reader sees a blank doc
+  //
+  // Both writers touch DIFFERENT columns (yjsState vs contentJson), so
+  // they don't fight. We slow the debounce to 2.5s in collab mode to
+  // dampen network thrash when multiple peers are typing — Y.js still
+  // carries the live sync, the HTTP path is just the canonical-JSON
+  // snapshot.
   const { status, lastSavedAt, error: saveError, scheduleSave, flush } = useDocAutosave({
     docId,
-    debounceMs: 1200,
-    // Phase G — Y.js → Hocuspocus → server owns persistence in collab
-    // mode. Title rename still calls flush({ title }) explicitly, which
-    // bypasses the gated scheduleSave path.
-    enabled: !inCollab,
+    debounceMs: inCollab ? 2500 : 1200,
+    enabled: true,
     onSaved: (updated) => {
       // Server returned the canonical doc — merge it but don't overwrite
       // the body the user is actively typing.
       setDoc((prev) => (prev ? { ...prev, ...updated, contentJson: prev.contentJson } : updated));
+      // Clear the error-dedup memo on the next clean save so a future
+      // failure surfaces a fresh toast (the issue likely changed).
+      lastSaveErrorRef.current = '';
+    },
+    onError: (msg) => {
+      // Surface persistent autosave failures as a toast — the SaveIndicator's
+      // "Save failed" pill is easy to miss in a long writing session.
+      // Dedup so a long network outage doesn't queue 50 toasts.
+      if (msg && msg !== lastSaveErrorRef.current) {
+        lastSaveErrorRef.current = msg;
+        try { toast.error(`Couldn't save your doc: ${msg}`); } catch (_) { /* no-op */ }
+      }
     },
   });
+
+  // Manual save handler. Used by Ctrl+S and the explicit "Save" button.
+  // Always triggers an HTTP flush — even in collab mode — because the
+  // HTTP path is what persists `contentJson` / `contentText` (Y.js only
+  // persists the binary `yjsState`).
+  const handleManualSave = useCallback(async () => {
+    if (!docId) return;
+    if (doc?.isArchived) {
+      try { toast.info('This doc is archived. Restore it to save edits.'); } catch (_) { /* no-op */ }
+      return;
+    }
+    try {
+      await flush();
+      try { toast.success('Saved'); } catch (_) { /* no-op */ }
+    } catch (err) {
+      safeLog.error('[DocPage] manual save failed', err);
+      const msg = getErrorMessage(err);
+      try { toast.error(`Couldn't save: ${msg}`); } catch (_) { /* no-op */ }
+    }
+  }, [docId, doc?.isArchived, flush, toast]);
+
+  // Ctrl+S / Cmd+S inside the doc editor saves the doc, NOT the browser's
+  // "save page as HTML" dialog. Window-capture listener so we beat the
+  // browser shortcut even when focus is inside the ProseMirror editor.
+  // Scoped to DocPage — cleanup on unmount restores default shortcuts
+  // everywhere else.
+  useEffect(() => {
+    if (!docId) return undefined;
+    function onKeyDown(e) {
+      // Match both `s` and `S` so Shift+Ctrl+S doesn't slip through (would
+      // hit browser "Save as", which is the same UX failure).
+      const isS = e.key === 's' || e.key === 'S';
+      if (!isS) return;
+      const isModified = e.ctrlKey || e.metaKey;
+      if (!isModified) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleManualSave();
+    }
+    // Capture phase so we run before the browser/Chromium's native handler.
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [docId, handleManualSave]);
 
   // Load doc on mount + when docId changes.
   useEffect(() => {
@@ -460,30 +540,80 @@ export default function DocPage() {
           {/* Slice 2d — one-shot Summarize. Sits next to "Ask AI" because
               both surface the AI tier but for very different intents:
               Summarize is one click → one paragraph + bullets; Ask AI is
-              the multi-turn Sidekick panel. */}
-          <AISummaryPopover
-            title="Doc summary"
-            placement="bottom-end"
-            run={() => aiSummary.summarizeDoc(doc.id)}
-            emptyText="The AI returned an empty summary. Try Regenerate."
-            trigger={
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors"
-                title="Summarize this doc"
-              >
-                <Sparkles size={13} /> Summarize
-              </button>
-            }
-          />
+              the multi-turn Sidekick panel.
+
+              May 2026: moved off AISummaryPopover (invisible in some
+              browsers) onto a dedicated centered DocSummaryModal. The
+              trigger shows its own spinner the instant it's clicked so
+              the user has immediate feedback even before the modal
+              mounts. */}
           <button
             type="button"
-            onClick={() => setShowSidekick(true)}
+            onClick={async () => {
+              if (preparingSummary || summaryOpen) return;
+              setPreparingSummary(true);
+              try {
+                // Flush pending edits FIRST so the AI reads the body the
+                // user actually sees on screen (race with 1.2-2.5s autosave
+                // debounce otherwise — summary of an empty doc).
+                try { await flush(); } catch (_) { /* non-fatal */ }
+                setSummaryOpen(true);
+              } finally {
+                setPreparingSummary(false);
+              }
+            }}
+            disabled={preparingSummary}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors disabled:opacity-70 disabled:cursor-wait"
+            title="Summarize this doc"
+          >
+            {preparingSummary ? (
+              <>
+                <Loader2 size={13} className="animate-spin" /> Preparing…
+              </>
+            ) : (
+              <>
+                <Sparkles size={13} /> Summarize
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              // Same rationale as Summarize: ensure the AI Sidekick reads
+              // the latest doc body, not what was on disk 2 seconds ago.
+              try { await flush(); } catch (_) { /* non-fatal */ }
+              setShowSidekick(true);
+            }}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/10 transition-colors"
             title="Ask AI about this doc"
           >
             <Sparkles size={13} /> Ask AI
           </button>
+          {/* May 2026 — explicit manual save. Autosave handles the common
+              path, but the button gives users a definitive "save now"
+              affordance and matches the Ctrl+S keyboard shortcut. The
+              button stays enabled in collab mode (HTTP path persists
+              contentJson; Y.js only persists yjsState). Disabled while a
+              save is mid-flight to avoid double-clicks. */}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={handleManualSave}
+              disabled={status === 'saving'}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-text-secondary border border-border bg-surface hover:border-primary-300 hover:text-primary disabled:opacity-50 disabled:cursor-wait"
+              title="Save now (Ctrl/Cmd + S)"
+            >
+              {status === 'saving' ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" /> Saving…
+                </>
+              ) : (
+                <>
+                  <Save size={12} /> Save
+                </>
+              )}
+            </button>
+          )}
           {/* Phase F — open comments side panel. Clears any stale
               pending-anchor; user is browsing thread list, not commenting
               on a specific selection. */}
@@ -738,6 +868,18 @@ export default function DocPage() {
             toast.error(getErrorMessage(err));
           }).finally(() => setLoading(false));
         }}
+      />
+
+      {/* May 2026 — centered Summarize modal. Replaces the prior
+          AISummaryPopover which proved invisible in some user
+          environments. The trigger above flushes pending edits before
+          opening so the AI reads the current doc body. */}
+      <AISummaryModal
+        isOpen={summaryOpen}
+        onClose={() => setSummaryOpen(false)}
+        title="Doc summary"
+        subtitle={doc.title}
+        run={() => aiSummary.summarizeDoc(doc.id)}
       />
     </div>
   );

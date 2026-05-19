@@ -125,6 +125,7 @@ jest.mock('../../utils/taskPrioritization', () => ({ buildPendingPriorityOrder: 
 jest.mock('../../utils/taskOwnership', () => ({
   isSelfOwnedTask: jest.fn(),
   isSelfOwnedCreate: jest.fn(),
+  isAssigneeOnTask: jest.fn(() => false),
 }));
 jest.mock('../../utils/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 

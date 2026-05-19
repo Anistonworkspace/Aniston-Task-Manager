@@ -10,6 +10,9 @@ import LetterAvatar from '../../components/common/LetterAvatar';
 import EmptyState from '../../components/common/EmptyState';
 import StatusPill from '../../components/common/StatusPill';
 import { useToast } from '../../components/common/Toast';
+// May 2026 — replaces the old "Share" = copy-URL + "Invite" = navigate-to-users
+// behavior with a single dialog that lists members and the user directory.
+import WorkspaceShareModal from '../../components/workspace/WorkspaceShareModal';
 
 /**
  * WorkspacePage — workspace landing surface (skill §7).
@@ -338,6 +341,9 @@ export default function WorkspacePage() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState('recents');
   const [contentQuery, setContentQuery] = useState('');
+  // May 2026 — the Share / Invite buttons both open WorkspaceShareModal.
+  // Older copy-link-only flow lives behind the modal's "Copy" affordance.
+  const [shareOpen, setShareOpen] = useState(false);
   const aliveRef = useRef(true);
 
   useEffect(() => () => { aliveRef.current = false; }, []);
@@ -379,18 +385,15 @@ export default function WorkspacePage() {
   }
 
   function handleShare() {
-    const url = `${window.location.origin}/workspaces/${id}`;
-    navigator.clipboard?.writeText(url).then(
-      () => toast.success('Workspace link copied'),
-      () => toast.info('Copy failed — link: ' + url)
-    );
+    setShareOpen(true);
   }
 
   function handleInvite() {
-    // Phase 1 minimal wiring — routes to the dedicated users page for now.
-    // A dedicated invite-to-workspace modal is a separate task.
-    if (isOwner) navigate('/users');
-    else toast.info('Only workspace owners can invite members.');
+    if (!isOwner) {
+      toast.info('Only workspace owners can invite members.');
+      return;
+    }
+    setShareOpen(true);
   }
 
   if (loading) {
@@ -460,6 +463,27 @@ export default function WorkspacePage() {
         )}
         {tab === 'permissions' && <PermissionsTab workspace={workspace} isOwner={isOwner} />}
       </div>
+
+      <WorkspaceShareModal
+        isOpen={shareOpen}
+        onClose={() => setShareOpen(false)}
+        workspace={workspace}
+        isOwner={isOwner}
+        onChanged={(updated) => {
+          // The server returns the canonical workspace on add/remove; if it
+          // didn't, refetch to keep the member list authoritative.
+          if (updated) {
+            setWorkspace((prev) => ({ ...prev, ...updated }));
+          } else {
+            api.get(`/workspaces/${id}`)
+              .then((res) => {
+                const data = res.data?.data?.workspace || res.data?.workspace || res.data?.data || res.data;
+                if (data) setWorkspace(data);
+              })
+              .catch((err) => safeLog.warn('[WorkspacePage] refetch after share failed', err));
+          }
+        }}
+      />
     </div>
   );
 }

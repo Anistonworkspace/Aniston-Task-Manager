@@ -249,6 +249,24 @@ async function checkTaskAction(action, user, task, taskAssignees = [], req) {
       return { allowed: false, reason: 'no_edit_permission' };
     }
 
+    case 'self_assign': {
+      // Sub-action checked by the controller as a controlled fallback when
+      // the broader `edit` action is denied. Allows a Tier 4 actor to put
+      // THEMSELVES on a task they can already see (inSubtree) but aren't
+      // currently linked to. The controller is responsible for confirming
+      // the request body really is a self-assign (assignedTo === user.id
+      // and no other fields); this middleware just owns the visibility +
+      // tier rule. Supervisors are explicitly excluded — they're oversight,
+      // not workers, and shouldn't be able to claim work via this path.
+      if (isSupervisor) {
+        return { allowed: false, reason: 'supervisor_cannot_self_assign' };
+      }
+      if (tier === TIER_4 && inSubtree) {
+        return { allowed: true, reason: 'self_assign_in_subtree' };
+      }
+      return { allowed: false, reason: 'self_assign_not_eligible' };
+    }
+
     case 'reassign': {
       // Tier 3 may reassign INSIDE their subtree. (Tier 1/2 already returned
       // tier_full_access at the top.)

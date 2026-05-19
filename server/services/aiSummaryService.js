@@ -49,7 +49,8 @@ async function summarizeTaskWithAI(user, taskId, opts = {}) {
   const messages = [
     { role: 'user', content: 'Summarize this task in 3-5 sentences. Lead with the bottom line. Call out blockers, next steps, and any risk to the due date.' },
   ];
-  const reply = await aiService.chat(messages, system, opts.providerId);
+  // 3-5 sentence summary needs ~300 tokens max — capping cuts latency.
+  const reply = await aiService.chat(messages, system, opts.providerId, { maxTokens: 350 });
   return { kind: 'text', summary: stripFences(String(reply || '').trim()) };
 }
 
@@ -61,7 +62,8 @@ async function summarizeBoardWithAI(user, boardId, opts = {}) {
   const messages = [
     { role: 'user', content: 'Give a concise summary of where this board stands. Cover: what is done, what is in flight, what is stuck (and why), what is overdue, and what to focus on next. Maximum 8 sentences.' },
   ];
-  const reply = await aiService.chat(messages, system, opts.providerId);
+  // 8-sentence board summary needs ~500 tokens — capping cuts latency.
+  const reply = await aiService.chat(messages, system, opts.providerId, { maxTokens: 550 });
   return { kind: 'text', summary: stripFences(String(reply || '').trim()) };
 }
 
@@ -227,24 +229,54 @@ async function transformInlineWithAI({ text, mode } = {}, opts = {}) {
  */
 async function summarizeDocWithAI(user, doc, opts = {}) {
   if (!doc || !doc.id) throw new AiScopeUnavailableError('Doc not found.');
-  const text = String(doc.contentText || '').trim();
+  // Prefer contentText (cheap shadow column updated on every HTTP save).
+  // Fall back to walking contentJson directly when contentText is empty —
+  // can happen on docs whose recent edits flowed through Y.js collab and
+  // the HTTP shadow path hasn't caught up yet, or on legacy docs.
+  let text = String(doc.contentText || '').trim();
+  if (!text && doc.contentJson) {
+    text = extractTextFromTiptapJson(doc.contentJson).trim();
+  }
   if (!text) {
     return {
       kind: 'text',
       summary: 'This doc is empty — write something first, then hit Summarize.',
     };
   }
-  const truncated = truncate(text, 6000);
+  // May 2026 latency tuning — was 6000 input / default-1500 output.
+  // For a 180-word summary, ~3000 chars of context and ~400 tokens of
+  // output is plenty and roughly halves provider latency. Long docs
+  // still get summarized; we just bias toward speed.
+  const truncated = truncate(text, 3000);
   const system = [
     `You are summarizing a collaborative document titled "${doc.title || 'Untitled doc'}".`,
     'Lead with the bottom line, then list the most important points as 3-5 short bullets.',
-    'Keep the whole reply under 180 words. Reply in plain Markdown — no code fences, no preamble.',
+    'Keep the whole reply under 150 words. Reply in plain Markdown — no code fences, no preamble.',
   ].join(' ');
   const messages = [
     { role: 'user', content: `Doc contents:\n\n${truncated}\n\nSummarize.` },
   ];
-  const reply = await aiService.chat(messages, system, opts.providerId);
+  const reply = await aiService.chat(messages, system, opts.providerId, { maxTokens: 400 });
   return { kind: 'text', summary: stripFences(String(reply || '').trim()) };
+}
+
+// Recursively walks a Tiptap JSON tree and pulls plain text. Used by
+// summarizeDocWithAI as a fallback when contentText is missing.
+function extractTextFromTiptapJson(node) {
+  if (!node || typeof node !== 'object') return '';
+  const parts = [];
+  function walk(n) {
+    if (!n || typeof n !== 'object') return;
+    if (typeof n.text === 'string') parts.push(n.text);
+    if (n.type === 'mention' && n.attrs?.label) parts.push(`@${n.attrs.label}`);
+    if ((n.type === 'taskChip' || n.type === 'task-chip') && n.attrs?.label) parts.push(`+${n.attrs.label}`);
+    if (Array.isArray(n.content)) n.content.forEach(walk);
+    if (['paragraph', 'heading', 'listItem', 'blockquote', 'codeBlock'].includes(n.type)) {
+      parts.push('\n');
+    }
+  }
+  walk(node);
+  return parts.join('').replace(/\n{3,}/g, '\n\n');
 }
 
 // ─── suggest priority ────────────────────────────────────────

@@ -175,10 +175,23 @@ function buildHocuspocusConfig(deps) {
   async function onStoreDocument({ documentName, document }) {
     try {
       const state = Y.encodeStateAsUpdate(document);
-      await Doc.update(
-        { yjsState: Buffer.from(state) },
-        { where: { id: documentName } }
-      );
+      // Persist the binary CRDT state — Y.js's source of truth between peers.
+      const update = { yjsState: Buffer.from(state) };
+      // Best-effort: also refresh `contentText` from the Y.doc's XmlFragment
+      // so search + AI Sidekick context don't go stale when the client
+      // HTTP-autosave path lags. The Tiptap collab extension stores its
+      // doc under the 'default' XmlFragment by convention; if the doc
+      // doesn't expose one (e.g. corrupted state), we just skip the
+      // shadow-update and keep the existing contentText.
+      try {
+        const xml = document.getXmlFragment && document.getXmlFragment('default');
+        if (xml) {
+          const text = xml.toString().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          if (text) update.contentText = text.slice(0, 50000);
+        }
+      } catch (_) { /* shadow-update is best-effort */ }
+      update.lastEditedAt = new Date();
+      await Doc.update(update, { where: { id: documentName } });
     } catch (err) {
       safeLogger.error('[DocCollab] persist failed', { err, docId: documentName });
       throw err;
