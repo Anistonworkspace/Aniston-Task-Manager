@@ -36,7 +36,7 @@ jobs:
       # so writes are physically rejected by Postgres regardless of guard.
       # ──────────────────────────────────────────────────────────────────────
       - name: Run READ-ONLY audit on EC2
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
@@ -524,7 +524,7 @@ jobs:
       # ──────────────────────────────────────────────────────────────────────
       - name: Cleanup remote temp files (always)
         if: always()
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
