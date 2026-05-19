@@ -362,18 +362,18 @@ export default function Login() {
             <>
               <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-1.5">Email</label>
+                  <label htmlFor="login-email" className="block text-sm font-medium text-text-primary mb-1.5">Email</label>
                   <div className="relative">
                     <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com"
+                    <input id="login-email" name="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com"
                       className="w-full pl-10 pr-4 py-2.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all" />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-1.5">Password</label>
+                  <label htmlFor="login-password" className="block text-sm font-medium text-text-primary mb-1.5">Password</label>
                   <div className="relative">
                     <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
-                    <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password"
+                    <input id="login-password" name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password"
                       className="w-full pl-10 pr-10 py-2.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all" />
                     <button type="button" onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary transition-colors">
