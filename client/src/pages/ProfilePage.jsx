@@ -2,15 +2,14 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Save, Lock, Eye, EyeOff, Shield, Mail, Building2, Briefcase,
-  User as UserIcon, Check, AlertCircle, Bell, Type, RotateCcw, Calendar,
-  X, ShieldCheck, Settings as SettingsIcon, Plug, BookOpen,
+  User as UserIcon, Check, AlertCircle, Type, RotateCcw, Calendar,
+  X, ShieldCheck, Settings as SettingsIcon, BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useFontSize, DEFAULT_FONT_SIZE } from '../context/FontSizeContext';
 import { useLanguage } from '../context/LanguageContext';
 import { Languages } from 'lucide-react';
 import api from '../services/api';
-import TeamsIntegrationSettings from '../components/settings/TeamsIntegrationSettings';
 import DesktopUpdateSettings from '../components/profile/DesktopUpdateSettings';
 import SOPViewer from '../components/common/SOPViewer';
 import DepartmentSelect from '../components/common/DepartmentSelect';
@@ -28,12 +27,10 @@ const TIER_STYLES = {
 // Labels are resolved at render time via t() so the tab row re-translates
 // when the user switches languages without a refresh.
 const SECTIONS = [
-  { id: 'profile',       labelKey: 'profile.sections.profile',       icon: UserIcon },
-  { id: 'security',      labelKey: 'profile.sections.security',      icon: ShieldCheck },
-  { id: 'preferences',   labelKey: 'profile.sections.preferences',   icon: SettingsIcon },
-  { id: 'notifications', labelKey: 'profile.sections.notifications', icon: Bell },
-  { id: 'integrations',  labelKey: 'profile.sections.integrations',  icon: Plug },
-  { id: 'guide',         labelKey: 'profile.sections.guide',         icon: BookOpen },
+  { id: 'profile',     labelKey: 'profile.sections.profile',     icon: UserIcon },
+  { id: 'security',    labelKey: 'profile.sections.security',    icon: ShieldCheck },
+  { id: 'preferences', labelKey: 'profile.sections.preferences', icon: SettingsIcon },
+  { id: 'guide',       labelKey: 'profile.sections.guide',       icon: BookOpen },
 ];
 
 /**
@@ -75,8 +72,6 @@ export default function ProfilePage({ variant = 'page', onClose }) {
   const [savingLanguage, setSavingLanguage] = useState(false);
   const [flash, setFlash] = useState(null);
   const [passwordFlash, setPasswordFlash] = useState(null);
-  const [teamsNotifEnabled, setTeamsNotifEnabled] = useState(user?.teamsNotificationsEnabled !== false);
-  const [togglingTeamsNotif, setTogglingTeamsNotif] = useState(false);
 
   const isModal = variant === 'modal';
 
@@ -177,20 +172,6 @@ export default function ProfilePage({ variant = 'page', onClose }) {
       showFlash(err.response?.data?.message || 'Failed to reset font size.', 'error');
     } finally {
       setSavingFontSize(false);
-    }
-  }
-
-  async function handleToggleTeamsNotif() {
-    setTogglingTeamsNotif(true);
-    try {
-      const newValue = !teamsNotifEnabled;
-      await updateProfile({ teamsNotificationsEnabled: newValue });
-      setTeamsNotifEnabled(newValue);
-      showFlash(newValue ? 'Teams notifications enabled.' : 'Teams notifications disabled.');
-    } catch (err) {
-      showFlash(err.response?.data?.message || 'Failed to update Teams notification preference.', 'error');
-    } finally {
-      setTogglingTeamsNotif(false);
     }
   }
 
@@ -306,7 +287,7 @@ export default function ProfilePage({ variant = 'page', onClose }) {
   // "Saving... / Saved / Save failed" cluster so both surfaces share the same
   // visual language for in-flight + completion feedback.
   const headerStatus = (() => {
-    if (saving || savingPassword || creatingPassword || savingFontSize || savingLanguage || togglingTeamsNotif) {
+    if (saving || savingPassword || creatingPassword || savingFontSize || savingLanguage) {
       return <span className="text-[10px] text-blue-500 font-medium animate-pulse">{t('common.saving')}</span>;
     }
     if (flash?.type === 'success') return <span className="text-[10px] text-success font-medium">{t('common.saved')}</span>;
@@ -724,38 +705,9 @@ export default function ProfilePage({ variant = 'page', onClose }) {
             </div>
           </Card>
 
-          {/* Notifications */}
-          <Card id="notifications" className="scroll-mt-16" icon={Bell} iconColor="text-primary" title={t('profile.teamsNotifications')}>
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-sm text-text-primary font-medium">{t('profile.teamsNotifBody')}</p>
-                <p className="text-xs text-text-tertiary mt-1">
-                  {t('profile.teamsNotifHint')}
-                </p>
-              </div>
-              <button
-                onClick={handleToggleTeamsNotif}
-                disabled={togglingTeamsNotif}
-                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 ${teamsNotifEnabled ? 'bg-primary' : 'bg-[var(--ui-background-color)]'}`}
-                role="switch"
-                aria-checked={teamsNotifEnabled}
-                aria-label={t('profile.teamsNotifications')}
-              >
-                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${teamsNotifEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-              </button>
-            </div>
-          </Card>
-
           {/* Desktop App Updates (Slice 9) — only renders inside the
-              Electron desktop wrapper. Returns null on web. Anchored under
-              the notifications section so it sits between Teams-notif
-              prefs and the Integrations panel; no new section tab required. */}
+              Electron desktop wrapper. Returns null on web. */}
           <DesktopUpdateSettings />
-
-          {/* Integrations: TeamsIntegrationSettings — full panel width */}
-          <div id="integrations" className="scroll-mt-16">
-            <TeamsIntegrationSettings />
-          </div>
 
           {/* Guide / SOP — full panel width */}
           <div id="guide" ref={sopRef} className="scroll-mt-16">

@@ -39,6 +39,12 @@ jest.mock('../../models', () => ({
   Task: { findByPk: jest.fn() },
   User: {},
   Board: { findByPk: jest.fn() },
+  // Required by the May 2026 owner-precondition (isUnassignedTask).
+  // Default to 0 so the precondition would fire if the task lacks an
+  // assignedTo; individual tests below set `assignedTo` on the task
+  // mock to satisfy the precondition without touching these counters.
+  TaskAssignee: { count: jest.fn(async () => 0) },
+  TaskOwner: { count: jest.fn(async () => 0) },
 }));
 
 jest.mock('../../config/db', () => ({
@@ -106,7 +112,9 @@ beforeEach(() => {
 // ── Task-scoped create now requires BOTH labels.create AND labels.add_to_task ──
 
 describe('createLabel — task-scoped path requires labels.create + labels.add_to_task', () => {
-  const visibleTask = { id: 't1', boardId: 'b1' };
+  // Task carries an assignedTo so the May 2026 owner-precondition does
+  // not fire — these tests pin the *permission* gates specifically.
+  const visibleTask = { id: 't1', boardId: 'b1', assignedTo: 'u-owner' };
   const t4Member = { id: 'u-t4', isSuperAdmin: false, role: 'member', tier: 4 };
 
   test('happy path — both gates pass → 201', async () => {

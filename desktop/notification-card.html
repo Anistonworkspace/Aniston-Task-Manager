@@ -7,24 +7,26 @@
 <style>
   /* -----------------------------------------------------------------
    * Teams-style notification card — Monday Aniston branding.
+   * Slice 12: bigger, lighter-by-default, app-theme aware.
    *
    * Visual targets (matching the Teams reference screenshot):
-   *   - Dark card (#1F1F23) with a thin colored top strip
-   *   - Brand color: Teams purple-blue gradient (#5B5FC7 → #4F52B2)
-   *   - Round avatar (purple), white initials
-   *   - Bold title, 4-line clamp body
-   *   - Subtle hover lift + entrance/exit animation
-   *   - Bottom-right of workArea, above the taskbar (positioning
-   *     handled by notificationWindow.js, not CSS)
+   *   - Card 376px wide (window 400, 24px h padding)
+   *   - Light card by default; dark only when payload.theme === 'dark'
+   *     OR (payload.theme === 'auto' AND OS prefers dark)
+   *   - Thin purple-blue gradient strip at the top
+   *   - 40 px round avatar with gradient
+   *   - Bold 14.5px title, 13px body
+   *   - Generous padding so the card breathes
+   *   - Subtle entrance/exit animation + hover lift
    *
-   * Window constraints (driven by notificationWindow.js):
+   * Position constraints (driven by notificationWindow.js):
+   *   - Bottom-right of workArea, 56 px above the taskbar
    *   - Frameless, transparent, skip-taskbar, non-focusable
-   *   - Width fixed (360px), height auto-resizes per card count
    * --------------------------------------------------------------- */
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     background: transparent;
-    color: #f3f4f7;
+    color: #1f2228;
     font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     font-size: 13px;
     -webkit-font-smoothing: antialiased;
@@ -33,29 +35,32 @@
     cursor: default;
   }
   body {
-    padding: 8px 12px 12px 12px;
+    padding: 10px 12px 14px 12px;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 10px;
+    gap: 12px;
   }
 
-  /* Card — fixed width, dark background, soft shadow.
-     Width: 336px (window 360 - 24px horizontal padding). */
+  /* Card. Width: 376 (window 400 - 24 padding).
+     LIGHT default per Slice 12 UX requirement. Dark applies only via
+     `body.theme-dark` (forwarded via IPC) or when payload.theme is
+     'auto' AND the OS prefers dark. */
   .card {
-    width: 336px;
-    background: #1f1f23;
-    border-radius: 10px;
+    width: 376px;
+    background: #ffffff;
+    color: #1f2228;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
     box-shadow:
-      0 10px 32px rgba(0, 0, 0, 0.45),
-      0 2px 8px rgba(0, 0, 0, 0.25);
+      0 16px 40px rgba(15, 23, 42, 0.18),
+      0 4px 12px rgba(15, 23, 42, 0.08);
     overflow: hidden;
     pointer-events: auto;
     cursor: pointer;
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
-    transition: opacity 240ms ease-out, transform 240ms ease-out, box-shadow 200ms ease;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    transform: translateY(10px) scale(0.985);
+    transition: opacity 240ms ease-out, transform 240ms ease-out, box-shadow 200ms ease, border-color 200ms ease;
   }
   .card.visible {
     opacity: 1;
@@ -63,18 +68,18 @@
   }
   .card.leaving {
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
+    transform: translateY(10px) scale(0.985);
   }
   .card:hover {
     box-shadow:
-      0 14px 38px rgba(0, 0, 0, 0.55),
-      0 3px 12px rgba(0, 0, 0, 0.3);
+      0 22px 50px rgba(15, 23, 42, 0.24),
+      0 6px 16px rgba(15, 23, 42, 0.12);
+    border-color: #d1d5db;
   }
 
-  /* Top accent strip — the Teams-style purple gradient that gives the
-     card its identity at a glance. */
+  /* Top accent strip — Teams-style purple-blue gradient identity. */
   .accent {
-    height: 3px;
+    height: 4px;
     background: linear-gradient(90deg, #5B5FC7 0%, #4F52B2 50%, #6B4FB8 100%);
   }
 
@@ -82,21 +87,20 @@
   .header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 12px 8px 12px;
+    gap: 9px;
+    padding: 12px 16px 8px 16px;
   }
   .app-icon {
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
     object-fit: contain;
     flex: 0 0 auto;
-    background: rgba(91, 95, 199, 0.15);
   }
   .app-name {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    color: #b3b6ff; /* Teams-purple-tinted */
+    color: #4F52B2; /* Teams-purple accent */
     letter-spacing: 0.2px;
     flex: 1;
     overflow: hidden;
@@ -104,132 +108,144 @@
     text-overflow: ellipsis;
   }
   .ts {
-    font-size: 11px;
-    color: #8a8a90;
+    font-size: 11.5px;
+    color: #6b7280;
     flex: 0 0 auto;
   }
   .close-btn {
     background: transparent;
     border: 0;
     padding: 0;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: #8a8a90;
+    color: #6b7280;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 5px;
     flex: 0 0 auto;
     transition: background 120ms ease, color 120ms ease;
   }
   .close-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #f3f4f7;
+    background: #f3f4f6;
+    color: #111827;
   }
-  .close-btn svg { width: 12px; height: 12px; }
+  .close-btn svg { width: 13px; height: 13px; }
 
   /* Body — avatar + title + message. */
   .body {
-    padding: 4px 12px 14px 12px;
+    padding: 4px 16px 14px 16px;
     display: flex;
     align-items: flex-start;
-    gap: 11px;
+    gap: 13px;
   }
   .avatar {
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     background: linear-gradient(135deg, #5B5FC7 0%, #4F52B2 100%);
     color: white;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     flex: 0 0 auto;
     user-select: none;
     letter-spacing: 0.3px;
-    box-shadow: 0 2px 6px rgba(91, 95, 199, 0.35);
+    box-shadow: 0 2px 8px rgba(91, 95, 199, 0.32);
   }
   .text {
     flex: 1;
     min-width: 0;
   }
   .title {
-    font-size: 13.5px;
+    font-size: 14.5px;
     font-weight: 600;
-    color: #f5f5f7;
+    color: #111827;
     line-height: 1.35;
     word-wrap: break-word;
     overflow-wrap: anywhere;
   }
   .message {
-    font-size: 12.5px;
-    color: #c9c9cf;
-    margin-top: 4px;
-    line-height: 1.45;
+    font-size: 13px;
+    color: #4b5563;
+    margin-top: 5px;
+    line-height: 1.5;
     word-wrap: break-word;
     overflow-wrap: anywhere;
     display: -webkit-box;
-    -webkit-line-clamp: 4;
+    -webkit-line-clamp: 5;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
 
-  /* CTA footer — subtle "Open in app →" affordance. The whole card is
-     clickable, but a visible hint helps users discover that. */
+  /* CTA footer — subtle "Open in Monday Aniston →" affordance. */
   .cta {
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    padding: 8px 12px;
-    font-size: 11.5px;
-    color: #b3b6ff;
-    font-weight: 500;
+    border-top: 1px solid #f1f3f5;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #4F52B2;
+    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    letter-spacing: 0.2px;
   }
-  .cta:hover { color: #d4d6ff; }
-  .cta-arrow { font-size: 12px; }
+  .cta:hover { color: #3a3d8c; }
+  .cta-arrow { font-size: 13px; }
 
-  /* Light theme variant (for systems that prefer light).
-     The notification window's transparent backing means we don't
-     actually fight any OS chrome — these styles only apply if the OS
-     reports a light preference AND the user explicitly opts in by
-     setting a body class. By default we stay dark to match Teams. */
-  body.theme-light .card {
-    background: #ffffff;
-    border-color: rgba(0, 0, 0, 0.08);
-    color: #1f2937;
-    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  /* ----- Dark theme overrides ----- */
+  body.theme-dark .card {
+    background: #1f1f23;
+    color: #f5f5f7;
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow:
+      0 16px 40px rgba(0, 0, 0, 0.5),
+      0 4px 12px rgba(0, 0, 0, 0.3);
   }
-  body.theme-light .title { color: #111827; }
-  body.theme-light .message { color: #4b5563; }
-  body.theme-light .app-name { color: #5B5FC7; }
-  body.theme-light .ts { color: #9aa0a6; }
-  body.theme-light .close-btn { color: #9aa0a6; }
-  body.theme-light .close-btn:hover { background: #f1f3f5; color: #1f2937; }
-  body.theme-light .cta { border-top-color: rgba(0, 0, 0, 0.06); color: #5B5FC7; }
+  body.theme-dark .card:hover {
+    box-shadow:
+      0 22px 50px rgba(0, 0, 0, 0.6),
+      0 6px 16px rgba(0, 0, 0, 0.4);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+  body.theme-dark .app-name { color: #b3b6ff; }
+  body.theme-dark .ts { color: #8a8a90; }
+  body.theme-dark .close-btn { color: #8a8a90; }
+  body.theme-dark .close-btn:hover { background: rgba(255, 255, 255, 0.08); color: #f3f4f6; }
+  body.theme-dark .title { color: #f5f5f7; }
+  body.theme-dark .message { color: #c9c9cf; }
+  body.theme-dark .cta { border-top-color: rgba(255, 255, 255, 0.08); color: #b3b6ff; }
+  body.theme-dark .cta:hover { color: #d4d6ff; }
+
+  /* When payload.theme === 'auto', respect OS preference. */
+  @media (prefers-color-scheme: dark) {
+    body.theme-auto .card {
+      background: #1f1f23;
+      color: #f5f5f7;
+      border-color: rgba(255, 255, 255, 0.08);
+      box-shadow:
+        0 16px 40px rgba(0, 0, 0, 0.5),
+        0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+    body.theme-auto .app-name { color: #b3b6ff; }
+    body.theme-auto .ts { color: #8a8a90; }
+    body.theme-auto .close-btn { color: #8a8a90; }
+    body.theme-auto .close-btn:hover { background: rgba(255, 255, 255, 0.08); color: #f3f4f6; }
+    body.theme-auto .title { color: #f5f5f7; }
+    body.theme-auto .message { color: #c9c9cf; }
+    body.theme-auto .cta { border-top-color: rgba(255, 255, 255, 0.08); color: #b3b6ff; }
+  }
 </style>
 </head>
-<body>
+<body class="theme-light">
 <script>
   // -----------------------------------------------------------------
-  // Renderer for the custom notification window.
-  //
-  // Communicates with the Electron main process via IPC channels
-  // exposed through the dedicated preload (notification-card-preload.js):
-  //   IN:
-  //     'notif-card:show'    payload: { id, title, body, url, iconUrl, sender, ts }
-  //     'notif-card:dismiss' payload: { id }
-  //     'notif-card:clear'   no payload — dismiss everything
-  //   OUT:
-  //     'notif-card:click'    payload: { id }   user clicked body
-  //     'notif-card:close'    payload: { id }   user clicked X
-  //     'notif-card:hover'    payload: { id, hovered: bool }
-  //     'notif-card:bounds'   payload: { width, height } sent on every layout change
+  // Renderer for the custom notification window. See preload for the
+  // IPC channel surface.
   // -----------------------------------------------------------------
-
   const bridge = window.notifBridge;
   if (!bridge) {
     document.body.innerHTML = '';
@@ -247,14 +263,29 @@
   }
 
   function reportBounds() {
-    const w = Math.max(360, document.documentElement.scrollWidth);
+    const w = Math.max(400, document.documentElement.scrollWidth);
     const h = Math.max(80, document.documentElement.scrollHeight);
     if (bridge && bridge.reportBounds) bridge.reportBounds({ width: w, height: h });
+  }
+
+  function applyTheme(theme) {
+    // Slice 12 — payload.theme controls the body class. Only one of
+    // the theme classes is applied at a time so the dark-theme block
+    // and the prefers-color-scheme block don't accidentally compose.
+    const cls = (theme === 'dark') ? 'theme-dark'
+              : (theme === 'auto') ? 'theme-auto'
+              : 'theme-light';
+    document.body.className = cls;
   }
 
   function renderCard(payload) {
     if (!payload || !payload.id || !payload.title) return;
     if (cards.has(payload.id)) return;
+
+    // Apply theme from the FIRST card's payload, and re-apply on every
+    // subsequent card (cheap; lets a later-arriving notification carry
+    // an updated theme if the user toggled it).
+    if (payload.theme) applyTheme(payload.theme);
 
     const card = document.createElement('div');
     card.className = 'card';

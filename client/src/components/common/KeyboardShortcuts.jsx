@@ -8,12 +8,12 @@ const SHORTCUTS = [
     { keys: ['?'], desc: 'Show keyboard shortcuts' },
   ]},
   { section: 'Board', items: [
-    { keys: ['N'], desc: 'New task (when on board)' },
-    { keys: ['F'], desc: 'Toggle filters' },
-    { keys: ['1'], desc: 'Main table view' },
-    { keys: ['2'], desc: 'Gantt view' },
-    { keys: ['3'], desc: 'Calendar view' },
-    { keys: ['4'], desc: 'Kanban view' },
+    { keys: ['Ctrl', 'Shift', 'F'], desc: 'Toggle filters' },
+    { keys: ['Ctrl', 'F'], desc: 'Focus board search' },
+    { keys: ['Shift', '1'], desc: 'Main table view' },
+    { keys: ['Shift', '2'], desc: 'Gantt view' },
+    { keys: ['Shift', '3'], desc: 'Calendar view' },
+    { keys: ['Shift', '4'], desc: 'Kanban view' },
   ]},
   { section: 'Task', items: [
     { keys: ['Enter'], desc: 'Save / submit' },

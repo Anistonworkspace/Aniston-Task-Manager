@@ -213,8 +213,6 @@ const en = {
       profile: 'Profile',
       security: 'Security',
       preferences: 'Preferences',
-      notifications: 'Notifications',
-      integrations: 'Integrations',
       guide: 'Guide',
     },
     personalInformation: 'Personal Information',
@@ -255,10 +253,6 @@ const en = {
     languageHint: 'Choose the language used across the entire app. Your selection is saved to your account.',
     languageEnglish: 'English',
     languageHindi: 'हिंदी',
-
-    teamsNotifications: 'Teams Notifications',
-    teamsNotifBody: 'Receive task notifications in Microsoft Teams',
-    teamsNotifHint: 'Task assignments, deadline changes, and removal notices will be sent to your Teams chat.',
 
     accountId: 'Account ID',
     lastUpdated: 'Last updated',

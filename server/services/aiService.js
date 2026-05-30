@@ -98,6 +98,27 @@ function isOpenRouterUrl(url) {
 }
 
 /**
+ * Newer OpenAI models (gpt-5*, o1*, o3*, o4*) reject `max_tokens` and require
+ * `max_completion_tokens`. Only applies when calling OpenAI directly — third-party
+ * OpenAI-compatible providers (DeepSeek, OpenRouter, custom) still use `max_tokens`.
+ */
+function requiresMaxCompletionTokens(provider, model, url) {
+  if (provider !== 'openai') return false;
+  if (url && !/api\.openai\.com/i.test(url)) return false;
+  return /^(gpt-5|o[1-9])/i.test(model || '');
+}
+
+/**
+ * OpenAI reasoning models (o1*, o3*, o4*) reject a custom `temperature` —
+ * the API only accepts the default value of 1. gpt-5* still supports temperature.
+ */
+function supportsCustomTemperature(provider, model, url) {
+  if (provider !== 'openai') return true;
+  if (url && !/api\.openai\.com/i.test(url)) return true;
+  return !/^o[1-9]/i.test(model || '');
+}
+
+/**
  * Send a chat request to the configured AI provider.
  * Retries automatically on 429 rate-limit errors.
  * @param {Array} messages - Array of { role, content }
@@ -178,12 +199,20 @@ async function callProvider(config, messages, systemPrompt, opts = {}) {
       headers['X-Title'] = 'Aniston Project Hub';
     }
 
-    const response = await axios.post(url, {
+    const body = {
       model: providerConfig.model,
       messages: allMessages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    }, {
+    };
+    if (requiresMaxCompletionTokens(config.provider, providerConfig.model, url)) {
+      body.max_completion_tokens = maxTokens;
+    } else {
+      body.max_tokens = maxTokens;
+    }
+    if (supportsCustomTemperature(config.provider, providerConfig.model, url)) {
+      body.temperature = 0.7;
+    }
+
+    const response = await axios.post(url, body, {
       headers,
       timeout: 30000,
     });

@@ -50,10 +50,16 @@ const { pathToFileURL } = require('url');
 const sharedLog = require('./log');
 
 // Tunables. Kept in one place so behaviour changes need one edit.
-const WIN_WIDTH = 360;
+// Slice 12 — size/position tuning to match Teams reference more closely:
+//   - Width bumped 360 → 400 so the card has Teams-equivalent
+//     horizontal real estate.
+//   - SCREEN_MARGIN_BOTTOM bumped 16 → 56 so the card floats clearly
+//     above the Windows taskbar rather than touching it.
+//   - SCREEN_MARGIN_RIGHT bumped 16 → 24 for visual breathing room.
+const WIN_WIDTH = 400;
 const WIN_MIN_HEIGHT = 80;
-const SCREEN_MARGIN_RIGHT = 16;
-const SCREEN_MARGIN_BOTTOM = 16;
+const SCREEN_MARGIN_RIGHT = 24;
+const SCREEN_MARGIN_BOTTOM = 56;
 const DEFAULT_DURATION_MS = 8000;     // Auto-dismiss when not hovered
 const HOVER_GRACE_MS = 1500;          // Extra time after hover-leave
 const MAX_VISIBLE = 5;                // Hard cap: prevents screen takeover
@@ -358,6 +364,13 @@ function show({ payload, onClick, onClose, diag }) {
   // IPC fires before the page's script registers its listener. We
   // defer until did-finish-load if the contents are still loading.
   const wc = w.webContents;
+  // Theme: 'light' (default), 'dark', or 'auto' (use OS preference).
+  // Renderer passes the user's app-theme preference; if missing or
+  // unknown we default to 'light' to match the Slice 12 UX requirement.
+  const themeRaw = typeof payload.theme === 'string' ? payload.theme.toLowerCase() : '';
+  const theme = (themeRaw === 'dark' || themeRaw === 'light' || themeRaw === 'auto')
+    ? themeRaw
+    : 'light';
   const cardPayload = {
     id: payload.id,
     title: payload.title || '',
@@ -366,6 +379,7 @@ function show({ payload, onClick, onClose, diag }) {
     iconUrl: payload.iconUrl || '',
     sender: payload.sender || '',
     ts: payload.ts || '',
+    theme,
   };
   const sendShow = () => {
     try { wc.send('notif-card:show', cardPayload); } catch { /* renderer gone */ }

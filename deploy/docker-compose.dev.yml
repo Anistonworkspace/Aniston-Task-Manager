@@ -23,7 +23,21 @@ services:
     image: node:20-alpine
     container_name: aph-backend-dev
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    # postgresql16-client provides `pg_dump` and `psql`, used by the Tier-1
+    # backup/restore service (server/services/backupService.js). The
+    # production image (deploy/Dockerfile.server) installs these too —
+    # this `apk add` is the dev-mode equivalent so backups work without
+    # needing DB_BACKUP_VIA_DOCKER (the backend container has no `docker`
+    # CLI, so docker-exec mode is not viable here). Version must match
+    # the postgres SERVER major (currently 16).
+    # postgresql16-client must be re-added on each fresh container (it installs
+    # outside the node_modules volume). npm install now runs ONLY when the
+    # node_modules volume is empty (first boot / after `docker compose down -v`),
+    # instead of on every restart — the per-restart install was the main cause
+    # of the slow, ECONNREFUSED-y window after each container restart. If you
+    # change package.json, run a one-off `docker compose ... run --rm backend npm install`
+    # or recreate with the volume removed.
+    command: sh -c "apk add --no-cache postgresql16-client && { [ -d node_modules/express ] || npm install; } && npm run dev"
     restart: unless-stopped
     depends_on:
       - postgres
@@ -48,12 +62,23 @@ services:
     image: node:20-alpine
     container_name: aph-frontend-dev
     working_dir: /app
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    command: sh -c "{ [ -d node_modules/vite ] || npm install; } && npm run dev -- --host 0.0.0.0"
     restart: unless-stopped
     depends_on:
       - backend
     environment:
       VITE_BACKEND_URL: http://backend:5000
+      # Forces Vite/chokidar into polling mode so it detects host edits across
+      # the Windows bind mount (see client/vite.config.js). Without this, HMR
+      # silently stops and you must restart the container to see changes.
+      CHOKIDAR_USEPOLLING: "true"
+      # Each fs.stat over the Docker Desktop Windows bind mount costs ~30-40ms
+      # (vs microseconds natively). With the default 4-thread libuv pool, the
+      # file-watcher's polling stats saturate every thread and Vite's own reads
+      # (serving pages, relaying /api proxy responses) queue behind them, making
+      # the dev server hang for seconds. A large pool absorbs the stat storm and
+      # keeps threads free to serve. Threads are cheap; idle ones cost nothing.
+      UV_THREADPOOL_SIZE: "64"
     ports:
       - "3000:3000"
     volumes:

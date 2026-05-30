@@ -2,6 +2,15 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const {
+  // feat/docs-personal-notion Phase 2 — personal docs surface.
+  listPersonalDocs,
+  createPersonalDoc,
+  // Phase 3 — manual-share endpoints (owner-only mutations on doc_access).
+  listCollaborators,
+  addCollaborator,
+  updateCollaborator,
+  removeCollaborator,
+  // Single-doc surface — Phase 3 hardened with docAccessSvc.
   getDoc, updateDoc, archiveDoc, restoreDoc,
   listVersions, restoreVersion,
   // Phase D Slice 1 — @-mention picker backing endpoint.
@@ -35,6 +44,11 @@ const {
 
 router.use(authenticate);
 
+// feat/docs-personal-notion Phase 2 — personal docs list + create.
+// Registered BEFORE the /:id catch-all so the bare `/` doesn't collide.
+router.get('/', listPersonalDocs);
+router.post('/', createPersonalDoc);
+
 // Phase D Slice 1 — list users the caller can @-mention in the workspace.
 // Registered BEFORE the /:id catch-all so "mentionable" doesn't get parsed
 // as a doc id. The route requires ?workspaceId= in the query string.
@@ -58,6 +72,14 @@ router.delete('/:id/permanent', permanentDeleteDoc);
 
 router.get('/:id/versions', listVersions);
 router.post('/:id/versions/:versionId/restore', restoreVersion);
+
+// Phase 3 — manual share / collaborator management. Owner-only mutations;
+// list requires any access so existing collaborators can see who else has
+// the doc.
+router.get('/:id/collaborators', listCollaborators);
+router.post('/:id/collaborators', addCollaborator);
+router.patch('/:id/collaborators/:userId', updateCollaborator);
+router.delete('/:id/collaborators/:userId', removeCollaborator);
 
 // Phase G follow-up — owner/admin opt-in migration of an existing doc to
 // Y.js collab. Snapshots the current contentJson to version history,

@@ -62,7 +62,7 @@ const TaskRow = React.memo(function TaskRow({
   const isOverdue = task.dueDate && new Date(task.dueDate) < new Date() && task.status !== 'done';
   const daysOverdue = isOverdue ? Math.ceil((new Date() - new Date(task.dueDate)) / (1000 * 60 * 60 * 24)) : 0;
 
-  const { user, isTier1, isTier2, isSuperAdmin, granularPermissions } = useAuth();
+  const { user, isTier1, isTier2, isTier3, isSuperAdmin, granularPermissions } = useAuth();
   const isApproved = task.approvalStatus === 'approved';
 
   // True if the actor cannot assign tasks to OTHERS (default for members; also
@@ -137,9 +137,14 @@ const TaskRow = React.memo(function TaskRow({
   // and have final authority on every task — they never go through approval.
   // Mirrors the backend gate in approvalController.submitForApproval and
   // approvalGateForCompletion in taskController.
+  // Tier 2 (admin/manager) and Tier 3 (assistant_manager) can mark another
+  // user's task Done — they shouldn't fall through to the backend approval
+  // gate (which 403s with the "requires manager approval" toast) just because
+  // they aren't the assignee. Route them through the same submit-for-approval
+  // modal so the chain walks UP from THEIR hierarchy to Tier 1/super admin.
   const shouldInterceptDone = (val) =>
     val === 'done'
-    && isOwnTask
+    && (isOwnTask || isTier2 || isTier3)
     && !isSuperAdmin
     && task.approvalStatus !== 'pending_approval'
     && task.approvalStatus !== 'approved';

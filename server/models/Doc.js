@@ -2,16 +2,21 @@ const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/db');
 
 /**
- * Doc — collaborative document inside a workspace.
+ * Doc — personal document (Notion-style).
  *
- * Phase B of the Doc Editor pillar. This model stores the Tiptap JSON
- * content as the source of truth, plus a plain-text shadow for full-text
- * search and a small set of metadata for permissioning + activity log
- * integration. Real-time collab state (Y.js) lives in a separate table
- * shipped later (Phase G); for Phase B every save is an HTTP autosave.
+ * feat/docs-personal-notion Phase 2: docs are personal/private by default.
+ * Access is governed by `ownerUserId` + the `doc_access` table (see
+ * services/docAccessService.js); workspaceId is informational metadata on
+ * legacy rows only.
  *
- * Permissions model: by default a doc inherits its workspace's permissions.
- * `sharePolicy` overrides — see `doc_collaborators` (Phase F/H).
+ * Content lifecycle:
+ *   - Tiptap JSON (legacy, contentFormat='tiptap_json')
+ *   - BlockNote JSON (Phase 6, contentFormat='blocknote_json')
+ *   - On in-place conversion, the original Tiptap JSON is preserved in
+ *     `legacyContentJson` so the user never loses the original source.
+ *
+ * The `sharePolicy` ENUM column is retained for backward compat but no
+ * longer drives access — the new flow uses doc_access rows directly.
  */
 const Doc = sequelize.define(
   'Doc',
@@ -22,10 +27,49 @@ const Doc = sequelize.define(
       primaryKey: true,
     },
     workspaceId: {
+      // feat/docs-personal-notion Phase 2: nullable. Docs are personal by
+      // default; workspaceId is retained on legacy rows as informational
+      // metadata only — it no longer governs access (doc_access does).
+      // New docs created via POST /api/docs leave this NULL.
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
       references: { model: 'workspaces', key: 'id' },
-      comment: 'Owning workspace. Permissions inherit from this workspace unless overridden.',
+      comment: 'Legacy metadata only — NOT the access source. doc_access is canonical.',
+    },
+    // feat/docs-personal-notion Phase 2: canonical owner. Backfilled from
+    // createdBy for existing rows. Required for new docs (created via
+    // POST /api/docs); the controller sets this to req.user.id.
+    ownerUserId: {
+      type: DataTypes.UUID,
+      allowNull: true, // nullable so the SET NULL FK on user delete works
+      references: { model: 'users', key: 'id' },
+      comment: 'Doc owner. Canonical for access checks. Backfilled from createdBy on existing rows.',
+    },
+    // 'private' (only owner + explicit doc_access rows) or 'shared' (any
+    // doc with one or more non-owner doc_access rows). visibility is a
+    // denormalization for fast list filtering; the doc_access table is the
+    // source of truth.
+    visibility: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: 'private',
+      validate: { isIn: [['private', 'shared']] },
+    },
+    // Tiptap (legacy) vs BlockNote (Phase 6). New docs default to
+    // 'blocknote_json'; existing docs are marked 'tiptap_json' in the
+    // Phase 2 boot migration so the editor knows which renderer to use.
+    contentFormat: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: 'blocknote_json',
+      validate: { isIn: [['tiptap_json', 'blocknote_json']] },
+    },
+    // Preserved Tiptap contentJson for any doc converted into BlockNote in
+    // Phase 6+. NULL on docs that have not been converted (the live
+    // contentJson is still their source of truth in their original format).
+    legacyContentJson: {
+      type: DataTypes.JSONB,
+      allowNull: true,
     },
     title: {
       type: DataTypes.STRING(300),
@@ -36,12 +80,18 @@ const Doc = sequelize.define(
         len: { args: [1, 300], msg: 'Doc title must be 1–300 characters' },
       },
     },
-    // Tiptap-emitted JSON document. Source of truth. HTML and plain text
-    // are derived on save (see contentText below).
+    // Doc body. Two shapes coexist (branched on `contentFormat` above):
+    //   - blocknote_json (default) → `Block[]` (empty array seeds a
+    //     single empty paragraph in the editor)
+    //   - tiptap_json (legacy)     → `{ type: 'doc', content: [...] }`
+    // Default is `[]` so any caller that omits contentJson on a new
+    // BlockNote doc gets a valid empty seed. The previous Tiptap-shaped
+    // default (`{ type:'doc', content:[] }`) was unreadable by BlockNote
+    // and crashed the editor on first open (May 2026 regression).
     contentJson: {
       type: DataTypes.JSONB,
       allowNull: false,
-      defaultValue: { type: 'doc', content: [] },
+      defaultValue: [],
     },
     // Plain-text shadow for full-text search. Server-derived from
     // contentJson on every save so consumers don't have to load JSON to
@@ -109,6 +159,8 @@ const Doc = sequelize.define(
     indexes: [
       { fields: ['workspaceId'] },
       { fields: ['createdBy'] },
+      { fields: ['ownerUserId'] },
+      { fields: ['visibility'] },
       { fields: ['isArchived'] },
       { fields: ['slug'] },
     ],

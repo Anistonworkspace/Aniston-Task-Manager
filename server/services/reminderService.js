@@ -418,29 +418,52 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
   const deadline = opts.dueDate ? dueDateToDeadline(opts.dueDate) : null;
   const now = new Date();
 
-  // 1. Cancel any existing user-set rows whose spec is no longer requested.
-  //    We do this BEFORE inserting so a race where the row briefly missing
-  //    is acceptable — the cron wakes every minute anyway.
+  // ── Atomicity / concurrency ──────────────────────────────────────────
+  // The reminder picker auto-saves on every chip/toggle click, so a single
+  // user gesture (turn "Repeat" on → pick "Specific times") fires two PUT
+  // /tasks/:id requests back-to-back. Each lands here and does a read-then-
+  // write (cancel rows not in the desired set, then create the desired ones).
+  // Without serialization those two requests interleave: request B's "cancel"
+  // scan runs before request A's insert has committed, so neither cancels the
+  // other and the task ends up with BOTH an `interval` and a `daily_times`
+  // row active — or the wrong one active when the order flips. (Observed in
+  // prod: tasks with two mutually-exclusive recurring rows created ~1s apart.)
   //
-  //    Recurring rows (interval / daily_times) are included here so toggling
-  //    the recurring section off in the UI cancels the row instead of
-  //    silently leaving it firing forever.
-  const existing = await TaskReminder.findAll({
-    where: {
-      taskId,
-      sentAt: null,
-      cancelled: false,
-      reminderType: { [Op.in]: ['offset', 'at_due', 'custom', 'interval', 'daily_times'] },
-    },
-  });
-  const desiredKeys = new Set(safeSpecs.map(specKey));
-  for (const row of existing) {
-    if (!desiredKeys.has(specKey(row))) {
-      await row.update({ cancelled: true });
-    }
-  }
+  // Fix: run the whole apply inside ONE transaction and take a per-task
+  // Postgres transaction-level advisory lock first. Concurrent calls for the
+  // SAME task block at the lock until the first commits, so the second sees
+  // the committed state and behaves exactly as it would in isolation. The
+  // lock auto-releases at transaction end (commit OR rollback) — no leak.
+  // Different tasks hash to different keys and never contend.
+  await sequelize.transaction(async (tx) => {
+    // Namespaced so we don't collide with the cron advisory locks. hashtext
+    // returns int4; cast to bigint for the single-arg lock signature.
+    await sequelize.query(
+      "SELECT pg_advisory_xact_lock(hashtext($key)::bigint)",
+      { bind: { key: `task_reminders:${taskId}` }, transaction: tx }
+    );
 
-  // 2. Create or update each requested spec.
+    // 1. Cancel any existing user-set rows whose spec is no longer requested.
+    //    Recurring rows (interval / daily_times) are included here so toggling
+    //    the recurring section off in the UI cancels the row instead of
+    //    silently leaving it firing forever.
+    const existing = await TaskReminder.findAll({
+      where: {
+        taskId,
+        sentAt: null,
+        cancelled: false,
+        reminderType: { [Op.in]: ['offset', 'at_due', 'custom', 'interval', 'daily_times'] },
+      },
+      transaction: tx,
+    });
+    const desiredKeys = new Set(safeSpecs.map(specKey));
+    for (const row of existing) {
+      if (!desiredKeys.has(specKey(row))) {
+        await row.update({ cancelled: true }, { transaction: tx });
+      }
+    }
+
+    // 2. Create or update each requested spec.
   //
   //    BUG FIX: an earlier version used `TaskReminder.upsert(row, {
   //    conflictFields: ['taskId','reminderType','offsetMinutes','customReminderAt'] })`
@@ -473,72 +496,82 @@ async function applyReminderSpecs(taskId, specs, opts = {}) {
   //    SequelizeUniqueConstraintError and re-fetch the winning row to
   //    update it. Same shape as the centralised `notificationService.createNotification`
   //    pattern.
-  for (const s of safeSpecs) {
-    const scheduledFor = computeScheduledFor(s, deadline, now);
-    if (!scheduledFor || scheduledFor <= now) continue;
+    for (const s of safeSpecs) {
+      const scheduledFor = computeScheduledFor(s, deadline, now);
+      if (!scheduledFor || scheduledFor <= now) continue;
 
-    // The dedup `where` only uses the columns that participate in the
-    // partial unique index — (taskId, reminderType, offsetMinutes,
-    // customReminderAt). For interval / daily_times both index-coalesced
-    // columns are null, so the index already enforces "one such row per
-    // task" via the COALESCE sentinels. The extra recurring config
-    // (intervalMinutes, timesOfDay, timezone) is written but not part of
-    // the dedup key — re-applying with a new interval value updates the
-    // existing row in the `if (row)` branch below.
-    const where = {
-      taskId,
-      reminderType: s.reminderType,
-      offsetMinutes: s.offsetMinutes ?? null,
-      customReminderAt: s.customReminderAt ?? null,
-    };
+      // The dedup `where` only uses the columns that participate in the
+      // partial unique index — (taskId, reminderType, offsetMinutes,
+      // customReminderAt). For interval / daily_times both index-coalesced
+      // columns are null, so the index already enforces "one such row per
+      // task" via the COALESCE sentinels. The extra recurring config
+      // (intervalMinutes, timesOfDay, timezone) is written but not part of
+      // the dedup key — re-applying with a new interval value updates the
+      // existing row in the `if (row)` branch below.
+      const where = {
+        taskId,
+        reminderType: s.reminderType,
+        offsetMinutes: s.offsetMinutes ?? null,
+        customReminderAt: s.customReminderAt ?? null,
+      };
 
-    // Recurring-type extras that need to land on every write.
-    const recurringExtras = {
-      intervalMinutes: s.intervalMinutes ?? null,
-      timesOfDay: s.timesOfDay ?? null,
-      timezone: s.timezone ?? null,
-    };
+      // Recurring-type extras that need to land on every write.
+      const recurringExtras = {
+        intervalMinutes: s.intervalMinutes ?? null,
+        timesOfDay: s.timesOfDay ?? null,
+        timezone: s.timezone ?? null,
+      };
 
-    let row = await TaskReminder.findOne({ where });
-    if (row) {
-      // Reactivate / refresh. A cancelled row gets uncancelled. A sent row
-      // is left alone — once sent, the user's spec re-selection produces a
-      // fresh row only after the next dueDate change (legitimate behavior:
-      // we don't re-fire historical reminders).
-      //
-      // For recurring rows we also overwrite the schedule config — the
-      // user may have changed "every 2h" → "every 3h", or edited the
-      // HH:MM list. Those edits should take effect on the next fire.
-      if (!row.sentAt) {
-        await row.update({ scheduledFor, cancelled: false, ...recurringExtras });
-      }
-      continue;
-    }
-
-    try {
-      await TaskReminder.create({
-        ...where,
-        ...recurringExtras,
-        scheduledFor,
-        sentAt: null,
-        cancelled: false,
-      });
-    } catch (err) {
-      if (err && (err.name === 'SequelizeUniqueConstraintError'
-                  || err.parent?.code === '23505')) {
-        // Lost the race; re-fetch + update.
-        row = await TaskReminder.findOne({ where });
-        if (row && !row.sentAt) {
-          await row.update({ scheduledFor, cancelled: false, ...recurringExtras });
+      let row = await TaskReminder.findOne({ where, transaction: tx });
+      if (row) {
+        // Reactivate / refresh. A cancelled row gets uncancelled. A sent row
+        // is left alone — once sent, the user's spec re-selection produces a
+        // fresh row only after the next dueDate change (legitimate behavior:
+        // we don't re-fire historical reminders).
+        //
+        // For recurring rows we also overwrite the schedule config — the
+        // user may have changed "every 2h" → "every 3h", or edited the
+        // HH:MM list. Those edits should take effect on the next fire.
+        if (!row.sentAt) {
+          await row.update({ scheduledFor, cancelled: false, ...recurringExtras }, { transaction: tx });
         }
-      } else {
-        // Surface non-uniqueness errors so the caller can decide. The
-        // taskController logs at warn-level and continues — the task
-        // update itself still succeeds.
-        throw err;
+        continue;
+      }
+
+      try {
+        // Nested transaction → SAVEPOINT. The per-task advisory lock above
+        // already serializes this path, so a unique violation here is only
+        // possible from a different code path inserting the same tuple
+        // concurrently. Isolating the INSERT in a savepoint means that
+        // violation rolls back only this insert, not the whole apply (a bare
+        // INSERT failure would otherwise abort the outer transaction and make
+        // the recovery query below fail with "current transaction is aborted").
+        await sequelize.transaction({ transaction: tx }, async (sp) => {
+          await TaskReminder.create({
+            ...where,
+            ...recurringExtras,
+            scheduledFor,
+            sentAt: null,
+            cancelled: false,
+          }, { transaction: sp });
+        });
+      } catch (err) {
+        if (err && (err.name === 'SequelizeUniqueConstraintError'
+                    || err.parent?.code === '23505')) {
+          // Lost the race; re-fetch + update.
+          row = await TaskReminder.findOne({ where, transaction: tx });
+          if (row && !row.sentAt) {
+            await row.update({ scheduledFor, cancelled: false, ...recurringExtras }, { transaction: tx });
+          }
+        } else {
+          // Surface non-uniqueness errors so the caller can decide. The
+          // taskController logs at warn-level and continues — the task
+          // update itself still succeeds.
+          throw err;
+        }
       }
     }
-  }
+  });
 }
 
 /** Stable string key identifying a single reminder spec — same shape for a

@@ -4,7 +4,6 @@ const { logActivity } = require('../services/activityService');
 const { emitToUser } = require('../services/socketService');
 const { canPermanentlyDelete, getProtectionInfo } = require('../utils/archiveHelpers');
 const { sanitizeNotificationField, sanitizeNotificationMessage } = require('../utils/sanitize');
-const taskVisibility = require('../services/taskVisibilityService');
 const { isTier4 } = require('../config/tiers');
 const { createNotification, buildIdempotencyKey } = require('../services/notificationService');
 const { PILL_ATTRIBUTES: USER_PILL_ATTRIBUTES } = require('../config/userAttributes');
@@ -20,16 +19,13 @@ exports.createHelpRequest = async (req, res) => {
     const task = await Task.findByPk(taskId);
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
 
-    // RBAC: helper must be authorized to see the parent task. Without this
-    // check a member can leak a task title to any user by picking them as
-    // the helper — the helper would receive the title in the notification
-    // body even though they cannot otherwise access the task.
-    const authorized = await taskVisibility.getAuthorizedRealtimeRecipients(task);
-    if (!authorized.includes(requestedTo)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Selected helper does not have access to this task.',
-      });
+    // Help requests intentionally allow asking ANY active user in the app —
+    // same model as cross-team dependency requests. The task title is shared
+    // with the helper via the notification body, which mirrors how
+    // dependencies already surface the parent-task title to an outside user.
+    const helper = await User.findByPk(requestedTo);
+    if (!helper || helper.isActive === false) {
+      return res.status(400).json({ success: false, message: 'Selected helper is not a valid active user.' });
     }
 
     const hr = await HelpRequest.create({
@@ -110,20 +106,46 @@ exports.updateStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to update this help request.' });
     }
 
-    const { status, meetingLink, meetingScheduledAt } = req.body;
+    const { status, meetingLink, meetingScheduledAt, rejectionReason } = req.body;
+    const ALLOWED = ['pending', 'in_review', 'meeting_scheduled', 'resolved', 'rejected'];
+    if (status && !ALLOWED.includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status.' });
+    }
+    // Rejection is only the helper's call — the requester cannot reject
+    // their own request, and a manager who isn't the helper shouldn't
+    // either (the helper is the one being asked).
+    if (status === 'rejected' && !isHelper) {
+      return res.status(403).json({ success: false, message: 'Only the helper can reject this request.' });
+    }
+    // Rejection must come with a reason so the requester knows why help was
+    // declined. Trim defensively — a string of spaces is not a reason.
+    let trimmedReason = null;
+    if (status === 'rejected') {
+      trimmedReason = typeof rejectionReason === 'string' ? rejectionReason.trim() : '';
+      if (!trimmedReason) {
+        return res.status(400).json({ success: false, message: 'A reason is required when rejecting a help request.' });
+      }
+      if (trimmedReason.length > 1000) {
+        return res.status(400).json({ success: false, message: 'Rejection reason must be 1000 characters or fewer.' });
+      }
+    }
     const updates = { status };
     if (meetingLink) updates.meetingLink = meetingLink;
     if (meetingScheduledAt) updates.meetingScheduledAt = meetingScheduledAt;
-    if (status === 'resolved') updates.resolvedAt = new Date();
+    if (status === 'resolved' || status === 'rejected') updates.resolvedAt = new Date();
+    if (status === 'rejected') updates.rejectionReason = trimmedReason;
 
     await hr.update(updates);
 
     // Notify requester. Idempotent per (helpRequest, status) so the user
     // can move from pending → in_review → resolved and each transition
     // notifies once, but a retried PUT to the same status does not.
-    const respondedMsg = sanitizeNotificationMessage(
-      `Your help request status updated to "${sanitizeNotificationField(status, 32)}"`
-    );
+    const respondedMsg = status === 'rejected'
+      ? sanitizeNotificationMessage(
+          `${sanitizeNotificationField(req.user.name)} declined your help request: ` +
+          `"${sanitizeNotificationField(trimmedReason, 160)}"`
+        )
+      : sanitizeNotificationMessage(`Your help request status updated to "${sanitizeNotificationField(status, 32)}"`);
     await createNotification({
       userId: hr.requestedBy,
       type: 'help_responded',
@@ -167,8 +189,8 @@ exports.archiveHelpRequest = async (req, res) => {
     const hr = await HelpRequest.findByPk(req.params.id);
     if (!hr) return res.status(404).json({ success: false, message: 'Not found.' });
 
-    if (hr.status !== 'resolved') {
-      return res.status(400).json({ success: false, message: 'Only resolved help requests can be archived.' });
+    if (hr.status !== 'resolved' && hr.status !== 'rejected') {
+      return res.status(400).json({ success: false, message: 'Only resolved or rejected help requests can be archived.' });
     }
 
     const isManager = ['manager', 'admin', 'assistant_manager'].includes(req.user.role);

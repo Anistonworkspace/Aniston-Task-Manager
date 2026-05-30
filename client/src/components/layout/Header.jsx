@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock, Download, RotateCw } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock, Download, RotateCw, Database } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useT } from '../../context/LanguageContext';
 import { isExplicitlyDenied } from '../../utils/permissions';
 import { isDesktopApp } from '../../utils/runtime';
+import { isEditableTarget } from '../../utils/isEditableTarget';
 import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import NotificationsPanel from '../common/NotificationsPanel';
@@ -350,8 +351,11 @@ export default function Header({ onToggleSidebar }) {
 
   useEffect(() => {
     function handleKeyDown(e) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setShowGlobalSearch(true); }
-      if (e.key === '?' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) { e.preventDefault(); setShowShortcuts(true); }
+      // Ctrl/Cmd+K is a reserved combo and safe inside editable fields, but
+      // bare `?` is a printable character that would hijack typing in any
+      // contenteditable / rich-text surface — gate it through isEditableTarget.
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setShowGlobalSearch(true); return; }
+      if (e.key === '?' && !isEditableTarget(e.target)) { e.preventDefault(); setShowShortcuts(true); }
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
@@ -402,7 +406,7 @@ export default function Header({ onToggleSidebar }) {
   return (
     <>
       <header
-        className="flex items-center justify-between px-5 flex-shrink-0 z-20"
+        className="relative flex items-center justify-between px-5 flex-shrink-0 z-30"
         style={{
           height: '48px',
           backgroundColor: 'var(--primary-background-color)',
@@ -619,6 +623,15 @@ export default function Header({ onToggleSidebar }) {
                     <button onClick={() => { navigate('/integrations'); setShowUserMenu(false); }}
                       className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
                       <Puzzle size={15} strokeWidth={1.8} /> Integrations
+                    </button>
+                  )}
+                  {/* Tier-1 only: Database Backups. The backend re-enforces the
+                      same gate via superAdminOnly on /api/admin/backups/*, so
+                      hiding the link is a UX nicety — never the only barrier. */}
+                  {isSuperAdmin && (
+                    <button onClick={() => { navigate('/admin/backups'); setShowUserMenu(false); }}
+                      className="flex items-center gap-3 px-4 py-2 text-sm hover:bg-surface-50 w-full transition-colors text-text-secondary hover:text-text-primary">
+                      <Database size={15} strokeWidth={1.8} /> Database Backups
                     </button>
                   )}
                   {canSeeFeedback && (

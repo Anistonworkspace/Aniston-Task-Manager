@@ -1035,11 +1035,28 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
      * the renderer can surface the right UX (the user can still go
      * through the conflict popup, which navigates to '/' on confirm
      * and re-triggers this verifier via the fallback).
+     *
+     * `source` distinguishes the trigger so we can apply path-specific
+     * trust policies:
+     *   'desktop-complete' — the new backend-owned terminal URL. The
+     *                       page is static; there is no in-popup auth
+     *                       proof. STRICT net.request verification.
+     *   'past-login'       — the legacy fallback: backend redirected to
+     *                       /login?sso=success and the popup's own
+     *                       loginWithToken just succeeded (proving the
+     *                       cookies ARE in the persist:aniston jar).
+     *                       LENIENT — we try net.request as a sanity
+     *                       check, but if it fails we still resolve
+     *                       ok:true because the popup is empirical
+     *                       proof of valid cookies. The main window's
+     *                       own renderer-side loginWithToken will
+     *                       confirm and catch the rare case where
+     *                       cookies somehow disappeared.
      */
-    async function verifyAndFinish(reasonLabel, expectedStatus) {
+    async function verifyAndFinish(reasonLabel, expectedStatus, source = 'desktop-complete') {
       if (resolved || completionInFlight) return;
       completionInFlight = true;
-      diag(`sso: verifyAndFinish reason=${reasonLabel} expectedStatus=${expectedStatus || 'none'}`);
+      diag(`sso: verifyAndFinish reason=${reasonLabel} expectedStatus=${expectedStatus || 'none'} source=${source}`);
       if (expectedStatus === 'error') {
         finish({ ok: false, reason: 'server-error', msg: expectedStatus });
         return;
@@ -1057,13 +1074,32 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
         completionInFlight = false;
         return;
       }
-      // success path (or fallback past-login URL) — verify authoritatively.
+      // success path — verify via net.request /auth/me.
       const ok = await verifySessionWithBackend();
       if (ok) {
+        diag('sso: net.request /auth/me verified — resolving ok:true');
         finish({ ok: true });
-      } else {
-        finish({ ok: false, reason: 'verification-failed' });
+        return;
       }
+      if (source === 'past-login') {
+        // Legacy backend path: the popup navigated past /login, which
+        // means its own loginWithToken (a /auth/me from the popup's
+        // session) returned 200. Cookies ARE valid. The main process's
+        // net.request can fail to retrieve them in some Electron + cookie
+        // SameSite edge cases — empirically observed when the deployed
+        // backend has not yet been updated to slice 8 and the popup
+        // ran the in-renderer auth handshake. Trust the popup's auth
+        // and resolve ok:true; the main window's own loginWithToken
+        // (which uses the renderer's session, not net.request) will
+        // confirm and surface a clear error if it somehow fails.
+        diag('sso: net.request verification failed BUT past-login URL was reached — trusting popup auth');
+        finish({ ok: true });
+        return;
+      }
+      // STRICT path (new backend slice 8 redirect): no in-popup auth
+      // proof exists; refuse to fake success.
+      diag('sso: STRICT verification failed (no popup-auth proof) — resolving ok:false');
+      finish({ ok: false, reason: 'verification-failed' });
     }
 
     function maybeFinishOnNav(url) {
@@ -1080,7 +1116,7 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       // instead of inferring from cookies or React state.
       if (path === '/api/auth/desktop-complete' || path === '/api/auth/desktop-complete/') {
         const status = u.searchParams.get('status') || 'error';
-        verifyAndFinish(`desktop-complete?status=${status}`, status);
+        verifyAndFinish(`desktop-complete?status=${status}`, status, 'desktop-complete');
         return;
       }
 
@@ -1110,9 +1146,11 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
       //   (b) SSO-conflict-then-confirm: popup is on
       //       /login?sso=session_conflict, user clicks Continue here,
       //       forceLoginSSO mints cookies, popup navigates to '/'.
-      // Both paths must STILL go through verifySessionWithBackend so
-      // a cookie-less navigation can never fake success.
-      verifyAndFinish(`fallback past-login (${path})`, 'success');
+      // Both paths must STILL attempt verifySessionWithBackend, but
+      // because the popup's own loginWithToken already succeeded
+      // (that's how it got past /login) we treat verification as a
+      // sanity check rather than a hard gate — see verifyAndFinish.
+      verifyAndFinish(`fallback past-login (${path})`, 'success', 'past-login');
     }
     ssoWin.webContents.on('did-navigate', (_e, u) => { maybeFinishOnNav(u); });
     ssoWin.webContents.on('did-redirect-navigation', (_e, u) => { maybeFinishOnNav(u); });
@@ -1163,7 +1201,9 @@ ipcMain.handle('aniston:open-sso', async (_event, rawAuthUrl) => {
               diag('sso: window closed past login — verifying session before resolving');
               // verifyAndFinish handles the resolve. completionInFlight
               // is set inside so any duplicate triggers are no-ops.
-              verifyAndFinish('window-closed-past-login', 'success');
+              // source='past-login' so we trust the popup's own auth
+              // if net.request can't independently verify.
+              verifyAndFinish('window-closed-past-login', 'success', 'past-login');
               return;
             }
           }

@@ -1,0 +1,20 @@
+{
+  "_comment": "Docker Desktop on Windows does not forward host filesystem events (inotify) into the Linux container over bind mounts, so nodemon's native watcher never sees edits in the ../server mount and you have to restart the container to pick up backend changes. legacyWatch switches nodemon to polling so it detects host edits. This is harmless when running natively on the host; it just costs a little CPU.",
+  "_watch_note": "Watch ONLY source dirs — never '.'. The runtime-written dirs (logs/, uploads/, backups/) churn constantly (winston rotates logs/combined.log + logs/error.log, creating new numbered files), and legacyWatch polling over the Windows bind mount mis-detects that churn as a change and fires spurious 'restarting due to changes'. Each restart re-runs the ~30-60s boot migrations, taking the API offline and making the Vite proxy hang (frontend stuck on skeleton loaders). Listing source dirs explicitly removes the write-heavy dirs from the watch set entirely, regardless of ignore-glob reliability under polling.",
+  "watch": [
+    "server.js",
+    "config",
+    "controllers",
+    "middleware",
+    "models",
+    "routes",
+    "services",
+    "jobs",
+    "utils",
+    "scripts"
+  ],
+  "ext": "js,json",
+  "ignore": ["**/__tests__/**", "**/*.test.js"],
+  "legacyWatch": true,
+  "delay": 1000
+}

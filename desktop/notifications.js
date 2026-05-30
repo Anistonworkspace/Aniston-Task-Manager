@@ -193,6 +193,10 @@ function notify({ payload, onClick }) {
   // returns { ok: false } and we fall through to the native path
   // below so the user never silently misses a notification.
   const cardId = tag || `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  // Slice 12 — accept the renderer's theme hint. Forwarded as-is; the
+  // notificationWindow.show layer re-validates against an allowlist
+  // and defaults to 'light' when missing.
+  const themeRaw = payload && typeof payload.theme === 'string' ? payload.theme : '';
   try {
     const result = notificationWindow.show({
       payload: {
@@ -203,6 +207,7 @@ function notify({ payload, onClick }) {
         iconUrl,
         sender: '', // not yet provided by the renderer; reserved for future
         ts: '',
+        theme: themeRaw,
       },
       onClick: ({ url: clickUrl }) => {
         try { if (onClick) onClick({ url: clickUrl }); }

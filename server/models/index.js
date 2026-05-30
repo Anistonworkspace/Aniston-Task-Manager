@@ -44,6 +44,10 @@ const DocMention = require('./DocMention');
 const DocTaskReference = require('./DocTaskReference');
 // Doc Editor Phase F — threaded comments anchored to selection text.
 const DocComment = require('./DocComment');
+// feat/docs-personal-notion Phase 2 — explicit per-user access grants.
+// Replaces the workspace/board/role membership fallback as the source of
+// truth for "can this user see this doc".
+const DocAccess = require('./DocAccess');
 const Feedback = require('./Feedback');
 const AIConfig = require('./AIConfig');
 const AIProvider = require('./AIProvider');
@@ -72,6 +76,9 @@ const WorkflowWait = require('./WorkflowWait');
 // Public submissions hit /api/forms/public/:slug/submit (unauthenticated).
 const Form = require('./Form');
 const FormSubmission = require('./FormSubmission');
+// Tier-1 administered DB backup catalog — metadata for every dump file under
+// DB_BACKUP_DIR. Source of truth for the /api/admin/backups/* endpoints.
+const BackupRecord = require('./BackupRecord');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -441,6 +448,7 @@ module.exports = {
   DocMention,
   DocTaskReference,
   DocComment,
+  DocAccess,
   Feedback,
   AIConfig,
   AIProvider,
@@ -465,7 +473,13 @@ module.exports = {
   WorkflowWait,
   Form,
   FormSubmission,
+  BackupRecord,
 };
+
+// ─── BackupRecord <-> User (creator) ────────────────────────
+// createdBy is null for scheduled / pre_restore runs; SET NULL on user delete
+// so historical backup metadata survives an admin offboarding.
+BackupRecord.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 
 // ─── RefreshToken <-> User ───────────────────────────────────────────
 // CASCADE on delete: deactivating/removing a user wipes their refresh tokens
@@ -555,9 +569,16 @@ Board.hasMany(StatusTemplate, { foreignKey: 'boardId', as: 'statusTemplates' });
 // ─── Doc Editor (Phase B) ────────────────────────────────────
 // Doc belongs to one workspace and one author. Versions hang off the doc
 // with CASCADE so archiving/deleting a doc cleans up snapshots too.
+// onDelete kept as CASCADE to mirror the actual FK constraint installed in
+// server.js (Phase 2 deliberately does NOT alter the constraint; deleting a
+// workspace is so rare that the FK behavior change can wait for Phase 3).
 Doc.belongsTo(Workspace, { foreignKey: 'workspaceId', as: 'workspace', onDelete: 'CASCADE' });
 Doc.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 Doc.belongsTo(User, { foreignKey: 'lastEditedBy', as: 'lastEditor', onDelete: 'SET NULL' });
+// feat/docs-personal-notion Phase 2 — canonical owner. The list endpoint
+// joins on this to surface "My docs" without going through workspace.
+Doc.belongsTo(User, { foreignKey: 'ownerUserId', as: 'owner', onDelete: 'SET NULL' });
+User.hasMany(Doc, { foreignKey: 'ownerUserId', as: 'ownedDocs' });
 // Used by the global /archive page to render "archived by X" attribution.
 // Mirrors the pattern on HelpRequest / TaskDependency / DependencyRequest.
 Doc.belongsTo(User, { foreignKey: 'archivedBy', as: 'archiver', onDelete: 'SET NULL' });
@@ -598,6 +619,17 @@ DocComment.belongsTo(User, { foreignKey: 'resolvedBy', as: 'resolver', onDelete:
 DocComment.hasMany(DocComment, { foreignKey: 'parentId', as: 'replies', onDelete: 'CASCADE' });
 DocComment.belongsTo(DocComment, { foreignKey: 'parentId', as: 'parent', onDelete: 'CASCADE' });
 User.hasMany(DocComment, { foreignKey: 'authorId', as: 'authoredDocComments' });
+
+// ─── Doc Editor feat/docs-personal-notion Phase 2 — DocAccess ────
+// Explicit per-user grants. Reads cascade with the doc; user delete cleans
+// up their own grant rows. Resolver in services/docAccessService.js. The
+// reverse User → DocAccess hasMany powers "list docs visible to me" via
+// SQL joins (no per-row N+1).
+Doc.hasMany(DocAccess, { foreignKey: 'docId', as: 'accessGrants', onDelete: 'CASCADE' });
+DocAccess.belongsTo(Doc, { foreignKey: 'docId', as: 'doc', onDelete: 'CASCADE' });
+DocAccess.belongsTo(User, { foreignKey: 'userId', as: 'user', onDelete: 'CASCADE' });
+DocAccess.belongsTo(User, { foreignKey: 'grantedByUserId', as: 'grantedBy', onDelete: 'SET NULL' });
+User.hasMany(DocAccess, { foreignKey: 'userId', as: 'docAccessGrants' });
 
 // ─── Task <-> TaskReference (1-to-many) ──────────────────────
 // Each task may carry multiple free-form reference entries (ticket IDs,

@@ -276,13 +276,15 @@ async function buildDocScope(user, docId) {
   });
   if (!doc) return '';
 
-  // Defense-in-depth visibility check. Mirrors docController's helper
-  // without reaching across module boundaries; we keep the rule local so a
-  // future change in docController doesn't silently relax this prompt's
-  // visibility surface.
-  const visible = await canSeeDocWorkspace(user, doc.workspaceId).catch(() => false);
+  // feat/docs-personal-notion Phase 3 — single source of truth.
+  // The Sidekick's doc-scoped context only loads the body when the caller
+  // has explicit access (owner OR doc_access row, super-admin bypass).
+  // Workspace/board/role no longer auto-grant — the model never sees a
+  // doc the user couldn't read in the UI.
+  const docAccessSvc = require('./docAccessService');
+  const visible = await docAccessSvc.hasDocAccess(user, doc).catch(() => false);
   if (!visible) {
-    safeLogger.info('[AIScopeContext] doc scope denied — workspace not visible', { docId, userId: user.id });
+    safeLogger.info('[AIScopeContext] doc scope denied — no doc_access', { docId, userId: user.id });
     return '';
   }
 
@@ -370,22 +372,44 @@ async function canSeeDocWorkspace(user, workspaceId) {
 function extractDocBodyText(contentJson, contentTextFallback) {
   if (contentJson && typeof contentJson === 'object') {
     const parts = [];
+    // Block-level node names that should break to a new line in the prompt
+    // text. Includes both Tiptap names ('paragraph', 'heading', 'listItem',
+    // 'blockquote', 'codeBlock', 'horizontalRule') AND BlockNote names
+    // ('bulletListItem', 'numberedListItem', 'checkListItem', 'quote',
+    // 'codeBlock', 'horizontalRule'). 'paragraph' and 'heading' overlap
+    // between the two — same name, same intent.
     const BREAK_TYPES = new Set([
+      // Tiptap
       'paragraph', 'heading', 'listItem', 'blockquote', 'codeBlock', 'horizontalRule',
+      // BlockNote
+      'bulletListItem', 'numberedListItem', 'checkListItem', 'quote', 'table',
     ]);
     function walk(node) {
       if (!node || typeof node !== 'object') return;
       if (typeof node.text === 'string') parts.push(node.text);
-      // Render mentions / task chips inline so prompt context stays readable.
-      if (node.type === 'mention' && node.attrs?.label) {
-        parts.push(`@${node.attrs.label}`);
-      } else if ((node.type === 'taskChip' || node.type === 'task-chip') && node.attrs?.label) {
-        parts.push(`+${node.attrs.label}`);
+      // Render mentions / task chips inline. Tiptap stores attrs under
+      // `.attrs`, BlockNote under `.props` — handle both. The label is the
+      // user/task display name we want the model to see.
+      if (node.type === 'mention') {
+        const label = node.attrs?.label || node.props?.label;
+        if (label) parts.push(`@${label}`);
+      } else if (node.type === 'taskChip' || node.type === 'task-chip' || node.type === 'task') {
+        const label = node.attrs?.label || node.props?.label;
+        if (label) parts.push(`+${label}`);
       }
       if (Array.isArray(node.content)) node.content.forEach(walk);
+      // BlockNote nests children blocks (e.g. nested list items) under
+      // `.children` — recurse so toggled / nested content is included.
+      if (Array.isArray(node.children)) node.children.forEach(walk);
       if (BREAK_TYPES.has(node.type)) parts.push('\n');
     }
-    walk(contentJson);
+    // BlockNote contentJson is a top-level Block[]; Tiptap contentJson is
+    // an object envelope. Handle both.
+    if (Array.isArray(contentJson)) {
+      contentJson.forEach(walk);
+    } else {
+      walk(contentJson);
+    }
     const txt = parts.join('').replace(/\n{3,}/g, '\n\n').trim();
     if (txt) return truncate(txt, MAX_DOC_BODY_CHARS);
   }

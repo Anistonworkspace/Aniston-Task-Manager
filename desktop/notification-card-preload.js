@@ -29,6 +29,8 @@ ipcRenderer.on('notif-card:show', (_event, payload) => {
   if (!showCb || !payload || typeof payload !== 'object') return;
   // Whitelist the payload shape so a future channel-misuse can't push
   // unknown fields into the renderer.
+  const allowedThemes = new Set(['light', 'dark', 'auto']);
+  const themeRaw = typeof payload.theme === 'string' ? payload.theme.toLowerCase() : '';
   const safe = {
     id: typeof payload.id === 'string' ? payload.id : null,
     title: typeof payload.title === 'string' ? payload.title : '',
@@ -37,6 +39,7 @@ ipcRenderer.on('notif-card:show', (_event, payload) => {
     iconUrl: typeof payload.iconUrl === 'string' ? payload.iconUrl : '',
     sender: typeof payload.sender === 'string' ? payload.sender : '',
     ts: typeof payload.ts === 'string' ? payload.ts : '',
+    theme: allowedThemes.has(themeRaw) ? themeRaw : 'light',
   };
   if (!safe.id || !safe.title) return;
   try { showCb(safe); } catch { /* swallow */ }

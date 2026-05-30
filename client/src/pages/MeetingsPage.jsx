@@ -20,7 +20,6 @@ import AnistonLoader from '../components/common/AnistonLoader';
 const TYPE_CONFIG = {
   meeting: { label: 'Meeting', color: '#0073ea', icon: Video, bg: 'bg-primary/10 text-primary' },
   reminder: { label: 'Reminder', color: '#fdab3d', icon: Bell, bg: 'bg-warning/10 text-warning' },
-  follow_up: { label: 'Follow-up', color: '#9d50dd', icon: GitBranch, bg: 'bg-purple/10 text-purple' },
 };
 
 const STATUS_CONFIG = {
@@ -118,7 +117,8 @@ export default function MeetingsPage() {
           <h1 className="text-xl font-bold text-text-primary">{t('meetings.title')}</h1>
           <p className="text-sm text-text-secondary mt-0.5">{t('meetings.subtitle')}</p>
         </div>
-        {canManage && (
+        {/* All tiers (1-4) can schedule meetings and reminders. */}
+        {user && (
           <button onClick={() => { setEditMeeting(null); setShowModal(true); }}
             className="flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary-hover transition-colors shadow-sm">
             <CalendarPlus size={16} /> {t('meetings.scheduleMeeting')}
@@ -159,7 +159,7 @@ export default function MeetingsPage() {
           <CalendarPlus size={40} className="mx-auto text-text-tertiary mb-3" />
           <p className="text-text-secondary font-medium">No meetings {tab !== 'all' ? tab : ''}</p>
           <p className="text-sm text-text-tertiary mt-1">
-            {canManage ? 'Schedule a new meeting to get started' : 'No meetings scheduled for you yet'}
+            Schedule a new meeting or reminder to get started
           </p>
         </div>
       ) : (
@@ -180,6 +180,7 @@ export default function MeetingsPage() {
                     const statusCfg = STATUS_CONFIG[meeting.status] || STATUS_CONFIG.scheduled;
                     const TypeIcon = typeCfg.icon;
                     const isOrganizer = meeting.createdBy === user?.id;
+                    const isReminder = meeting.type === 'reminder';
                     const myParticipant = meeting.participants?.filter(Boolean)?.find(p => p.userId === user?.id);
                     const isPastMeeting = meeting.date < today;
 
@@ -207,9 +208,9 @@ export default function MeetingsPage() {
 
                                 <div className="flex items-center gap-4 text-xs text-text-secondary mb-2">
                                   <span className="flex items-center gap-1">
-                                    <Clock size={12} /> {meeting.startTime} - {meeting.endTime}
+                                    <Clock size={12} /> {meeting.startTime}{!isReminder && ` - ${meeting.endTime}`}
                                   </span>
-                                  {meeting.location && (
+                                  {!isReminder && meeting.location && (
                                     <span className="flex items-center gap-1">
                                       <MapPin size={12} /> {meeting.location}
                                     </span>
@@ -247,8 +248,8 @@ export default function MeetingsPage() {
                                   )}
                                 </div>
 
-                                {/* Participants */}
-                                {meeting.participants?.filter(Boolean)?.length > 0 && (
+                                {/* Participants (meetings only) */}
+                                {!isReminder && meeting.participants?.filter(Boolean)?.length > 0 && (
                                   <div className="flex -space-x-1.5">
                                     {meeting.participants.filter(Boolean).slice(0, 4).map((p, i) => (
                                       <div key={i} title={`${p.name || 'Unknown'} (${p.status || 'pending'})`}

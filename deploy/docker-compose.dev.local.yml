@@ -1,0 +1,27 @@
+# Local-only override (untracked). Use with:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.dev.local.yml up -d --no-deps backend frontend
+#
+# Skips the bundled `aph-postgres-dev` service and instead points the backend
+# at the existing `aniston-postgres` container (from the HRMS project's
+# docker-compose) by joining its network.
+services:
+  postgres:
+    profiles: ["never"]
+
+  backend:
+    depends_on: !reset []
+    networks:
+      - default
+      - hrms
+    environment:
+      DB_HOST: aniston-postgres
+      DB_PORT: "5432"
+
+  frontend:
+    networks:
+      - default
+
+networks:
+  hrms:
+    name: docker_default
+    external: true

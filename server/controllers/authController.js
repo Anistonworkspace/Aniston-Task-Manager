@@ -39,6 +39,15 @@ const safeLogger = require('../utils/safeLogger');
 const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const PENDING_LOGIN_TTL_SEC = 5 * 60;
 
+// Multi-tab refresh-token race grace window. If a refresh request hits a
+// row that was rotated within the last N ms, we treat the request as a
+// benign tab race instead of session compromise — the winning tab just set
+// new cookies; the loser only needs to retry the original request. A real
+// attacker replaying a stolen refresh token does it seconds-to-hours later,
+// well past this window. See refreshTokenEndpoint for the full rationale
+// and the 2026-05-23 incident note.
+const REFRESH_TOKEN_REUSE_GRACE_MS = 10 * 1000;
+
 /**
  * SHA-256 hex of a raw token. Used to look up pending_login_tokens rows
  * without ever storing the raw token. Length is always 64.
@@ -1182,9 +1191,35 @@ const refreshTokenEndpoint = async (req, res) => {
     if (record.revokedAt) {
       // Two cases: (a) we revoked this token (logout / changePassword) — fine,
       // 401. (b) it was already rotated (replacedByJti is set) and someone is
-      // replaying the OLD token — strong indicator of session compromise.
-      // Burn the chain.
+      // replaying the OLD token — usually session compromise, sometimes a
+      // benign multi-tab race.
       if (record.replacedByJti) {
+        // Multi-tab race: when a user opens the app with several tabs whose
+        // access tokens all expired overnight, every tab fires POST /refresh
+        // with the same JTI in the same millisecond. The first wins, rotates
+        // the row, and sets new cookies. The runners-up see the now-rotated
+        // row here. Burning the chain in that case logs every tab out for
+        // what is actually normal behaviour (the 9:34 AM mass-logout in the
+        // 2026-05-23 incident).
+        //
+        // We tell apart "lost a race" from "stolen token replay" by age:
+        // a tab-race finishes in milliseconds; a stolen token is replayed
+        // seconds-to-hours later. If the rotation just happened, return a
+        // soft 401 (TOKEN_RACE_RETRY) that tells the client to back off and
+        // retry the ORIGINAL request — by then the winner's Set-Cookie has
+        // landed and the access cookie is valid. No chain-nuke.
+        const revokedAtMs = record.revokedAt
+          ? new Date(record.revokedAt).getTime()
+          : 0;
+        const ageMs = Date.now() - revokedAtMs;
+        if (revokedAtMs && ageMs >= 0 && ageMs < REFRESH_TOKEN_REUSE_GRACE_MS) {
+          return res.status(401).json({
+            success: false,
+            message: 'Session refresh raced with another tab. Retrying…',
+            code: 'TOKEN_RACE_RETRY',
+            retryAfter: 1,
+          });
+        }
         await revokeAllRefreshTokensForUser(user.id);
         return res.status(401).json({
           success: false,

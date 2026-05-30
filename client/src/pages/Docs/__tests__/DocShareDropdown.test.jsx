@@ -51,12 +51,14 @@ vi.mock('../../../utils/safeLog', () => ({
 import DocShareDropdown from '../DocShareDropdown';
 import { updateDocSharePolicy } from '../../../services/docsService';
 
-function renderDropdown(props = {}, { workspaceId = 'w1' } = {}) {
+// Phase 1: docs live at /docs/:docId. The optional workspaceId arg is kept
+// for call-site compat but ignored — there is no workspace in the URL now.
+function renderDropdown(props = {}, /* { workspaceId = 'w1' } unused */ _ = {}) {
   return render(
-    <MemoryRouter initialEntries={[`/workspaces/${workspaceId}/docs/d1`]}>
+    <MemoryRouter initialEntries={['/docs/d1']}>
       <Routes>
         <Route
-          path="/workspaces/:workspaceId/docs/:docId"
+          path="/docs/:docId"
           element={
             <DocShareDropdown
               docId="d1"
@@ -110,7 +112,8 @@ describe('DocShareDropdown', () => {
     fireEvent.click(screen.getByTestId('share-copy'));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
     const url = navigator.clipboard.writeText.mock.calls[0][0];
-    expect(url).toMatch(/\/workspaces\/w1\/docs\/d1$/);
+    // Phase 1: public share URL dropped the /workspaces/:wsId segment.
+    expect(url).toMatch(/\/docs\/d1$/);
   });
 
   it('changing policy calls updateDocSharePolicy and fires onChanged with the new value', async () => {
@@ -159,10 +162,10 @@ describe('DocShareDropdown — read-only branch', () => {
 
   it('canEdit=false hides the radio rows and shows a read-only caption', async () => {
     render(
-      <MemoryRouter initialEntries={['/workspaces/w1/docs/d1']}>
+      <MemoryRouter initialEntries={['/docs/d1']}>
         <Routes>
           <Route
-            path="/workspaces/:workspaceId/docs/:docId"
+            path="/docs/:docId"
             element={
               <DocShareDropdown
                 docId="d1"

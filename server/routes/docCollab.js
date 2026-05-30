@@ -16,8 +16,13 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { authenticate } = require('../middleware/auth');
-const { Doc, Workspace, User } = require('../models');
-const { canSeeWorkspace, TICKET_PURPOSE } = require('../services/docCollabService');
+const { Doc } = require('../models');
+const { TICKET_PURPOSE } = require('../services/docCollabService');
+// feat/docs-personal-notion Phase 3 — gate ticket minting on the canonical
+// access resolver instead of workspace/board visibility. A user whose
+// doc_access row was revoked can no longer mint a collab ticket even if
+// they still belong to the workspace via board membership.
+const docAccessSvc = require('../services/docAccessService');
 const safeLogger = require('../utils/safeLogger');
 
 const router = express.Router();
@@ -51,7 +56,7 @@ router.post('/ticket', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, message: 'This doc is archived.' });
     }
 
-    const visible = await canSeeWorkspace({ Workspace, User }, req.user, doc.workspaceId);
+    const visible = await docAccessSvc.hasDocAccess(req.user, doc);
     if (!visible) {
       return res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
     }

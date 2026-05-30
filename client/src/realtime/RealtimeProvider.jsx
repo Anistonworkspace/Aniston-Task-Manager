@@ -73,6 +73,20 @@ const REALTIME_EVENTS = [
   // listens via useRealtimeEvent + filters by docId so peer mutations
   // refresh local inline highlights without polling.
   'doc:comments:changed',
+  // Doc content + sharing realtime. `doc:updated` is fired by
+  // docController.updateDoc on every content/title save and fans out to
+  // every user with access so open viewers refresh live. `doc:access:*`
+  // are fired by the mention sync AND the manual share endpoints
+  // (add/update/remove collaborator) so the recipient's /docs list and
+  // open DocPage react without a refresh. These MUST be listed here or
+  // the Provider never subscribes them on the socket and the
+  // useRealtimeEvent() listeners in DocPage / DocsListPage stay silent.
+  'doc:updated', 'doc:access:granted', 'doc:access:revoked',
+  // Collaborator-set change (mention add/remove OR manual share add/level/
+  // remove). Fans out to everyone with doc access — including the author —
+  // so the "Shared with" @name bar + Share panel stay live without a
+  // refresh. DocSharedWithBar / DocSharePanel filter by docId.
+  'doc:collaborators:changed',
 ];
 
 const RealtimeContext = createContext(null);
@@ -90,6 +104,15 @@ export function RealtimeProvider({ children }) {
   // Map<event: string, Set<handler: (payload) => void>>
   const eventSubscribersRef = useRef(new Map());
 
+  // Per-queryKey debounce timers. When several socket events affecting the
+  // same queryKey arrive in a tight burst (e.g. 22 task:updated for one
+  // board in one second during a bulk edit), we collapse them into a
+  // single refetch. This was the dominant cause of the 12:56 PM /
+  // 1:41 PM rate-limit cascades in the 2026-05-23 incident.
+  // Map<queryKey: string, timeoutId>
+  const pendingTimersRef = useRef(new Map());
+  const REFETCH_DEBOUNCE_MS = 300;
+
   // Ref so the dispatcher always reads the latest invalidator without
   // re-creating the socket listener on every state change.
   const invalidateRef = useRef(null);
@@ -98,16 +121,31 @@ export function RealtimeProvider({ children }) {
     if (!queryKey) return;
     const set = registryRef.current.get(queryKey);
     if (!set || set.size === 0) return;
-    // Snapshot the set before iterating: refetch implementations may
-    // synchronously unmount their owner (rare, but possible during
-    // navigation), which would mutate the Set under us.
-    for (const refetch of Array.from(set)) {
-      try {
-        refetch();
-      } catch (err) {
-        console.error('[Realtime] refetch threw for queryKey', queryKey, err);
+
+    // Coalesce bursts: drop any pending timer for this queryKey and arm a
+    // fresh one. The trailing edge wins — by the time the timer fires, all
+    // events in the burst have been observed, and a single refetch reads
+    // the post-burst server state.
+    const existing = pendingTimersRef.current.get(queryKey);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      pendingTimersRef.current.delete(queryKey);
+      const currentSet = registryRef.current.get(queryKey);
+      if (!currentSet || currentSet.size === 0) return;
+      // Snapshot the set before iterating: refetch implementations may
+      // synchronously unmount their owner (rare, but possible during
+      // navigation), which would mutate the Set under us.
+      for (const refetch of Array.from(currentSet)) {
+        try {
+          refetch();
+        } catch (err) {
+          console.error('[Realtime] refetch threw for queryKey', queryKey, err);
+        }
       }
-    }
+    }, REFETCH_DEBOUNCE_MS);
+
+    pendingTimersRef.current.set(queryKey, timer);
   };
 
   // ── Wire socket events into the registry ─────────────────────
@@ -180,6 +218,11 @@ export function RealtimeProvider({ children }) {
         try { off && off(); } catch { /* ignore */ }
       }
       if (offConnect) offConnect();
+      // Drop any pending debounced refetches so they don't fire post-unmount.
+      for (const timer of pendingTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      pendingTimersRef.current.clear();
     };
   }, []);
 

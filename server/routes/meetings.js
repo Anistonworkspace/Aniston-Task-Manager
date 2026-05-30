@@ -20,7 +20,8 @@ const meetingValidators = [
   body('startTime').optional().isString(),
   body('endTime').optional().isString(),
   body('location').optional().isString().isLength({ max: 500 }).withMessage('location must be ≤500 chars'),
-  body('type').optional().isString(),
+  // Only meeting | reminder are accepted. follow_up is retired.
+  body('type').optional().isIn(['meeting', 'reminder']).withMessage('type must be meeting or reminder'),
   body('status').optional().isString(),
 ];
 

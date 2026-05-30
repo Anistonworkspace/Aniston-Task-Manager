@@ -114,6 +114,15 @@ function clampNotifyPayload(payload) {
   if (!payload || typeof payload !== 'object') return null;
   const title = typeof payload.title === 'string' ? payload.title.slice(0, 200) : '';
   if (!title) return null;
+  // Slice 12 — accept an optional `theme` field so the renderer can
+  // tell the notification card whether to render light or dark. We
+  // narrow to the same allowlist the card preload uses; anything else
+  // falls back to undefined (which the main process will treat as
+  // 'light', the new default).
+  const themeRaw = typeof payload.theme === 'string' ? payload.theme.toLowerCase() : '';
+  const theme = (themeRaw === 'dark' || themeRaw === 'light' || themeRaw === 'auto')
+    ? themeRaw
+    : undefined;
   return {
     title,
     body: typeof payload.body === 'string' ? payload.body.slice(0, 500) : '',
@@ -123,6 +132,7 @@ function clampNotifyPayload(payload) {
     url: typeof payload.url === 'string' && payload.url.startsWith('/')
       ? payload.url.slice(0, 1000)
       : undefined,
+    theme,
   };
 }
 

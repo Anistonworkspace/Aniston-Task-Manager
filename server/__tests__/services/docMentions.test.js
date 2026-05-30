@@ -40,10 +40,24 @@ jest.mock('../../models', () => ({
     create: jest.fn(),
     destroy: jest.fn(),
   },
+  // Phase 5 — doc_access write/delete after mention sync, gated by the
+  // safe rule (only source='mention' rows are pruned).
+  DocAccess: {
+    findOne: jest.fn(),
+    findAll: jest.fn().mockResolvedValue([]),
+    create: jest.fn(),
+    destroy: jest.fn(),
+  },
   Workspace: {
     findByPk: jest.fn(),
   },
-  User: {},
+  // Phase 5 — active-user validation before any mention row is created.
+  // Default echoes every requested userId back as active; specific tests
+  // can override to simulate deactivated users.
+  User: {
+    findAll: jest.fn(),
+    findByPk: jest.fn(),
+  },
 }));
 
 jest.mock('../../utils/safeLogger', () => ({
@@ -61,7 +75,15 @@ jest.mock('../../services/notificationService', () => ({
   createNotification: jest.fn().mockResolvedValue({}),
 }));
 
-const { Doc, DocVersion, DocMention, Workspace } = require('../../models');
+// Phase 5 — mention sync emits realtime `doc:access:granted` /
+// `doc:access:revoked` to the affected user. Mocked at the module level
+// so the controller's lazy `require('../services/socketService')` picks
+// up the jest.fn instead of trying to instantiate a real socket.io server.
+jest.mock('../../services/socketService', () => ({
+  emitToUsers: jest.fn(),
+}));
+
+const { Doc, DocVersion, DocMention, DocAccess, User, Workspace } = require('../../models');
 const notificationService = require('../../services/notificationService');
 const docCtrl = require('../../controllers/docController');
 
@@ -144,6 +166,18 @@ beforeEach(() => {
   DocMention.create.mockResolvedValue({});
   DocMention.destroy.mockResolvedValue(0);
   notificationService.createNotification.mockResolvedValue({});
+  // Phase 5 — default User.findAll echoes every requested id back as
+  // active+approved. Tests that want to simulate a deactivated user
+  // override per-test.
+  User.findAll.mockImplementation((opts) => {
+    const ids = (opts && opts.where && opts.where.id && opts.where.id[Op.in]) || [];
+    return Promise.resolve(ids.map((id) => ({ id })));
+  });
+  // Phase 5 — doc_access default state: no existing rows, no upsert race.
+  DocAccess.findOne.mockResolvedValue(null);
+  DocAccess.findAll.mockResolvedValue([]);
+  DocAccess.create.mockResolvedValue({ id: 'a-new' });
+  DocAccess.destroy.mockResolvedValue(0);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -299,151 +333,40 @@ describe('__extractMentions', () => {
 // listMentionableUsers
 // ───────────────────────────────────────────────────────────────────────────
 
-describe('listMentionableUsers', () => {
-  test('400 when workspaceId query param is missing', async () => {
-    const req = { user: CALLER, query: {} };
-    const res = mockRes();
-    await docCtrl.listMentionableUsers(req, res);
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(Workspace.findByPk).not.toHaveBeenCalled();
-  });
+describe('listMentionableUsers (legacy endpoint — Phase 4 delegation)', () => {
+  // feat/docs-personal-notion Phase 4 — this endpoint is now a thin
+  // delegation to userMentionController.searchMentionableUsers. The
+  // workspace-scoped semantics it used to enforce (creator + members +
+  // dedup + cap + self-exclude + name/email filter) live in the global
+  // controller now and are covered by
+  //   server/__tests__/controllers/userMentionController.test.js
+  // The single delegation test below verifies the legacy /api/docs/mentionable
+  // path still works AND ignores the old workspaceId query param.
 
-  test('403 when caller cannot see the workspace', async () => {
-    // The first Workspace.findByPk inside canCallerSeeWorkspace returns a
-    // workspace the caller is NOT a member of.
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'someone-else',
-      workspaceMembers: [],
-    }));
-    const req = { user: CALLER, query: { workspaceId: 'w1' } };
-    const res = mockRes();
-    await docCtrl.listMentionableUsers(req, res);
-    expect(res.status).toHaveBeenCalledWith(403);
-  });
-
-  test('200 returns workspace creator + members (deduped), excludes self, capped at 25', async () => {
-    // First findByPk: membership check (caller is a member → allowed)
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'creator-id',
-      workspaceMembers: [{ id: CALLER.id }],
-    }));
-
-    // Build 30 members so we can verify the cap-at-25 trim.
-    const members = [];
-    for (let i = 0; i < 30; i += 1) {
-      members.push({
-        id: `member-${i}`,
-        name: `Member ${String.fromCharCode(65 + (i % 26))}-${i}`,
-        email: `member${i}@x.com`,
-        avatar: null,
-        isActive: true,
-      });
+  test('delegates to global searchMentionableUsers (workspaceId ignored)', async () => {
+    // The User model isn't in this file's mock barrel (the original suite
+    // tested workspace-scoped logic via Workspace.findByPk only). Stub it
+    // inline so the delegation can run.
+    const models = require('../../models');
+    if (!models.User || typeof models.User.findAll !== 'function') {
+      models.User = { findAll: jest.fn() };
     }
-    // Include the caller themselves in the membership list — they MUST be
-    // filtered out. Also duplicate the creator inside workspaceMembers to
-    // verify dedup.
-    const creator = {
-      id: 'creator-id',
-      name: 'Creator',
-      email: 'creator@x.com',
-      avatar: null,
-      isActive: true,
-    };
-    members.push({ ...creator }); // dup
-    members.push({ id: CALLER.id, name: 'Self', email: 'self@x.com', avatar: null, isActive: true });
+    models.User.findAll = jest.fn().mockResolvedValue([
+      { id: 'u1', name: 'Alice', email: 'alice@x.com', avatar: null },
+    ]);
 
-    // Second findByPk: full listing
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'creator-id',
-      workspaceMembers: members,
-      creator,
-    }));
-
-    const req = { user: CALLER, query: { workspaceId: 'w1' } };
+    const req = { user: CALLER, query: { workspaceId: 'IGNORED', q: 'al' } };
     const res = mockRes();
     await docCtrl.listMentionableUsers(req, res);
 
+    expect(models.User.findAll).toHaveBeenCalledTimes(1);
     const payload = res.json.mock.calls[0][0];
     expect(payload.success).toBe(true);
-    expect(payload.data.users.length).toBeLessThanOrEqual(25);
-    // self excluded
-    expect(payload.data.users.find((u) => u.id === CALLER.id)).toBeUndefined();
-    // creator only appears once
-    const creatorRows = payload.data.users.filter((u) => u.id === 'creator-id');
-    expect(creatorRows.length).toBeLessThanOrEqual(1);
-  });
-
-  test('filters by q substring on name (case-insensitive)', async () => {
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: [{ id: CALLER.id }],
-    }));
-    const candidates = [
-      { id: 'm1', name: 'Alice Cooper', email: 'alice@x.com', avatar: null, isActive: true },
-      { id: 'm2', name: 'Bob Marley', email: 'bob@x.com', avatar: null, isActive: true },
-      { id: 'm3', name: 'Charlie Brown', email: 'charlie@x.com', avatar: null, isActive: true },
-    ];
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: candidates,
-      creator: null,
-    }));
-
-    const req = { user: CALLER, query: { workspaceId: 'w1', q: 'ALICE' } };
-    const res = mockRes();
-    await docCtrl.listMentionableUsers(req, res);
-
-    const payload = res.json.mock.calls[0][0];
-    expect(payload.data.users).toHaveLength(1);
-    expect(payload.data.users[0].id).toBe('m1');
-  });
-
-  test('filters by q substring on email', async () => {
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: [{ id: CALLER.id }],
-    }));
-    const candidates = [
-      { id: 'm1', name: 'Alice', email: 'alice@example.com', avatar: null, isActive: true },
-      { id: 'm2', name: 'Bob', email: 'bob@other.com', avatar: null, isActive: true },
-    ];
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: candidates,
-      creator: null,
-    }));
-
-    const req = { user: CALLER, query: { workspaceId: 'w1', q: 'example' } };
-    const res = mockRes();
-    await docCtrl.listMentionableUsers(req, res);
-
-    const payload = res.json.mock.calls[0][0];
-    expect(payload.data.users).toHaveLength(1);
-    expect(payload.data.users[0].email).toBe('alice@example.com');
-  });
-
-  test('excludes inactive users', async () => {
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: [{ id: CALLER.id }],
-    }));
-    const candidates = [
-      { id: 'm1', name: 'Active', email: 'a@x.com', avatar: null, isActive: true },
-      { id: 'm2', name: 'Inactive', email: 'i@x.com', avatar: null, isActive: false },
-    ];
-    Workspace.findByPk.mockResolvedValueOnce(makeWorkspace({
-      createdBy: 'other',
-      workspaceMembers: candidates,
-      creator: null,
-    }));
-
-    const req = { user: CALLER, query: { workspaceId: 'w1' } };
-    const res = mockRes();
-    await docCtrl.listMentionableUsers(req, res);
-
-    const payload = res.json.mock.calls[0][0];
-    expect(payload.data.users).toHaveLength(1);
-    expect(payload.data.users[0].id).toBe('m1');
+    expect(payload.data.users).toEqual([
+      { id: 'u1', name: 'Alice', email: 'alice@x.com', avatar: null },
+    ]);
+    // Workspace lookup is NOT consulted anymore — workspaceId is a no-op.
+    expect(Workspace.findByPk).not.toHaveBeenCalled();
   });
 });
 
@@ -687,5 +610,214 @@ describe('mention sync via updateDoc', () => {
 
     await flushAsync();
     expect(notificationService.createNotification).not.toHaveBeenCalled();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Phase 5 — mention → doc_access wiring
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('mention → doc_access wiring (Phase 5)', () => {
+  // socketService is mocked at file-level (see top of file). We pull the
+  // reference here so each test can assert on its emitToUsers calls.
+  const socketService = require('../../services/socketService');
+
+  test('newly inserted mention → upsertAccess(comment, mention) + emits doc:access:granted', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([]); // no existing mentions
+
+    // upsertAccess flow: findOne → null (no row) → create
+    DocAccess.findOne.mockResolvedValue(null);
+    DocAccess.create.mockResolvedValue({ id: 'a-new' });
+
+    const json = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [mention(UUID_A, 'Alice')] }],
+    };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: json } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocAccess.create).toHaveBeenCalledWith(expect.objectContaining({
+      docId: 'd1',
+      userId: UUID_A,
+      accessLevel: 'comment',
+      source: 'mention',
+      grantedByUserId: ADMIN.id,
+    }));
+    expect(socketService.emitToUsers).toHaveBeenCalledWith(
+      'doc:access:granted',
+      expect.objectContaining({ docId: 'd1', source: 'mention' }),
+      [UUID_A],
+    );
+  });
+
+  test('mention upgrade is a no-op when user already has higher access (no downgrade)', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([]);
+
+    // User already has 'edit' — upsertAccess returns { created:false, upgraded:false }
+    DocAccess.findOne.mockResolvedValue({
+      accessLevel: 'edit',
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+
+    const json = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [mention(UUID_A, 'Alice')] }],
+    };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: json } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocAccess.create).not.toHaveBeenCalled();
+    // No realtime emit fires when nothing actually changed.
+    const grantedCalls = socketService.emitToUsers.mock.calls
+      .filter((c) => c[0] === 'doc:access:granted');
+    expect(grantedCalls).toHaveLength(0);
+  });
+
+  test('removed mention with source=mention → deletes doc_access + emits doc:access:revoked', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    // Existing has UUID_B mention; incoming has no mentions → UUID_B removed.
+    DocMention.findAll.mockResolvedValue([
+      { id: 'row-b', mentionedUserId: UUID_B },
+    ]);
+    // doc_access lookup says UUID_B's row has source='mention' → safe to delete.
+    DocAccess.findAll.mockResolvedValue([{ userId: UUID_B }]);
+    DocAccess.destroy.mockResolvedValue(1);
+
+    const emptyJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'no mentions' }] }] };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: emptyJson } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocMention.destroy).toHaveBeenCalled();
+    // The mention-removal query selects rows with source='mention' only.
+    // (updateDoc also issues an unrelated DocAccess.findAll to resolve
+    // doc:updated fan-out recipients, so locate the mention call by its
+    // WHERE clause rather than assuming it's the first findAll.)
+    const findAllArgs = DocAccess.findAll.mock.calls
+      .map((c) => c[0])
+      .find((args) => args?.where?.source === 'mention');
+    expect(findAllArgs).toBeDefined();
+    expect(findAllArgs.where.source).toBe('mention');
+    expect(findAllArgs.where.docId).toBe('d1');
+    // The destroy query targets the same source='mention' subset.
+    expect(DocAccess.destroy).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ docId: 'd1', source: 'mention' }),
+    }));
+    expect(socketService.emitToUsers).toHaveBeenCalledWith(
+      'doc:access:revoked',
+      expect.objectContaining({ docId: 'd1', source: 'mention' }),
+      [UUID_B],
+    );
+  });
+
+  test('removed mention whose access row is source=manual_share → access SURVIVES (safe rule)', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([
+      { id: 'row-b', mentionedUserId: UUID_B },
+    ]);
+    // doc_access lookup returns EMPTY — because the only row for UUID_B has
+    // source='manual_share' (not 'mention'), so the WHERE source='mention'
+    // query finds nothing.
+    DocAccess.findAll.mockResolvedValue([]);
+
+    const emptyJson = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: emptyJson } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    // DocMention row was destroyed (back-ref) but doc_access stays.
+    expect(DocMention.destroy).toHaveBeenCalled();
+    expect(DocAccess.destroy).not.toHaveBeenCalled();
+    // No revoked emit because no access actually went away.
+    const revokedCalls = socketService.emitToUsers.mock.calls
+      .filter((c) => c[0] === 'doc:access:revoked');
+    expect(revokedCalls).toHaveLength(0);
+  });
+
+  test('mention pointing at an inactive user is silently dropped (no row, no grant, no notify)', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([]);
+
+    // Override the default echo-all User.findAll to return NO active rows —
+    // simulating "the mentioned user was just deactivated".
+    User.findAll.mockResolvedValueOnce([]);
+
+    const json = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [mention(UUID_A, 'GhostUser')] }],
+    };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: json } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocMention.create).not.toHaveBeenCalled();
+    expect(DocAccess.create).not.toHaveBeenCalled();
+    expect(notificationService.createNotification).not.toHaveBeenCalled();
+  });
+
+  test('self-mention is ignored — owner never gets a doc_access row for their own doc', async () => {
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([]);
+
+    const json = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [mention(ADMIN.id, 'Me')] }],
+    };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: json } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocMention.create).not.toHaveBeenCalled();
+    expect(DocAccess.create).not.toHaveBeenCalled();
+  });
+
+  test('only mention-source access rows are pruned (multi-source removal is filtered server-side)', async () => {
+    // Setup: removing 2 users at once. Server returns only the one whose
+    // source='mention'; the other has source='manual_share' and won't appear
+    // in the findAll result → only the mention-source row is destroyed.
+    const doc = makeDoc({ createdBy: ADMIN.id });
+    Doc.findByPk.mockResolvedValueOnce(doc).mockResolvedValueOnce(doc);
+    DocVersion.count.mockResolvedValue(0);
+    DocVersion.create.mockResolvedValue({});
+    DocMention.findAll.mockResolvedValue([
+      { id: 'row-b', mentionedUserId: UUID_B },
+      { id: 'row-c', mentionedUserId: UUID_C },
+    ]);
+    // Only UUID_B's access row has source='mention'. UUID_C is manual_share.
+    DocAccess.findAll.mockResolvedValue([{ userId: UUID_B }]);
+
+    const emptyJson = { type: 'doc', content: [{ type: 'paragraph' }] };
+    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: emptyJson } };
+    await docCtrl.updateDoc(req, mockRes());
+    await flushAsync();
+
+    expect(DocAccess.destroy).toHaveBeenCalledTimes(1);
+    // Targeted emit only to the user whose access actually went away.
+    const revokedCalls = socketService.emitToUsers.mock.calls
+      .filter((c) => c[0] === 'doc:access:revoked');
+    expect(revokedCalls).toHaveLength(1);
+    expect(revokedCalls[0][2]).toEqual([UUID_B]); // recipient list
   });
 });

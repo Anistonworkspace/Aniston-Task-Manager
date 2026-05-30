@@ -244,6 +244,17 @@ export async function showLocalNotification(title, options = {}) {
   //     toast originates in the main process where lifecycle is
   //     simpler).
   //
+  // Slice 12 — Pass the user's current app theme so the notification
+  // card matches. ThemeContext owns `darkMode` and mirrors it to
+  // localStorage('darkMode'); reading directly from there here keeps
+  // this service file pure (no React import). Unknown / missing →
+  // notification window defaults to 'light' (Slice 12 requirement).
+  let theme = 'light';
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('darkMode') : null;
+    if (stored === 'true') theme = 'dark';
+  } catch { /* ignore — fall through to light */ }
+
   // The bridge returns { ok: true } on dispatch (incl. deduped) or
   // { ok: false, reason } on failure. We treat any non-ok response as
   // signal to fall through to the web paths below so the user is never
@@ -252,7 +263,7 @@ export async function showLocalNotification(title, options = {}) {
     if (typeof window !== 'undefined'
         && window.anistonDesktop
         && typeof window.anistonDesktop.notify === 'function') {
-      const result = await window.anistonDesktop.notify({ title, body, tag, url });
+      const result = await window.anistonDesktop.notify({ title, body, tag, url, theme });
       if (result && result.ok) return;
       safeLog.warn('[showLocalNotification] desktop bridge declined, falling back', result);
     }

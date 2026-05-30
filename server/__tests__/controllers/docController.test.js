@@ -31,10 +31,23 @@ jest.mock('../../models', () => ({
     create: jest.fn(),
     count: jest.fn(),
   },
+  // feat/docs-personal-notion Phase 2+3 — access table + mention/task-ref
+  // models referenced by the controller. Defaults below (findOne → null)
+  // simulate "no explicit grant"; tests that need access either set the
+  // doc's ownerUserId/createdBy to the user OR use SUPER admin.
+  DocAccess: {
+    findOne: jest.fn(),
+    findAll: jest.fn(),
+    create: jest.fn(),
+  },
+  DocMention: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn() },
+  DocTaskReference: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn(), destroy: jest.fn() },
+  Task: { findByPk: jest.fn(), findAll: jest.fn() },
+  Board: { findByPk: jest.fn(), findAll: jest.fn() },
   Workspace: {
     findByPk: jest.fn(),
   },
-  User: {},
+  User: { findByPk: jest.fn() },
 }));
 
 jest.mock('../../utils/safeLogger', () => ({
@@ -369,6 +382,9 @@ describe('getDoc', () => {
   });
 
   test('200 returns the doc including contentJson when allowed', async () => {
+    // Phase 3: admin role no longer auto-grants doc access — use OWNER
+    // (matches makeDoc's default createdBy fallback) or set up a DocAccess
+    // row. OWNER is the simplest fit.
     const doc = makeDoc({
       id: 'd1',
       contentJson: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }] },
@@ -376,7 +392,7 @@ describe('getDoc', () => {
     Doc.findByPk.mockResolvedValue(doc);
     Workspace.findByPk.mockResolvedValue(makeWorkspace());
 
-    const req = { user: ADMIN, params: { id: 'd1' } };
+    const req = { user: OWNER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.getDoc(req, res);
 
@@ -421,12 +437,14 @@ describe('updateDoc', () => {
   });
 
   test('title-only update does NOT create a version snapshot', async () => {
+    // Phase 3: edit requires owner OR an 'edit' doc_access row. OWNER
+    // matches the makeDoc default createdBy fallback (resolveOwnerId).
     const doc = makeDoc();
     Doc.findByPk
       .mockResolvedValueOnce(doc)
       .mockResolvedValueOnce(doc);
 
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { title: 'New name' } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { title: 'New name' } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
@@ -451,7 +469,7 @@ describe('updateDoc', () => {
         { type: 'paragraph', content: [{ type: 'text', text: 'World' }] },
       ],
     };
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: newJson } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { contentJson: newJson } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
@@ -463,7 +481,7 @@ describe('updateDoc', () => {
   test('rejects contentJson that is not an object', async () => {
     const doc = makeDoc();
     Doc.findByPk.mockResolvedValue(doc);
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: 'not-an-object' } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { contentJson: 'not-an-object' } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
     expect(res.status).toHaveBeenCalledWith(400);
@@ -473,7 +491,7 @@ describe('updateDoc', () => {
   test("rejects contentJson with wrong .type (not 'doc')", async () => {
     const doc = makeDoc();
     Doc.findByPk.mockResolvedValue(doc);
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: { type: 'paragraph', content: [] } } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { contentJson: { type: 'paragraph', content: [] } } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
     expect(res.status).toHaveBeenCalledWith(400);
@@ -486,7 +504,7 @@ describe('updateDoc', () => {
     // Build a JSON object > 2MB
     const bigText = 'a'.repeat(3 * 1024 * 1024);
     const req = {
-      user: ADMIN,
+      user: OWNER,
       params: { id: 'd1' },
       body: { contentJson: { type: 'doc', content: [{ type: 'text', text: bigText }] } },
     };
@@ -520,7 +538,7 @@ describe('updateDoc', () => {
     DocVersion.create.mockResolvedValue({});
 
     const newJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'first' }] }] };
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { contentJson: newJson } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { contentJson: newJson } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
@@ -529,15 +547,16 @@ describe('updateDoc', () => {
     expect(versionArgs.docId).toBe('d1');
     expect(versionArgs.contentJson).toEqual(newJson);
     expect(versionArgs.contentText).toBe('first');
-    expect(versionArgs.savedBy).toBe(ADMIN.id);
+    expect(versionArgs.savedBy).toBe(OWNER.id);
   });
 
   test('accepts valid sharePolicy enum values', async () => {
+    // Phase 3: sharePolicy changes are owner-only.
     const doc = makeDoc();
     Doc.findByPk
       .mockResolvedValueOnce(doc)
       .mockResolvedValueOnce(doc);
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { sharePolicy: 'public_link' } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { sharePolicy: 'public_link' } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
@@ -549,7 +568,7 @@ describe('updateDoc', () => {
     const doc = makeDoc();
     // Only one findByPk needed — early return path before reload.
     Doc.findByPk.mockResolvedValue(doc);
-    const req = { user: ADMIN, params: { id: 'd1' }, body: { sharePolicy: 'evil-policy' } };
+    const req = { user: OWNER, params: { id: 'd1' }, body: { sharePolicy: 'evil-policy' } };
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
@@ -672,12 +691,14 @@ describe('listVersions', () => {
   });
 
   test('200 returns versions array with attributes excluding contentJson', async () => {
+    // Phase 3: listVersions requires 'view' access — OWNER matches the
+    // makeDoc default createdBy fallback.
     Doc.findByPk.mockResolvedValue(makeDoc({ workspaceId: 'w1' }));
     Workspace.findByPk.mockResolvedValue(makeWorkspace());
     const versions = [makeVersion({ id: 'v1' }), makeVersion({ id: 'v2' })];
     DocVersion.findAll.mockResolvedValue(versions);
 
-    const req = { user: ADMIN, params: { id: 'd1' } };
+    const req = { user: OWNER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.listVersions(req, res);
 
@@ -705,9 +726,10 @@ describe('restoreVersion', () => {
   });
 
   test('404 when version missing', async () => {
+    // Phase 3: restoreVersion requires 'edit' access.
     Doc.findByPk.mockResolvedValue(makeDoc());
     DocVersion.findOne.mockResolvedValue(null);
-    const req = { user: ADMIN, params: { id: 'd1', versionId: 'missing-version' } };
+    const req = { user: OWNER, params: { id: 'd1', versionId: 'missing-version' } };
     const res = mockRes();
     await docCtrl.restoreVersion(req, res);
     expect(res.status).toHaveBeenCalledWith(404);

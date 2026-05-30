@@ -54,7 +54,7 @@ function formatTime(iso) {
  * one tab and the submitter in another stay in sync without refresh.
  */
 export default function ApprovalSection({ task, onUpdate }) {
-  const { user, isSuperAdmin } = useAuth();
+  const { user, isSuperAdmin, isTier2, isTier3 } = useAuth();
   const { success, error: toastError } = useToast();
 
   // Local mirror of the chain. Hydrated from props (flows ship via the task
@@ -226,11 +226,15 @@ export default function ApprovalSection({ task, onUpdate }) {
   // gate) was the bypass we removed. The standard "submit for approval"
   // initiation path now applies to every non-super-admin owner regardless of
   // who else is on the assignee list.
+  // Tier 2 / Tier 3 can initiate a submission even when they aren't on the
+  // task's assignee list — they're routing it up to the next senior approver
+  // in THEIR own chain. Mirrors the Done-status intercept in TaskRow /
+  // TaskModal so the panel-button path stays in sync with the inline path.
   const canResubmit =
     !isSuperAdmin
     && (
       ((approvalStatus === 'changes_requested' || approvalStatus === 'rejected') && isOriginalSubmitter)
-      || (!approvalStatus && isOwner)
+      || (!approvalStatus && (isOwner || isTier2 || isTier3))
     );
 
   function openActionPanel(action) {

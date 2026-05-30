@@ -27,9 +27,12 @@ jest.mock('../../models', () => ({
   TaskAssignee:   { findAll: jest.fn() },
   TaskOwner:      { findAll: jest.fn() },
   Subtask:        { findAll: jest.fn() },
-  Doc:            { findByPk: jest.fn() },
+  Doc:            { findByPk: jest.fn(), findAll: jest.fn() },
   Workspace:      { findByPk: jest.fn() },
   DocComment:     { findAll: jest.fn() },
+  // feat/docs-personal-notion Phase 3 — buildDocScope now calls
+  // docAccessSvc.hasDocAccess, which reads DocAccess.findOne.
+  DocAccess:      { findOne: jest.fn(), findAll: jest.fn() },
 }));
 
 jest.mock('../../services/boardVisibilityService', () => ({
@@ -302,6 +305,55 @@ describe('buildScopeContext', () => {
     expect(text).toContain('Launch goals');
     expect(text).toContain('Ship by Q3 end of quarter');
     expect(text).toContain('Owners: @Sara, @Mike');
+  });
+
+  it('doc scope walks BlockNote Block[] shape (Phase 6+ docs)', async () => {
+    // BlockNote stores contentJson as a top-level array of Block objects.
+    // The walker must recurse into `content[]` AND `children[]`, and read
+    // mention props.label (vs Tiptap's attrs.label) so the Sidekick gets
+    // meaningful context regardless of editor.
+    Doc.findByPk.mockResolvedValue({
+      id: 'd-bn',
+      title: 'New Notion-style doc',
+      workspaceId: 'w1',
+      contentFormat: 'blocknote_json',
+      contentJson: [
+        {
+          id: 'b1', type: 'heading', props: { level: 1 },
+          content: [{ type: 'text', text: 'Launch plan', styles: {} }],
+          children: [],
+        },
+        {
+          id: 'b2', type: 'bulletListItem', props: {},
+          content: [
+            { type: 'text', text: 'Owners: ', styles: {} },
+            { type: 'mention', props: { userId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', label: 'Sara' } },
+            { type: 'text', text: ' and ', styles: {} },
+            { type: 'mention', props: { userId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', label: 'Mike' } },
+          ],
+          children: [
+            {
+              id: 'b3', type: 'bulletListItem', props: {},
+              content: [{ type: 'text', text: 'Nested deliverable', styles: {} }],
+              children: [],
+            },
+          ],
+        },
+      ],
+      contentText: '',
+      lastEditedAt: new Date('2026-05-25T10:00:00Z'),
+      creator: { id: 'u9', name: 'Sunny Mehta' },
+      workspace: { id: 'w1', name: 'Engineering' },
+    });
+    const SUPER = { id: 'super-1', role: 'admin', isSuperAdmin: true };
+    const text = await buildScopeContext(SUPER, { scope: 'doc', scopeId: 'd-bn' });
+
+    expect(text).toContain('DOC SCOPE');
+    expect(text).toContain('Launch plan');                // heading
+    expect(text).toContain('Owners:');                    // paragraph text
+    expect(text).toContain('@Sara');                      // mention via props.label
+    expect(text).toContain('@Mike');                      // second mention
+    expect(text).toContain('Nested deliverable');         // children recursion
   });
 
   it('doc scope falls back to contentText when contentJson is missing', async () => {

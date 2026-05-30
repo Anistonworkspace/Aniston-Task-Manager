@@ -546,7 +546,7 @@ export default function TaskModal({
   onClose, onUpdate, onDelete,
   onPrev, onNext,
 }) {
-  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions, isTier1, isTier2 } = useAuth();
+  const { user, canManage, isMember, isManager, isAdmin, isSuperAdmin, granularPermissions, isTier1, isTier2, isTier3 } = useAuth();
   const t = useT();
   const { error: toastError, success: toastSuccess } = useToast();
   const shellCloseRef = useRef(null);
@@ -658,6 +658,49 @@ export default function TaskModal({
     setReminders(normalizeReminderProps(task?.reminders));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(task?.reminders || null)]);
+
+  // ── Debounced reminder save ────────────────────────────────────────────
+  // The reminder picker calls onChange on every chip/toggle/time click. Each
+  // call used to fire its own PUT /tasks/:id, so a single gesture ("Repeat" on
+  // → "Specific times") sent two requests back-to-back. They raced on the
+  // server (and their echoes could arrive out of order), leaving the task with
+  // conflicting reminder rows and the toggle snapping back off. We now keep the
+  // optimistic UI update immediate but COALESCE the network save into one PUT
+  // carrying the final desired state. Refs (not state) so the timer survives
+  // re-renders and the flush always sees the latest `save`/payload.
+  const reminderSaveTimerRef = useRef(null);
+  const reminderPendingRef = useRef(null);
+  const reminderSaveFnRef = useRef(null);
+  const flushReminderSave = useCallback(() => {
+    if (reminderSaveTimerRef.current) {
+      clearTimeout(reminderSaveTimerRef.current);
+      reminderSaveTimerRef.current = null;
+    }
+    const payload = reminderPendingRef.current;
+    reminderPendingRef.current = null;
+    if (payload && typeof reminderSaveFnRef.current === 'function') {
+      reminderSaveFnRef.current({ reminders: payload });
+    }
+  }, []);
+  // Flush any pending reminder save when the modal unmounts so a change made
+  // just before close isn't lost.
+  useEffect(() => () => flushReminderSave(), [flushReminderSave]);
+  // Schedule a coalesced reminder save. Optimistic state is updated by the
+  // caller; this only debounces the network write.
+  const queueReminderSave = useCallback((next) => {
+    if (!task?.id) return;
+    reminderPendingRef.current = next;
+    if (reminderSaveTimerRef.current) clearTimeout(reminderSaveTimerRef.current);
+    reminderSaveTimerRef.current = setTimeout(() => {
+      reminderSaveTimerRef.current = null;
+      flushReminderSave();
+    }, 500);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.id, flushReminderSave]);
+  // Keep the flush pointed at the latest `save` closure (hoisted function
+  // declaration, defined below) so a debounced/unmount flush never uses a
+  // stale `task` reference.
+  reminderSaveFnRef.current = save;
 
   // The board task list endpoint (`GET /api/tasks?boardId=...`) only enriches
   // each row with the reminder *summary* (hasActiveReminder, nextReminderAt,
@@ -1240,9 +1283,14 @@ export default function TaskModal({
     || (Array.isArray(task?.taskAssignees) && task.taskAssignees.some(ta => ta.userId === user.id))
   );
 
+  // Tier 2 / Tier 3 are allowed to submit on tasks they don't own — the
+  // approval chain walks up from their own hierarchy to the next senior
+  // approver (Tier 1 / super admin). Without this carve-out the backend
+  // approvalGateForCompletion 403s with "requires manager approval" the
+  // moment a manager flips status to Done on a member's task.
   const shouldInterceptDone = (val) =>
     val === 'done'
-    && isTaskOwner
+    && (isTaskOwner || isTier2 || isTier3)
     && !isSuperAdmin
     && task?.approvalStatus !== 'pending_approval'
     && task?.approvalStatus !== 'approved';
@@ -2148,8 +2196,8 @@ export default function TaskModal({
                           dueDate={dueDate}
                           disabled={deletedRemotely}
                           onChange={(next) => {
-                            setReminders(next);
-                            if (task?.id) save({ reminders: next });
+                            setReminders(next);            // optimistic, immediate
+                            queueReminderSave(next);       // debounced single PUT
                           }}
                         />
                       ) : reminders.length === 0 ? (

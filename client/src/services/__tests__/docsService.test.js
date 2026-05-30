@@ -11,7 +11,8 @@ vi.mock('../api', () => ({
 
 import api from '../api';
 import {
-  listWorkspaceDocs,
+  listMyDocs,
+  listWorkspaceDocs, // backward-compat shim — still tested below
   createDoc,
   getDoc,
   updateDoc,
@@ -27,37 +28,58 @@ beforeEach(() => {
 });
 
 describe('docsService client wrappers', () => {
-  it('listWorkspaceDocs GETs /workspaces/:id/docs with q + archived params', async () => {
+  // ─── Phase 2 — personal docs surface ───────────────────────────
+
+  it('listMyDocs GETs /docs with q + archived params', async () => {
     api.get.mockResolvedValue({
       data: { success: true, data: { docs: [{ id: 'd1' }] } },
     });
-    const out = await listWorkspaceDocs('w1', { q: 'spec', archived: true });
-    expect(api.get).toHaveBeenCalledWith('/workspaces/w1/docs', {
+    const out = await listMyDocs({ q: 'spec', archived: true });
+    expect(api.get).toHaveBeenCalledWith('/docs', {
       params: { q: 'spec', archived: '1' },
     });
     expect(out.docs).toEqual([{ id: 'd1' }]);
   });
 
-  it('listWorkspaceDocs omits q and archived when not provided', async () => {
+  it('listMyDocs omits q and archived when not provided', async () => {
     api.get.mockResolvedValue({ data: { success: true, data: { docs: [] } } });
-    await listWorkspaceDocs('w1');
-    expect(api.get).toHaveBeenCalledWith('/workspaces/w1/docs', { params: {} });
+    await listMyDocs();
+    expect(api.get).toHaveBeenCalledWith('/docs', { params: {} });
   });
 
-  it('listWorkspaceDocs throws when workspaceId is missing', async () => {
-    await expect(listWorkspaceDocs()).rejects.toThrow(/workspaceId/);
-    expect(api.get).not.toHaveBeenCalled();
+  it('listMyDocs forwards filter param when provided', async () => {
+    api.get.mockResolvedValue({ data: { success: true, data: { docs: [] } } });
+    await listMyDocs({ filter: 'owned' });
+    expect(api.get).toHaveBeenCalledWith('/docs', { params: { filter: 'owned' } });
   });
 
-  it('createDoc POSTs /workspaces/:id/docs with body and throws on missing workspaceId', async () => {
+  it('listWorkspaceDocs is a backward-compat shim that ignores workspaceId', async () => {
+    api.get.mockResolvedValue({
+      data: { success: true, data: { docs: [{ id: 'd1' }] } },
+    });
+    // workspaceId param is intentionally discarded — call should go to /docs.
+    await listWorkspaceDocs('w1', { q: 'spec' });
+    expect(api.get).toHaveBeenCalledWith('/docs', { params: { q: 'spec' } });
+  });
+
+  it('createDoc POSTs /docs with body (no workspaceId)', async () => {
     api.post.mockResolvedValue({
       data: { success: true, data: { doc: { id: 'd1', title: 'Hi' } } },
     });
-    const out = await createDoc('w1', { title: 'Hi' });
-    expect(api.post).toHaveBeenCalledWith('/workspaces/w1/docs', { title: 'Hi' });
+    const out = await createDoc({ title: 'Hi' });
+    expect(api.post).toHaveBeenCalledWith('/docs', { title: 'Hi' });
     expect(out.doc.id).toBe('d1');
+  });
 
-    await expect(createDoc()).rejects.toThrow(/workspaceId/);
+  it('createDoc forwards contentFormat when set', async () => {
+    api.post.mockResolvedValue({
+      data: { success: true, data: { doc: { id: 'd2' } } },
+    });
+    await createDoc({ title: 'BN doc', contentFormat: 'blocknote_json' });
+    expect(api.post).toHaveBeenCalledWith('/docs', {
+      title: 'BN doc',
+      contentFormat: 'blocknote_json',
+    });
   });
 
   it('getDoc GETs /docs/:id and throws when id is missing', async () => {
@@ -130,17 +152,17 @@ describe('docsService client wrappers', () => {
   it('unwrap helper: prefers res.data.data, falls back to res.data, then {}', async () => {
     // Nested {success,data} shape (the canonical backend format)
     api.get.mockResolvedValue({ data: { success: true, data: { docs: ['nested'] } } });
-    let out = await listWorkspaceDocs('w1');
+    let out = await listMyDocs();
     expect(out).toEqual({ docs: ['nested'] });
 
     // Flat {data:{...}} shape (no nested data wrapper)
     api.get.mockResolvedValue({ data: { docs: ['flat'] } });
-    out = await listWorkspaceDocs('w1');
+    out = await listMyDocs();
     expect(out).toEqual({ docs: ['flat'] });
 
     // Completely empty/missing response
     api.get.mockResolvedValue({});
-    out = await listWorkspaceDocs('w1');
+    out = await listMyDocs();
     expect(out).toEqual({});
   });
 

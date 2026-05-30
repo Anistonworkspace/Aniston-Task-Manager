@@ -52,7 +52,7 @@ function TileIconChip({ icon: Icon, color }) {
 
 // ── Page ───────────────────────────────────────────────────────────────
 export default function HomePage() {
-  const { user, canManage } = useAuth();
+  const { user } = useAuth();
   const t = useT();
   const navigate = useNavigate();
   const { error: toastError } = useToast();
@@ -64,12 +64,11 @@ export default function HomePage() {
   const [updatesOpen, setUpdatesOpen] = useState(false);
 
   useEffect(() => {
-    // loadStats is for ALL roles, not just managers. The endpoint applies
-    // taskVisibility server-side, so a member's response only contains
-    // their own tasks (memberStats[me] is the user's accurate per-status
-    // counts, untruncated by /tasks limits). The `Completed = 0` bug came
-    // from gating this call to canManage and then deriving counts from a
-    // 20-row /tasks slice that drops Done tasks to the bottom.
+    // loadStats is for ALL roles. The endpoint returns memberStats keyed by
+    // user id; we pick memberStats[me] for the Home dashboard so every tile
+    // reflects only the caller's tasks (Total / Completed / In Progress /
+    // Stuck / Due Today / Overdue). Team-wide aggregates live on the Team
+    // Dashboard page, not here.
     Promise.all([
       loadBoards(),
       loadNotifications(),
@@ -171,42 +170,26 @@ export default function HomePage() {
     ? 0
     : Math.round((personalDone / personalTotal) * 100);
 
-  // ── Tile values: managers see team-scoped; members see personal ────
-  // Due Today and Overdue stay personal for both roles — they're
-  // "what should I focus on today" not team-management metrics.
-  const totalCount = canManage && summary ? (summary.totalTasks || 0) : personalTotal;
-  const completedCount = canManage && summary ? (summary.done || 0) : personalDone;
-  const inProgressCount = canManage && stats
-    ? (statusCounts.working_on_it || statusCounts.in_progress || summary?.working || 0)
-    : personalInProgress;
-  const stuckCount = canManage && stats
-    ? (statusCounts.stuck || summary?.stuck || 0)
-    : personalStuck;
+  // ── Tile values: ALL tiles are personal-scoped ─────────────────────
+  // The Home dashboard is "my task health". Team-wide aggregates live on
+  // the separate Team Dashboard (`/dashboard` / `/manager-dashboard` /
+  // `/admin-dashboard`). Even a super-admin sees only their own tasks
+  // here. Members previously saw personal; managers + admins used to see
+  // team summary — those branches have been collapsed to personal too.
+  const totalCount = personalTotal;
+  const completedCount = personalDone;
+  const inProgressCount = personalInProgress;
+  const stuckCount = personalStuck;
   const dueTodayCount = personalDueToday;
   const overdueCount = personalOverdue;
   const activeCount = Math.max(0, totalCount - completedCount);
 
-  const teamCompletionRate = (() => {
-    if (!summary) return 0;
-    // Forward-compat: handle the proposed { current, previous, delta } shape
-    // documented in TODO_BACKEND.md without breaking the current numeric/derived path.
-    if (typeof stats.completionRate === 'object' && stats.completionRate) {
-      return stats.completionRate.current ?? 0;
-    }
-    if (typeof stats.completionRate === 'number') return stats.completionRate;
-    const total = summary.totalTasks || 0;
-    const done = summary.done || 0;
-    return total > 0 ? Math.round((done / total) * 100) : 0;
-  })();
-  const completionRate = canManage ? teamCompletionRate : personalCompletionRate;
+  const completionRate = personalCompletionRate;
 
-  // Week-over-week delta. Only render the trend chip when the backend
-  // returns a real number — never fabricate one. The current endpoint does
-  // not surface this; the chip stays hidden until /dashboard/stats ships
-  // the proposed { current, previous, delta } shape.
-  const completionDelta = canManage && stats && typeof stats.completionRate === 'object'
-    ? (typeof stats.completionRate.delta === 'number' ? stats.completionRate.delta : null)
-    : null;
+  // Week-over-week delta is a team-aggregate concept and never applied
+  // to a single user's task list, so the trend chip stays hidden on the
+  // Home dashboard regardless of tier.
+  const completionDelta = null;
   const showTrendChip = completionDelta !== null && completionDelta !== 0;
   const trendUp = (completionDelta ?? 0) > 0;
 
@@ -269,9 +252,7 @@ export default function HomePage() {
         >
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
-              <TileLabel>
-                {canManage ? 'Team Completion Rate' : 'Your Completion Rate'}
-              </TileLabel>
+              <TileLabel>Your Completion Rate</TileLabel>
               <Info size={11} className="text-text-tertiary" aria-hidden="true" />
             </div>
             {showTrendChip && (
@@ -294,7 +275,7 @@ export default function HomePage() {
                 {completionRate}%
               </p>
               <p className="text-xs text-text-secondary mt-2">
-                {canManage ? 'This period' : 'Across your tasks'}
+                Across your tasks
                 {totalCount > 0 && (
                   <span className="text-text-tertiary">
                     {' · '}{completedCount}/{totalCount} done
@@ -327,7 +308,7 @@ export default function HomePage() {
             {completedCount}
           </p>
           <p className="text-[11px] text-text-tertiary mt-1.5">
-            {canManage ? 'This period' : 'Across your tasks'}
+            Across your tasks
           </p>
         </StatTile>
 
@@ -393,7 +374,7 @@ export default function HomePage() {
             {inProgressCount}
           </p>
           <p className="text-[11px] text-text-tertiary mt-1.5">
-            {canManage ? 'Across your team' : 'Currently working'}
+            Currently working
           </p>
         </StatTile>
 
@@ -421,7 +402,6 @@ export default function HomePage() {
           </p>
           <p className="text-[11px] text-text-tertiary mt-auto pt-2">
             {activeCount} active
-            {canManage && totalCount > 0 ? ' · across your team' : ''}
           </p>
         </StatTile>
 

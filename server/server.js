@@ -1,7 +1,44 @@
-const http = require('http');
+﻿const http = require('http');
 const path = require('path');
 require('dotenv').config();
 // Multi-manager support: ManagerRelation model + routes added (nodemon restart trigger)
+
+// Docker Desktop containers on Windows commonly have no outbound IPv6
+// routing. Microsoft's DNS-based geo-load-balancing sometimes returns ONLY
+// IPv6 A/AAAA records for endpoints like login.microsoftonline.com and
+// graph.microsoft.com (varies per query / region / time), so even with
+// dns.setDefaultResultOrder('ipv4first') the resolver hands back zero
+// IPv4 addresses to reorder, and every connect() hits ENETUNREACH.
+//
+// The robust fix is to force dns.lookup to ask for IPv4 records only
+// when the caller didn't pin a family explicitly. Every HTTP client
+// (axios, fetch, https, node-fetch, ...) routes through dns.lookup, so
+// this single patch covers all outbound calls. Docker internal services
+// (e.g. the `postgres` hostname inside the compose network) are IPv4-
+// only by default, so they're unaffected.
+//
+// Production (AWS) has working IPv6, so we leave the default behavior
+// alone there. FORCE_IPV4_DNS=true can opt-in for prod debugging.
+if (process.env.NODE_ENV !== 'production' || process.env.FORCE_IPV4_DNS === 'true') {
+  try {
+    const dns = require('dns');
+    const originalLookup = dns.lookup;
+    dns.lookup = function patchedLookup(hostname, optionsOrCb, callback) {
+      let options = optionsOrCb;
+      let cb = callback;
+      if (typeof options === 'function') { cb = options; options = {}; }
+      else if (typeof options === 'number') { options = { family: options }; }
+      else if (options == null) { options = {}; }
+      if (options.family === undefined || options.family === 0) {
+        options = Object.assign({}, options, { family: 4 });
+      }
+      return originalLookup.call(dns, hostname, options, cb);
+    };
+    // Also disable Happy Eyeballs so any caller that DOES pass family:0
+    // explicitly still gets sequential single-family behavior.
+    try { require('net').setDefaultAutoSelectFamily(false); } catch (_) { /* Node <20 */ }
+  } catch (_) { /* leave defaults */ }
+}
 
 const express = require('express');
 const cors = require('cors');
@@ -19,7 +56,7 @@ const { testConnection } = require('./config/db');
 const { sequelize } = require('./models');
 const { initializeSocket } = require('./services/socketService');
 
-// ─── Route imports ───────────────────────────────────────────
+// â”€â”€â”€ Route imports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const authRoutes = require('./routes/auth');
 const boardRoutes = require('./routes/boards');
 const taskRoutes = require('./routes/tasks');
@@ -40,7 +77,7 @@ const meetingRoutes = require('./routes/meetings');
 const dependencyRoutes = require('./routes/dependencies');
 const teamsRoutes = require('./routes/teams');
 const automationRoutes = require('./routes/automations');
-// Workflow Canvas (Phase W1) — visual node-graph automation. Coexists
+// Workflow Canvas (Phase W1) â€” visual node-graph automation. Coexists
 // with the legacy automation engine on /api/automations; both routes
 // + both engines stay live.
 const workflowRoutes = require('./routes/workflows');
@@ -75,22 +112,25 @@ const boardOrderRoutes = require('./routes/boardOrders');
 const systemSettingsRoutes = require('./routes/systemSettings');
 const meetingStreamRoutes = require('./routes/meetingStream');
 const desktopDownloadRoutes = require('./routes/desktopDownload');
+// Tier-1 (Super Admin) database backup management. Every endpoint inside
+// is gated by superAdminOnly â€” see routes/adminBackups.js.
+const adminBackupsRoutes = require('./routes/adminBackups');
 
-// ─── App initialisation ─────────────────────────────────────
+// â”€â”€â”€ App initialisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const app = express();
 
 // Trust private-network proxies in front of the app.
 //
 // Production topology has TWO proxies: host nginx (terminates TLS on :443)
-// → frontend container nginx (proxies /api/ to backend container). With the
+// â†’ frontend container nginx (proxies /api/ to backend container). With the
 // previous `trust proxy: 1`, Express only stripped one hop from the right of
 // X-Forwarded-For, so req.ip resolved to the Docker bridge gateway (e.g.
 // 172.19.0.1) for every request. That meant express-rate-limit bucketed
-// EVERY user under the same key — one stuck browser tab DoS'd the whole
+// EVERY user under the same key â€” one stuck browser tab DoS'd the whole
 // product, and `combined`-format access logs only ever showed the bridge IP.
 //
 // Trusting the standard private-IP ranges (loopback / link-local / unique-
-// local — see RFC 1918 + RFC 4193) walks XFF from right to left, skips every
+// local â€” see RFC 1918 + RFC 4193) walks XFF from right to left, skips every
 // trusted proxy, and uses the first non-private IP as req.ip. That is the
 // real public client IP regardless of how many internal hops are added.
 //
@@ -100,27 +140,27 @@ app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
 const server = http.createServer(app);
 
-// ─── Socket.io initialisation ────────────────────────────────
+// â”€â”€â”€ Socket.io initialisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 initializeSocket(server);
 
-// ─── Meeting-mode audio streaming WebSocket ──────────────────
+// â”€â”€â”€ Meeting-mode audio streaming WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Proxies browser PCM audio to Deepgram and forwards speaker-labeled
 // transcripts back. Claims only /api/meeting-stream/ws so it coexists
 // with Socket.io (which handles /socket.io/*).
 const { attachMeetingStream } = require('./services/meetingStreamService');
 attachMeetingStream(server);
 
-// ─── Doc Editor Phase G — collab WebSocket (Hocuspocus + Y.js) ───────
+// â”€â”€â”€ Doc Editor Phase G â€” collab WebSocket (Hocuspocus + Y.js) â”€â”€â”€â”€â”€â”€â”€
 // Claims only /api/docs-collab/ws so it coexists with Socket.io and
-// /api/meeting-stream/ws — each upgrade handler ignores paths it
+// /api/meeting-stream/ws â€” each upgrade handler ignores paths it
 // doesn't own. attachDocCollab returns null and logs if hocuspocus/yjs
 // aren't installed; boot continues either way.
 const { attachDocCollab } = require('./services/docCollabService');
 attachDocCollab(server);
 
-// ─── Global middleware ───────────────────────────────────────
+// â”€â”€â”€ Global middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// D-8 — Content-Security-Policy.
+// D-8 â€” Content-Security-Policy.
 //
 // We deploy CSP in REPORT-ONLY mode first so the browser sends violation
 // reports without blocking anything. After observing the wild for a few
@@ -130,35 +170,35 @@ attachDocCollab(server);
 //
 // Directive choices (each annotated with WHY):
 //   default-src 'self'
-//     — minimum baseline; any directive not explicitly set falls back here.
+//     â€” minimum baseline; any directive not explicitly set falls back here.
 //   script-src 'self' 'unsafe-inline' 'unsafe-eval'
-//     — Vite injects inline bootstrap scripts in index.html and the dev
+//     â€” Vite injects inline bootstrap scripts in index.html and the dev
 //       toolbar uses eval. 'unsafe-inline' weakens script-src on its own,
 //       but combined with our XSS sanitisation + the new SVG check (D-5)
 //       this is acceptable. Long-term we'd switch to nonces or hashes.
 //   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com
-//     — Tailwind's JIT generates style attributes; component libraries
+//     â€” Tailwind's JIT generates style attributes; component libraries
 //       (lucide-react, framer-motion) sometimes inline transforms.
 //   img-src 'self' data: blob: https:
-//     — avatars stored on /uploads (self), uploaded image previews
+//     â€” avatars stored on /uploads (self), uploaded image previews
 //       (data:/blob:), and external avatars / OG images (https:).
 //   font-src 'self' data: https://fonts.gstatic.com
-//     — embedded data URIs for icon fonts, Google Fonts CDN.
+//     â€” embedded data URIs for icon fonts, Google Fonts CDN.
 //   connect-src 'self' ws: wss: https://login.microsoftonline.com
-//     — Socket.io needs ws/wss; SSO redirects to login.microsoftonline.com.
+//     â€” Socket.io needs ws/wss; SSO redirects to login.microsoftonline.com.
 //   frame-ancestors 'none'
-//     — disallow being embedded in an iframe (clickjacking defence).
+//     â€” disallow being embedded in an iframe (clickjacking defence).
 //   form-action 'self' https://login.microsoftonline.com
-//     — restrict where forms can post. Microsoft login form posts to
+//     â€” restrict where forms can post. Microsoft login form posts to
 //       login.microsoftonline.com during SSO.
 //   object-src 'none'
-//     — kill the legacy <object>/<embed>/applet attack surface.
+//     â€” kill the legacy <object>/<embed>/applet attack surface.
 //   base-uri 'self'
-//     — prevent <base> tag injection from rerouting relative URLs.
+//     â€” prevent <base> tag injection from rerouting relative URLs.
 //   worker-src 'self' blob:
-//     — service worker (sw.js) + any blob workers.
+//     â€” service worker (sw.js) + any blob workers.
 //   manifest-src 'self'
-//     — PWA manifest.
+//     â€” PWA manifest.
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
@@ -172,7 +212,7 @@ const cspDirectives = {
   baseUri: ["'self'"],
   workerSrc: ["'self'", 'blob:'],
   manifestSrc: ["'self'"],
-  // Legacy CSP1 reporting directive — broadly supported. Modern browsers
+  // Legacy CSP1 reporting directive â€” broadly supported. Modern browsers
   // also honour the Reporting-Endpoints header + report-to directive but
   // report-uri is the lowest-common-denominator and works for everyone.
   reportUri: ['/api/csp-report'],
@@ -230,7 +270,7 @@ const allowedOrigins = (() => {
     }
     for (const o of list) {
       if (o.includes('*')) {
-        console.error(`[Fatal] CLIENT_URL contains wildcard "${o}" — refusing to start.`);
+        console.error(`[Fatal] CLIENT_URL contains wildcard "${o}" â€” refusing to start.`);
         process.exit(1);
       }
       try {
@@ -284,10 +324,10 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ─── Origin validation (CSRF-like protection for mutating requests) ──────
+// â”€â”€â”€ Origin validation (CSRF-like protection for mutating requests) â”€â”€â”€â”€â”€â”€
 // Runs in every environment except 'test'. The previous code only enforced
 // in production, which meant a developer typo like "I'll just point this at
-// `CLIENT_URL=*`" would never surface until prod boot — by which point the
+// `CLIENT_URL=*`" would never surface until prod boot â€” by which point the
 // permissive value might already be merged. Validating in dev too forces the
 // envvar to be correct earlier.
 //
@@ -299,14 +339,14 @@ if (process.env.NODE_ENV !== 'test') {
   app.use((req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
     const raw = req.headers.origin || req.headers.referer;
-    if (!raw) return next(); // server-to-server / curl — not subject to SOP
+    if (!raw) return next(); // server-to-server / curl â€” not subject to SOP
 
     let candidate;
     try {
       const u = new URL(raw);
       candidate = `${u.protocol}//${u.host}`;
     } catch {
-      // Malformed Origin/Referer — refuse rather than silently allow.
+      // Malformed Origin/Referer â€” refuse rather than silently allow.
       return res.status(403).json({ success: false, message: 'Malformed Origin/Referer header.' });
     }
 
@@ -317,7 +357,7 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
-// ─── Static file serving (uploads) ──────────────────────────
+// â”€â”€â”€ Static file serving (uploads) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Phase 5e (audit P0-1): /uploads is now AUTHENTICATED. Token is accepted
 // via Authorization: Bearer header OR ?token= query string so <img src=...>
 // tags still work once the frontend appends the JWT. Anonymous requests
@@ -327,8 +367,8 @@ const { getUploadDir } = require('./middleware/upload');
 const { authenticateForStatic } = require('./middleware/staticAuth');
 app.use('/uploads', authenticateForStatic, express.static(getUploadDir()));
 
-// ─── Upload config endpoint (tells frontend what's allowed) ─
-// INTENTIONALLY PUBLIC — returns only file extension/size limits (no secrets).
+// â”€â”€â”€ Upload config endpoint (tells frontend what's allowed) â”€
+// INTENTIONALLY PUBLIC â€” returns only file extension/size limits (no secrets).
 // Frontend needs this before uploads to show allowed formats, even on login page.
 const { UPLOAD_CATEGORIES } = require('./config/fileTypes');
 app.get('/api/upload-config', (req, res) => {
@@ -344,9 +384,9 @@ app.get('/api/upload-config', (req, res) => {
   res.json({ success: true, data: configs });
 });
 
-// ─── Health checks ───────────────────────────────────────────
+// â”€â”€â”€ Health checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // /api/health = lightweight liveness probe. Used by the Docker HEALTHCHECK
-// in deploy/Dockerfile.server. We deliberately do NOT hit the DB here — a
+// in deploy/Dockerfile.server. We deliberately do NOT hit the DB here â€” a
 // transient DB hiccup should not cause Docker to mark the container
 // unhealthy and (depending on swarm/compose setup) restart it. This endpoint
 // answering at all means the Node event loop is alive.
@@ -384,7 +424,7 @@ app.get('/api/health/deep', async (_req, res) => {
   }
 });
 
-// ─── Rate limiting ──────────────────────────────────────────
+// â”€â”€â”€ Rate limiting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Shared 429 response shape so the frontend can branch on `code === 'rate_limited'`
 // and read `retryAfter` (seconds) without parsing free-text. `standardHeaders`
@@ -427,7 +467,7 @@ const searchLimiter = rateLimit({
   handler: rateLimitHandler('search'),
 });
 
-// General API rate limiter — broad safety net for /api/*. Combined with the
+// General API rate limiter â€” broad safety net for /api/*. Combined with the
 // trust-proxy fix above this is now per real client IP, so one stuck browser
 // tab can only throttle ITSELF (and others on the same NAT, mitigated below
 // by route-specific limiters with their own budgets).
@@ -459,7 +499,7 @@ const externalLimiter = rateLimit({
   handler: rateLimitHandler('external'),
 });
 
-// P1-7 — Per-route mutation cap for label / reference / link endpoints.
+// P1-7 â€” Per-route mutation cap for label / reference / link endpoints.
 // Falls under the global 300/min for total traffic but caps any single
 // client at 60 mutations/minute on these specific surfaces. Without this
 // a logged-in user could spam-create thousands of refs/links per minute,
@@ -472,7 +512,7 @@ const mutationLimiter = rateLimit({
   handler: rateLimitHandler('mutation'),
 });
 
-// ─── API routes ──────────────────────────────────────────────
+// â”€â”€â”€ API routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use('/api', generalLimiter); // Apply to all API routes
 
 // External HRMS API (must be before dependency routes which apply global authenticate)
@@ -494,6 +534,11 @@ app.use('/api/subtasks', subtaskRoutes);
 app.use('/api/worklogs', worklogRoutes);
 app.use('/api/activities', activityRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+// feat/docs-personal-notion Phase 4 â€” global active-user mention search.
+// Mounted BEFORE the /api/users router so the `/mentions` sub-path doesn't
+// get caught by users.js's `/:id` patterns (toggle-status, delete, etc).
+const userMentionRoutes = require('./routes/userMentions');
+app.use('/api/users/mentions', userMentionRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/timeplans', timePlanRoutes);
 app.use('/api/reviews', reviewRoutes);
@@ -502,7 +547,7 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/meetings', meetingRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/automations', automationRoutes);
-// Workflow Canvas Phase W1 — sibling of /api/automations.
+// Workflow Canvas Phase W1 â€” sibling of /api/automations.
 app.use('/api/workflows', workflowRoutes);
 app.use('/api/forms', formRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -510,10 +555,10 @@ app.use('/api/permissions', permissionRoutes);
 app.use('/api/access-requests', accessRequestRoutes);
 app.use('/api/task-extras', taskExtrasRoutes);
 app.use('/api/announcements', announcementRoutes);
-// P1-7 — mutationLimiter applied BEFORE the route handlers. Reads still
+// P1-7 â€” mutationLimiter applied BEFORE the route handlers. Reads still
 // fall under the global limiter; writes get the per-route cap.
 app.use('/api/labels', mutationLimiter, labelRoutes);
-// Phase 2 — Status Tile Group (status template) routes. Reads are open to
+// Phase 2 â€” Status Tile Group (status template) routes. Reads are open to
 // anyone with board visibility (the controller gates); writes are restricted
 // to Tier 1/Tier 2 in the controller (no board-creator carve-out). The
 // mutationLimiter mirrors labels: a small per-route write cap on top of the
@@ -521,30 +566,38 @@ app.use('/api/labels', mutationLimiter, labelRoutes);
 app.use('/api/status-templates', mutationLimiter, statusTemplateRoutes);
 app.use('/api/task-references', mutationLimiter, taskReferenceRoutes);
 app.use('/api/task-links', mutationLimiter, taskLinkRoutes);
-// Observability endpoint — admin-only operational metrics snapshot.
+// Observability endpoint â€” admin-only operational metrics snapshot.
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/help-requests', helpRequestRoutes);
 app.use('/api/promotions', promotionRoutes);
 app.use('/api/hierarchy-levels', hierarchyRoutes);
 app.use('/api/manager-relations', managerRelationRoutes);
-// /api/director-plan retired — return 410 Gone for any direct hits.
+// /api/director-plan retired â€” return 410 Gone for any direct hits.
 app.use('/api/director-plan', (_req, res) => res.status(410).json({ success: false, message: 'Director Plan module has been removed.' }));
 app.use('/api/archive', archiveRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/integrations', integrationConfigRoutes);
 app.use('/api/notes', noteRoutes);
-// Doc Editor Phase B — collaborative documents inside a workspace.
-//   /api/docs/:id family          → flat routes for a single doc + versions
-//   /api/workspaces/:id/docs(/:..) → list + create handled inline below so
-//                                     the workspaceId param falls through
-//                                     to the controller cleanly.
+// Doc Editor Phase B â€” collaborative documents inside a workspace.
+//   /api/docs/:id family          â†’ flat routes for a single doc + versions
+//   /api/docs (GET, POST)   â†’ personal list + create (feat/docs-personal-notion Phase 2).
+//   /api/workspaces/:id/docs â†’ returns 410 Gone with a migration hint. Kept
+//                              for one release so any pinned client (mobile
+//                              app, third-party automation) gets a clear
+//                              "use the new endpoint" instead of a 404.
 const docRoutes = require('./routes/docs');
 const { authenticate } = require('./middleware/auth');
-const docCtl = require('./controllers/docController');
 app.use('/api/docs', docRoutes);
-app.get('/api/workspaces/:workspaceId/docs', authenticate, docCtl.listDocs);
-app.post('/api/workspaces/:workspaceId/docs', authenticate, docCtl.createDoc);
+function docsWorkspaceRemoved(_req, res) {
+  res.status(410).json({
+    success: false,
+    code: 'docs_workspace_removed',
+    message: 'Docs are now personal â€” use /api/docs (list/create) instead.',
+  });
+}
+app.get('/api/workspaces/:workspaceId/docs', authenticate, docsWorkspaceRemoved);
+app.post('/api/workspaces/:workspaceId/docs', authenticate, docsWorkspaceRemoved);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/transcription', transcriptionRoutes);
@@ -553,8 +606,11 @@ app.use('/api/outbound-webhooks', outboundWebhookRoutes);
 app.use('/api/recurring-tasks', recurringTaskRoutes);
 app.use('/api/board-orders', boardOrderRoutes);
 app.use('/api/system-settings', systemSettingsRoutes);
+// Tier-1 DB backup management. Mounted at /api/admin/backups so the URL
+// space makes the privilege level obvious to anyone reading nginx logs.
+app.use('/api/admin/backups', adminBackupsRoutes);
 app.use('/api/meeting-stream', meetingStreamRoutes);
-// Doc Editor Phase G — collab ticket endpoint. Mirrors meeting-stream
+// Doc Editor Phase G â€” collab ticket endpoint. Mirrors meeting-stream
 // ticket: short-lived JWT (60s) used to authenticate the WS upgrade
 // on /api/docs-collab/ws.
 const docCollabRoutes = require('./routes/docCollab');
@@ -564,8 +620,8 @@ app.use('/api/docs-collab', docCollabRoutes);
 // populated by `npm run desktop:publish`.
 app.use('/api/desktop', desktopDownloadRoutes);
 
-// ─── Multi-manager relation routes (inline for reliable loading) ───
-// /api/multi-manager/* — the legacy alias the OrgChartPage actually calls on
+// â”€â”€â”€ Multi-manager relation routes (inline for reliable loading) â”€â”€â”€
+// /api/multi-manager/* â€” the legacy alias the OrgChartPage actually calls on
 // drag-drop. Audit B4 fix: this surface previously lacked requirePermission,
 // so a Tier-2 user with an explicit DENY override could still mutate the
 // chart here even though the canonical /api/promotions/relations/* path was
@@ -579,10 +635,10 @@ app.put('/api/multi-manager/:id', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), 
 app.delete('/api/multi-manager/:id', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.removeRelation);
 app.post('/api/multi-manager/sync', mrAuth, mrMgr, mrPerm('org_chart', 'manage'), mrCtrl.syncFromManagerId);
 
-// Dependency routes mounted at /api (uses router.use(authenticate) — must be LAST)
+// Dependency routes mounted at /api (uses router.use(authenticate) â€” must be LAST)
 app.use('/api', dependencyRoutes);
 
-// ─── Boot-time route registration check ──────────────────────
+// â”€â”€â”€ Boot-time route registration check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Recurring source of confusion: a running Node process serving requests on
 // port 5000 keeps reporting "Route not found." for newly-added routes
 // because the process was started before the file existed and hasn't been
@@ -601,7 +657,7 @@ try {
   } else {
     console.warn(`[Routes] MISSING board-order routes! get=${getOk} put=${putOk}. Check server/routes/workspaces.js and restart the backend.`);
   }
-  // Workspace-order (Rearrange Workspaces) routes — same paranoia as above.
+  // Workspace-order (Rearrange Workspaces) routes â€” same paranoia as above.
   // The literal `/order` path MUST be registered before `/:id` in the
   // router file or Express will route `GET /api/workspaces/order` into
   // getWorkspace with id="order" and the 404 path won't even fire.
@@ -621,14 +677,14 @@ try {
   console.warn('[Routes] route registration check failed:', e.message);
 }
 
-// ─── 404 handler ─────────────────────────────────────────────
+// â”€â”€â”€ 404 handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // In development, include the method and path in the response so a stale
 // route registration is obvious from the network panel. In production, keep
 // the response generic to avoid leaking the API surface to unauthenticated
 // scanners.
 app.use((req, res) => {
   const isDev = process.env.NODE_ENV !== 'production';
-  // Always log the unmatched request — this is the single most useful
+  // Always log the unmatched request â€” this is the single most useful
   // diagnostic when "Route not found" comes back.
   console.warn(`[Server] 404 ${req.method} ${req.originalUrl}`);
   res.status(404).json({
@@ -638,7 +694,7 @@ app.use((req, res) => {
   });
 });
 
-// ─── Global error handler ────────────────────────────────────
+// â”€â”€â”€ Global error handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Centralized in middleware/errorHandler.js. Classifies the thrown error
 // into a stable code + safe user-facing message, redacts secrets from the
 // server-side log, and never leaks stack traces, SQL fragments, or column
@@ -647,7 +703,7 @@ app.use((req, res) => {
 // carrying { code, message, requestId, details? } for new frontend code.
 app.use(require('./middleware/errorHandler'));
 
-// ─── Start server ────────────────────────────────────────────
+// â”€â”€â”€ Start server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 
 const start = async () => {
@@ -655,7 +711,7 @@ const start = async () => {
     // Test DB connection
     await testConnection();
 
-    // ── Auto-migration: Convert tasks.status from ENUM to VARCHAR(50) ──
+    // â”€â”€ Auto-migration: Convert tasks.status from ENUM to VARCHAR(50) â”€â”€
     // This is required for custom task-level statuses. Safe to re-run.
     try {
       const [colInfo] = await sequelize.query(
@@ -673,13 +729,13 @@ const start = async () => {
         await sequelize.query(`DROP TYPE IF EXISTS "enum_tasks_status"`);
         console.log('[Server] tasks.status converted to VARCHAR(50) successfully.');
       } else {
-        console.log('[Server] tasks.status is already VARCHAR — no ENUM conversion needed.');
+        console.log('[Server] tasks.status is already VARCHAR â€” no ENUM conversion needed.');
       }
     } catch (e) {
       console.warn('[Server] Status ENUM migration warning:', e.message?.slice(0, 120));
     }
 
-    // ── Auto-migration: Add statusConfig JSONB column to tasks ──
+    // â”€â”€ Auto-migration: Add statusConfig JSONB column to tasks â”€â”€
     try {
       await sequelize.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "statusConfig" JSONB DEFAULT NULL`);
       console.log('[Server] tasks.statusConfig column ensured.');
@@ -692,7 +748,7 @@ const start = async () => {
       await sequelize.query(`ALTER TYPE "enum_users_role" ADD VALUE IF NOT EXISTS 'assistant_manager';`);
       console.log('[Server] User role ENUM migration complete.');
     } catch (e) {
-      // Ignore — type may not exist yet or value already exists
+      // Ignore â€” type may not exist yet or value already exists
     }
 
     // Create task_reminders table for deadline reminder tracking
@@ -739,10 +795,23 @@ const start = async () => {
     }
     console.log('[Server] Notification type ENUM extended (reminders + priority_change + governance).');
 
-    // ── Auto-migration: push_subscriptions table ──────────────
+    // â”€â”€ Auto-migration: help_requests.rejectionReason â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Captured when a helper declines a request so the requester sees the
+    // reason instead of a silent rejection. Added defensively via
+    // ADD COLUMN IF NOT EXISTS so older deploys without this column upgrade
+    // cleanly on next boot.
+    try {
+      await sequelize.query(
+        `ALTER TABLE help_requests ADD COLUMN IF NOT EXISTS "rejectionReason" TEXT`
+      );
+    } catch (e) {
+      console.warn('[Server] help_requests.rejectionReason migration warn:', e.message);
+    }
+
+    // â”€â”€ Auto-migration: push_subscriptions table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // DB-backed VAPID push subscriptions. Replaces the previous in-memory Map
     // in services/pushService.js so subscriptions survive restart and aren't
-    // split across replicas. Endpoint is globally unique — same browser maps
+    // split across replicas. Endpoint is globally unique â€” same browser maps
     // to the same row regardless of which user signs in on it; the row gets
     // re-linked to the new userId on subscribe, and isActive flips on logout.
     try {
@@ -774,7 +843,7 @@ const start = async () => {
       console.warn('[Server] push_subscriptions migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: notifications performance indexes ─────
+    // â”€â”€ Auto-migration: notifications performance indexes â”€â”€â”€â”€â”€
     // Speeds up the bell list (ordered by createdAt DESC) and the unread-count
     // query (the most-hit endpoint per page load).
     try {
@@ -788,7 +857,7 @@ const start = async () => {
       console.warn('[Server] notifications index migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: task_reminders extension (offset / custom) ──────
+    // â”€â”€ Auto-migration: task_reminders extension (offset / custom) â”€â”€â”€â”€â”€â”€
     // Phase 5 (task-level reminders). Adds two nullable columns and replaces
     // the legacy `(taskId, reminderType)` unique constraint with an
     // expression-based one that includes offsetMinutes + customReminderAt so
@@ -823,7 +892,7 @@ const start = async () => {
       console.warn('[Server] task_reminders Phase 5 migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: task_reminders recurring types (interval / daily_times) ──
+    // â”€â”€ Auto-migration: task_reminders recurring types (interval / daily_times) â”€â”€
     // Adds the fields needed for repeat-until-done reminders. The two new
     // reminderType values store either an `intervalMinutes` period or a
     // JSONB `timesOfDay` array (in `timezone`). `lastFiredAt` is audit-only.
@@ -842,13 +911,13 @@ const start = async () => {
       console.warn('[Server] task_reminders recurring-types migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: notifications.idempotencyKey column + partial unique index ─
+    // â”€â”€ Auto-migration: notifications.idempotencyKey column + partial unique index â”€
     // Phase 3 (Notification system fix pass). Adds the column used by the
     // centralised notificationService.createNotification() to deduplicate
     // logical events across concurrent callers, retries, and cron ticks.
     //
     // The unique index is PARTIAL (`WHERE "idempotencyKey" IS NOT NULL`) so
-    // legacy callers that omit the key continue to work — multiple NULL rows
+    // legacy callers that omit the key continue to work â€” multiple NULL rows
     // are allowed. Adding the column is non-blocking under normal load
     // (`ADD COLUMN ... DEFAULT NULL` is metadata-only in modern Postgres).
     try {
@@ -893,7 +962,7 @@ const start = async () => {
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_task_assignees_task_user_role ON task_assignees("taskId", "userId", role)`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_task_assignees_user_id ON task_assignees("userId")`);
 
-      // ── One-shot legacy backfill (gated) ──────────────────────────────
+      // â”€â”€ One-shot legacy backfill (gated) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       //
       // These two INSERTs migrate pre-junction-table data into task_assignees:
       //   1. Every task whose legacy `tasks.assignedTo` is set gets a matching
@@ -905,12 +974,12 @@ const start = async () => {
       // If an assignee was removed via a path that cleared task_assignees but
       // NOT the legacy `tasks.assignedTo` column (e.g. an out-of-band psql
       // edit, a now-fixed controller bug, or a one-off script), the next
-      // backend restart silently re-inserts the assignee — making it look
+      // backend restart silently re-inserts the assignee â€” making it look
       // like deleted data is "coming back" after a deploy.
       //
       // For mature installs (production), the backfill has long since
       // completed. Gate it behind `system_flags.task_assignees_legacy_backfill_v1`
-      // — same pattern as the BoardMembers.autoAdded cleanup further below.
+      // â€” same pattern as the BoardMembers.autoAdded cleanup further below.
       // The first deploy after this code lands runs the INSERTs once and
       // writes the marker. All subsequent deploys short-circuit via a
       // single SELECT and the restoration vector is closed.
@@ -944,7 +1013,7 @@ const start = async () => {
           `);
           const fromAssignedTo = fromAssignedToMeta?.rowCount ?? 0;
           const fromOwners = fromOwnersMeta?.rowCount ?? 0;
-          console.log(`[Server] task_assignees legacy backfill v1 ran: assignedTo→${fromAssignedTo}, task_owners→${fromOwners}.`);
+          console.log(`[Server] task_assignees legacy backfill v1 ran: assignedToâ†’${fromAssignedTo}, task_ownersâ†’${fromOwners}.`);
           await sequelize.query(
             `INSERT INTO system_flags (flag, completed_at, details)
              VALUES ('task_assignees_legacy_backfill_v1', NOW(), $1)
@@ -955,7 +1024,7 @@ const start = async () => {
         } else {
           // Subsequent boots: explicit skip log so the absence of a backfill
           // line in deploy output is not mistaken for a missing migration.
-          console.log('[Server] task_assignees legacy backfill v1 already complete — skipping.');
+          console.log('[Server] task_assignees legacy backfill v1 already complete â€” skipping.');
         }
       } catch (e) {
         console.warn('[Server] task_assignees legacy backfill v1 warning:', e.message?.slice(0, 200));
@@ -965,9 +1034,9 @@ const start = async () => {
       console.warn('[Server] task_assignees migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: pending_login_tokens table ────────────────
+    // â”€â”€ Auto-migration: pending_login_tokens table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Single-active-session feature. One row per "you're already logged in
-    // somewhere — click to take over" confirmation handshake. Raw token is
+    // somewhere â€” click to take over" confirmation handshake. Raw token is
     // returned ONCE to the client; only its SHA-256 hash lives here.
     //
     // Idempotent: every statement uses IF NOT EXISTS. Non-destructive: no
@@ -1000,9 +1069,9 @@ const start = async () => {
       console.warn('[Server] pending_login_tokens migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: user_board_orders table ───────────────────
+    // â”€â”€ Auto-migration: user_board_orders table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Per-user board ordering inside workspaces (sidebar Rearrange feature).
-    // Idempotent — safe to run on every boot.
+    // Idempotent â€” safe to run on every boot.
     try {
       await sequelize.query(`CREATE TABLE IF NOT EXISTS user_board_orders (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1022,9 +1091,9 @@ const start = async () => {
       console.warn('[Server] user_board_orders migration warning:', e.message?.slice(0, 120));
     }
 
-    // ── Auto-migration: user_workspace_orders table ──────────────
+    // â”€â”€ Auto-migration: user_workspace_orders table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Per-user workspace ordering for the sidebar (Rearrange Workspaces).
-    // Idempotent — safe to run on every boot. ON DELETE CASCADE is critical
+    // Idempotent â€” safe to run on every boot. ON DELETE CASCADE is critical
     // here so stale rows for archived/deleted workspaces don't accumulate.
     try {
       await sequelize.query(`CREATE TABLE IF NOT EXISTS user_workspace_orders (
@@ -1044,8 +1113,8 @@ const start = async () => {
       console.warn('[Server] user_workspace_orders migration warning:', e.message?.slice(0, 120));
     }
 
-    // ── Auto-migration: task_approval_flows table + stage column ──
-    // Self-installing DDL — mirrors server/scripts/create-task-approval-flow.js
+    // â”€â”€ Auto-migration: task_approval_flows table + stage column â”€â”€
+    // Self-installing DDL â€” mirrors server/scripts/create-task-approval-flow.js
     // and server/scripts/migrate-task-approval-flow-stage.js so the schema is
     // guaranteed in production without anyone running a manual script.
     //
@@ -1084,14 +1153,14 @@ const start = async () => {
         "updatedAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
       )`);
 
-      // Defensive ADD COLUMN — covers the case where an older deploy created
+      // Defensive ADD COLUMN â€” covers the case where an older deploy created
       // the table before `stage` existed. Backfill stage = level so existing
       // in-flight chains route through findCurrentStageRows correctly.
       await sequelize.query(`ALTER TABLE task_approval_flows ADD COLUMN IF NOT EXISTS stage INTEGER`);
       await sequelize.query(`UPDATE task_approval_flows SET stage = level WHERE stage IS NULL`);
 
       // All four indexes from the model definition. The unique (taskId, level)
-      // index is load-bearing — submitForApproval relies on it to prevent
+      // index is load-bearing â€” submitForApproval relies on it to prevent
       // duplicate level rows under concurrent submissions.
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS task_approval_flows_task_level_unique
         ON task_approval_flows ("taskId", level)`);
@@ -1102,7 +1171,7 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS task_approval_flows_task_stage_status_idx
         ON task_approval_flows ("taskId", stage, status)`);
 
-      // Verification — log the column set so an operator can confirm the
+      // Verification â€” log the column set so an operator can confirm the
       // schema is in shape after a deploy without a separate query.
       const [verifyCols] = await sequelize.query(
         `SELECT column_name FROM information_schema.columns
@@ -1116,7 +1185,7 @@ const start = async () => {
       console.warn('[Server] task_approval_flows migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: permission_grants schema upgrades (008) ──
+    // â”€â”€ Auto-migration: permission_grants schema upgrades (008) â”€â”€
     // Adds action-based permission columns required by permissionEngine.js
     try {
       const [pgTables] = await sequelize.query(
@@ -1152,7 +1221,7 @@ const start = async () => {
       console.warn('[Server] permission_grants migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration 017: permission_grants UNIQUE active-override ──
+    // â”€â”€ Auto-migration 017: permission_grants UNIQUE active-override â”€â”€
     //
     // Phase A (May 2026 RBAC hardening). Adds a partial UNIQUE index that
     // prevents two ACTIVE rows from sharing the same
@@ -1215,7 +1284,7 @@ const start = async () => {
       console.warn('[Server] permission_grants UNIQUE constraint warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: labels and task_labels tables ──
+    // â”€â”€ Auto-migration: labels and task_labels tables â”€â”€
     // These are required by the Label include in task queries.
     // Without them, every task fetch crashes with "relation does not exist".
     try {
@@ -1240,7 +1309,7 @@ const start = async () => {
       console.warn('[Server] labels/task_labels migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: status_templates (Phase 2 — board-scoped status
+    // â”€â”€ Auto-migration: status_templates (Phase 2 â€” board-scoped status
     // tile groups). Mirrors server/migrations/020_status_templates.sql.
     // Idempotent so every restart is a no-op once the table is in place.
     // Cascade on board delete; partial unique index keeps the "one default
@@ -1267,14 +1336,14 @@ const start = async () => {
       console.warn('[Server] status_templates migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: docs + doc_versions (Doc Editor Phase B).
+    // â”€â”€ Auto-migration: docs + doc_versions (Doc Editor Phase B).
     // Idempotent CREATE-IF-NOT-EXISTS for both tables plus the workspace +
     // archive indexes the doc list page reads. Mirrors server/models/Doc.js
-    // and server/models/DocVersion.js — Sequelize sync({alter:false}) won't
+    // and server/models/DocVersion.js â€” Sequelize sync({alter:false}) won't
     // touch existing tables, so this DDL is the source of truth at boot.
     //
     // Note: the sharePolicy enum is declared inline because Sequelize's
-    // ENUM type generates an enum value Postgres reuses — we want the same
+    // ENUM type generates an enum value Postgres reuses â€” we want the same
     // value-set whether the table was created here or via sync.
     try {
       await sequelize.query(`DO $$ BEGIN
@@ -1326,7 +1395,7 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_versions_doc_time
         ON doc_versions("docId", "createdAt" DESC)`);
 
-      // Doc Editor Phase D Slice 1 — @-mentions per doc. Unique on
+      // Doc Editor Phase D Slice 1 â€” @-mentions per doc. Unique on
       // (docId, mentionedUserId) so the same user can't have two rows
       // for the same doc; updateDoc relies on that uniqueness when
       // diffing mentions between saves.
@@ -1347,7 +1416,7 @@ const start = async () => {
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_mentions_doc_user
         ON doc_mentions("docId", "mentionedUserId")`);
 
-      // Doc Editor Phase D Slice 2 — task chips per doc.
+      // Doc Editor Phase D Slice 2 â€” task chips per doc.
       // Unique on (docId, taskId) so the same task can't have two
       // rows for the same doc. CASCADE on both ends so deleting either
       // the doc or the task removes the link cleanly.
@@ -1367,9 +1436,9 @@ const start = async () => {
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_task_refs_doc_task
         ON doc_task_references("docId", "taskId")`);
 
-      // Doc Editor Phase F — selection-anchored comments + replies.
+      // Doc Editor Phase F â€” selection-anchored comments + replies.
       // Self-referential FK on parentId (replies hang off top-level
-      // comments). CASCADE through doc → comments and parent → replies
+      // comments). CASCADE through doc â†’ comments and parent â†’ replies
       // so archiving/deleting a doc cleans up its threads, and deleting
       // a parent wipes orphan children. Author / resolver FKs SET NULL
       // so historical threads survive user deletion.
@@ -1395,7 +1464,7 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_comments_parent
         ON doc_comments("parentId")`);
 
-      // Doc Editor Phase G — Y.js CRDT state column. BYTEA; populated by
+      // Doc Editor Phase G â€” Y.js CRDT state column. BYTEA; populated by
       // Hocuspocus onStoreDocument. NULL on existing rows that predate
       // collab; the service either rejects collab for non-trivial legacy
       // docs (no auto-migration) or starts fresh for empty docs.
@@ -1407,9 +1476,250 @@ const start = async () => {
       console.warn('[Server] docs migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: workflows + workflow_nodes + workflow_edges +
+    // â”€â”€ feat/docs-personal-notion Phase 2 â€” personal docs primitives. â”€â”€
+    //
+    // What this block does (all idempotent / additive â€” re-runnable on every
+    // boot without side effects):
+    //   1. Makes docs.workspaceId nullable. New personal docs leave it NULL;
+    //      existing rows keep their workspaceId as legacy metadata.
+    //   2. Adds ownerUserId, visibility, contentFormat, legacyContentJson
+    //      columns to docs.
+    //   3. Adds anchorBlockId to doc_comments (Phase 6 BlockNote anchoring).
+    //   4. Adds contentFormat to doc_versions so snapshot restore knows
+    //      whether to feed Tiptap or BlockNote.
+    //   5. Creates the doc_access table â€” explicit per-user grants. Replaces
+    //      the canCallerSeeWorkspace workspace/board/role fallback as the
+    //      canonical "can this user see this doc" resolver.
+    //   6. Backfills (one-shot, gated by system_flags.docs_personal_phase2_v1
+    //      so subsequent boots skip the scan entirely):
+    //        a. docs.ownerUserId  â† docs.createdBy
+    //        b. docs.contentFormat='tiptap_json' for rows that pre-date the
+    //           deploy (gated by legacyContentJson IS NULL + a one-shot flag
+    //           so re-runs don't re-flip new BlockNote docs)
+    //        c. doc_access owner rows for every owned doc
+    //        d. doc_access legacy_workspace rows preserving CURRENT effective
+    //           access for every workspace-creator, workspace-member,
+    //           board-member, and admin/manager â€” so no user loses access at
+    //           the moment of cutover (option (b) from the migration plan).
+    //
+    // Rollback story:
+    //   - Code revert reinstates canCallerSeeWorkspace and lists the old
+    //     workspace-nested routes. Schema additions stay (harmless additive
+    //     columns + one new table). The 'docs_personal_phase2_v1' system_flags
+    //     row stays as proof the backfill ran â€” re-running the migration on
+    //     a later re-deploy will skip the backfill block.
+    //   - The owner backfill is non-destructive: docs.createdBy is unchanged.
+    //   - legacy_workspace rows can be hand-pruned with a single DELETE on
+    //     `source='legacy_workspace'` if a clean cutover is desired.
+    try {
+      // 1. Nullable workspaceId.
+      await sequelize.query(`ALTER TABLE docs ALTER COLUMN "workspaceId" DROP NOT NULL`);
+      // 2. New docs columns.
+      await sequelize.query(`ALTER TABLE docs
+        ADD COLUMN IF NOT EXISTS "ownerUserId" UUID REFERENCES users(id) ON DELETE SET NULL`);
+      await sequelize.query(`ALTER TABLE docs
+        ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'private'`);
+      await sequelize.query(`ALTER TABLE docs
+        ADD COLUMN IF NOT EXISTS "contentFormat" VARCHAR(16) NOT NULL DEFAULT 'blocknote_json'`);
+      await sequelize.query(`ALTER TABLE docs
+        ADD COLUMN IF NOT EXISTS "legacyContentJson" JSONB`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_owner_user
+        ON docs("ownerUserId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_docs_visibility
+        ON docs(visibility)`);
+
+      // 3. doc_comments + doc_versions additions.
+      await sequelize.query(`ALTER TABLE doc_comments
+        ADD COLUMN IF NOT EXISTS "anchorBlockId" VARCHAR(40)`);
+      await sequelize.query(`ALTER TABLE doc_versions
+        ADD COLUMN IF NOT EXISTS "contentFormat" VARCHAR(16) NOT NULL DEFAULT 'tiptap_json'`);
+
+      // 4. doc_access table.
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS doc_access (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "docId" UUID NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+        "userId" UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        "accessLevel" VARCHAR(16) NOT NULL DEFAULT 'view'
+          CHECK ("accessLevel" IN ('owner','edit','comment','view')),
+        source VARCHAR(20) NOT NULL DEFAULT 'manual_share'
+          CHECK (source IN ('owner','mention','manual_share','legacy_workspace')),
+        "grantedByUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      )`);
+      await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_access_doc_user
+        ON doc_access("docId", "userId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_access_user
+        ON doc_access("userId")`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_doc_access_doc
+        ON doc_access("docId")`);
+
+      // 5. One-time backfill â€” gated by system_flags so it runs exactly once
+      //    across this codebase's lifetime regardless of boot count.
+      await sequelize.query(`CREATE TABLE IF NOT EXISTS system_flags (
+        flag TEXT PRIMARY KEY,
+        completed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        details JSONB DEFAULT '{}'
+      )`);
+      const [flagRows] = await sequelize.query(
+        `SELECT flag FROM system_flags WHERE flag = 'docs_personal_phase2_v1'`
+      );
+      if (flagRows.length === 0) {
+        const counts = { ownerBackfill: 0, formatFlip: 0, ownerAccess: 0, wsCreators: 0, wsMembers: 0, boardMembers: 0, admins: 0 };
+
+        // 5a. ownerUserId â† createdBy
+        const [, r1] = await sequelize.query(`
+          UPDATE docs SET "ownerUserId" = "createdBy"
+          WHERE "ownerUserId" IS NULL AND "createdBy" IS NOT NULL
+        `);
+        counts.ownerBackfill = r1?.rowCount ?? 0;
+
+        // 5b. Existing rows â†’ tiptap_json. Guarded by legacyContentJson IS NULL
+        //     so any doc the user later converts in Phase 6 keeps its post-
+        //     conversion format. Also gated implicitly by this whole block
+        //     running once (system_flags guard above).
+        const [, r2] = await sequelize.query(`
+          UPDATE docs SET "contentFormat" = 'tiptap_json'
+          WHERE "contentFormat" = 'blocknote_json'
+            AND "legacyContentJson" IS NULL
+        `);
+        counts.formatFlip = r2?.rowCount ?? 0;
+
+        // 5c. Owner rows.
+        const [, r3] = await sequelize.query(`
+          INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+          SELECT id, "ownerUserId", 'owner', 'owner' FROM docs
+          WHERE "ownerUserId" IS NOT NULL
+          ON CONFLICT ("docId", "userId") DO NOTHING
+        `);
+        counts.ownerAccess = r3?.rowCount ?? 0;
+
+        // 5d. Workspace creator (legacy_workspace).
+        const [, r4] = await sequelize.query(`
+          INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+          SELECT d.id, w."createdBy", 'comment', 'legacy_workspace'
+          FROM docs d JOIN workspaces w ON w.id = d."workspaceId"
+          WHERE w."createdBy" IS NOT NULL
+            AND w."createdBy" <> COALESCE(d."ownerUserId", '00000000-0000-0000-0000-000000000000'::uuid)
+          ON CONFLICT ("docId", "userId") DO NOTHING
+        `);
+        counts.wsCreators = r4?.rowCount ?? 0;
+
+        // 5e. Workspace members (users.workspaceId = ws.id).
+        const [, r5] = await sequelize.query(`
+          INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+          SELECT d.id, u.id, 'comment', 'legacy_workspace'
+          FROM docs d JOIN users u ON u."workspaceId" = d."workspaceId"
+          WHERE u."isActive" = true
+            AND u.id <> COALESCE(d."ownerUserId", '00000000-0000-0000-0000-000000000000'::uuid)
+          ON CONFLICT ("docId", "userId") DO NOTHING
+        `);
+        counts.wsMembers = r5?.rowCount ?? 0;
+
+        // 5f. Board members (the May 2026 board-membership fallback).
+        const [, r6] = await sequelize.query(`
+          INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+          SELECT DISTINCT d.id, bm."userId", 'comment', 'legacy_workspace'
+          FROM docs d
+          JOIN boards b ON b."workspaceId" = d."workspaceId" AND b."isArchived" = false
+          JOIN "BoardMembers" bm ON bm."boardId" = b.id
+          WHERE bm."userId" <> COALESCE(d."ownerUserId", '00000000-0000-0000-0000-000000000000'::uuid)
+          ON CONFLICT ("docId", "userId") DO NOTHING
+        `);
+        counts.boardMembers = r6?.rowCount ?? 0;
+
+        // 5g. Admins/managers (role bypass that canCallerSeeWorkspace honored).
+        //     Backfilling them now preserves their CURRENT access for the
+        //     docs that exist today; from Phase 2 onwards, role no longer
+        //     auto-grants access for NEW docs.
+        const [, r7] = await sequelize.query(`
+          INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+          SELECT d.id, u.id, 'comment', 'legacy_workspace'
+          FROM docs d CROSS JOIN users u
+          WHERE u."isActive" = true
+            AND u.role IN ('admin','manager')
+            AND u.id <> COALESCE(d."ownerUserId", '00000000-0000-0000-0000-000000000000'::uuid)
+          ON CONFLICT ("docId", "userId") DO NOTHING
+        `);
+        counts.admins = r7?.rowCount ?? 0;
+
+        await sequelize.query(
+          `INSERT INTO system_flags (flag, completed_at, details)
+           VALUES ('docs_personal_phase2_v1', NOW(), $1)
+           ON CONFLICT (flag) DO NOTHING`,
+          { bind: [JSON.stringify(counts)] }
+        );
+        console.log('[Server] docs_personal_phase2 backfill complete:', counts);
+      }
+
+      console.log('[Server] docs personal-phase2 schema + backfill ensured.');
+
+      // â”€ Owner-row hygiene (docs_personal_phase2_owner_hygiene_v1) â”€
+      // The phase-2 backfill above could insert BOTH an owner-row AND a
+      // legacy_workspace 'comment' row for the same (docId, userId) â€” the
+      // creator-of-workspace and admins/managers branches don't exclude
+      // the doc's own owner unless ownerUserId was set at the time the
+      // backfill ran. Resolver-side that's harmless (the owner check
+      // returns 'owner' before consulting the table), but it pollutes the
+      // Share-panel display ("Owner" row collides with a "from old
+      // workspace Â· comment" row for the same person).
+      //
+      // This cleanup is non-destructive â€” it removes ONLY duplicate
+      // legacy_workspace rows for the doc's own owner. It never touches
+      // legacy rows for non-owners (those are real, preserved access),
+      // and it never touches mention/manual_share/owner rows. It also
+      // (re-)ensures an 'owner' row exists for every doc with
+      // ownerUserId so a future repair can rely on the invariant.
+      try {
+        const [hygieneFlagRows] = await sequelize.query(
+          `SELECT flag FROM system_flags WHERE flag = 'docs_personal_phase2_owner_hygiene_v1'`
+        );
+        if (hygieneFlagRows.length === 0) {
+          const hygieneCounts = { ownerUserIdBackfill: 0, ownerRowsEnsured: 0, staleLegacyForOwnerRemoved: 0 };
+          // 1. ownerUserId â† createdBy for any rows that still slipped through.
+          const [, h1] = await sequelize.query(`
+            UPDATE docs SET "ownerUserId" = "createdBy"
+            WHERE "ownerUserId" IS NULL AND "createdBy" IS NOT NULL
+          `);
+          hygieneCounts.ownerUserIdBackfill = h1?.rowCount ?? 0;
+          // 2. Ensure every doc with ownerUserId has an owner row.
+          const [, h2] = await sequelize.query(`
+            INSERT INTO doc_access ("docId", "userId", "accessLevel", source)
+            SELECT id, "ownerUserId", 'owner', 'owner' FROM docs
+            WHERE "ownerUserId" IS NOT NULL
+            ON CONFLICT ("docId", "userId") DO NOTHING
+          `);
+          hygieneCounts.ownerRowsEnsured = h2?.rowCount ?? 0;
+          // 3. Remove legacy_workspace rows for the doc's owner â€” they're
+          //    shadowed by the owner row anyway and confuse the Share panel.
+          //    Owner-row, mention rows, manual_share rows are left intact.
+          const [, h3] = await sequelize.query(`
+            DELETE FROM doc_access da
+            USING docs d
+            WHERE da."docId" = d.id
+              AND d."ownerUserId" IS NOT NULL
+              AND da."userId" = d."ownerUserId"
+              AND da.source = 'legacy_workspace'
+          `);
+          hygieneCounts.staleLegacyForOwnerRemoved = h3?.rowCount ?? 0;
+          await sequelize.query(
+            `INSERT INTO system_flags (flag, completed_at, details)
+             VALUES ('docs_personal_phase2_owner_hygiene_v1', NOW(), $1)
+             ON CONFLICT (flag) DO NOTHING`,
+            { bind: [JSON.stringify(hygieneCounts)] }
+          );
+          console.log('[Server] docs owner-row hygiene complete:', hygieneCounts);
+        }
+      } catch (e) {
+        console.warn('[Server] docs owner-row hygiene warning:', e.message?.slice(0, 200));
+      }
+    } catch (e) {
+      console.warn('[Server] docs personal-phase2 migration warning:', e.message?.slice(0, 200));
+    }
+
+    // â”€â”€ Auto-migration: workflows + workflow_nodes + workflow_edges +
     //    workflow_runs (Workflow Canvas Phase W1). Mirrors the docs
-    //    block above — CREATE TABLE IF NOT EXISTS is the source of
+    //    block above â€” CREATE TABLE IF NOT EXISTS is the source of
     //    truth at boot. Coexists with the legacy `automations` table.
     try {
       await sequelize.query(`CREATE TABLE IF NOT EXISTS workflows (
@@ -1431,7 +1741,7 @@ const start = async () => {
         ON workflows("boardId")`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflows_board_active
         ON workflows("boardId", "isActive")`);
-      // May-17 audit follow-up — optimal index for the hot-path
+      // May-17 audit follow-up â€” optimal index for the hot-path
       // processWorkflows() query: `WHERE isActive=true AND (boardId IS NULL
       // OR boardId=?)`. The (isActive, boardId) column order lets Postgres
       // jump straight to the small `isActive=true` slice first, then scan
@@ -1469,7 +1779,7 @@ const start = async () => {
         ON workflow_edges("workflowId")`);
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_edges_source_target
         ON workflow_edges("sourceNodeId", "targetNodeId")`);
-      // Phase W2 — branch column for condition-node outgoing edges.
+      // Phase W2 â€” branch column for condition-node outgoing edges.
       // 'true' / 'false' / NULL. Idempotent.
       await sequelize.query(`ALTER TABLE workflow_edges
         ADD COLUMN IF NOT EXISTS branch VARCHAR(8)`);
@@ -1490,7 +1800,7 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_time
         ON workflow_runs("workflowId", "startedAt" DESC)`);
 
-      // May-19 audit follow-up — run-history enrichment. Each column is
+      // May-19 audit follow-up â€” run-history enrichment. Each column is
       // additive + NULL-safe so a partial replay or a prior hot-patch
       // leaves the table in the same final state. Mirrors migration
       // server/migrations/022_workflows.sql.
@@ -1506,7 +1816,7 @@ const start = async () => {
         ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(255)`);
       await sequelize.query(`ALTER TABLE workflow_runs
         ADD COLUMN IF NOT EXISTS "workflowVersion" INTEGER`);
-      // Partial unique — only non-NULL keys get the uniqueness guarantee.
+      // Partial unique â€” only non-NULL keys get the uniqueness guarantee.
       // Matches the idx_notifications_idempotency pattern.
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_idempotency
         ON workflow_runs("workflowId", "idempotencyKey")
@@ -1516,14 +1826,14 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_actor
         ON workflow_runs("actorId")`);
 
-      // May-19 audit — explicit per-FK indexes on workflow_edges for cascade
+      // May-19 audit â€” explicit per-FK indexes on workflow_edges for cascade
       // performance on node deletion.
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_edges_source
         ON workflow_edges("sourceNodeId")`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_workflow_edges_target
         ON workflow_edges("targetNodeId")`);
 
-      // W3 — pending wait queue for resumable wait actions (>5 min).
+      // W3 â€” pending wait queue for resumable wait actions (>5 min).
       await sequelize.query(`CREATE TABLE IF NOT EXISTS workflow_waits (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         "workflowId" UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -1544,7 +1854,7 @@ const start = async () => {
       console.warn('[Server] workflows migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: forms + form_submissions (Phase F1) ──
+    // â”€â”€ Auto-migration: forms + form_submissions (Phase F1) â”€â”€
     try {
       await sequelize.query(`CREATE TABLE IF NOT EXISTS forms (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1565,7 +1875,7 @@ const start = async () => {
         ON forms("workspaceId")`);
       await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_forms_target_board
         ON forms("targetBoardId")`);
-      // Phase F2 — targetColumnMap (idempotent). NOT NULL default '{}'::jsonb
+      // Phase F2 â€” targetColumnMap (idempotent). NOT NULL default '{}'::jsonb
       // so the new col is safe to add even when rows already exist.
       await sequelize.query(`ALTER TABLE forms
         ADD COLUMN IF NOT EXISTS "targetColumnMap" JSONB NOT NULL DEFAULT '{}'::jsonb`);
@@ -1592,7 +1902,7 @@ const start = async () => {
       console.warn('[Server] forms migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: legacy task_labels.id column repair ──
+    // â”€â”€ Auto-migration: legacy task_labels.id column repair â”€â”€
     //
     // Root cause of the May 12 "null value in column \"id\" of relation
     // \"task_labels\" violates not-null constraint" regression:
@@ -1602,14 +1912,14 @@ const start = async () => {
     // path ran at any point during that window (older dev DBs, the audit
     // workstation), Postgres got a `task_labels.id UUID NOT NULL` column with
     // NO default. The model was later rewritten to use a composite PK
-    // (taskId, labelId) — see TaskLabel.js comment — and the boot DDL above
+    // (taskId, labelId) â€” see TaskLabel.js comment â€” and the boot DDL above
     // was hardened to match, but `CREATE TABLE IF NOT EXISTS` no-ops on those
     // environments so the legacy `id` column persists. Every INSERT then
     // fails because Sequelize doesn't send `id` and the column has no default.
     //
     // Fix: detect the legacy column, ensure pgcrypto is available, and set
     // DEFAULT gen_random_uuid() so the DB fills the value on insert. We
-    // intentionally do NOT drop the column — a unique/PK constraint may still
+    // intentionally do NOT drop the column â€” a unique/PK constraint may still
     // reference it, and dropping would risk losing junction rows on databases
     // we cannot inspect from here. Backfilling the default is non-destructive
     // and idempotent: re-running the block is a no-op when the default is
@@ -1629,16 +1939,16 @@ const start = async () => {
           await sequelize.query(`ALTER TABLE task_labels ALTER COLUMN id SET DEFAULT gen_random_uuid()`);
           console.log('[Server] task_labels.id legacy column backfilled with DEFAULT gen_random_uuid().');
         } else {
-          console.log('[Server] task_labels.id legacy column already has a default — no action.');
+          console.log('[Server] task_labels.id legacy column already has a default â€” no action.');
         }
       }
     } catch (e) {
       console.warn('[Server] task_labels.id legacy repair warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: task_references and task_links tables ──
+    // â”€â”€ Auto-migration: task_references and task_links tables â”€â”€
     // Backing storage for the "Reference" and "Link" default columns
-    // (multi-value per task). Idempotent CREATE IF NOT EXISTS — safe to
+    // (multi-value per task). Idempotent CREATE IF NOT EXISTS â€” safe to
     // run on every boot. CASCADE on taskId so archiving a task wipes its
     // associated refs/links; SET NULL on createdBy so deactivating a user
     // doesn't lose history of who added what.
@@ -1670,11 +1980,11 @@ const start = async () => {
       console.warn('[Server] task_references/task_links migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: backfill default board columns ──
+    // â”€â”€ Auto-migration: backfill default board columns â”€â”€
     // Every board should include the multi-value Reference + Link/URL columns
     // alongside the existing Labels/Progress defaults. Append-only so the
     // user-customised column ORDER and any extra custom columns are
-    // preserved. Idempotent — appends only when a column of the target
+    // preserved. Idempotent â€” appends only when a column of the target
     // TYPE doesn't already exist on the board.
     //
     // Why this is rewritten: the previous version used `sequelize.query()`
@@ -1683,13 +1993,13 @@ const start = async () => {
     // when columns came back differently shaped). Using the Sequelize
     // model + `board.changed('columns', true)` is the canonical pattern in
     // this codebase for JSONB mutation and surfaces failures clearly.
-    // P1-1 — title normalization is now NON-DESTRUCTIVE: only the literal
+    // P1-1 â€” title normalization is now NON-DESTRUCTIVE: only the literal
     // old default "Link" is rewritten to "Link/URL". Any other user
     // customization (e.g. a user renamed the column to "External Links")
     // is preserved across server restarts. The previous version blindly
     // overwrote every title back to "Link/URL" on each boot.
     //
-    // P1-2 — the whole pass runs inside a single sequelize.transaction().
+    // P1-2 â€” the whole pass runs inside a single sequelize.transaction().
     // If any save fails mid-loop, the whole transaction rolls back and
     // the next boot retries from a consistent state.
     try {
@@ -1741,21 +2051,21 @@ const start = async () => {
 
       if (backfilledCount > 0) {
         console.log(`[Server] Default-column backfill applied to ${backfilledCount} board(s):`);
-        for (const line of summary) console.log(`         · ${line}`);
+        for (const line of summary) console.log(`         Â· ${line}`);
       }
       if (renamedCount > 0) {
-        console.log(`[Server] Default-column titles normalized on ${renamedCount} board(s) (Link → Link/URL).`);
+        console.log(`[Server] Default-column titles normalized on ${renamedCount} board(s) (Link â†’ Link/URL).`);
       }
       if (backfilledCount === 0 && renamedCount === 0) {
         console.log('[Server] Default-column backfill: all boards already have label/references/links columns with correct titles.');
       }
     } catch (e) {
-      // Transaction rolled back — log full stack so the failure is
+      // Transaction rolled back â€” log full stack so the failure is
       // recoverable on the next boot without leaving the DB half-migrated.
       console.error('[Server] default columns backfill ERROR (transaction rolled back):', e);
     }
 
-    // ── Auto-migration: file_attachments table ──
+    // â”€â”€ Auto-migration: file_attachments table â”€â”€
     // Required by the file upload/fetch endpoints.
     // Without it, every file operation crashes with "relation does not exist".
     try {
@@ -1778,7 +2088,7 @@ const start = async () => {
       console.warn('[Server] file_attachments migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: add provider & category columns to file_attachments ──
+    // â”€â”€ Auto-migration: add provider & category columns to file_attachments â”€â”€
     // Required by the storage-provider abstraction (007_add_file_attachment_columns.sql).
     // Existing tables created before this migration will be missing these columns.
     try {
@@ -1789,7 +2099,7 @@ const start = async () => {
       console.warn('[Server] file_attachments column migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: webhooks + webhook_deliveries ─────────
+    // â”€â”€ Auto-migration: webhooks + webhook_deliveries â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Outbound webhook subscriptions registered against an API key. Receivers
     // get task lifecycle events POSTed to their URL with HMAC-SHA256 sigs.
     try {
@@ -1834,7 +2144,7 @@ const start = async () => {
       console.warn('[Server] webhooks migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: transcription_providers + transcript_segments ──
+    // â”€â”€ Auto-migration: transcription_providers + transcript_segments â”€â”€
     // Creates the tables required for the Deepgram meeting-mode integration.
     // IF NOT EXISTS keeps this idempotent on every boot.
     try {
@@ -1878,15 +2188,15 @@ const start = async () => {
       console.warn('[Server] transcript_segments migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Task calendar-sync columns (migration 010) ──
+    // â”€â”€ Auto-migration: Task calendar-sync columns (migration 010) â”€â”€
     // Mirrors server/migrations/010_add_task_calendar_sync_fields.sql.
     // Originally applied via server/migrations/run_010.js, but deploy.yml
-    // never invokes that script — so prod DBs deployed before commit
+    // never invokes that script â€” so prod DBs deployed before commit
     // 0a90125 are missing these columns, and `Task.findAll` (which selects
     // all model-declared columns by default) crashes with
     // `column tasks."syncStatus" does not exist`. That single failure takes
     // down GET /api/boards/:id (eager-loads tasks) and GET /api/tasks at
-    // the same time — i.e. the production board page exactly. Idempotent:
+    // the same time â€” i.e. the production board page exactly. Idempotent:
     // each ADD COLUMN guarded with its own try so a single failure does
     // not abort the rest of the schema fixes.
     for (const stmt of [
@@ -1905,13 +2215,13 @@ const start = async () => {
     }
     console.log('[Server] tasks calendar-sync columns ensured.');
 
-    // ── Auto-migration: Daily Work / Recurring Task workflow schema ──
+    // â”€â”€ Auto-migration: Daily Work / Recurring Task workflow schema â”€â”€
     // Mirrors server/scripts/create-recurring-task-templates.js +
     // server/scripts/add-recurring-fields-to-tasks.js so the schema is
     // self-installing on every boot. Without this, existing prod DBs that
     // pre-date this feature stay stuck on the old schema (sequelize.sync
     // with alter:false creates missing tables but NEVER adds missing
-    // columns to existing tables) — and every Task.findAll on the new
+    // columns to existing tables) â€” and every Task.findAll on the new
     // columns crashes with `column tasks.recurringTemplateId does not exist`,
     // taking down /api/tasks, /api/dashboard/stats,
     // /api/task-extras/workflow-items, /api/task-extras/my-feedback, and
@@ -1948,7 +2258,7 @@ const start = async () => {
         "createdAt"             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
         "updatedAt"             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
       )`);
-      // Defensive constraints (idempotent via NOT EXISTS via DO block — old DBs
+      // Defensive constraints (idempotent via NOT EXISTS via DO block â€” old DBs
       // may already have the table from a prior partial install).
       await sequelize.query(`DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recurring_task_templates_frequency_check') THEN
@@ -1964,7 +2274,7 @@ const start = async () => {
             CHECK ("endDate" IS NULL OR "endDate" >= "startDate");
         END IF;
       END $$`);
-      // Multi-day monthly support — adds an array column alongside the legacy
+      // Multi-day monthly support â€” adds an array column alongside the legacy
       // single `dayOfMonth` integer. Old templates keep working because the
       // service-layer reader prefers `daysOfMonth` when non-empty and falls
       // back to `[dayOfMonth]`. Backfill below normalises existing rows so the
@@ -2011,13 +2321,13 @@ const start = async () => {
       await sequelize.query(`CREATE INDEX IF NOT EXISTS tasks_recurring_instance_idx
         ON tasks ("recurringTemplateId", "occurrenceDate")
         WHERE "isRecurringInstance" = TRUE`);
-      // Duplicate-protection guarantee — partial unique index, only kicks in
+      // Duplicate-protection guarantee â€” partial unique index, only kicks in
       // for recurring instances. Non-recurring tasks unaffected.
       await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS tasks_recurring_template_occurrence_unique
         ON tasks ("recurringTemplateId", "occurrenceDate")
         WHERE "recurringTemplateId" IS NOT NULL AND "occurrenceDate" IS NOT NULL`);
 
-      // Idempotent backfill — give legacy done-tasks a completedAt so
+      // Idempotent backfill â€” give legacy done-tasks a completedAt so
       // reporting queries that COALESCE(completedAt, updatedAt) work day one.
       await sequelize.query(`UPDATE tasks
         SET "completedAt" = "updatedAt"
@@ -2041,7 +2351,7 @@ const start = async () => {
       console.warn('[Server] Recurring-task schema migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: Dependency Request system (migration 012) ──
+    // â”€â”€ Auto-migration: Dependency Request system (migration 012) â”€â”€
     // Mirrors server/migrations/012_create_dependency_requests.sql so the
     // table, indexes, and CHECK constraints are self-installing on every
     // boot. Without this block the new dependency endpoints crash with
@@ -2097,7 +2407,7 @@ const start = async () => {
       `CREATE UNIQUE INDEX IF NOT EXISTS dep_req_active_unique_idx
         ON dependency_requests ("parentTaskId", "assignedToUserId", lower(btrim(title)))
         WHERE status IN ('pending','accepted','working_on_it') AND "archivedAt" IS NULL`,
-      // Phase 13 — back-pointer to the materialized "shadow" Task on the
+      // Phase 13 â€” back-pointer to the materialized "shadow" Task on the
       // assignee's board. Idempotency key for materialization (controller
       // refuses to create a second Task once this column is non-null).
       // SET NULL on Task delete so the dep row survives even if the surface
@@ -2117,7 +2427,7 @@ const start = async () => {
     }
     console.log('[Server] dependency_requests table ensured.');
 
-    // ── Auto-migration: extend notifications.type enum for dependency events ──
+    // â”€â”€ Auto-migration: extend notifications.type enum for dependency events â”€â”€
     // Mirrors the recurring-task pattern: probe for the enum first (fresh
     // installs may not have it yet), then ALTER TYPE per value with
     // IF NOT EXISTS so re-runs are no-ops.
@@ -2144,11 +2454,11 @@ const start = async () => {
       console.warn('[Server] notifications.type dependency-enum migration warning:', e.message?.slice(0, 200));
     }
 
-    // ── Auto-migration: Subtask inline-table columns ──
+    // â”€â”€ Auto-migration: Subtask inline-table columns â”€â”€
     // Inline subtasks render in the board grid with the same column set as
     // main tasks (priority, progress, due date, description). The Subtask
     // model declares these but `sequelize.sync({ alter: false })` only
-    // creates missing tables — it never adds missing columns to an existing
+    // creates missing tables â€” it never adds missing columns to an existing
     // `subtasks` table. Without this block the inline subtask UI would
     // crash on existing prod DBs with `column "priority" does not exist`.
     // All statements are idempotent.
@@ -2182,11 +2492,11 @@ const start = async () => {
     }
     console.log('[Server] subtasks inline-table columns ensured.');
 
-    // ── Auto-migration: system_settings table ────────────────────
+    // â”€â”€ Auto-migration: system_settings table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Generic key/value store for platform-wide settings (e.g. inactivity
     // auto-logout duration). Created here explicitly so the table exists
     // independent of sequelize.sync timing, and so the row for inactivity
-    // timeout is seeded with the historical 5-minute default — preserving
+    // timeout is seeded with the historical 5-minute default â€” preserving
     // existing behavior until a Super Admin changes it.
     try {
       await sequelize.query(`CREATE TABLE IF NOT EXISTS system_settings (
@@ -2208,7 +2518,7 @@ const start = async () => {
       console.warn('[Server] system_settings migration warning:', e.message?.slice(0, 200));
     }
 
-    // Sync models — create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
+    // Sync models â€” create missing tables only, skip ALTER (Sequelize ALTER has bugs with REFERENCES)
     try {
       await sequelize.sync({ alter: false });
       console.log('[Server] Database models synced.');
@@ -2217,7 +2527,7 @@ const start = async () => {
       console.log('[Server] Continuing with existing schema...');
     }
 
-    // ── Auto-migration: Add autoAdded column to BoardMembers ──
+    // â”€â”€ Auto-migration: Add autoAdded column to BoardMembers â”€â”€
     // Tracks whether a membership was auto-added (via task assignment) or
     // explicitly added (via Board Settings). Only auto-added rows are cleaned
     // up when the user's last task on the board is unassigned.
@@ -2279,9 +2589,9 @@ const start = async () => {
       console.warn('[Server] BoardMembers autoAdded migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Data backfill: progress=100 for tasks already marked done ──
-    // Idempotent — only touches rows that are out-of-sync with the new
-    // "completed ⇒ progress 100" invariant enforced by the controller.
+    // â”€â”€ Data backfill: progress=100 for tasks already marked done â”€â”€
+    // Idempotent â€” only touches rows that are out-of-sync with the new
+    // "completed â‡’ progress 100" invariant enforced by the controller.
     try {
       const [, meta] = await sequelize.query(
         `UPDATE tasks SET progress = 100 WHERE status = 'done' AND (progress IS NULL OR progress < 100)`
@@ -2292,7 +2602,7 @@ const start = async () => {
       console.warn('[Server] Done-task progress backfill warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add lang column to notes table ──
+    // â”€â”€ Auto-migration: Add lang column to notes table â”€â”€
     // Must run AFTER sync so the table exists. Uses IF NOT EXISTS for idempotency.
     try {
       // Check if the notes table exists first
@@ -2303,13 +2613,13 @@ const start = async () => {
         await sequelize.query(`ALTER TABLE notes ADD COLUMN IF NOT EXISTS lang VARCHAR(10) DEFAULT 'en-US'`);
         console.log('[Server] notes.lang column ensured.');
       } else {
-        console.log('[Server] notes table does not exist yet — lang column will be created with table.');
+        console.log('[Server] notes table does not exist yet â€” lang column will be created with table.');
       }
     } catch (e) {
       console.warn('[Server] notes.lang migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add archivedGroups column to boards table ──
+    // â”€â”€ Auto-migration: Add archivedGroups column to boards table â”€â”€
     try {
       const [boardTables] = await sequelize.query(
         `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'boards'`
@@ -2322,8 +2632,8 @@ const start = async () => {
       console.warn('[Server] boards.archivedGroups migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── One-shot backfill: mappedStatus on existing Board.groups ──
-    // Boards created before the status↔group mapping feature have groups
+    // â”€â”€ One-shot backfill: mappedStatus on existing Board.groups â”€â”€
+    // Boards created before the statusâ†”group mapping feature have groups
     // shaped { id, title, color, position } with no mappedStatus. Without
     // mappedStatus, the auto-move on status change (taskController.updateTask)
     // falls back to id/title-regex matching, which silently no-ops for boards
@@ -2332,7 +2642,7 @@ const start = async () => {
     //
     // This block runs once per environment (gated by system_flags) and infers
     // a mappedStatus for groups whose id or title clearly maps to a known
-    // status. Groups whose titles don't match any status are LEFT alone — that
+    // status. Groups whose titles don't match any status are LEFT alone â€” that
     // is the intended freeform-bucket behavior (Sprint 1, Backlog Q3, etc.).
     //
     // Idempotent: groups that already have a mappedStatus are not touched.
@@ -2349,7 +2659,7 @@ const start = async () => {
       );
       if (mappedFlagRows.length === 0) {
         const Board = require('./models/Board');
-        // Inverse of STATUS_GROUP_MAP — more specific first so "stuck" doesn't
+        // Inverse of STATUS_GROUP_MAP â€” more specific first so "stuck" doesn't
         // fall through to "in_progress".
         const TITLE_TO_STATUS = [
           { pattern: /done|complet|finish|closed/i,                          status: 'done' },
@@ -2407,7 +2717,7 @@ const start = async () => {
       console.warn('[Server] group_mapped_status backfill warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add local_status_override column to users ──
+    // â”€â”€ Auto-migration: Add local_status_override column to users â”€â”€
     // Tracks whether an admin manually edited a user's isActive flag from
     // Admin Settings. The Microsoft sync skips users with this flag so that
     // manual deactivations are not reactivated on the next sync cycle.
@@ -2425,11 +2735,11 @@ const start = async () => {
       console.warn('[Server] users.local_status_override migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add font_size_preference column to users ──
+    // â”€â”€ Auto-migration: Add font_size_preference column to users â”€â”€
     // Mirrors server/migrations/013_add_user_font_size_preference.sql so a
     // fresh boot picks up the column without an out-of-band migration step.
     // Idempotent ADD COLUMN IF NOT EXISTS + DO $$ guard for the CHECK
-    // constraint — safe to re-run.
+    // constraint â€” safe to re-run.
     try {
       const [userTablesFs] = await sequelize.query(
         `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'users'`
@@ -2456,7 +2766,7 @@ const start = async () => {
       console.warn('[Server] users.font_size_preference migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add language column to users (migration 016) ──
+    // â”€â”€ Auto-migration: Add language column to users (migration 016) â”€â”€
     // Mirrors server/migrations/016_add_user_language.sql. Self-installing
     // so production deploys (which only restart the container, never invoke
     // run_016.js) get the column and CHECK constraint on every boot.
@@ -2487,11 +2797,11 @@ const start = async () => {
       console.warn('[Server] users.language migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: Add tier column to users (migration 014) ──
+    // â”€â”€ Auto-migration: Add tier column to users (migration 014) â”€â”€
     // Mirrors server/migrations/014_add_user_tier.sql. Self-installing so
     // production deploys (which only restart the container, never invoke
     // run_014.js) get the column, the CHECK constraint, the index, and the
-    // legacy→tier backfill on every boot. Without this block sequelize.sync
+    // legacyâ†’tier backfill on every boot. Without this block sequelize.sync
     // ({ alter: false }) would fail to add the column to existing prod DBs
     // and every User.findAll() would crash with `column users.tier does not
     // exist`. Idempotent: ADD COLUMN IF NOT EXISTS + DO $$ guard for the
@@ -2517,7 +2827,7 @@ const start = async () => {
             END IF;
           END $$;
         `);
-        // Backfill from legacy fields. Idempotent — re-running re-derives the
+        // Backfill from legacy fields. Idempotent â€” re-running re-derives the
         // same value from (isSuperAdmin, role) so concurrent boots are safe.
         // WHERE-guard ensures re-runs against an already-backfilled table touch
         // zero rows (no useless writes, no needless WAL/replication traffic).
@@ -2542,9 +2852,9 @@ const start = async () => {
       console.warn('[Server] users.tier migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: hierarchy integrity constraints (migration 015) ──
+    // â”€â”€ Auto-migration: hierarchy integrity constraints (migration 015) â”€â”€
     // Mirrors server/migrations/015_hierarchy_constraints.sql. Self-installing
-    // for the same reason as 014 — production deploys never invoke run_*.js
+    // for the same reason as 014 â€” production deploys never invoke run_*.js
     // scripts directly. Idempotent: NOT EXISTS guard for the constraint,
     // CREATE INDEX IF NOT EXISTS for the indexes. NOT VALID + VALIDATE
     // pattern means legacy self-referencing rows surface as a clear notice
@@ -2566,7 +2876,7 @@ const start = async () => {
               BEGIN
                 ALTER TABLE users VALIDATE CONSTRAINT users_no_self_manager;
               EXCEPTION WHEN check_violation THEN
-                RAISE NOTICE 'users_no_self_manager VALIDATE failed — clear self-referencing rows.';
+                RAISE NOTICE 'users_no_self_manager VALIDATE failed â€” clear self-referencing rows.';
               END;
             END IF;
           END $$;
@@ -2580,7 +2890,7 @@ const start = async () => {
       console.warn('[Server] hierarchy constraints migration warning:', e.message?.slice(0, 100));
     }
 
-    // ── Auto-migration: refresh_tokens table (D-2 — token rotation/denylist).
+    // â”€â”€ Auto-migration: refresh_tokens table (D-2 â€” token rotation/denylist).
     // Stores one row per issued refresh JWT keyed by its JTI claim. The
     // /api/auth/refresh endpoint consults this table on every refresh and
     // rotates the row (revoking the old, issuing a new). On password change
@@ -2613,7 +2923,50 @@ const start = async () => {
       console.warn('[Server] refresh_tokens migration warning:', e.message?.slice(0, 120));
     }
 
-    // ── Auto-migration: Add receipt columns to task_assignees ──
+    // â”€â”€ Auto-migration: backup_records â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Tier-1 DB backup catalog. Created via raw DDL (rather than relying on
+    // sequelize.sync) so the column types are stable across deploys and don't
+    // depend on Sequelize's ENUM creation order. trigger / status are stored
+    // as TEXT with CHECK constraints â€” same shape as the model ENUMs, but
+    // avoids the failure mode where a typo in the Sequelize ENUM definition
+    // silently writes a string the DB later rejects.
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS backup_records (
+          id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          filename        VARCHAR(255) NOT NULL UNIQUE,
+          path            VARCHAR(1024) NOT NULL,
+          "sizeBytes"     BIGINT,
+          trigger         TEXT NOT NULL DEFAULT 'manual'
+                          CHECK (trigger IN ('scheduled','manual','pre_restore','uploaded')),
+          status          TEXT NOT NULL DEFAULT 'running'
+                          CHECK (status IN ('running','completed','failed')),
+          "errorMessage"  TEXT,
+          "createdBy"     UUID REFERENCES users(id) ON DELETE SET NULL,
+          "completedAt"   TIMESTAMP WITH TIME ZONE,
+          "restoredAt"    TIMESTAMP WITH TIME ZONE,
+          "createdAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          "updatedAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )
+      `);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_backup_records_created_at ON backup_records("createdAt" DESC)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_backup_records_trigger ON backup_records(trigger)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_backup_records_status ON backup_records(status)`);
+      // progressPercent added in the in-flight backup progress feature.
+      // Existing rows back-fill to 100 when completed / 0 otherwise so the
+      // UI doesn't render a stalled-at-0% bar against historical successes.
+      await sequelize.query(`ALTER TABLE backup_records
+        ADD COLUMN IF NOT EXISTS "progressPercent" INTEGER NOT NULL DEFAULT 0
+        CHECK ("progressPercent" >= 0 AND "progressPercent" <= 100)`);
+      await sequelize.query(`UPDATE backup_records
+        SET "progressPercent" = 100
+        WHERE status = 'completed' AND "progressPercent" = 0`);
+      console.log('[Server] backup_records table ensured.');
+    } catch (e) {
+      console.warn('[Server] backup_records migration warning:', e.message?.slice(0, 200));
+    }
+
+    // â”€â”€ Auto-migration: Add receipt columns to task_assignees â”€â”€
     // Per-assignee delivery/seen tracking for the WhatsApp-style receipt UI.
     // assignerId records who triggered the assignment (used to scope visibility
     // of the receipt icon to the assigner only).
@@ -2663,7 +3016,7 @@ const start = async () => {
 
     // Bootstrap a default AIProvider from env vars (DEEPSEEK_API_KEY /
     // OPENAI_API_KEY / OPENROUTER_API_KEY / ANTHROPIC_API_KEY) when the
-    // table is otherwise empty. Idempotent — never overwrites an existing
+    // table is otherwise empty. Idempotent â€” never overwrites an existing
     // active provider configured via /admin-settings. Lets a fresh install
     // boot with summarize/Sidekick working out of the box if any of these
     // vars is set in .env.
@@ -2674,7 +3027,7 @@ const start = async () => {
       console.warn('[Server] AI env bootstrap skipped:', bootErr.message?.slice(0, 80));
     }
 
-    // ── One-time data cleanup: Director Plan & Time Plan ──
+    // â”€â”€ One-time data cleanup: Director Plan & Time Plan â”€â”€
     // One-shot cleanup ran historically. Now invoked manually via
     // `node cleanup-plan-data.js` if needed. See P1-27 in audit.
     // The module is still on disk (and still exports runStartupCleanup) so
@@ -2715,7 +3068,7 @@ const start = async () => {
       const { startCalendarSyncRetryJob } = require('./jobs/calendarSyncRetryJob');
       startCalendarSyncRetryJob();
 
-      // ─── Daily Work / Recurring Work jobs (Phase B) ─────────────────────
+      // â”€â”€â”€ Daily Work / Recurring Work jobs (Phase B) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Distinct from the legacy `recurringTaskJob` (Task.recurrence JSONB)
       // which still runs at :15. These two jobs drive the new
       // RecurringTaskTemplate + generated-instance design.
@@ -2725,11 +3078,11 @@ const start = async () => {
       const { startMissedRecurringTaskJob } = require('./jobs/missedRecurringTaskJob');
       startMissedRecurringTaskJob();
 
-      // Outbound webhook retry job (every 5 min) — drains failed deliveries
+      // Outbound webhook retry job (every 5 min) â€” drains failed deliveries
       const { startWebhookRetryJob } = require('./jobs/webhookRetryJob');
       startWebhookRetryJob();
 
-      // Workflow wait resume job (every 1 min) — Phase W3. Picks up
+      // Workflow wait resume job (every 1 min) â€” Phase W3. Picks up
       // long-running `wait` actions that were persisted to workflow_waits
       // and resumes the walk past them once their resumeAt has elapsed.
       const { startWorkflowWaitJob } = require('./jobs/workflowWaitJob');
@@ -2738,16 +3091,24 @@ const start = async () => {
       // Weekly VACUUM ANALYZE on hot tables. Defends against the planner-stats
       // drift class of incident (May 2026 pg_toast_2619 corruption hit prod
       // because autovacuum thresholds were too lax for our churn rate). The
-      // job is replica-safe via a Postgres advisory lock — see jobs/cronLock.js.
+      // job is replica-safe via a Postgres advisory lock â€” see jobs/cronLock.js.
       const { startVacuumAnalyzeJob } = require('./jobs/vacuumAnalyzeJob');
       startVacuumAnalyzeJob();
+
+      // Daily DB backup at 18:00 server time (overridable via DB_BACKUP_CRON).
+      // Replica-safe via withCronLock; retention runs only after a successful
+      // dump. Disable via DB_BACKUP_ENABLED=false if ever needed (the env
+      // override is intentionally undocumented in CLAUDE.md so it's not the
+      // default escape hatch).
+      const { startDailyBackupJob } = require('./jobs/dailyBackupJob');
+      startDailyBackupJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);
     // Try to start the HTTP server anyway so health checks can report status
     try {
       server.listen(PORT, () => {
-        console.error(`[Server] Started on port ${PORT} with errors — check logs above`);
+        console.error(`[Server] Started on port ${PORT} with errors â€” check logs above`);
       });
     } catch (listenErr) {
       console.error('[Server] Cannot start HTTP server:', listenErr);
@@ -2768,12 +3129,12 @@ process.on('uncaughtException', (err) => {
   _safeLogger.error('[Server] Uncaught Exception', { err });
 });
 
-// Graceful shutdown on SIGTERM/SIGINT — closes the HTTP server (so in-flight
+// Graceful shutdown on SIGTERM/SIGINT â€” closes the HTTP server (so in-flight
 // requests can finish) then ends the Sequelize pool. Docker compose sends
 // SIGTERM then escalates to SIGKILL after ~10s, so we hard-exit at 15s to
 // give a small buffer; .unref() so the timer itself can't keep the loop alive.
 const gracefulShutdown = (signal) => {
-  console.log(`[Server] ${signal} received — shutting down gracefully.`);
+  console.log(`[Server] ${signal} received â€” shutting down gracefully.`);
   server.close((err) => {
     if (err) { console.error('[Server] Error during shutdown:', err); process.exit(1); }
     sequelize.close().finally(() => process.exit(0));

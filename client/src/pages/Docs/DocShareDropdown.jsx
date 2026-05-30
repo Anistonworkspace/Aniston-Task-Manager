@@ -1,5 +1,4 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { Share2, Lock, Users, Globe, Copy, Check } from 'lucide-react';
 
 import Popover from '../../components/common/Popover';
@@ -69,21 +68,20 @@ export default function DocShareDropdown({
   canEdit = true,
   onChanged,
 }) {
-  const { workspaceId } = useParams();
   const toast = useToast();
   const [policy, setPolicy] = useState(currentSharePolicy || 'workspace');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // Build the public share URL — used by the "Copy link" affordance when
-  // the policy is set to public_link. We build it off window.location so
-  // dev (localhost), preview (vercel-ish), and prod all just work.
+  // the policy is set to public_link. Phase 1 dropped the workspace segment
+  // from the URL; the canonical path is now /docs/:docId.
   const publicUrl = useMemo(() => {
     if (typeof window === 'undefined') return '';
     const origin = window.location.origin;
-    if (!workspaceId || !docId) return origin;
-    return `${origin}/workspaces/${workspaceId}/docs/${docId}`;
-  }, [workspaceId, docId]);
+    if (!docId) return origin;
+    return `${origin}/docs/${docId}`;
+  }, [docId]);
 
   const handlePick = useCallback(async (nextPolicy) => {
     if (!docId || nextPolicy === policy) return;

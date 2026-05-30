@@ -116,6 +116,7 @@ const STATUS_FILTERS = {
     { value: 'pending', label: 'Pending' },
     { value: 'in_review', label: 'In Review' },
     { value: 'resolved', label: 'Resolved' },
+    { value: 'rejected', label: 'Rejected' },
   ],
 };
 
@@ -303,7 +304,7 @@ function groupByBoard(items, getBoard) {
 }
 
 export default function TasksPage() {
-  const { canManage, isAdmin, isAssistantManager } = useAuth();
+  const { user, canManage, isAdmin, isAssistantManager } = useAuth();
   const t = useT();
   const canViewTeamFeedback = canManage || isAssistantManager;
   const { addToast } = useToast();
@@ -509,6 +510,32 @@ export default function TasksPage() {
     } catch (err) { console.error(err); } finally { setActionLoading(null); }
   }
 
+  // Opens the shared reason dialog. The actual API call happens in
+  // performRejectHelp() once the user submits a reason.
+  function handleRejectHelp(helpId) {
+    setReasonValue('');
+    setReasonDialog({
+      kind: 'rejectHelp',
+      helpId,
+      title: 'Reject help request',
+      label: 'Reason for rejection (required):',
+      submitLabel: 'Reject',
+      required: true,
+    });
+  }
+
+  async function performRejectHelp(helpId, reason) {
+    setActionLoading(helpId);
+    try {
+      await api.put(`/help-requests/${helpId}/status`, { status: 'rejected', rejectionReason: reason });
+      fetchData();
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to reject help request.';
+      addToast(msg, 'error');
+      console.error(err);
+    } finally { setActionLoading(null); }
+  }
+
   // Filter items by status
   function filterByStatus(items, statusField = 'approvalStatus') {
     if (statusFilter === 'all') return items;
@@ -519,7 +546,7 @@ export default function TasksPage() {
     approvals: data.approvals?.filter(t => t.approvalStatus === 'pending_approval').length || 0,
     myFeedback: myFeedback?.filter(f => f.status === 'pending').length || 0,
     extensions: data.extensions?.filter(e => e.status === 'pending').length || 0,
-    help: data.helpRequests?.filter(h => h.status !== 'resolved').length || 0,
+    help: data.helpRequests?.filter(h => h.status !== 'resolved' && h.status !== 'rejected').length || 0,
   };
 
   // Compact stats — derived only from already-loaded `data` and `myFeedback`.
@@ -534,7 +561,7 @@ export default function TasksPage() {
       pending: pending.length,
       higherLevel,
       extensions: (data.extensions || []).filter(e => e.status === 'pending').length,
-      help: (data.helpRequests || []).filter(h => h.status !== 'resolved').length,
+      help: (data.helpRequests || []).filter(h => h.status !== 'resolved' && h.status !== 'rejected').length,
     };
   }, [data]);
 
@@ -1332,6 +1359,14 @@ export default function TasksPage() {
                           {hr.description}
                         </p>
                       )}
+                      {hr.status === 'rejected' && hr.rejectionReason && (
+                        <p
+                          className="text-[12px] px-3 py-2 mb-2"
+                          style={{ backgroundColor: '#FEE2E2', color: '#B91C1C', borderRadius: 12 }}
+                        >
+                          <span className="font-semibold">Reason for rejection: </span>{hr.rejectionReason}
+                        </p>
+                      )}
                       {hr.preferredTime && (
                         <p className="text-[11px] mb-1" style={{ color: TONE.textMuted }}>
                           Preferred time: {hr.preferredTime}
@@ -1349,8 +1384,16 @@ export default function TasksPage() {
                         </a>
                       )}
 
-                      {hr.status !== 'resolved' && (
+                      {hr.status !== 'resolved' && hr.status !== 'rejected' && hr.requestedTo === user?.id && (
                         <div className="flex items-center justify-end gap-2 flex-wrap">
+                          <NeoActionButton
+                            onClick={() => handleRejectHelp(hr.id)}
+                            disabled={actionLoading === hr.id}
+                            gradient={REJECT_GRADIENT}
+                            fg={TONE.coralText}
+                            icon={X}
+                            label="Reject"
+                          />
                           <NeoActionButton
                             onClick={() => handleResolveHelp(hr.id)}
                             disabled={actionLoading === hr.id}
@@ -1422,6 +1465,7 @@ export default function TasksPage() {
                 const dlg = reasonDialog;
                 setReasonDialog(null);
                 if (dlg.kind === 'reject') performReject(dlg.taskId, trimmed);
+                else if (dlg.kind === 'rejectHelp') performRejectHelp(dlg.helpId, trimmed);
               }}
               className="px-3 py-1.5 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
             >

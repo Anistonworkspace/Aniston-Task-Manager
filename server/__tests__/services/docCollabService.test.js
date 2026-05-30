@@ -36,6 +36,12 @@ jest.mock('../../models', () => ({
   Doc: { findByPk: jest.fn(), update: jest.fn() },
   Workspace: { findByPk: jest.fn() },
   User: { findByPk: jest.fn() },
+  // feat/docs-personal-notion Phase 3 — ticket endpoint + onAuthenticate
+  // gate on docAccessSvc.hasDocAccess (which reads DocAccess.findOne).
+  // Default findOne returns null; tests that exercise the happy path
+  // either use a super-admin user or set the doc's ownerUserId to the
+  // caller's id (matches resolveOwnerId fallback).
+  DocAccess: { findOne: jest.fn().mockResolvedValue(null), findAll: jest.fn() },
 }));
 
 jest.mock('../../utils/safeLogger', () => ({
@@ -50,7 +56,7 @@ jest.mock('../../middleware/auth', () => ({
   authenticate: (req, _res, next) => next(),
 }));
 
-const { Doc, Workspace, User } = require('../../models');
+const { Doc, Workspace, User, DocAccess } = require('../../models');
 const docCollab = require('../../services/docCollabService');
 
 // ─── Reusable user/doc/workspace fixtures ─────────────────────────────
@@ -157,21 +163,21 @@ describe('POST /api/docs-collab/ticket', () => {
     expect(res.status).toBe(403);
   });
 
-  test('403 when caller cannot see workspace', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    Workspace.findByPk.mockResolvedValue(makeWorkspace({
-      createdBy: 'someone-else',
-      workspaceMembers: [],
-    }));
+  test('403 when caller has no doc_access grant', async () => {
+    // Phase 3: workspace/board/role no longer auto-grant — without an
+    // explicit doc_access row OR ownership, OUTSIDER is denied.
+    Doc.findByPk.mockResolvedValue(makeDoc({ ownerUserId: 'someone-else' }));
+    DocAccess.findOne.mockResolvedValue(null);
     const res = await request(buildApp(OUTSIDER))
       .post('/api/docs-collab/ticket')
       .send({ docId: 'd1' });
     expect(res.status).toBe(403);
   });
 
-  test('200 happy path issues a JWT with purpose + docId', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    Workspace.findByPk.mockResolvedValue(makeWorkspace());
+  test('200 happy path: owner can mint a ticket', async () => {
+    // Phase 3: owner match via ownerUserId. (Pre-Phase-3 this test used a
+    // generic workspace member — that no longer grants access.)
+    Doc.findByPk.mockResolvedValue(makeDoc({ ownerUserId: MEMBER.id }));
     const res = await request(buildApp(MEMBER))
       .post('/api/docs-collab/ticket')
       .send({ docId: 'd1' });
@@ -184,14 +190,12 @@ describe('POST /api/docs-collab/ticket', () => {
     expect(decoded.id).toBe(MEMBER.id);
   });
 
-  test('200 admin gets visibility even without explicit membership', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    // No membership; admin role bypass kicks in.
-    Workspace.findByPk.mockResolvedValue(makeWorkspace({
-      createdBy: 'someone-else',
-      workspaceMembers: [],
-    }));
-    const res = await request(buildApp(ADMIN))
+  test('200 super-admin bypasses access checks (17.7a)', async () => {
+    // Phase 3: admin role no longer auto-grants. Only super-admin does
+    // (per decision 17.7a).
+    Doc.findByPk.mockResolvedValue(makeDoc({ ownerUserId: 'someone-else' }));
+    const SUPER = { id: 'u-super', role: 'admin', isSuperAdmin: true };
+    const res = await request(buildApp(SUPER))
       .post('/api/docs-collab/ticket')
       .send({ docId: 'd1' });
     expect(res.status).toBe(200);
@@ -252,17 +256,18 @@ describe('buildHocuspocusConfig', () => {
       .rejects.toThrow('Doc is archived');
   });
 
-  test('onAuthenticate rejects when caller cannot see workspace', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    Workspace.findByPk.mockResolvedValue(makeWorkspace({ createdBy: 'other', workspaceMembers: [] }));
+  test('onAuthenticate rejects when caller has no doc_access', async () => {
+    // Phase 3: no doc_access row + not owner + not super-admin → denied.
+    Doc.findByPk.mockResolvedValue(makeDoc({ ownerUserId: 'other' }));
+    DocAccess.findOne.mockResolvedValue(null);
     const token = signTicket({ id: OUTSIDER.id, docId: 'd1', purpose: 'doc-collab-ws', role: 'member' });
     await expect(buildConfig().onAuthenticate({ token, documentName: 'd1' }))
       .rejects.toThrow('Access denied');
   });
 
   test('onAuthenticate resolves with userId + docId on happy path', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    Workspace.findByPk.mockResolvedValue(makeWorkspace());
+    // Phase 3: owner can authenticate without an explicit doc_access row.
+    Doc.findByPk.mockResolvedValue(makeDoc({ ownerUserId: MEMBER.id }));
     const token = signTicket({
       id: MEMBER.id,
       docId: 'd1',

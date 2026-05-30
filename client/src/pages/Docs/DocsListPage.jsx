@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { FileText, Plus, Search, Archive, RotateCcw, MoreHorizontal, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { FileText, Plus, Search, Archive, RotateCcw, Loader2, AtSign, Users, User as UserIcon, Inbox } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import {
-  listWorkspaceDocs, createDoc as createDocApi,
+  listMyDocs, createDoc as createDocApi,
   archiveDoc as archiveDocApi, restoreDoc as restoreDocApi,
 } from '../../services/docsService';
 import safeLog from '../../utils/safeLog';
@@ -12,21 +12,33 @@ import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../components/common/Toast';
 import LetterAvatar from '../../components/common/LetterAvatar';
 import EmptyState from '../../components/common/EmptyState';
+// Phase 8 — listen for realtime access grants/revokes so /docs self-refreshes
+// when someone shares a doc with us or removes our mention-derived access.
+import useRealtimeEvent from '../../realtime/useRealtimeEvent';
+
+// Phase 8 — filter chip definitions. Keys match the backend's `?filter=`
+// query param. Icons are lucide-react; copy stays simple Notion-style.
+const FILTERS = [
+  { key: 'all',       label: 'All docs',      Icon: Inbox },
+  { key: 'owned',     label: 'My docs',       Icon: UserIcon },
+  { key: 'shared',    label: 'Shared with me', Icon: Users },
+  { key: 'mentioned', label: 'Mentioned me',   Icon: AtSign },
+];
 
 /**
- * DocsListPage — workspace-scoped doc library (Doc Editor Phase B).
+ * DocsListPage — personal docs library.
  *
- * Route: `/workspaces/:workspaceId/docs`
+ * Route: `/docs`
  *
- * Renders every doc in the workspace the caller can see. Optimistic create
- * → navigate straight into the new DocPage. Search runs server-side via
- * the `q=` query param (which matches both title and contentText).
+ * feat/docs-personal-notion Phase 2: backend is now personal-scoped
+ * (GET /api/docs returns only docs the caller can see — owner + shared +
+ * legacy-workspace backfill rows). No more workspace resolution; create
+ * lands on POST /api/docs without a workspaceId.
  */
 
 export default function DocsListPage() {
-  const { workspaceId } = useParams();
   const navigate = useNavigate();
-  const { user, isSuperAdmin, canManage } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const toast = useToast();
 
   const [docs, setDocs] = useState([]);
@@ -35,15 +47,18 @@ export default function DocsListPage() {
   const [query, setQuery] = useState('');
   const [includeArchived, setIncludeArchived] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Phase 8 — filter chip state. 'all' is the safe default; 'owned' /
+  // 'shared' / 'mentioned' narrow the result set server-side.
+  const [filter, setFilter] = useState('all');
 
   const load = useCallback(async () => {
-    if (!workspaceId) return;
     setLoading(true);
     setError('');
     try {
-      const { docs: list } = await listWorkspaceDocs(workspaceId, {
+      const { docs: list } = await listMyDocs({
         q: query || undefined,
         archived: includeArchived,
+        filter: filter !== 'all' ? filter : undefined,
       });
       setDocs(Array.isArray(list) ? list : []);
     } catch (err) {
@@ -52,7 +67,7 @@ export default function DocsListPage() {
     } finally {
       setLoading(false);
     }
-  }, [workspaceId, query, includeArchived]);
+  }, [query, includeArchived, filter]);
 
   // Debounce search by 250ms so typing doesn't fire a request per keystroke.
   useEffect(() => {
@@ -60,12 +75,19 @@ export default function DocsListPage() {
     return () => clearTimeout(t);
   }, [load, query]);
 
+  // Phase 8 — realtime self-refresh. When the user is granted or revoked
+  // access in another tab / by another user's mention, the docs list
+  // re-fetches in place. Cheap because the events are targeted (Phase 5
+  // emitToUsers, so this only fires for events meant for THIS user).
+  useRealtimeEvent('doc:access:granted', useCallback(() => { load(); }, [load]));
+  useRealtimeEvent('doc:access:revoked', useCallback(() => { load(); }, [load]));
+
   async function handleCreate() {
     if (creating) return;
     setCreating(true);
     try {
-      const { doc } = await createDocApi(workspaceId, { title: 'Untitled doc' });
-      navigate(`/workspaces/${workspaceId}/docs/${doc.id}`);
+      const { doc } = await createDocApi({ title: 'Untitled doc' });
+      navigate(`/docs/${doc.id}`);
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -112,7 +134,7 @@ export default function DocsListPage() {
           </span>
           <div className="flex-1 min-w-0">
             <h1 className="text-xl font-bold text-text-primary">Docs</h1>
-            <p className="text-xs text-text-tertiary">Collaborative documents in this workspace.</p>
+            <p className="text-xs text-text-tertiary">Your personal documents. Private by default — share via @mention or the Share panel.</p>
           </div>
           <button
             type="button"
@@ -153,6 +175,32 @@ export default function DocsListPage() {
             Show archived
           </label>
         </div>
+
+        {/* Phase 8 — filter chip row. Sits below search so the filter
+            applies on top of any query the user has typed. The 'all' chip
+            is the safe default; backend narrows the result set when any
+            other key is picked. */}
+        <div className="mt-3 flex items-center gap-1.5 overflow-x-auto">
+          {FILTERS.map(({ key, label, Icon }) => {
+            const active = filter === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFilter(key)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[12px] font-medium transition-colors whitespace-nowrap border ${
+                  active
+                    ? 'bg-primary text-white border-primary'
+                    : 'bg-surface text-text-secondary border-border hover:border-primary-300 hover:text-primary'
+                }`}
+                aria-pressed={active}
+              >
+                <Icon size={12} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </header>
 
       <div className="flex-1 overflow-auto p-6">
@@ -169,11 +217,25 @@ export default function DocsListPage() {
         ) : activeDocs.length === 0 ? (
           <EmptyState
             icon={<FileText size={48} className="text-text-tertiary" />}
-            title={query ? 'No docs match' : 'No docs yet'}
-            description={query
-              ? 'Try a different search.'
-              : 'Create your first doc to draft a spec, capture meeting notes, or decide together.'}
-            primaryAction={!query ? { label: '+ Create doc', onClick: handleCreate } : undefined}
+            title={
+              query ? 'No docs match'
+                : filter === 'shared' ? 'Nothing shared with you yet'
+                : filter === 'mentioned' ? 'You haven\'t been @-mentioned yet'
+                : filter === 'owned' ? 'You haven\'t created any docs yet'
+                : 'No docs yet'
+            }
+            description={
+              query ? 'Try a different search or filter.'
+                : filter === 'shared' ? 'When someone shares a doc with you via the Share panel, it will show up here.'
+                : filter === 'mentioned' ? 'When a teammate @-mentions you in a doc, you\'ll see it here.'
+                : filter === 'owned' ? 'Create your first doc to draft a spec, capture meeting notes, or decide together.'
+                : 'Create your first doc to draft a spec, capture meeting notes, or decide together.'
+            }
+            primaryAction={
+              (!query && (filter === 'all' || filter === 'owned'))
+                ? { label: '+ Create doc', onClick: handleCreate }
+                : undefined
+            }
           />
         ) : (
           <ul className="space-y-1 rounded-md border border-border-light overflow-hidden">
@@ -181,10 +243,14 @@ export default function DocsListPage() {
               <li key={doc.id}>
                 <DocRow
                   doc={doc}
-                  onOpen={() => navigate(`/workspaces/${workspaceId}/docs/${doc.id}`)}
+                  onOpen={() => navigate(`/docs/${doc.id}`)}
                   onArchive={(e) => handleArchive(doc, e)}
                   onRestore={(e) => handleRestore(doc, e)}
-                  canEdit={isSuperAdmin || canManage || doc.createdBy === user?.id}
+                  // Owner gate: super-admin OR the doc's owner. Shared/mentioned
+                  // users no longer see Archive/Restore — Phase 3 will enforce
+                  // this server-side too.
+                  canEdit={isSuperAdmin
+                    || (doc.ownerUserId || doc.createdBy) === user?.id}
                   isFirst={i === 0}
                 />
               </li>
@@ -216,6 +282,10 @@ function DocRow({ doc, onOpen, onArchive, onRestore, canEdit, isFirst }) {
         <div className="text-sm font-semibold text-text-primary truncate">
           {doc.title || 'Untitled doc'}
           {doc.isArchived && <span className="ml-2 text-[10px] uppercase font-bold text-amber-600">Archived</span>}
+          {/* Phase 8 — caller-relation badge. Server populates
+              `callerRelation` so the UI can render a one-glance pill
+              without extra round-trips. */}
+          <RelationBadge relation={doc.callerRelation} />
         </div>
         {doc.contentText && (
           <div className="text-xs text-text-tertiary truncate">
@@ -270,5 +340,28 @@ function DocRow({ doc, onOpen, onArchive, onRestore, canEdit, isFirst }) {
         )}
       </div>
     </button>
+  );
+}
+
+// Phase 8 — small pill in the doc row that surfaces the caller's
+// relationship to this doc at a glance. Server populates `callerRelation`
+// on every list response so this is a pure presentational lookup.
+function RelationBadge({ relation }) {
+  if (!relation || relation === 'owner') return null;
+  const palette = {
+    mentioned: { bg: 'rgba(157, 80, 221, 0.12)', fg: '#7c3aed', label: 'Mentioned' },
+    shared:    { bg: 'rgba(0, 115, 234, 0.12)',  fg: '#0073ea', label: 'Shared' },
+    legacy:    { bg: 'rgba(120, 120, 120, 0.12)', fg: '#6b7280', label: 'Legacy access' },
+    super_admin: { bg: 'rgba(220, 38, 38, 0.10)', fg: '#dc2626', label: 'Super-admin view' },
+  };
+  const tone = palette[relation];
+  if (!tone) return null;
+  return (
+    <span
+      className="ml-2 inline-block text-[10px] uppercase font-bold px-1.5 py-0.5 rounded"
+      style={{ backgroundColor: tone.bg, color: tone.fg, letterSpacing: 0.3 }}
+    >
+      {tone.label}
+    </span>
   );
 }

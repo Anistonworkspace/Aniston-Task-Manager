@@ -646,6 +646,30 @@ The `main` branch carries (in addition to the historical phases above):
 - **Read-only production audit workflows** — two GH Actions workflows for investigating prod state without mutation.
 - **Pre-deploy DB snapshot** — `deploy.yml` takes a `pg_dump` before every deploy.
 - **Two production safety flips** — Sunny/Muskan force-reset now `false` by default; `seed-hierarchy.js` refuses prod without explicit opt-in.
+- **Tier-1 Database Backup Management** — `BackupRecord` model, `backupService.js` (pg_dump streaming + gzip + validation), `routes/adminBackups.js` mounted at `/api/admin/backups`, `dailyBackupJob.js` (6 PM cron, replica-safe via `withCronLock`), retention (30 days for scheduled only), pre-restore safety dump, typed `RESTORE DATABASE` confirmation enforced server-side. Frontend `BackupSettingsPage.jsx` at `/admin/backups` (Tier-1 only). Postgres client installed in backend Dockerfile; backups live in `backup_data:/app/backups` Docker volume.
+
+---
+
+## Database Backup System (Tier 1)
+
+Production-safe DB backup workflow, all gated by `superAdminOnly`.
+
+| Surface | Location | Notes |
+|---|---|---|
+| Model | `server/models/BackupRecord.js` | UUID PK, `trigger` ∈ (scheduled\|manual\|pre_restore\|uploaded), `status` ∈ (running\|completed\|failed). Auto-installed via DDL block in `server.js`. |
+| Service | `server/services/backupService.js` | `pg_dump → gzip → file`, `gunzip → psql` for restore, `gzip -t` validation, path-traversal gate on every file op. Args passed as arrays to `spawn` (no shell). Credentials via `PGPASSWORD` env, not argv. |
+| Controller | `server/controllers/adminBackupsController.js` | Multer (`storage=diskStorage`, `.sql.gz` extension only, 2 GB cap). Server-side typed-confirmation check (`RESTORE DATABASE`). |
+| Routes | `server/routes/adminBackups.js` | Mounted at `/api/admin/backups`. Every endpoint behind `authenticate` + `superAdminOnly` + rate limiter. |
+| Cron | `server/jobs/dailyBackupJob.js` | `0 18 * * *` daily, replica-safe via `withCronLock('dailyDbBackup')`. Retention runs only after successful dump. |
+| Frontend | `client/src/pages/BackupSettingsPage.jsx`, route `/admin/backups`, `SuperAdminRoute` guard. Profile dropdown link (`Header.jsx`). |
+| Storage | `backup_data:/app/backups` Docker named volume; subdirs `database/`, `pre-restore/`, `uploads-inbox/`. pg_dump installed via `postgresql16-client` in `deploy/Dockerfile.server`. |
+| Env | `DB_BACKUP_ENABLED`, `DB_BACKUP_CRON`, `DB_BACKUP_DIR`, `DB_BACKUP_RETENTION_DAYS`, `DB_BACKUP_UPLOAD_MAX_MB` (see `server/.env.example`). |
+
+**Operational rules**
+- Format: gzipped plain SQL (`.sql.gz`), produced by `pg_dump --format=plain --clean --if-exists --no-owner --no-privileges`. Restored by streaming through `psql --set ON_ERROR_STOP=1`.
+- Restore ALWAYS creates a `pre_restore` safety dump first. The pre-restore artefact is preserved even if the subsequent restore fails (logged in `meta.preRestoreId` of the failure activity row, surfaced to the UI).
+- Retention deletes ONLY `trigger='scheduled'` rows older than `DB_BACKUP_RETENTION_DAYS` (default 30). Manual / uploaded / pre-restore artefacts are never auto-pruned.
+- Off-host shipping (S3) is NOT yet wired — EC2 host loss = backup loss. The existing `deploy/backup.sh` has a commented `aws s3 cp` template for future use.
 
 ---
 

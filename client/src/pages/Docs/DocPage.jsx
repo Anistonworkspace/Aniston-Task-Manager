@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, FileText, Archive, RotateCcw,
+  FileText, Archive, RotateCcw,
   Sparkles, Check, AlertCircle, Loader2, History, MessageSquare, Save,
-} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons. Save — May 2026 manual-save button.
+  MoreHorizontal, Link2, Wand2, ChevronDown, ChevronRight, LayoutGrid, RefreshCw,
+} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons. Save — May 2026 manual-save button. May 2026 Notion-style refactor: MoreHorizontal/Link2/Wand2/ChevronDown for the new AI + More menus. ChevronRight + LayoutGrid added for the Editorial breadcrumb (May 2026 Editorial pass). RefreshCw — live peer-update refresh pill.
+import PortalDropdown from '../../components/common/PortalDropdown';
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../../services/api';
 import {
@@ -11,6 +14,9 @@ import {
   listMentionableUsers, listSearchableTasks, listDocComments,
   // Phase G follow-up — owner-only migration of an existing doc to Y.js.
   migrateDocToCollab,
+  // Bidirectional unshare — revoke the explicit grant when an @name chip is
+  // removed from the shared-with bar.
+  removeCollaborator,
 } from '../../services/docsService';
 import safeLog from '../../utils/safeLog';
 import { getErrorMessage } from '../../utils/errorMap';
@@ -18,8 +24,14 @@ import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../components/common/Toast';
 import EmptyState from '../../components/common/EmptyState';
 import LetterAvatar from '../../components/common/LetterAvatar';
-// Phase A made this editor real. Phase B uses it as the doc body.
+import ErrorBoundary from '../../components/common/ErrorBoundary';
+// Phase A made this editor real. Phase B uses it as the doc body for
+// legacy `contentFormat='tiptap_json'` docs.
 import RichTextEditor from '../../components/common/RichTextEditor';
+// Phase 6 — Notion-style BlockNote editor for new personal docs
+// (contentFormat='blocknote_json'). Lazy import so the BlockNote bundle
+// (~400kb gzipped) only loads when a BlockNote doc is opened.
+const BlockNoteEditor = React.lazy(() => import('../../components/common/BlockNoteEditor'));
 import SidekickPanel from '../../components/sidekick/SidekickPanel';
 import { formatDistanceToNow } from 'date-fns';
 import useDocAutosave from './useDocAutosave';
@@ -39,15 +51,24 @@ import aiSummary from '../../services/aiSummaryService';
 import AISummaryModal from '../../components/sidekick/AISummaryModal';
 // Phase F — side-panel comments anchored to selection.
 import DocCommentsSidebar from '../../components/common/DocCommentsSidebar';
-// Phase H — version history modal + share dropdown (replaces the
-// old copy-URL-only Share button).
+// Phase H — version history modal.
 import DocVersionHistoryModal from './DocVersionHistoryModal';
-import DocShareDropdown from './DocShareDropdown';
+// Phase 8 — DocSharePanel replaces the old DocShareDropdown. It manages
+// real per-user doc_access rows (owner / mention / manual_share /
+// legacy_workspace) instead of the legacy `sharePolicy` enum.
+import DocSharePanel from './DocSharePanel';
+// Shared-with @name bar — renders the doc's collaborators as @mention
+// chips just under the title, with owner-only unshare. Reflects live
+// share/unshare via the `shareVersion` reload key bumped by DocSharePanel.
+import DocSharedWithBar from './DocSharedWithBar';
 
 /**
- * DocPage — collaborative document viewer/editor (Doc Editor Phase B).
+ * DocPage — collaborative document viewer/editor.
  *
- * Route: `/workspaces/:workspaceId/docs/:docId`
+ * Route: `/docs/:docId` (workspace was dropped from the URL in
+ * feat/docs-personal-notion Phase 1; it's now derived from doc.workspaceId
+ * after the doc loads and used only for the mention/task pickers and the
+ * AI sidekick pageState).
  *
  * Layout:
  *   - Sticky header: title (inline-edit), save indicator, AI button, share, ⋯
@@ -63,12 +84,20 @@ import DocShareDropdown from './DocShareDropdown';
  */
 
 export default function DocPage() {
-  const { workspaceId, docId } = useParams();
+  // feat/docs-personal-notion Phase 1: URL is now /docs/:docId — workspaceId
+  // is no longer in the URL. It comes from the loaded doc (doc.workspaceId)
+  // so the mention picker, task-chip picker, and back-navigation still work
+  // without a workspace-scoped route. Phase 2 will further detach the
+  // pickers from workspace context.
+  const { docId } = useParams();
   const navigate = useNavigate();
   const { user, isSuperAdmin } = useAuth();
   const toast = useToast();
 
   const [doc, setDoc] = useState(null);
+  // Derived from doc.workspaceId once the doc loads. Used by mention/task
+  // pickers and share URL only — NOT a URL param anymore.
+  const workspaceId = doc?.workspaceId;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editingTitle, setEditingTitle] = useState(false);
@@ -97,40 +126,132 @@ export default function DocPage() {
   // re-apply CommentMark highlights. Refreshes on doc load + whenever the
   // sidebar dispatches `doc-comments-changed` (after add/edit/delete/resolve).
   const [commentMarks, setCommentMarks] = useState([]);
+  // Live collaboration (May 2026 — non-CRDT path). When a peer saves the
+  // doc, the server fires `doc:updated`; we re-fetch the body and bump
+  // `editorRemountKey` to remount the editor with the fresh content (the
+  // BlockNote/Tiptap editors only read `value` on mount, so a key bump is
+  // the canonical way to apply external content — neither fires onChange
+  // for initial content, so there's no echo-save loop). If the local user
+  // has unsaved edits we don't clobber them — we surface a Refresh pill
+  // (`peerUpdated`) instead.
+  const [editorRemountKey, setEditorRemountKey] = useState(0);
+  const [peerUpdated, setPeerUpdated] = useState(false);
+  // Bumped whenever the Share panel mutates collaborators so the
+  // shared-with @name bar re-fetches.
+  const [shareVersion, setShareVersion] = useState(0);
 
-  // "Owner" is the strict role used to gate destructive UI (archive /
-  // restore / rename). Anyone who can READ a doc passed the workspace
-  // visibility gate server-side, so we trust them to also write the body —
-  // matches the Notion-style collab default we now enforce on the backend.
+  // Post-Phase-2: server returns `callerAccessLevel` from getDoc, computed
+  // by docAccessService.getDocAccessLevel. It's the single source of truth
+  // for what this caller can do on this doc — owner > edit > comment > view,
+  // with super-admin bypass already collapsed to 'owner' upstream. Role/tier
+  // membership does NOT promote anyone to owner anymore; the legacy
+  // `user.role === 'admin'` shortcut here was the reason any
+  // admin/manager could trigger PATCH autosaves on other people's docs and
+  // get "you have comment" toast spam.
+  const serverAccessLevel = doc?.callerAccessLevel || null;
+
+  // isOwner gates destructive UI (archive / restore / rename / share-panel
+  // mutations). Strictly the doc owner or super-admin.
   const isOwner = useMemo(() => {
     if (!doc || !user) return false;
-    return isSuperAdmin || doc.createdBy === user.id || user.role === 'admin' || user.role === 'manager';
-  }, [doc, user, isSuperAdmin]);
+    if (isSuperAdmin) return true;
+    if (serverAccessLevel === 'owner') return true;
+    // Safe fallback for the brief window before the server starts surfacing
+    // callerAccessLevel on every response (e.g. an older cached payload).
+    const ownerId = doc.ownerUserId || doc.createdBy;
+    return !!ownerId && ownerId === user.id;
+  }, [doc, user, isSuperAdmin, serverAccessLevel]);
 
-  // canEdit is the looser gate for body writes — true for any caller who
-  // successfully loaded the doc and the doc isn't archived. (If the load
-  // failed, we don't render the editor at all.)
-  const canEdit = !!doc && !doc.isArchived;
+  // canEdit gates body writes (autosave PATCH, manual Save). Only owners
+  // and explicit edit-level grants. View / comment users see a read-only
+  // editor; archived docs are read-only regardless of access.
+  const canEdit = useMemo(() => {
+    if (!doc || doc.isArchived) return false;
+    if (isOwner) return true;
+    return serverAccessLevel === 'edit';
+  }, [doc, isOwner, serverAccessLevel]);
 
-  // Phase D Slice 1 — pass a stable `mentions.suggest` to RichTextEditor.
-  // The function calls /api/docs/mentionable scoped to this doc's
-  // workspace. We memoize the wrapper so RichTextEditor's extension array
-  // stays stable across renders (which keeps the Tiptap editor instance
-  // alive instead of remounting on every keystroke-driven re-render).
-  const mentionsConfig = useMemo(() => {
-    if (!workspaceId) return null;
-    return {
-      suggest: async (query) => {
-        try {
-          const { users } = await listMentionableUsers(workspaceId, { q: query });
-          return Array.isArray(users) ? users : [];
-        } catch (err) {
-          safeLog.warn('[DocPage] mentionable users fetch failed', err);
-          return [];
-        }
-      },
+  // canComment gates the floating "Comment" affordance. Owners + edit-level
+  // users can always comment; comment-level collaborators can too (even
+  // though their editor body is read-only). View-only users + archived docs
+  // get no comment affordance.
+  const canComment = useMemo(() => {
+    if (!doc || doc.isArchived) return false;
+    if (canEdit) return true;
+    return serverAccessLevel === 'comment';
+  }, [doc, canEdit, serverAccessLevel]);
+
+  // Editor-agnostic comment trigger. BlockNote (new docs) doesn't carry our
+  // Comment pill in its own toolbar, and comment-level collaborators get a
+  // read-only editor where TipTap's bubble menu is suppressed — so neither
+  // path surfaced a way to comment. We instead watch native text selection
+  // inside the doc body and float a small "Comment" pill next to it. Works
+  // for both editor types and in read-only mode.
+  const docBodyRef = useRef(null);
+  const [commentBtn, setCommentBtn] = useState(null); // { top, left, text } | null
+
+  useEffect(() => {
+    if (!canComment) { setCommentBtn(null); return undefined; }
+    let raf = 0;
+    const evaluate = () => {
+      const sel = typeof window !== 'undefined' ? window.getSelection() : null;
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) { setCommentBtn(null); return; }
+      const text = sel.toString();
+      if (!text || !text.trim()) { setCommentBtn(null); return; }
+      const range = sel.getRangeAt(0);
+      // Only when the selection lives inside this doc's body (not the
+      // comments composer, sidebar, or anywhere else on the page).
+      const body = docBodyRef.current;
+      if (!body || !body.contains(range.commonAncestorContainer)) { setCommentBtn(null); return; }
+      const rect = range.getBoundingClientRect();
+      if (!rect || (rect.width === 0 && rect.height === 0)) { setCommentBtn(null); return; }
+      // position:fixed → viewport coords. Clamp inside the viewport.
+      const top = Math.min(rect.bottom + 8, window.innerHeight - 44);
+      const left = Math.min(Math.max(rect.left + rect.width / 2 - 48, 12), window.innerWidth - 120);
+      setCommentBtn({ top, left, text: text.trim().slice(0, 1000) });
     };
-  }, [workspaceId]);
+    const onSelectionChange = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(evaluate);
+    };
+    const onScroll = () => setCommentBtn(null);
+    document.addEventListener('selectionchange', onSelectionChange);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      document.removeEventListener('selectionchange', onSelectionChange);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [canComment]);
+
+  // Open the comments sidebar with the captured selection pre-anchored.
+  // anchorText is the server's source of truth for re-anchoring; from/to are
+  // left null (native-selection path doesn't carry ProseMirror offsets).
+  const startCommentFromSelection = useCallback(() => {
+    if (!commentBtn) return;
+    setPendingCommentAnchor({ text: commentBtn.text, from: null, to: null });
+    setCommentsOpen(true);
+    setCommentBtn(null);
+    try { window.getSelection()?.removeAllRanges(); } catch (_) { /* no-op */ }
+  }, [commentBtn]);
+
+  // Phase 4 — global active-user mention picker. No longer scoped to the
+  // doc's workspace (per decision 17.5 any active user can mention any
+  // active user). The memoized wrapper is now stable across the lifetime
+  // of the page; we keep the useMemo to preserve referential stability for
+  // RichTextEditor's extension list (which would otherwise re-init the
+  // Tiptap instance on every keystroke-driven re-render).
+  const mentionsConfig = useMemo(() => ({
+    suggest: async (query) => {
+      try {
+        const { users } = await listMentionableUsers({ q: query });
+        return Array.isArray(users) ? users : [];
+      } catch (err) {
+        safeLog.warn('[DocPage] mentionable users fetch failed', err);
+        return [];
+      }
+    },
+  }), []);
 
   // Phase D Slice 2 — task-chip support. Symmetrical to mentionsConfig —
   // memoized so the editor extension list stays stable. Backend caps at
@@ -262,15 +383,16 @@ export default function DocPage() {
     applyTaskChipUpdate(t);
   });
 
-  // Phase G — open the collab session once the doc has loaded and the
-  // user is allowed to edit. The hook handles its own retry/teardown
-  // lifecycle; `currentUser` carries the awareness identity so peers
-  // see "Sara: |" instead of a faceless cursor. The pickColor helper
-  // deterministically maps user.id → palette entry so the same person
-  // always gets the same cursor color.
+  // feat/docs-personal-notion Phase 7 — Y.js/Hocuspocus collab path is
+  // DEPRECATED (decision 17.4). We still call useDocCollab so the hook's
+  // teardown code runs cleanly on unmount, but `enabled: false` keeps the
+  // WebSocket from ever opening. The hook returns its idle state and the
+  // editor below mounts in single-user mode (HTTP autosave only). The
+  // useDocCollab.js / docCollabService.js / routes/docCollab.js files stay
+  // on disk for now — a future cleanup phase deletes them en bloc.
   const collab = useDocCollab({
     docId: doc?.id,
-    enabled: !!doc && !doc.isArchived,
+    enabled: false, // Phase 7 — Y.js path retired
     currentUser: user
       ? { id: user.id, name: user.name, color: pickColor(user.id) }
       : null,
@@ -303,7 +425,12 @@ export default function DocPage() {
   const { status, lastSavedAt, error: saveError, scheduleSave, flush } = useDocAutosave({
     docId,
     debounceMs: inCollab ? 2500 : 1200,
-    enabled: true,
+    // Gate autosave on the caller's actual edit ability. View / comment
+    // users never fire PATCH requests — without this, a Tier-4 viewer
+    // opening a legacy doc they have 'comment' on would trigger the
+    // editor's first synthetic onChange → PATCH → 403 → "you have comment"
+    // toast spam. Owners/editors get full debounced autosave.
+    enabled: canEdit,
     onSaved: (updated) => {
       // Server returned the canonical doc — merge it but don't overwrite
       // the body the user is actively typing.
@@ -323,6 +450,57 @@ export default function DocPage() {
     },
   });
 
+  // Phase 7 — owner-only "Convert to new editor" flow for legacy Tiptap
+  // docs. Renders the existing Tiptap contentJson to HTML, asks BlockNote
+  // to parse it into blocks, then PATCHes the doc with the new format +
+  // preserves the original Tiptap JSON in legacyContentJson (the column
+  // added in Phase 2 specifically for this insurance). After save, the
+  // page hard-reloads so the editor branch flips and BlockNote takes over.
+  const [converting, setConverting] = useState(false);
+  const handleConvertToBlockNote = useCallback(async () => {
+    if (!doc?.id || converting) return;
+    if (doc.contentFormat !== 'tiptap_json') return;
+    const ok = typeof window !== 'undefined' && window.confirm
+      ? window.confirm(
+        'Convert this doc to the new Notion-style editor?\n\n'
+        + 'Your original content will be preserved (saved to version history) '
+        + 'so you can always restore it later. Some custom Tiptap nodes '
+        + '(mentions, task chips) may render differently after conversion.',
+      )
+      : true;
+    if (!ok) return;
+    setConverting(true);
+    try {
+      // 1. Flush any pending edits so we convert what's actually on screen.
+      try { await flush(); } catch (_) { /* non-fatal */ }
+      // 2. Render the current Tiptap JSON to HTML.
+      const html = tiptapJsonToHtml(doc.contentJson) || '';
+      // 3. Lazy-load BlockNote and parse the HTML into blocks. We construct
+      //    a throwaway editor instance just for the parse — no UI mount.
+      const [{ BlockNoteEditor: HeadlessEditor }] = await Promise.all([
+        import('@blocknote/core'),
+      ]);
+      const tmp = HeadlessEditor.create({});
+      const blocks = await tmp.tryParseHTMLToBlocks(html);
+      // 4. PATCH the doc with the new format. Server-side updateDoc detects
+      //    the format flip and auto-snapshots the existing tiptap_json
+      //    contentJson into legacyContentJson before overwriting — the
+      //    client never has to send legacyContentJson directly.
+      await api.patch(`/docs/${doc.id}`, {
+        contentJson: blocks,
+        contentFormat: 'blocknote_json',
+      });
+      toast.success('Converted to the new editor.');
+      // 5. Hard reload so the BlockNote branch mounts cleanly. Simpler than
+      //    juggling the in-flight editor state through a remount.
+      window.location.reload();
+    } catch (err) {
+      safeLog.error('[DocPage] convert-to-BlockNote failed', err);
+      toast.error(getErrorMessage(err) || 'Could not convert this doc.');
+      setConverting(false);
+    }
+  }, [doc, converting, flush, toast]);
+
   // Manual save handler. Used by Ctrl+S and the explicit "Save" button.
   // Always triggers an HTTP flush — even in collab mode — because the
   // HTTP path is what persists `contentJson` / `contentText` (Y.js only
@@ -333,6 +511,13 @@ export default function DocPage() {
       try { toast.info('This doc is archived. Restore it to save edits.'); } catch (_) { /* no-op */ }
       return;
     }
+    // Read-only callers shouldn't be able to trigger a PATCH via Ctrl+S
+    // either. Without this, Ctrl+S in a doc the user only has 'comment' on
+    // returns the same 403 toast pattern the autosave path now avoids.
+    if (!canEdit) {
+      try { toast.info('You have read-only access to this doc.'); } catch (_) { /* no-op */ }
+      return;
+    }
     try {
       await flush();
       try { toast.success('Saved'); } catch (_) { /* no-op */ }
@@ -341,7 +526,7 @@ export default function DocPage() {
       const msg = getErrorMessage(err);
       try { toast.error(`Couldn't save: ${msg}`); } catch (_) { /* no-op */ }
     }
-  }, [docId, doc?.isArchived, flush, toast]);
+  }, [docId, doc?.isArchived, canEdit, flush, toast]);
 
   // Ctrl+S / Cmd+S inside the doc editor saves the doc, NOT the browser's
   // "save page as HTML" dialog. Window-capture listener so we beat the
@@ -390,6 +575,97 @@ export default function DocPage() {
     return () => { cancelled = true; };
   }, [docId]);
 
+  // ─── Live collaboration (non-CRDT) ────────────────────────────
+  // Re-fetch the doc and remount the editor with the fresh content. Used
+  // when a peer's edit arrives (`doc:updated`) or our access level changes
+  // (`doc:access:granted`). The editor only reads `value` on mount, so a
+  // key bump is how external content is applied — and neither editor fires
+  // onChange for initial content, so there's no echo-save loop.
+  const reloadDocBody = useCallback(() => {
+    if (!docId) return;
+    getDoc(docId)
+      .then(({ doc: fresh }) => {
+        if (!fresh) return;
+        setDoc((prev) => (prev ? { ...prev, ...fresh } : fresh));
+        setBodyDraft(tiptapJsonToHtml(fresh?.contentJson));
+        setEditorRemountKey((k) => k + 1);
+        setPeerUpdated(false);
+      })
+      .catch((err) => {
+        safeLog.warn('[DocPage] reloadDocBody failed', err);
+      });
+  }, [docId]);
+
+  // Apply a peer refresh, but never clobber the local user's unsaved edits:
+  // if we're mid-edit (dirty/saving), surface a manual Refresh pill instead.
+  const applyPeerRefresh = useCallback(() => {
+    if (status === 'dirty' || status === 'saving') {
+      setPeerUpdated(true);
+      return;
+    }
+    reloadDocBody();
+  }, [status, reloadDocBody]);
+
+  // Peer edited the doc body/title. Ignore our own saves (actorId === me).
+  useRealtimeEvent('doc:updated', useCallback((payload) => {
+    if (!payload || payload.docId !== docId) return;
+    if (payload.actorId && user && payload.actorId === user.id) return;
+    applyPeerRefresh();
+  }, [docId, user, applyPeerRefresh]));
+
+  // Our access to this doc was granted or its level changed (e.g. view →
+  // edit). Re-fetch so callerAccessLevel / canEdit recompute and the editor
+  // re-mounts with the correct editable state.
+  useRealtimeEvent('doc:access:granted', useCallback((payload) => {
+    if (!payload || payload.docId !== docId) return;
+    applyPeerRefresh();
+  }, [docId, applyPeerRefresh]));
+
+  // Our access to this doc was revoked — bounce back to the docs list.
+  useRealtimeEvent('doc:access:revoked', useCallback((payload) => {
+    if (!payload || payload.docId !== docId) return;
+    try { toast.info('Your access to this doc was removed.'); } catch (_) { /* no-op */ }
+    navigate('/docs');
+  }, [docId, navigate, toast]));
+
+  // Strip every @mention of `userId` from the live editor body. Returns true
+  // if anything was removed. The edit fires the editor's onChange → autosave,
+  // so the server's mention-sync then drops the mention-derived access row.
+  const removeMentionFromEditor = useCallback((userId) => {
+    const editor = editorRef.current?.getEditor?.();
+    if (!editor || !userId) return false;
+    if (doc?.contentFormat === 'blocknote_json') {
+      return removeBlockNoteMention(editor, userId);
+    }
+    return removeTiptapMention(editor, userId);
+  }, [doc?.contentFormat]);
+
+  // Unshare a collaborator from the "Shared with" bar. Keeps the bar and the
+  // doc body in sync: removes the person's @mention from the content (so the
+  // next save can't re-grant mention access) AND revokes any explicit
+  // doc_access grant. Bumps shareVersion so the bar/panel refresh.
+  const handleUnshareCollaborator = useCallback(async (row) => {
+    const userId = row?.user?.id;
+    if (!userId) return;
+    // 1. Remove the @mention from the body, then flush so it persists now.
+    try {
+      const removed = removeMentionFromEditor(userId);
+      if (removed) { try { await flush(); } catch (_) { /* non-fatal */ } }
+    } catch (err) {
+      safeLog.warn('[DocPage] removeMentionFromEditor failed', err);
+    }
+    // 2. Revoke the explicit grant. A mention-only collaborator may already
+    //    have had their row cleared by the save above → tolerate 404.
+    try {
+      await removeCollaborator(docId, userId);
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status && status !== 404) throw err;
+    }
+    // 3. Refresh the shared-with bar + Share panel.
+    setShareVersion((v) => v + 1);
+  }, [docId, removeMentionFromEditor, flush]);
+
   // Title commit (on blur or Enter).
   const commitTitle = useCallback(async () => {
     if (!editingTitle) return;
@@ -422,6 +698,16 @@ export default function DocPage() {
     scheduleSave({ contentJson });
   }, [scheduleSave]);
 
+  // Phase 6 — BlockNote change handler. The editor emits Block[] directly;
+  // we forward as-is. Server-side `sanitizeContentJson` accepts both
+  // shapes (Tiptap doc envelope OR BlockNote block array) so no transform
+  // is needed at the wire boundary.
+  const handleBlockNoteChange = useCallback((blocks) => {
+    if (!initialLoadedRef.current) return;
+    if (!Array.isArray(blocks)) return;
+    scheduleSave({ contentJson: blocks });
+  }, [scheduleSave]);
+
   async function handleArchive() {
     if (!doc?.id) return;
     const ok = window.confirm(`Archive "${doc.title}"? You can restore it from the workspace archive later.`);
@@ -429,7 +715,7 @@ export default function DocPage() {
     try {
       await archiveDocApi(doc.id);
       toast.success('Doc archived');
-      navigate(`/workspaces/${workspaceId}/docs`);
+      navigate('/docs');
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
@@ -467,7 +753,7 @@ export default function DocPage() {
         <EmptyState
           title="Couldn't load this doc"
           description={error || 'The doc may have been archived or you may not have access.'}
-          primaryAction={{ label: 'Back to docs', onClick: () => navigate(`/workspaces/${workspaceId}/docs`) }}
+          primaryAction={{ label: 'Back to docs', onClick: () => navigate('/docs') }}
         />
       </div>
     );
@@ -475,11 +761,11 @@ export default function DocPage() {
 
   const titleDisplay = (
     <h1
-      className="text-2xl font-bold text-text-primary hover:bg-surface-50 rounded px-1 -ml-1 cursor-text"
+      className="doc-page-notion__title"
       onClick={() => isOwner && setEditingTitle(true)}
       title={isOwner ? 'Click to rename' : doc.title}
     >
-      {doc.title || 'Untitled doc'}
+      {doc.title || <span className="doc-page-notion__title-placeholder">Untitled</span>}
     </h1>
   );
 
@@ -494,167 +780,120 @@ export default function DocPage() {
         if (e.key === 'Escape') { setEditingTitle(false); setTitleDraft(doc?.title || ''); }
       }}
       maxLength={300}
-      className="text-2xl font-bold text-text-primary bg-transparent border-b-2 border-primary outline-none w-full"
+      placeholder="Untitled"
+      className="doc-page-notion__title doc-page-notion__title--editing"
     />
   );
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Sticky header */}
-      <header
-        className="flex items-center gap-2 px-6 py-3 bg-surface flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--layout-border-color, #e2e2e2)' }}
-      >
-        <button
-          type="button"
-          onClick={() => navigate(`/workspaces/${workspaceId}/docs`)}
-          aria-label="Back to docs"
-          className="p-1.5 rounded-md text-text-tertiary hover:bg-surface-100 hover:text-text-secondary"
-        >
-          <ArrowLeft size={16} />
-        </button>
-        <span
-          className="w-7 h-7 rounded-md inline-flex items-center justify-center flex-shrink-0"
-          style={{ backgroundColor: 'rgba(87, 155, 252, 0.15)', color: '#579bfc' }}
-        >
-          <FileText size={13} />
-        </span>
-
-        <SaveIndicator status={status} lastSavedAt={lastSavedAt} error={saveError} />
-        <CollabStatusPill
-          status={collab.status}
-          peerCount={collab.peerCount}
-          error={collab.error}
-        />
-        {/* Phase G follow-up — owner-only "Migrate to collab" affordance.
-            Only shown when collab actually failed BECAUSE the server said
-            the doc isn't migrated (so we don't surface it on transient
-            network errors). One-click action with a confirm dialog;
-            on success we hard-reload the page so the useDocCollab hook
-            re-handshakes against the fresh yjsState. */}
-        {isOwner && collab.error && collab.error._collabMigrationMissing && (
-          <MigrateToCollabButton docId={doc.id} />
-        )}
-
-        <div className="ml-auto flex items-center gap-1">
-          {/* Slice 2d — one-shot Summarize. Sits next to "Ask AI" because
-              both surface the AI tier but for very different intents:
-              Summarize is one click → one paragraph + bullets; Ask AI is
-              the multi-turn Sidekick panel.
-
-              May 2026: moved off AISummaryPopover (invisible in some
-              browsers) onto a dedicated centered DocSummaryModal. The
-              trigger shows its own spinner the instant it's clicked so
-              the user has immediate feedback even before the modal
-              mounts. */}
+    <div className="flex flex-col h-full doc-page-notion">
+      {/* Editorial minimal sticky toolbar (May 2026 redesign).
+          Left:  app-grid › Monday Aniston › <doc title (truncated)>.
+          Right: SaveIndicator · AI · Comments · Share · inline Save (only
+                 while dirty/saving) · More.
+          History / Archive / Copy-link / Convert all live in More. */}
+      <header className="doc-page-notion__header">
+        <div className="doc-page-notion__breadcrumb">
           <button
             type="button"
-            onClick={async () => {
+            onClick={() => navigate('/docs')}
+            className="doc-page-notion__breadcrumb-app"
+            aria-label="Back to docs"
+            title="Back to docs"
+          >
+            <LayoutGrid size={14} aria-hidden="true" />
+            <span>Monday Aniston</span>
+          </button>
+          <ChevronRight size={12} className="doc-page-notion__breadcrumb-sep" aria-hidden="true" />
+          <span className="doc-page-notion__breadcrumb-title" title={doc.title}>
+            {doc.title || 'Untitled'}
+          </span>
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          <SaveIndicator status={status} lastSavedAt={lastSavedAt} error={saveError} />
+          {/* Live peer-update pill — shown only when a collaborator's edit
+              arrived while we had unsaved local changes (so we didn't auto-
+              clobber the editor). Clicking loads the latest. */}
+          {peerUpdated && (
+            <button
+              type="button"
+              onClick={reloadDocBody}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100"
+              title="This doc was updated by someone else — click to load the latest"
+            >
+              <RefreshCw size={12} /> Updated · Refresh
+            </button>
+          )}
+          {/* Collab presence pill — currently no-op since collab is off
+              (enabled:false), but harmless if the flag ever flips. */}
+          <CollabStatusPill
+            status={collab.status}
+            peerCount={collab.peerCount}
+            error={collab.error}
+          />
+          {isOwner && collab.error && collab.error._collabMigrationMissing && (
+            <MigrateToCollabButton docId={doc.id} />
+          )}
+          {/* AI menu — Summarize + Ask AI behind one sparkle. */}
+          <DocAIMenu
+            onSummarize={async () => {
               if (preparingSummary || summaryOpen) return;
               setPreparingSummary(true);
               try {
-                // Flush pending edits FIRST so the AI reads the body the
-                // user actually sees on screen (race with 1.2-2.5s autosave
-                // debounce otherwise — summary of an empty doc).
                 try { await flush(); } catch (_) { /* non-fatal */ }
                 setSummaryOpen(true);
               } finally {
                 setPreparingSummary(false);
               }
             }}
-            disabled={preparingSummary}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors disabled:opacity-70 disabled:cursor-wait"
-            title="Summarize this doc"
-          >
-            {preparingSummary ? (
-              <>
-                <Loader2 size={13} className="animate-spin" /> Preparing…
-              </>
-            ) : (
-              <>
-                <Sparkles size={13} /> Summarize
-              </>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              // Same rationale as Summarize: ensure the AI Sidekick reads
-              // the latest doc body, not what was on disk 2 seconds ago.
+            onAskAI={async () => {
               try { await flush(); } catch (_) { /* non-fatal */ }
               setShowSidekick(true);
             }}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/10 transition-colors"
-            title="Ask AI about this doc"
+            preparing={preparingSummary}
+          />
+
+          {/* Comments — single icon button; opens sidebar on click. */}
+          <button
+            type="button"
+            onClick={() => { setPendingCommentAnchor(null); setCommentsOpen(true); }}
+            className="doc-page-notion__icon-btn"
+            aria-label="Open comments"
+            title="Comments"
           >
-            <Sparkles size={13} /> Ask AI
+            <MessageSquare size={15} />
           </button>
-          {/* May 2026 — explicit manual save. Autosave handles the common
-              path, but the button gives users a definitive "save now"
-              affordance and matches the Ctrl+S keyboard shortcut. The
-              button stays enabled in collab mode (HTTP path persists
-              contentJson; Y.js only persists yjsState). Disabled while a
-              save is mid-flight to avoid double-clicks. */}
-          {canEdit && (
+
+          {/* Share popover (DocSharePanel already renders as a Popover).
+              onChanged bumps shareVersion so the shared-with @name bar
+              under the title re-fetches after any add/level-change/remove. */}
+          <DocSharePanel
+            docId={doc.id}
+            canEdit={isOwner}
+            onChanged={() => setShareVersion((v) => v + 1)}
+          />
+
+          {/* Inline Save affordance — only appears while dirty/error so the
+              header stays minimal during clean autosave loops. Full Save
+              entry also lives in the More menu below. */}
+          {canEdit && (status === 'dirty' || status === 'error' || status === 'saving') && (
             <button
               type="button"
               onClick={handleManualSave}
               disabled={status === 'saving'}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-text-secondary border border-border bg-surface hover:border-primary-300 hover:text-primary disabled:opacity-50 disabled:cursor-wait"
+              className="doc-page-notion__inline-save"
               title="Save now (Ctrl/Cmd + S)"
             >
               {status === 'saving' ? (
-                <>
-                  <Loader2 size={12} className="animate-spin" /> Saving…
-                </>
+                <><Loader2 size={12} className="animate-spin" /> Saving…</>
               ) : (
-                <>
-                  <Save size={12} /> Save
-                </>
+                <><Save size={12} /> Save</>
               )}
             </button>
           )}
-          {/* Phase F — open comments side panel. Clears any stale
-              pending-anchor; user is browsing thread list, not commenting
-              on a specific selection. */}
-          <button
-            type="button"
-            onClick={() => { setPendingCommentAnchor(null); setCommentsOpen(true); }}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-text-secondary border border-border bg-surface hover:border-primary-300 hover:text-primary"
-            title="Open comments"
-          >
-            <MessageSquare size={13} /> Comments
-          </button>
-          {/* Phase H — version history modal. Disabled-styled while
-              loading since the modal does its own fetch on open. */}
-          <button
-            type="button"
-            onClick={() => setVersionsOpen(true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-text-secondary border border-border bg-surface hover:border-primary-300 hover:text-primary"
-            title="Version history"
-          >
-            <History size={13} /> History
-          </button>
-          {/* Phase H — share dropdown replaces the old copy-URL button.
-              Surfaces all three sharePolicy options + copy-link for
-              public_link. Stays read-only for non-editors. */}
-          <DocShareDropdown
-            docId={doc.id}
-            currentSharePolicy={doc.sharePolicy || 'workspace'}
-            canEdit={isOwner}
-            onChanged={(next) => setDoc((d) => (d ? { ...d, sharePolicy: next } : d))}
-          />
-          {isOwner && !doc.isArchived && (
-            <button
-              type="button"
-              onClick={handleArchive}
-              aria-label="Archive doc"
-              className="p-1.5 rounded-md text-text-tertiary hover:bg-surface-100"
-              title="Archive doc"
-            >
-              <Archive size={14} />
-            </button>
-          )}
+
+          {/* Restore is a primary recovery action — keep inline when archived. */}
           {isOwner && doc.isArchived && (
             <button
               type="button"
@@ -665,61 +904,94 @@ export default function DocPage() {
               <RotateCcw size={12} /> Restore
             </button>
           )}
+
+          {/* More menu — History, Save, Copy link, Convert, Archive. */}
+          <DocMoreMenu
+            canEdit={canEdit}
+            isOwner={isOwner}
+            doc={doc}
+            saveStatus={status}
+            onOpenHistory={() => setVersionsOpen(true)}
+            onManualSave={handleManualSave}
+            onCopyLink={async () => {
+              try {
+                await navigator.clipboard.writeText(window.location.href);
+                toast.success('Link copied');
+              } catch (err) {
+                toast.error('Could not copy link');
+              }
+            }}
+            onConvert={handleConvertToBlockNote}
+            converting={converting}
+            onArchive={handleArchive}
+          />
         </div>
       </header>
 
-      {/* Centered 720px column */}
+      {/* Super-admin override banner — slim calm strip (audit-required
+          per decision 17.7a). Token-driven; matches the approved Editorial
+          spec: mx-4, 8px y-padding, rounded, 6px accent dot. */}
+      {isSuperAdmin && doc && doc.ownerUserId && doc.ownerUserId !== user?.id && (
+        <div className="doc-page-notion__sa-banner" role="status">
+          <span className="doc-page-notion__sa-banner-dot" aria-hidden="true" />
+          <span className="truncate">
+            <strong>Super admin view</strong>
+            {' — viewing '}
+            {doc.owner?.name ? `${doc.owner.name}'s` : "another user's"}
+            {' doc. Actions are logged.'}
+          </span>
+        </div>
+      )}
+
+      {/* Editorial centered page column. Floating doc icon + large title +
+          compact meta + chromeless editor body. (Cover band removed
+          May 2026 — felt too heavy; icon now sits flush at the top of
+          the column.) */}
       <div className="flex-1 overflow-auto">
-        <div className="max-w-3xl mx-auto px-6 pt-8 pb-24">
-          <div className="mb-4">
+        <div className="doc-page-notion__column">
+          <div className="doc-page-notion__title-block">
+            <div className="doc-page-notion__page-icon" aria-hidden="true">
+              <FileText size={22} />
+            </div>
             {editingTitle && isOwner ? titleEditor : titleDisplay}
-            <div className="mt-2 flex items-center gap-2 text-xs text-text-tertiary">
+            <div className="doc-page-notion__meta">
               {doc.creator && (
                 <span className="inline-flex items-center gap-1.5">
                   <LetterAvatar name={doc.creator.name} size="xs" shape="circle" />
-                  Created by {doc.creator.name}
+                  {doc.creator.name}
                 </span>
               )}
               {doc.lastEditedAt && (
                 <>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
                   <span>Edited {formatDistanceToNow(new Date(doc.lastEditedAt), { addSuffix: true })}</span>
                 </>
               )}
               {doc.isArchived && (
                 <>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
                   <span className="text-amber-600 font-semibold">Archived</span>
                 </>
               )}
             </div>
+            {/* Shared-with @name bar — collaborators rendered as @mention
+                chips. Owner can unshare inline. Re-fetches on shareVersion
+                (bumped by the Share panel) so it stays in sync. */}
+            <DocSharedWithBar
+              docId={doc.id}
+              canEdit={isOwner}
+              reloadKey={shareVersion}
+              onChanged={() => setShareVersion((v) => v + 1)}
+              onUnshare={handleUnshareCollaborator}
+            />
           </div>
-
-          {/* Phase D Slice 2c — persistent hint that surfaces the doc's
-              three power-features. Users who don't know about the trigger
-              chars now see them every time they open a doc. */}
-          {canEdit && (
-            <div className="mb-2 flex flex-wrap items-center gap-3 text-[11px] text-text-tertiary">
-              <span className="inline-flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 rounded bg-surface-100 border border-border text-[10px] font-mono">/</kbd>
-                blocks
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 rounded bg-surface-100 border border-border text-[10px] font-mono">@</kbd>
-                mention a teammate
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 rounded bg-surface-100 border border-border text-[10px] font-mono">+</kbd>
-                link or create a task
-              </span>
-            </div>
-          )}
           {/* Phase D Slice 2c — delegated click handler. When the user
               clicks a task chip we look up the chip's data-task-id +
               data-board-id and navigate to /boards/<board>?taskId=<id>,
               which BoardPage already deep-links to TaskModal. Holding
               Ctrl/Cmd opens in a new tab. */}
           <div
+            ref={docBodyRef}
             className="rich-doc-body"
             onClick={(e) => {
               // Phase F polish — clicking a highlighted (commented) range
@@ -760,51 +1032,128 @@ export default function DocPage() {
               }
             }}
           >
-            <RichTextEditor
-              ref={editorRef}
-              // Phase G — when collab is active, Y.js owns content. We
-              // intentionally still pass the cached HTML for non-collab
-              // mode (single-user fallback) so initial-render text shows
-              // immediately; RichTextEditor ignores `value` when its
-              // `collab` prop is set.
-              value={bodyDraft}
-              onUpdate={handleBodyChange}
-              disabled={!canEdit}
-              placeholder="Start writing… Type / for blocks, @ to mention a teammate, + to link a task."
-              minHeight={500}
-              // Slice 2c — chromeless wrapper for Notion-style writing.
-              bordered={false}
-              // Phase D Slice 1 — workspace-scoped @-mentions. The
-              // RichTextEditor extension list adapts to the presence of
-              // this prop; pass null / undefined to disable mentions.
-              mentions={mentionsConfig}
-              // Phase D Slice 2 — workspace-scoped task chips, triggered
-              // by `+`. Same opt-in pattern as mentions.
-              tasks={tasksConfig}
-              // Phase E — inline AI on selection. Bubble menu gains an
-              // "AI" pill; clicking it opens the action menu.
-              ai={aiConfig}
-              // Phase F — bubble menu gains a "💬 Comment" pill that
-              // hands the live selection back to DocPage so the
-              // comments sidebar opens with the snippet pre-quoted.
-              comments={commentsConfig}
-              // Phase G — real-time collab. Mounted only when the
-              // provider is fully connected; until then the editor
-              // works in single-user mode against `value` + HTTP
-              // autosave so users never see a broken editor while the
-              // WS is mid-handshake.
-              collab={inCollab && user ? {
-                ydoc: collab.ydoc,
-                provider: collab.provider,
-                currentUser: { name: user.name, color: pickColor(user.id) },
-              } : null}
-              // Phase H polish — drag/paste an image; uploads to
-              // /api/files/upload-general and inserts at drop position.
-              images={imagesConfig}
-            />
+            {/* Phase 6 — format-aware editor selection.
+                  - blocknote_json (NEW docs, default) → BlockNote editor
+                  - tiptap_json (legacy) → RichTextEditor with all the
+                    existing extensions (mentions, task chips, AI, comments,
+                    optional Y.js collab)
+                The branch is keyed on doc.contentFormat which the server
+                sets at create time. Legacy docs created before Phase 6
+                continue to render in Tiptap; new docs render BlockNote.
+                Phase 7 adds an explicit "Convert to new editor" affordance
+                for legacy docs that wires through legacyContentJson. */}
+            {/* Defensive ErrorBoundary around the editor body. If BlockNote
+                chokes on a malformed contentJson (e.g. a Tiptap envelope
+                sneaking in under contentFormat='blocknote_json') or Tiptap
+                throws on an exotic legacy node, this catches the render
+                error and shows an inline retry card instead of bubbling to
+                App.jsx's full-page ErrorBoundary. Reset key on doc id +
+                contentFormat so navigating to another doc clears the
+                error state. */}
+            <ErrorBoundary
+              variant="section"
+              name="DocEditor"
+              resetKeys={[doc.id, doc.contentFormat]}
+            >
+            {doc.contentFormat === 'blocknote_json' ? (
+              <React.Suspense fallback={<div className="text-sm text-text-tertiary py-12">Loading editor…</div>}>
+                <BlockNoteEditor
+                  // Key bump remounts the editor with fresh content after a
+                  // peer edit / version restore / access change.
+                  key={`bn-${editorRemountKey}`}
+                  ref={editorRef}
+                  value={doc.contentJson}
+                  onChange={handleBlockNoteChange}
+                  disabled={!canEdit}
+                  placeholder="Press / for commands, @ to mention someone"
+                  minHeight={500}
+                  // Phase 7 — @-mention picker. Reuses the same mentionsConfig
+                  // as the legacy editor (global active-user search via
+                  // /api/users/mentions). Selecting a user inserts a mention
+                  // inline content node; the doc-save path's syncDocMentionsAndNotify
+                  // then creates the DocMention row + doc_access grant.
+                  mentions={mentionsConfig}
+                />
+              </React.Suspense>
+            ) : (
+              <RichTextEditor
+                // Key bump remounts the editor with fresh content after a
+                // peer edit / version restore / access change.
+                key={`rt-${editorRemountKey}`}
+                ref={editorRef}
+                // Phase G — when collab is active, Y.js owns content. We
+                // intentionally still pass the cached HTML for non-collab
+                // mode (single-user fallback) so initial-render text shows
+                // immediately; RichTextEditor ignores `value` when its
+                // `collab` prop is set.
+                value={bodyDraft}
+                onUpdate={handleBodyChange}
+                disabled={!canEdit}
+                placeholder="Press / for commands, @ to mention someone, + to link a task"
+                minHeight={500}
+                // Slice 2c — chromeless wrapper for Notion-style writing.
+                bordered={false}
+                // Phase D Slice 1 — workspace-scoped @-mentions. The
+                // RichTextEditor extension list adapts to the presence of
+                // this prop; pass null / undefined to disable mentions.
+                mentions={mentionsConfig}
+                // Phase D Slice 2 — workspace-scoped task chips, triggered
+                // by `+`. Same opt-in pattern as mentions.
+                tasks={tasksConfig}
+                // Phase E — inline AI on selection. Bubble menu gains an
+                // "AI" pill; clicking it opens the action menu.
+                ai={aiConfig}
+                // Phase F — bubble menu gains a "💬 Comment" pill that
+                // hands the live selection back to DocPage so the
+                // comments sidebar opens with the snippet pre-quoted.
+                comments={commentsConfig}
+                // Phase G — real-time collab. Mounted only when the
+                // provider is fully connected; until then the editor
+                // works in single-user mode against `value` + HTTP
+                // autosave so users never see a broken editor while the
+                // WS is mid-handshake.
+                collab={inCollab && user ? {
+                  ydoc: collab.ydoc,
+                  provider: collab.provider,
+                  currentUser: { name: user.name, color: pickColor(user.id) },
+                } : null}
+                // Phase H polish — drag/paste an image; uploads to
+                // /api/files/upload-general and inserts at drop position.
+                images={imagesConfig}
+              />
+            )}
+            </ErrorBoundary>
           </div>
         </div>
       </div>
+
+      {/* Floating "Comment" pill — appears next to a text selection in the
+          doc body for anyone who can comment (owner / edit / comment). The
+          editor-agnostic path so BlockNote docs and read-only comment-level
+          collaborators can both start a comment.
+
+          Suppressed for EDITABLE TipTap docs because that editor's own
+          bubble menu already carries a Comment pill (wired via
+          commentsConfig) — showing both would be a double button. BlockNote
+          has no such pill, and read-only editors suppress the bubble, so the
+          floating pill is the only affordance in those cases. */}
+      {commentBtn && canComment
+        && (doc.contentFormat === 'blocknote_json' || !canEdit)
+        && typeof document !== 'undefined' && createPortal(
+        <button
+          type="button"
+          // Keep the selection alive through the click so the captured text
+          // isn't lost before onClick runs.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={startCommentFromSelection}
+          className="fixed z-[9999] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-emerald-600 text-white text-xs font-semibold shadow-lg hover:bg-emerald-700"
+          style={{ top: commentBtn.top, left: commentBtn.left }}
+          title="Comment on selection"
+        >
+          <MessageSquare size={13} /> Comment
+        </button>,
+        document.body,
+      )}
 
       <SidekickPanel
         isOpen={showSidekick}
@@ -813,7 +1162,7 @@ export default function DocPage() {
         scopeId={doc.id}
         scopeLabel="this doc"
         pageContext={`Doc: ${doc.title}`}
-        pageState={{ route: `/workspaces/${workspaceId}/docs/${doc.id}`, docId: doc.id }}
+        pageState={{ route: `/docs/${doc.id}`, docId: doc.id }}
       />
 
       {/* Phase D Slice 2b — create task right from the doc. The TaskChip
@@ -993,6 +1342,161 @@ function MigrateToCollabButton({ docId }) {
   );
 }
 
+/**
+ * DocAIMenu — single sparkle entry point that fronts Summarize + Ask AI.
+ * Replaces the two large coloured buttons that used to sit in the header.
+ * Inline expansion later (Improve writing / Shorter / Longer / Fix grammar)
+ * just adds rows here without touching DocPage.
+ */
+function DocAIMenu({ onSummarize, onAskAI, preparing }) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef(null);
+  return (
+    <>
+      <button
+        ref={anchorRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="doc-page-notion__menu-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="AI actions"
+      >
+        {preparing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        <span className="doc-page-notion__menu-trigger-label">AI</span>
+        <ChevronDown size={11} className="opacity-60" />
+      </button>
+      <PortalDropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} align="right" width={220}>
+        <div className="doc-page-notion__menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            className="doc-page-notion__menu-item"
+            onClick={() => { setOpen(false); onSummarize(); }}
+          >
+            <Sparkles size={14} className="text-emerald-500" />
+            <div className="flex-1 text-left">
+              <div className="doc-page-notion__menu-item-title">Summarize</div>
+              <div className="doc-page-notion__menu-item-hint">One-shot recap of this doc</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="doc-page-notion__menu-item"
+            onClick={() => { setOpen(false); onAskAI(); }}
+          >
+            <Wand2 size={14} className="text-violet-500" />
+            <div className="flex-1 text-left">
+              <div className="doc-page-notion__menu-item-title">Ask AI</div>
+              <div className="doc-page-notion__menu-item-hint">Open Sidekick on this doc</div>
+            </div>
+          </button>
+        </div>
+      </PortalDropdown>
+    </>
+  );
+}
+
+/**
+ * DocMoreMenu — overflow menu for the document-level actions that aren't
+ * needed in the primary bar: History, Manual Save, Copy link, Convert
+ * (legacy docs), Archive (owner). Each item gates itself on the same
+ * permissions the inline buttons used to check.
+ */
+function DocMoreMenu({
+  canEdit, isOwner, doc, saveStatus,
+  onOpenHistory, onManualSave, onCopyLink, onConvert, converting, onArchive,
+}) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef(null);
+  const close = () => setOpen(false);
+  return (
+    <>
+      <button
+        ref={anchorRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="doc-page-notion__icon-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        title="More"
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      <PortalDropdown anchorRef={anchorRef} open={open} onClose={close} align="right" width={220}>
+        <div className="doc-page-notion__menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            className="doc-page-notion__menu-item"
+            onClick={() => { close(); onOpenHistory(); }}
+          >
+            <History size={14} />
+            <span className="doc-page-notion__menu-item-title">Version history</span>
+          </button>
+          {canEdit && (
+            <button
+              type="button"
+              role="menuitem"
+              className="doc-page-notion__menu-item"
+              onClick={() => { close(); onManualSave(); }}
+              disabled={saveStatus === 'saving'}
+            >
+              {saveStatus === 'saving' ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              <span className="doc-page-notion__menu-item-title">
+                {saveStatus === 'saving' ? 'Saving…' : 'Save now'}
+              </span>
+              <span className="doc-page-notion__menu-kbd">Ctrl S</span>
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="doc-page-notion__menu-item"
+            onClick={() => { close(); onCopyLink(); }}
+          >
+            <Link2 size={14} />
+            <span className="doc-page-notion__menu-item-title">Copy link</span>
+          </button>
+          {isOwner && doc.contentFormat === 'tiptap_json' && !doc.isArchived && (
+            <button
+              type="button"
+              role="menuitem"
+              className="doc-page-notion__menu-item"
+              onClick={() => { close(); onConvert(); }}
+              disabled={converting}
+            >
+              {converting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} className="text-violet-500" />}
+              <div className="flex-1 text-left">
+                <div className="doc-page-notion__menu-item-title">
+                  {converting ? 'Converting…' : 'Switch to new editor'}
+                </div>
+                <div className="doc-page-notion__menu-item-hint">Notion-style blocks</div>
+              </div>
+            </button>
+          )}
+          {isOwner && !doc.isArchived && (
+            <>
+              <div className="doc-page-notion__menu-divider" />
+              <button
+                type="button"
+                role="menuitem"
+                className="doc-page-notion__menu-item doc-page-notion__menu-item--danger"
+                onClick={() => { close(); onArchive(); }}
+              >
+                <Archive size={14} />
+                <span className="doc-page-notion__menu-item-title">Archive doc</span>
+              </button>
+            </>
+          )}
+        </div>
+      </PortalDropdown>
+    </>
+  );
+}
+
 function SaveIndicator({ status, lastSavedAt, error }) {
   // Build the current content + a stable key per state so AnimatePresence
   // can crossfade between the four states (saving / dirty / error / saved).
@@ -1138,6 +1642,62 @@ function renderNode(node) {
     }
     default:            return children;
   }
+}
+
+// ─── Mention removal helpers (bidirectional unshare) ────────────
+//
+// Remove every @mention of a given user from the live editor so unsharing
+// from the "Shared with" bar also strips them from the doc body. Both
+// helpers mutate the editor in place, which fires the editor's onChange →
+// schedules an autosave; the server's mention-sync then drops the
+// mention-derived doc_access row. Each returns true if anything changed.
+
+function removeTiptapMention(editor, userId) {
+  const state = editor?.state;
+  const view = editor?.view;
+  if (!state || !view) return false;
+  const ranges = [];
+  state.doc.descendants((node, pos) => {
+    if (node.type?.name === 'mention' && node.attrs?.id === userId) {
+      ranges.push({ from: pos, to: pos + node.nodeSize });
+    }
+    return true;
+  });
+  if (!ranges.length) return false;
+  // Delete last-to-first so earlier positions stay valid as we splice.
+  ranges.sort((a, b) => b.from - a.from);
+  let tr = state.tr;
+  for (const r of ranges) tr = tr.delete(r.from, r.to);
+  tr.setMeta('addToHistory', true);
+  view.dispatch(tr);
+  return true;
+}
+
+function removeBlockNoteMention(editor, userId) {
+  if (!editor) return false;
+  let changed = false;
+  const walk = (blocks) => {
+    if (!Array.isArray(blocks)) return;
+    for (const block of blocks) {
+      if (Array.isArray(block?.content)) {
+        const hasMention = block.content.some(
+          (c) => c?.type === 'mention' && c?.props?.userId === userId,
+        );
+        if (hasMention) {
+          const newContent = block.content.filter(
+            (c) => !(c?.type === 'mention' && c?.props?.userId === userId),
+          );
+          try {
+            editor.updateBlock(block, { content: newContent });
+            changed = true;
+          } catch (_) { /* block gone / editor unmounting */ }
+        }
+      }
+      if (Array.isArray(block?.children) && block.children.length) walk(block.children);
+    }
+  };
+  try { walk(editor.document); } catch (_) { /* editor unmounting */ }
+  return changed;
 }
 
 function escapeHtml(s) {

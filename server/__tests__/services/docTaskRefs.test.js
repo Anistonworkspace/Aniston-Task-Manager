@@ -51,6 +51,13 @@ jest.mock('../../models', () => ({
     create: jest.fn(),
     destroy: jest.fn(),
   },
+  // feat/docs-personal-notion Phase 3 — access table consulted by
+  // docAccessSvc.hasDocAccess (now the gate inside
+  // listDocReferencesForTask's per-doc filter).
+  DocAccess: {
+    findOne: jest.fn(),
+    findAll: jest.fn().mockResolvedValue([]),
+  },
   Task: {
     findByPk: jest.fn(),
     findAll: jest.fn(),
@@ -855,7 +862,11 @@ describe('listDocReferencesForTask', () => {
     expect(res.status).toHaveBeenCalledWith(403);
   });
 
-  test('200 returns docs whose workspace the caller can see; excludes archived docs', async () => {
+  test('200 returns docs the caller can access; excludes archived docs', async () => {
+    // Phase 3: filter is now docAccessSvc.hasDocAccess (per-doc), NOT
+    // canCallerSeeWorkspace. We drive access via doc.ownerUserId matching
+    // ADMIN for the "visible" ref; the "hidden" doc has a different owner
+    // and no DocAccess row, so it falls out.
     Task.findByPk.mockResolvedValue({ id: UUID_A, boardId: 'b1' });
     canUserSeeBoard.mockResolvedValue(true);
 
@@ -866,6 +877,7 @@ describe('listDocReferencesForTask', () => {
         id: 'doc-visible',
         title: 'Visible doc',
         workspaceId: 'w-visible',
+        ownerUserId: ADMIN.id, // caller owns this doc → access granted
         isArchived: false,
       },
     };
@@ -876,7 +888,8 @@ describe('listDocReferencesForTask', () => {
         id: 'doc-archived',
         title: 'Archived doc',
         workspaceId: 'w-visible',
-        isArchived: true, // must be filtered out
+        ownerUserId: ADMIN.id,
+        isArchived: true, // archived filter excludes regardless
       },
     };
     const hiddenRef = {
@@ -886,6 +899,7 @@ describe('listDocReferencesForTask', () => {
         id: 'doc-hidden',
         title: 'Hidden doc',
         workspaceId: 'w-hidden',
+        ownerUserId: 'someone-else', // no DocAccess row mocked → denied
         isArchived: false,
       },
     };
@@ -895,15 +909,10 @@ describe('listDocReferencesForTask', () => {
       doc: null, // dangling ref
     };
     DocTaskReference.findAll.mockResolvedValue([visibleRef, archivedRef, hiddenRef, nullDocRef]);
-
-    // Workspace visibility: w-visible passes (caller is admin), w-hidden returns
-    // null (workspace not found) so canCallerSeeWorkspace returns false.
-    Workspace.findByPk.mockImplementation((wsId) => {
-      if (wsId === 'w-visible') {
-        return Promise.resolve(makeWorkspace({ id: 'w-visible', createdBy: ADMIN.id }));
-      }
-      return Promise.resolve(null);
-    });
+    // Default DocAccess.findOne to null — the hasDocAccess call for the
+    // hidden doc falls through to a deny.
+    const { DocAccess } = require('../../models');
+    DocAccess.findOne.mockResolvedValue(null);
 
     const req = { user: ADMIN, params: { id: UUID_A } };
     const res = mockRes();

@@ -1,11 +1,11 @@
-@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Poppins:wght@500;600;700&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Poppins:wght@500;600;700&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* =====================================================================
-   DESIGN SYSTEM TOKENS  —  per .claude/skills/generic_monday_ui.md §10
+   DESIGN SYSTEM TOKENS  â€”  per .claude/skills/generic_monday_ui.md Â§10
    Single source of truth for color, spacing, radius, typography, shadows
    and motion. Theme dark applies via `.theme-dark` (spec) OR `.dark`
    (Tailwind darkMode='class', kept for back-compat).
@@ -58,7 +58,7 @@
   --font-text3-medium: 600 12px/16px var(--font-family);
   --font-text3-bold:   700 12px/16px var(--font-family);
 
-  /* Primary / brand — Monday blue */
+  /* Primary / brand â€” Monday blue */
   --primary-color: #0073ea;
   --primary-hover-color: #0060b9;
   --primary-selected-color: #cce5ff;
@@ -113,7 +113,7 @@
   --box-shadow-medium: 0px 6px 20px rgba(0, 0, 0, 0.2);
   --box-shadow-large: 0px 15px 50px rgba(0, 0, 0, 0.3);
 
-  /* ── Legacy aliases (kept so existing components don't break) ──
+  /* â”€â”€ Legacy aliases (kept so existing components don't break) â”€â”€
      These were the previous app token names; they now point at the
      canonical spec tokens above. Removing call sites that use them
      can happen incrementally without breaking the UI today. */
@@ -160,7 +160,7 @@
   --bg-elevated: var(--primary-background-color);
 }
 
-/* Dark theme — applies via `.dark` (Tailwind) OR `.theme-dark` (skill) */
+/* Dark theme â€” applies via `.dark` (Tailwind) OR `.theme-dark` (skill) */
 .dark,
 .theme-dark {
   /* Spec tokens */
@@ -191,7 +191,7 @@
   --box-shadow-medium: 0px 6px 20px rgba(9, 11, 25, 0.5);
   --box-shadow-large: 0px 15px 50px rgba(9, 11, 25, 0.5);
 
-  /* Legacy aliases — dark overrides */
+  /* Legacy aliases â€” dark overrides */
   --sidebar-text: 156 163 175;
   --sidebar-accent: 105 167 239;
 
@@ -211,7 +211,7 @@
 html { scroll-behavior: smooth; }
 html, body, #root { height: 100%; width: 100%; }
 
-/* ── Root typography scale ─────────────────────────────────────────
+/* â”€â”€ Root typography scale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    Every Tailwind text-* and spacing utility is rem-based, so changing
    this single value rescales the whole app. Browser default is 16px;
    we ship 15px so the UI feels slightly more compact by default.
@@ -243,7 +243,7 @@ body {
   }
 }
 
-/* ===== Focus Visible (skill §9) ===== */
+/* ===== Focus Visible (skill Â§9) ===== */
 :focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px hsla(209, 100%, 50%, 0.5);
@@ -258,7 +258,7 @@ body {
 .dark .bg-sidebar-hover { background-color: #252629 !important; }
 .dark .bg-sidebar-active { background-color: #1C2C3C !important; }
 
-/* bg-white is a built-in Tailwind class — override it centrally for dark mode */
+/* bg-white is a built-in Tailwind class â€” override it centrally for dark mode */
 .dark .bg-white { background-color: var(--bg-elevated) !important; }
 .dark [class*="bg-[#ffffff]"] { background-color: var(--bg-elevated) !important; }
 .dark [class*="bg-[#f5f6f8]"] { background-color: var(--surface) !important; }
@@ -272,7 +272,7 @@ body {
 .dark [class*="border-[#e6e9ef]"] { border-color: var(--border-color) !important; }
 .dark [class*="border-[#c3c6d4]"] { border-color: var(--border-color) !important; }
 
-/* Dark override: Tailwind gray palette — catch components not yet on semantic tokens */
+/* Dark override: Tailwind gray palette â€” catch components not yet on semantic tokens */
 .dark [class*="text-gray-900"] { color: #F3F4F6 !important; }
 .dark [class*="text-gray-800"] { color: #E5E7EB !important; }
 .dark [class*="text-gray-700"] { color: #D1D5DB !important; }
@@ -294,7 +294,7 @@ body {
 .dark [class*="bg-slate-100"] { background-color: var(--surface-100) !important; }
 .dark [class*="text-slate-600"] { color: #9CA3AF !important; }
 
-/* Dark override: Tailwind zinc palette — components using dark:bg-zinc-* */
+/* Dark override: Tailwind zinc palette â€” components using dark:bg-zinc-* */
 .dark [class*="dark\:bg-zinc-600"] { background-color: var(--surface-200) !important; }
 .dark [class*="dark\:bg-zinc-700"] { background-color: var(--surface-100) !important; }
 .dark [class*="dark\:bg-zinc-800"] { background-color: var(--bg-elevated) !important; }
@@ -339,7 +339,7 @@ body {
   color: var(--text-tertiary) !important;
 }
 
-/* Dark mode shadows — softer glow for dark surfaces */
+/* Dark mode shadows â€” softer glow for dark surfaces */
 .dark .shadow-sm  { box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important; }
 .dark .shadow-lg  { box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important; }
 .dark .shadow-xl  { box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important; }
@@ -375,7 +375,7 @@ body {
    Stack puts Neue Machina first so when/if the team licenses & ships the
    actual font (e.g. as a self-hosted woff2), it takes precedence with zero
    call-site changes. Today it falls back to Space Grotesk (closest free
-   approximation) → Figtree → system. Use sparingly — display only. */
+   approximation) â†’ Figtree â†’ system. Use sparingly â€” display only. */
 .font-neu-machina {
   font-family: 'Neue Machina', 'Space Grotesk', 'Figtree', system-ui, sans-serif;
   font-feature-settings: 'ss01', 'ss02', 'cv11';
@@ -384,7 +384,7 @@ body {
 
 /* ===== Component Layer ===== */
 @layer components {
-  /* Status pill — Monday.com exact style */
+  /* Status pill â€” Monday.com exact style */
   .status-pill {
     @apply inline-flex items-center justify-center py-[6px] text-[13px] font-medium text-white text-center cursor-pointer select-none;
     width: 100%;
@@ -410,7 +410,7 @@ body {
     @apply flex items-center justify-center px-2 py-2 text-sm border-r border-border;
   }
 
-  /* Sidebar item — uses CSS variable tokens so dark mode auto-adapts */
+  /* Sidebar item â€” uses CSS variable tokens so dark mode auto-adapts */
   .sidebar-item {
     @apply flex items-center gap-2.5 px-3 py-[6px] text-[14px] rounded-md mx-2 cursor-pointer;
     color: rgb(var(--sidebar-text));
@@ -503,7 +503,7 @@ body {
   .badge-purple { @apply bg-violet-50 text-violet-700; }
   .badge-neutral { @apply bg-slate-100 text-slate-600; }
 
-  /* ===== Skill Button system (§5) =====
+  /* ===== Skill Button system (Â§5) =====
      Backs the `btn`, `btn--<kind>`, `btn--<size>` API emitted by
      client/src/components/common/Button.jsx. Sizes / kinds / states
      follow the spec exactly so the dead-class defect is closed without
@@ -545,7 +545,7 @@ body {
     border-color: transparent;
   }
 
-  /* Sizes — heights enforced per spec */
+  /* Sizes â€” heights enforced per spec */
   .btn--xxs   { height: 16px; padding: var(--space-2) var(--space-4);  font: var(--font-text2-normal); }
   .btn--xs    { height: 24px; padding: var(--space-4) var(--space-8);  font: var(--font-text2-normal); }
   .btn--sm    { height: 32px; padding: var(--space-4) var(--space-8);  font: var(--font-text2-normal); }
@@ -607,15 +607,15 @@ body {
   .btn--leftFlat  { border-top-right-radius: 0; border-bottom-right-radius: 0; }
   .btn--rightFlat { border-top-left-radius: 0; border-bottom-left-radius: 0; }
 
-  /* ===== Headings (§2) — Poppins via --title-font-family ===== */
+  /* ===== Headings (Â§2) â€” Poppins via --title-font-family ===== */
   .text-h1 { font: var(--font-h1); letter-spacing: -0.5px; color: var(--primary-text-color); }
   .text-h2 { font: var(--font-h2); letter-spacing: -0.1px; color: var(--primary-text-color); }
   .text-h3 { font: var(--font-h3); letter-spacing: -0.1px; color: var(--primary-text-color); }
 
-  /* ===== Skill Tabs system (§6) =====
+  /* ===== Skill Tabs system (Â§6) =====
      Backs the <Tabs> React primitive at common/Tabs.jsx. Inactive rail is
      a 2px --ui-background-color border; active rail is a 2px --primary-color
-     ::after bar animated scaleX(0→1) via --motion-productive-medium. */
+     ::after bar animated scaleX(0â†’1) via --motion-productive-medium. */
 
   .ds-tab-list {
     display: flex;
@@ -631,7 +631,7 @@ body {
   .ds-tab-list--stretched           { width: 100%; }
   .ds-tab-list--stretched .ds-tab   { flex: 1 1 0; }
 
-  /* Sizes (§6.1) */
+  /* Sizes (Â§6.1) */
   .ds-tab-list--sm .ds-tab { height: 32px; }
   .ds-tab-list--md .ds-tab,
   .ds-tab-list      .ds-tab { height: 40px; }     /* md is the default */
@@ -756,8 +756,8 @@ body {
     @apply btn-compact text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-40;
   }
   .btn-compact-primary {
-    /* Phase C: primary action color aligned to Monday-blue per skill §5.
-       The old emerald was semantically wrong for "primary" — green reads
+    /* Phase C: primary action color aligned to Monday-blue per skill Â§5.
+       The old emerald was semantically wrong for "primary" â€” green reads
        as success/approval, blue reads as primary action. */
     @apply btn-compact text-white bg-primary hover:bg-primary-600 disabled:bg-[var(--disabled-background-color)] disabled:text-[var(--disabled-text-color)];
   }
@@ -772,7 +772,7 @@ body {
   }
   .tab-trigger-compact[aria-selected="true"],
   .tab-trigger-compact.is-active {
-    /* Active-tab accent aligned to Monday-blue (§6) — replaces emerald.
+    /* Active-tab accent aligned to Monday-blue (Â§6) â€” replaces emerald.
        Used by every compact-tab modal in the app (settings, integrations
        config, board settings, etc.). */
     @apply text-primary dark:text-primary-400 border-primary;
@@ -796,7 +796,7 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Inline subtask section — opacity-only fade. Avoids height/width tweens
+/* Inline subtask section â€” opacity-only fade. Avoids height/width tweens
    that fight the sticky-left flex grid in BoardPage and caused jitter. */
 .subtask-section-fade-in {
   animation: subtaskSectionFadeIn 0.16s ease-out;
@@ -905,7 +905,7 @@ body {
   background-size: 200% 100%;
 }
 
-/* Dropdown animation container — dark mode */
+/* Dropdown animation container â€” dark mode */
 .dark .dropdown-enter {
   background-color: var(--bg-elevated);
   border-color: var(--border-color);
@@ -997,7 +997,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .rich-doc-body .rte-content { padding: 0.25rem 0; }
 .rich-doc-body .ProseMirror p { font-size: 16px; }
 
-/* Phase F polish — commented-text highlights. Soft amber background + a
+/* Phase F polish â€” commented-text highlights. Soft amber background + a
    subtle underline so the marked range reads as annotated without
    competing with the user's own formatting marks (bold, code, etc.).
    Click affordance handled by the cursor change. */
@@ -1016,10 +1016,10 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   border-bottom-color: rgba(217, 119, 6, 0.75);
 }
 
-/* P2-8 — floating sticky toolbar for chromeless mode. The toolbar is the
+/* P2-8 â€” floating sticky toolbar for chromeless mode. The toolbar is the
    first direct child of the editor wrapper (RichTextEditor renders it
    above EditorContent). Sticky + backdrop-blur + shadow makes it feel
-   "alive" — matches the Monday/Notion behaviour the user expected. */
+   "alive" â€” matches the Monday/Notion behaviour the user expected. */
 .rich-doc-body > div > div:first-child {
   position: sticky;
   top: 0;
@@ -1036,7 +1036,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   background: rgba(20, 23, 30, 0.88);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4), 0 4px 12px -10px rgba(0, 0, 0, 0.5);
 }
-/* Toolbar button polish — visible active/focus state, soft press transition. */
+/* Toolbar button polish â€” visible active/focus state, soft press transition. */
 .rich-doc-body > div > div:first-child button {
   position: relative;
   transition: background-color 120ms ease, transform 80ms ease;
@@ -1049,10 +1049,10 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   outline-offset: 1px;
 }
 
-/* P2-9 — task-chip + mention polish for read-mode (rendered HTML from
+/* P2-9 â€” task-chip + mention polish for read-mode (rendered HTML from
    tiptapJsonToHtml in DocPage). The Tiptap node's HTMLAttributes already
    style the in-editor chip via Tailwind utilities, but a saved doc
-   reloaded via the JSON→HTML bridge emits a bare `.task-chip` span — this
+   reloaded via the JSONâ†’HTML bridge emits a bare `.task-chip` span â€” this
    block gives it identical visual treatment without depending on
    Tailwind class strings making it through the round-trip. */
 .task-chip {
@@ -1086,12 +1086,12 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 
 /* =====================================================================
-   FLOATING-CARD SHELL THEME  (restored — deliberate divergence from §4.2)
+   FLOATING-CARD SHELL THEME  (restored â€” deliberate divergence from Â§4.2)
    ---------------------------------------------------------------------
    Activated by adding the `.app-shell` class to the Layout root and
    wrapping the main content area in `.floating-card`. The tan-tinted
    base layer + detached white content card give the app warmth and depth
-   that the skill's flat §4.2 shell loses. Kept on purpose; the rest of
+   that the skill's flat Â§4.2 shell loses. Kept on purpose; the rest of
    the Phase A token migration (Monday-blue primary, Header tokens,
    sidebar dropdowns, Tabs primitive) is unaffected.
    ===================================================================== */
@@ -1117,14 +1117,14 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
     0 12px 24px rgba(0, 0, 0, 0.4);
 }
 
-/* App shell — paint the tinted base layer behind everything */
+/* App shell â€” paint the tinted base layer behind everything */
 .app-shell,
 .dark .app-shell,
 .theme-dark .app-shell {
   background-color: var(--base-tint) !important;
 }
 
-/* Sidebar — blend visually into the base tint, drop the right divider */
+/* Sidebar â€” blend visually into the base tint, drop the right divider */
 .app-shell .bg-sidebar-bg {
   background-color: var(--base-tint) !important;
   border-right-color: transparent !important;
@@ -1133,13 +1133,13 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   border-color: transparent !important;
 }
 
-/* Header — sit transparently over the base tint */
+/* Header â€” sit transparently over the base tint */
 .app-shell > div > header {
   background-color: transparent !important;
   border-bottom-color: transparent !important;
 }
 
-/* Floating content card — detached, rounded, layered shadow */
+/* Floating content card â€” detached, rounded, layered shadow */
 .floating-card {
   background-color: var(--card-bg);
   border-radius: var(--card-radius);
@@ -1147,7 +1147,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   border: 1px solid var(--card-border-color);
 }
 
-/* Stuck variant — flush to right and bottom bezels.
+/* Stuck variant â€” flush to right and bottom bezels.
    Top-left and top-right stay rounded; bottom corners are flat so the
    right/bottom edges meet the viewport cleanly with no shadow gap. */
 .floating-card--stuck {
@@ -1198,16 +1198,16 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 
 /* =====================================================================
-   v3 TASK MODAL  —  Phase B: Monday-spec primary + tokenized values
+   v3 TASK MODAL  â€”  Phase B: Monday-spec primary + tokenized values
    ---------------------------------------------------------------------
    Class names kept (TaskModal.jsx still emits .v3-* / .bento-*); colors
-   and sizes rewritten to skill §1/§6/§3 tokens. The purple identity
+   and sizes rewritten to skill Â§1/Â§6/Â§3 tokens. The purple identity
    (#6D5CE7 / #A78BFA) is replaced by Monday blue (--primary-color).
    `--proj-color` / `--proj-light` / `--card-accent` inline-style hooks
-   on TaskModal still work — they fall back to the primary token now.
+   on TaskModal still work â€” they fall back to the primary token now.
    ===================================================================== */
 
-/* Project stripe — Monday-blue shimmer */
+/* Project stripe â€” Monday-blue shimmer */
 .v3-project-stripe {
   height: 3px;
   width: 100%;
@@ -1226,7 +1226,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   50%      { background-position: 200% 0; }
 }
 
-/* Tabs — skill §6: 14px (text2), 40px height, --primary-color underline */
+/* Tabs â€” skill Â§6: 14px (text2), 40px height, --primary-color underline */
 .v3-tabs {
   display: flex;
   align-items: center;
@@ -1286,7 +1286,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   color: var(--primary-color);
 }
 
-/* Section card with accent rail — accent is Monday blue (or per-task tint) */
+/* Section card with accent rail â€” accent is Monday blue (or per-task tint) */
 .v3-card {
   position: relative;
   background: var(--primary-background-color);
@@ -1306,7 +1306,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 .v3-card-divider { border-top: 1px dashed var(--layout-border-color); }
 
-/* Sticky tabs container — keeps tabs visible while content scrolls below */
+/* Sticky tabs container â€” keeps tabs visible while content scrolls below */
 .v3-tabs-sticky {
   position: sticky;
   top: 0;
@@ -1339,7 +1339,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   50%      { opacity: 0.55; }
 }
 
-/* Urgent countdown chip pulse — uses negative status token */
+/* Urgent countdown chip pulse â€” uses negative status token */
 .v3-urgent-pulse { animation: v3UrgentPulse 1.8s ease-in-out infinite; }
 @keyframes v3UrgentPulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(216, 58, 82, 0.30); }
@@ -1397,11 +1397,11 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   position: relative;
   background: var(--primary-background-color);
   border: 1px solid var(--layout-border-color);
-  /* Tile radius standardised to 12px — between spec medium (8) and big
+  /* Tile radius standardised to 12px â€” between spec medium (8) and big
      (16). Matches .v3-card so cards and tiles share a visual rhythm. */
   border-radius: 12px;
   padding: 10px 12px;
-  /* overflow MUST be visible — dropdowns positioned absolutely inside
+  /* overflow MUST be visible â€” dropdowns positioned absolutely inside
      tiles get clipped otherwise. */
   overflow: visible;
   min-width: 0;
@@ -1425,7 +1425,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .bento-tile-clickable { cursor: pointer; }
 .bento-tile-clickable:hover { background-color: var(--primary-background-hover-color); }
 
-/* Tile typography — token-driven sizes */
+/* Tile typography â€” token-driven sizes */
 .tile-label {
   display: inline-flex;
   align-items: center;
@@ -1471,8 +1471,8 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   font-feature-settings: 'tnum';
 }
 
-/* Pastel tinted tile variants — status-driven washes, recolored to align
-   with skill §1.5 status tokens (positive / negative / warning) and §1.1
+/* Pastel tinted tile variants â€” status-driven washes, recolored to align
+   with skill Â§1.5 status tokens (positive / negative / warning) and Â§1.1
    primary. The "people" and "recurrence" tiles flipped from purple to
    Monday-blue wash so the modal reads consistently blue overall. */
 .bento-tile-approval-pending  { background: linear-gradient(135deg, #FFFBEB 0%, var(--primary-background-color) 60%); border-color: rgba(234, 170, 21, 0.22); }
@@ -1495,7 +1495,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .dark .bento-tile-reminders   { background: linear-gradient(135deg, rgba(0, 133, 77, 0.10) 0%, var(--secondary-background-color) 80%); }
 .dark .bento-tile-people      { background: linear-gradient(135deg, rgba(0, 115, 234, 0.12) 0%, var(--secondary-background-color) 80%); }
 
-/* Recurrence tile — Monday-blue wash (was soft purple) */
+/* Recurrence tile â€” Monday-blue wash (was soft purple) */
 .bento-tile-recurrence {
   background: linear-gradient(135deg, var(--primary-highlighted-color) 0%, var(--primary-background-color) 100%);
   border-color: rgba(0, 115, 234, 0.18);
@@ -1519,7 +1519,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 
 @media (max-width: 900px) {
-  /* Narrow viewport — collapse 3-col asymmetric bento to single-column stack */
+  /* Narrow viewport â€” collapse 3-col asymmetric bento to single-column stack */
   .bento-grid {
     grid-template-columns: 1fr;
     grid-auto-rows: auto;
@@ -1528,7 +1528,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   .bento-tile-wide { grid-column: span 1; }
 }
 
-/* ===== Doc Editor Phase H — inline images =====
+/* ===== Doc Editor Phase H â€” inline images =====
    The buildImageExtension factory mounts an `image` Node into the Tiptap
    editor. These rules clamp images to the editor's content width so a
    pasted/uploaded photo doesn't blow up the writing surface, round the
@@ -1546,7 +1546,7 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   max-width: 100%;
 }
 
-/* Phase C — table block styling. Borders are intentionally light so
+/* Phase C â€” table block styling. Borders are intentionally light so
    tables read as structured but don't compete with body copy. The
    resize handle from @tiptap/extension-table is styled via the wrapper
    it adds (`.tableWrapper`). */
@@ -1598,4 +1598,534 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .rte-content .ProseMirror .selectedCell,
 .rich-doc-body .ProseMirror .selectedCell {
   background: rgba(0, 115, 234, 0.10);
+}
+
+/* =====================================================================
+   Editorial Docs page â€” May 2026 refactor (Notion-style).
+   Scoped under `.doc-page-notion` so the rules can't leak into other
+   Mantine/BlockNote/Tiptap consumers elsewhere in the app.
+
+   Token system: --bg / --text / --text-2 / --text-3 / --divider / --hover
+   / --accent / --accent-soft / --check-border. Configure both light and
+   dark scoped to this surface only.
+   ===================================================================== */
+.doc-page-notion {
+  --bg:            var(--surface, #ffffff);
+  --text:          var(--text-primary, #1f2330);
+  --text-2:        var(--text-secondary, #4b5563);
+  --text-3:        var(--text-tertiary, #9aa1ad);
+  --divider:       rgba(15, 23, 42, 0.06);
+  --hover:         rgba(15, 23, 42, 0.04);
+  --accent:        var(--primary-color, #5b54e6);
+  --accent-soft:   rgba(91, 84, 230, 0.10);
+  --check-border:  rgba(15, 23, 42, 0.22);
+
+  /* Back-compat aliases referenced by older rules below. */
+  --doc-page-bg:     var(--bg);
+  --doc-text-color:  var(--text);
+  --doc-meta-color:  var(--text-3);
+  --doc-border-soft: var(--divider);
+
+  background: var(--bg);
+  color: var(--text);
+}
+.dark .doc-page-notion,
+.theme-dark .doc-page-notion {
+  --bg:            var(--surface, #14171e);
+  --text:          var(--text-primary, #e5e7eb);
+  --text-2:        var(--text-secondary, #c4c8d1);
+  --text-3:        var(--text-tertiary, #8d94a3);
+  --divider:       rgba(255, 255, 255, 0.07);
+  --hover:         rgba(255, 255, 255, 0.06);
+  --accent:        #8b85f2;
+  --accent-soft:   rgba(139, 133, 242, 0.16);
+  --check-border:  rgba(255, 255, 255, 0.24);
+}
+
+/* Slim 48px toolbar â€” calm, no heavy chrome. */
+.doc-page-notion__header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--divider);
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.doc-page-notion__breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.doc-page-notion__breadcrumb-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.doc-page-notion__breadcrumb-app:hover { color: var(--accent); }
+.doc-page-notion__breadcrumb-sep {
+  color: var(--text-3);
+  user-select: none;
+}
+.doc-page-notion__breadcrumb-title {
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.doc-page-notion__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.doc-page-notion__icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Share trigger button â€” pill style, matches Notion's compact share. */
+.doc-page-notion__share-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.doc-page-notion__share-trigger:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.doc-page-notion__share-popover {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px -12px rgba(15, 23, 42, 0.25), 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+.dark .doc-page-notion__share-popover,
+.theme-dark .doc-page-notion__share-popover {
+  box-shadow: 0 16px 44px -12px rgba(0, 0, 0, 0.6), 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+
+.doc-page-notion__menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.doc-page-notion__menu-trigger:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.doc-page-notion__menu-trigger-label {
+  font-size: 12px;
+}
+
+.doc-page-notion__inline-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--primary-color, #0073ea);
+  background: rgba(0, 115, 234, 0.08);
+  border: 1px solid rgba(0, 115, 234, 0.18);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.doc-page-notion__inline-save:hover:not(:disabled) {
+  background: rgba(0, 115, 234, 0.14);
+}
+.doc-page-notion__inline-save:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Portal-dropdown menu panel + items. Matches a Notion menu visually:
+   small radius, soft shadow, generous row height, monospace shortcut hint. */
+.doc-page-notion__menu {
+  padding: 4px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--doc-border-soft);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px -8px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06);
+  min-width: 200px;
+}
+.dark .doc-page-notion__menu,
+.theme-dark .doc-page-notion__menu {
+  background: #1f2230;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 28px -10px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.doc-page-notion__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-primary, #111827);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 100ms ease;
+}
+.doc-page-notion__menu-item:hover:not(:disabled) {
+  background: var(--surface-100, rgba(15, 23, 42, 0.05));
+}
+.dark .doc-page-notion__menu-item:hover:not(:disabled),
+.theme-dark .doc-page-notion__menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+.doc-page-notion__menu-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.doc-page-notion__menu-item-title { font-weight: 500; }
+.doc-page-notion__menu-item-hint {
+  font-size: 11px;
+  color: var(--text-tertiary, #9ca3af);
+  font-weight: 400;
+  margin-top: 1px;
+}
+.doc-page-notion__menu-item--danger {
+  color: var(--danger, #dc2626);
+}
+.doc-page-notion__menu-item--danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.08);
+}
+.doc-page-notion__menu-divider {
+  height: 1px;
+  background: var(--doc-border-soft);
+  margin: 4px 2px;
+}
+.doc-page-notion__menu-kbd {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--text-tertiary, #9ca3af);
+  letter-spacing: 0.5px;
+}
+
+/* Slim super-admin banner â€” kept visible (audit requirement) but very
+   calm: token-based hover surface, 6px accent dot, single line, rounded.
+   No amber alarm. */
+.doc-page-notion__sa-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--hover);
+  border: 1px solid var(--divider);
+  flex-shrink: 0;
+}
+.doc-page-notion__sa-banner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.doc-page-notion__sa-banner strong {
+  color: var(--text);
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+/* Centered editorial column. Generous side padding, Notion-like max
+   width. Top padding gives the floating page icon room to breathe
+   (the cover band was removed; icon no longer overlaps anything). */
+.doc-page-notion__column {
+  max-width: 701px;
+  margin: 0 auto;
+  padding: 5px 20px 73px;
+}
+@media (max-width: 720px) {
+  .doc-page-notion__column { padding: 5px 18px 73px; }
+}
+
+/* Page icon â€” 46px rounded square, accent-soft fill. Used to sit
+   overlapping the cover band; the cover was removed in May 2026 so the
+   icon now sits flush at the top of the column. */
+.doc-page-notion__page-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-page-notion__title-block {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+/* Editable title â€” calmer Editorial scale (reduced from 42px May 2026
+   so it doesn't dominate the column). */
+.doc-page-notion__title {
+  font-family: var(--title-font-family, Poppins, sans-serif);
+  font-size: 32px;
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  width: 100%;
+  cursor: text;
+  margin: 0;
+}
+.doc-page-notion__title:focus,
+.doc-page-notion__title:hover { background: transparent; }
+.doc-page-notion__title--editing { caret-color: var(--accent); }
+.doc-page-notion__title-placeholder {
+  color: var(--text-3);
+  font-weight: 700;
+}
+.doc-page-notion__title::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+  font-weight: 700;
+}
+
+/* Compact metadata row â€” avatar Â· creator Â· Â· edited time. */
+.doc-page-notion__meta {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.doc-page-notion__meta a { color: var(--text-2); }
+.doc-page-notion__meta a:hover { color: var(--accent); }
+
+/* Editor wrapper â€” chromeless. Kill the boxed/card look on both branches:
+   - BlockNote (Mantine theme) renders its own container with background,
+     border, and shadow; we flatten it under .doc-page-notion.
+   - Tiptap / RichTextEditor previously had a sticky toolbar pill with
+     box-shadow + rounded background; in the docs page we render the
+     editor "chromeless" so the toolbar reads as inline chrome. */
+
+/* BlockNote â€” strip the Mantine wrapper boxing. */
+.doc-page-notion .blocknote-wrapper {
+  background: transparent !important;
+}
+.doc-page-notion .blocknote-wrapper .bn-container,
+.doc-page-notion .blocknote-wrapper .mantine-Paper-root,
+.doc-page-notion .blocknote-wrapper .bn-editor {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.doc-page-notion .blocknote-wrapper .bn-editor {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--doc-text-color);
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="paragraph"],
+.doc-page-notion .blocknote-wrapper [data-content-type="bulletListItem"],
+.doc-page-notion .blocknote-wrapper [data-content-type="numberedListItem"],
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] {
+  font-size: 16px;
+  line-height: 1.65;
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="heading"][data-level="1"] {
+  font-family: var(--title-font-family, Poppins, sans-serif);
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 24px;
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="heading"][data-level="2"] {
+  font-family: var(--title-font-family, Poppins, sans-serif);
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: 700;
+  margin-top: 20px;
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="heading"][data-level="3"] {
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 600;
+  margin-top: 16px;
+}
+
+/* First content block sits flush against the title block â€” strip the
+   heading/paragraph top margin only for the first child so subsequent
+   blocks keep their inter-block rhythm. */
+.doc-page-notion .blocknote-wrapper .bn-block-group > .bn-block-outer:first-child [data-content-type] {
+  margin-top: 0 !important;
+}
+.doc-page-notion .rich-doc-body .ProseMirror > *:first-child {
+  margin-top: 0 !important;
+}
+
+/* Tiptap branch â€” flatten the sticky toolbar card the legacy editor
+   draws (defined upstream at .rich-doc-body > div > div:first-child).
+   We only override when the editor lives under .doc-page-notion so other
+   consumers of .rich-doc-body keep their current chrome. */
+.doc-page-notion .rich-doc-body > div > div:first-child {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 2px 0 !important;
+  margin-bottom: 4px !important;
+  border-bottom: 1px solid var(--doc-border-soft);
+}
+.doc-page-notion .rich-doc-body .ProseMirror {
+  font-size: 16px;
+  line-height: 1.65;
+  outline: none;
+  background: transparent;
+}
+.doc-page-notion .rich-doc-body .ProseMirror:focus { outline: none; }
+.doc-page-notion .rich-doc-body .ProseMirror p {
+  font-size: 16px;
+  line-height: 1.65;
+  margin: 0.25em 0;
+}
+.doc-page-notion .rich-doc-body .ProseMirror h1,
+.doc-page-notion .rich-doc-body .ProseMirror h2,
+.doc-page-notion .rich-doc-body .ProseMirror h3 {
+  font-family: var(--title-font-family, Poppins, sans-serif);
+  letter-spacing: -0.01em;
+}
+.doc-page-notion .rich-doc-body .ProseMirror h1 { font-size: 28px; line-height: 1.25; margin-top: 24px; }
+.doc-page-notion .rich-doc-body .ProseMirror h2 { font-size: 22px; line-height: 1.3;  margin-top: 20px; }
+.doc-page-notion .rich-doc-body .ProseMirror h3 { font-size: 18px; line-height: 1.35; margin-top: 16px; }
+
+/* Block hover affordances â€” subtle +/drag handles on hover, no clutter
+   when idle. BlockNote renders these inside `.bn-block-side-menu`; we
+   just tune their opacity so they fade in/out gracefully. */
+.doc-page-notion .blocknote-wrapper .bn-block-side-menu {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.doc-page-notion .blocknote-wrapper .bn-block-outer:hover .bn-block-side-menu,
+.doc-page-notion .blocknote-wrapper .bn-block-outer:focus-within .bn-block-side-menu {
+  opacity: 1;
+}
+.doc-page-notion .blocknote-wrapper .bn-block-side-menu > * {
+  color: var(--text-3);
+}
+.doc-page-notion .blocknote-wrapper .bn-block-side-menu > *:hover {
+  color: var(--text);
+  background: var(--hover) !important;
+}
+
+/* Checklist styling â€” token-driven, matches target mockup. */
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--check-border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] input[type="checkbox"]:hover {
+  border-color: var(--accent);
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] [data-checked="true"] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+/* BlockNote slash menu â€” dark-mode readable + soft tokens. */
+.doc-page-notion .blocknote-wrapper .bn-side-menu,
+.doc-page-notion .blocknote-wrapper .mantine-Menu-dropdown,
+.doc-page-notion .blocknote-wrapper .bn-suggestion-menu {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--divider) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 14px 40px -12px rgba(15, 23, 42, 0.25), 0 4px 10px rgba(15, 23, 42, 0.08) !important;
+}
+.dark .doc-page-notion .blocknote-wrapper .bn-side-menu,
+.dark .doc-page-notion .blocknote-wrapper .mantine-Menu-dropdown,
+.dark .doc-page-notion .blocknote-wrapper .bn-suggestion-menu,
+.theme-dark .doc-page-notion .blocknote-wrapper .bn-side-menu,
+.theme-dark .doc-page-notion .blocknote-wrapper .mantine-Menu-dropdown,
+.theme-dark .doc-page-notion .blocknote-wrapper .bn-suggestion-menu {
+  box-shadow: 0 16px 44px -12px rgba(0, 0, 0, 0.6), 0 6px 14px rgba(0, 0, 0, 0.45) !important;
 }

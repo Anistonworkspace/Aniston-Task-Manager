@@ -58,21 +58,27 @@ function isContentJsonEmptyOrTrivial(contentJson) {
 }
 
 /**
- * Re-implementation of the workspace visibility check used in
- * docController. Re-implemented privately here to (a) avoid the
- * controller's Express baggage and (b) mirror what meetingStreamService
- * does for the same reason.
+ * Workspace visibility check — must accept the same (user, workspaceId)
+ * pairs as `docController.canCallerSeeWorkspace`. The board-visibility
+ * branch is what lets a Tier 4 user reach the workspace's docs when they
+ * only have membership via a board (not an explicit workspaceMembers row).
+ *
+ * `Board` and `boardVisibility` are optional deps so existing unit tests
+ * that pass `{ Workspace, User }` only continue to work — they just skip
+ * the board-visibility branch.
  *
  * Resolves to `true` when:
  *   - user is super-admin
  *   - user is admin/manager (org-wide visibility)
  *   - user created the workspace
  *   - user is in the workspace's explicit member list
+ *   - user can see any board in the workspace (board-visibility branch)
  */
-async function canSeeWorkspace({ Workspace, User }, user, workspaceId) {
+async function canSeeWorkspace(deps, user, workspaceId) {
   if (!user || !workspaceId) return false;
   if (user.isSuperAdmin) return true;
   if (user.role === 'admin' || user.role === 'manager') return true;
+  const { Workspace, User, Board, boardVisibility } = deps || {};
   const ws = await Workspace.findByPk(workspaceId, {
     include: [
       { model: User, as: 'workspaceMembers', attributes: ['id'], required: false },
@@ -81,7 +87,28 @@ async function canSeeWorkspace({ Workspace, User }, user, workspaceId) {
   if (!ws) return false;
   if (ws.createdBy === user.id) return true;
   const memberIds = (ws.workspaceMembers || []).map((m) => m.id);
-  return memberIds.includes(user.id);
+  if (memberIds.includes(user.id)) return true;
+
+  // Board-membership path. Mirrors docController.canCallerSeeWorkspace so a
+  // Tier 4 user who reaches the workspace via board access can still open
+  // its docs in collab mode. Optional — tests that don't provide Board /
+  // boardVisibility skip this branch.
+  if (Board && boardVisibility && typeof boardVisibility.getVisibleBoardIdsForUser === 'function') {
+    try {
+      const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
+      if (visibleBoardIds && visibleBoardIds.size > 0) {
+        const wsBoards = await Board.findAll({
+          where: { workspaceId, isArchived: false },
+          attributes: ['id'],
+          raw: true,
+        });
+        if (wsBoards.some((b) => visibleBoardIds.has(b.id))) return true;
+      }
+    } catch (err) {
+      safeLogger.warn('[DocCollab] canSeeWorkspace board-visibility fallback failed', { err, workspaceId, userId: user.id });
+    }
+  }
+  return false;
 }
 
 /**
@@ -90,10 +117,15 @@ async function canSeeWorkspace({ Workspace, User }, user, workspaceId) {
  * no Hocuspocus runtime needed — so tests can drive each hook directly
  * with mock models. The real attach helper passes its own deps in.
  *
- * deps = { Y, jwt, Doc, Workspace, User, jwtSecret }
+ * deps = { Y, jwt, Doc, Workspace, User, jwtSecret, Board?, boardVisibility? }
+ *
+ * `Board` and `boardVisibility` are optional: when present, the workspace
+ * visibility check honors the board-membership branch so a Tier 4 user who
+ * reaches the workspace via board access can open collab sessions on its
+ * docs. Tests that don't supply them fall back to membership-only checks.
  */
 function buildHocuspocusConfig(deps) {
-  const { Y, jwt: jwtLib, Doc, Workspace, User, jwtSecret } = deps;
+  const { Y, jwt: jwtLib, Doc, Workspace, User, jwtSecret, Board, boardVisibility } = deps;
 
   async function onAuthenticate({ token, documentName }) {
     if (!token) throw new Error('Missing token');
@@ -133,7 +165,20 @@ function buildHocuspocusConfig(deps) {
       }
     }
 
-    const visible = await canSeeWorkspace({ Workspace, User }, user, doc.workspaceId);
+    // feat/docs-personal-notion Phase 3 — gate the collab handshake on
+    // docAccessSvc.hasDocAccess instead of workspace visibility. A user
+    // whose explicit doc_access row was revoked between ticket mint and
+    // WS upgrade now fails the handshake. Lazy-required so unit tests that
+    // exercise the hook factory with their own deps continue to work.
+    let visible;
+    try {
+      const docAccessSvc = require('./docAccessService');
+      visible = await docAccessSvc.hasDocAccess(user, doc);
+    } catch (_) {
+      // Fallback to the legacy workspace check if docAccessSvc isn't loaded
+      // (e.g. in older unit tests that mock the models without it).
+      visible = await canSeeWorkspace({ Workspace, User, Board, boardVisibility }, user, doc.workspaceId);
+    }
     if (!visible) throw new Error('Access denied');
 
     return { user: { id: payload.id }, docId: documentName };
@@ -215,7 +260,8 @@ function getHocuspocusServer() {
 
   const Y = require('yjs');
   const { Server } = require('@hocuspocus/server');
-  const { Doc, Workspace, User } = require('../models');
+  const { Doc, Workspace, User, Board } = require('../models');
+  const boardVisibility = require('./boardVisibilityService');
 
   const hooks = buildHocuspocusConfig({
     Y,
@@ -223,6 +269,8 @@ function getHocuspocusServer() {
     Doc,
     Workspace,
     User,
+    Board,
+    boardVisibility,
     jwtSecret: process.env.JWT_SECRET,
   });
 

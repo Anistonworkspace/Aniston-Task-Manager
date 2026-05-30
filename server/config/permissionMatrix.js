@@ -768,8 +768,12 @@ const ROLE_PERMISSIONS = {
     // edit/delete/manage_members/manage_settings/export remain false — those
     // are management-only actions (rename/archive/reorder groups, member
     // management, settings, exports) and have not been loosened.
-    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
-    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: false },
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
+    // tasks.approve = true: assistant_managers are walked into the approval
+    // chain as sequential approvers for their direct reports. Per-task chain
+    // membership is enforced inside processApprovalAction; this just unlocks
+    // the `tasks.approve_completion` route gate. Mirrors TIER_PERMISSIONS[3].
+    tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
     task_files:       { view: true, upload: true, delete: true },
@@ -811,7 +815,7 @@ const ROLE_PERMISSIONS = {
     // remains false so members cannot rename/archive/reorder groups via
     // PUT /boards/:id — addGroup uses a separate per-board route guarded by
     // boardVisibilityService.canUserSeeBoard instead.
-    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
     // Members can create their own tasks and self-assign. Editing applies to
     // their own/self-assigned tasks only — controllers enforce the field-level
     // whitelist; assigning OTHERS requires the explicit assign_others grant.
@@ -837,7 +841,7 @@ const ROLE_PERMISSIONS = {
     dashboard:        { view: false, export: false },
     reports:          { view: true, export: false },
     exports:          { view: false, export: false },
-    meetings:         { view: true, create: false, edit: false, delete: false, manage: false },
+    meetings:         { view: true, create: true, edit: false, delete: false, manage: false },
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },
@@ -892,7 +896,7 @@ const TIER_PERMISSIONS = {
     roles:            { view: true, manage: true },
     admin_settings:   { view: true, manage: true },
     workspaces:       { view: true, create: true, edit: true, delete: true, manage_members: true },
-    boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true },
+    boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true, create_group: true },
     tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: true },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
@@ -927,7 +931,7 @@ const TIER_PERMISSIONS = {
     // surfaces — Tier 1 only per migration plan §3.1 (accepted by product).
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: true, edit: true, delete: false, manage_members: true },
-    boards:           { view: true, create: true, edit: true, delete: false, manage_members: true, manage_settings: true, export: true },
+    boards:           { view: true, create: true, edit: true, delete: false, manage_members: true, manage_settings: true, export: true, create_group: true },
     // edit_locked_description is T1+T2 (decision #10 revised — Tier 1 and Tier 2
     // may rewrite an already-set task description; Tier 3/Tier 4 are blocked.)
     tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: true },
@@ -977,10 +981,19 @@ const TIER_PERMISSIONS = {
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
     // boards.create allowed; controller verifies workspace scope (decision #7).
-    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
+    // create_group: true — every tier that can see a board may add groups to
+    // it. addGroup controller pre-gates via boardVisibilityService.canUserSeeBoard,
+    // so this explicit entry just stops the umbrella fallback (which would
+    // otherwise inherit boards.edit=false) from blocking T3.
+    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
     // tasks.delete tightened to false (decision #4, no destructive without scope proof).
-    // tasks.approve remains false to match prior asst-manager behavior.
-    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: false, edit_locked_description: false },
+    // tasks.approve = true: the approval chain in approvalChainService walks
+    // assistant_managers in as sequential approvers for their Tier 4 reports,
+    // and computeApprovalCapabilities authorises them on a per-task basis. The
+    // umbrella matrix value just unlocks the `tasks.approve_completion` route
+    // gate; processApprovalAction still enforces "you must be in this task's
+    // chain" so a T3 can't approve tasks they aren't an approver for.
+    tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: false },
     subtasks:         { view: true, create: true, edit: true, delete: false },
     task_comments:    { view: true, create: true, edit: true, delete: false },
     task_files:       { view: true, upload: true, delete: false },
@@ -1030,7 +1043,11 @@ const TIER_PERMISSIONS = {
     roles:            { view: false, manage: false },
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
-    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false },
+    // create_group: true — Tier 4 may add groups to any board they can see
+    // (addGroup controller pre-gates via boardVisibilityService.canUserSeeBoard).
+    // Explicit entry overrides the umbrella fallback that would otherwise
+    // inherit boards.edit=false.
+    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
     // assign_others: false (decision #8 — implicit, kept as before)
     // set_priority: false (decision #9: T4 priority denied)
     // delete: false (controller has separate own-task-archive path)
@@ -1059,7 +1076,7 @@ const TIER_PERMISSIONS = {
     dashboard:        { view: false, export: false },
     reports:          { view: true, export: false },
     exports:          { view: false, export: false },
-    meetings:         { view: true, create: false, edit: false, delete: false, manage: false },
+    meetings:         { view: true, create: true, edit: false, delete: false, manage: false },
     notes:            { view: true, create: true, edit: true, delete: true },
     announcements:    { view: true, create: false, edit: false, delete: false },
     time_plan:        { view: true, create: true, edit: true, delete: true, manage: false },

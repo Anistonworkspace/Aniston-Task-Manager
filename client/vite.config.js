@@ -48,11 +48,39 @@ export default defineConfig(({ mode }) => ({
   },
   server: {
     port: 3000,
+    // Docker Desktop on Windows does not forward host filesystem events
+    // (inotify) into the Linux container over bind mounts, so Vite's native
+    // watcher never sees edits and HMR silently stops working — you'd have to
+    // restart the container to pick up changes. When running in the dev
+    // container we set CHOKIDAR_USEPOLLING=true (see docker-compose.dev.yml)
+    // to switch chokidar to polling. Native host dev (`npm run dev` on
+    // Windows directly) leaves this unset and keeps fast event-based watching.
+    // Polling interval is deliberately high (1000ms, not the chokidar 100ms
+    // default). Docker Desktop's Windows bind mount (gRPC-FUSE) makes each
+    // fs.stat cost ~30-40ms instead of microseconds. Vite polls ~500 source
+    // files, so a tight interval pegs all libuv threads on stat() forever and
+    // starves Vite's own reads — pages and proxied /api responses then stall
+    // for seconds. A 1s interval plus a large UV_THREADPOOL_SIZE (set in
+    // docker-compose.dev.yml) keeps the watcher cheap while leaving threads
+    // free to serve. HMR still picks up edits within ~1s.
+    watch:
+      process.env.CHOKIDAR_USEPOLLING === 'true'
+        ? { usePolling: true, interval: 1000, binaryInterval: 2000 }
+        : undefined,
     proxy: {
+      // timeout / proxyTimeout cap how long a single proxied request may hang
+      // waiting to connect to, or receive a response from, the backend. Without
+      // them, if the backend is briefly unavailable (e.g. a nodemon reboot in
+      // the Docker dev stack), failed/pending sockets accumulate in http-proxy's
+      // agent until the proxy wedges and every /api call hangs ~indefinitely —
+      // the frontend then sits on skeleton loaders forever. Failing fast (8s)
+      // lets the browser's own retries recover once the backend is back.
       '/api': {
         target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
         changeOrigin: true,
         secure: false,
+        timeout: 8000,
+        proxyTimeout: 8000,
       },
       '/socket.io': {
         target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
@@ -62,6 +90,8 @@ export default defineConfig(({ mode }) => ({
       '/uploads': {
         target: process.env.VITE_BACKEND_URL || 'http://localhost:5000',
         changeOrigin: true,
+        timeout: 30000,
+        proxyTimeout: 30000,
       },
     },
   },

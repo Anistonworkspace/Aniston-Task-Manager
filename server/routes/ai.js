@@ -1,5 +1,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
 const { authenticate, strictAdminOnly } = require('../middleware/auth');
 const {
@@ -39,7 +40,7 @@ const aiUserLimiter = rateLimit({
   legacyHeaders: false,
   // Authenticated route, so req.user.id is the canonical bucket key. Falls
   // back to req.ip only if for some reason req.user is missing (defensive).
-  keyGenerator: (req) => (req.user && req.user.id) || req.ip,
+  keyGenerator: (req) => (req.user && req.user.id) || ipKeyGenerator(req.ip),
   skip: (req) => !!(req.user && req.user.isSuperAdmin),
   handler: (req, res, _next, options) => {
     const retryAfterSec = Math.ceil(options.windowMs / 1000);

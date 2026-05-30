@@ -71,6 +71,15 @@ services:
       - "5000:5000"
     volumes:
       - uploads_data:/app/uploads
+      # Tier-1 database backups. Named volume so dumps survive container
+      # rebuilds (a docker-compose `up --build` would otherwise blow them
+      # away if backups lived in the image). The backend writes to three
+      # subdirs under /app/backups: database/, pre-restore/, uploads-inbox/.
+      #
+      # NOT YET shipped off-host. EC2 host loss = backup loss. The
+      # follow-up is to wire a daily `aws s3 cp /app/backups/database/...`
+      # via the existing deploy/backup.sh hook or a sidecar.
+      - backup_data:/app/backups
     healthcheck:
       # node:20-alpine ships with `wget` but NOT `curl`. The previous probe
       # used curl and silently returned 127 ("command not found") every 30s,
@@ -115,3 +124,7 @@ services:
 volumes:
   postgres_data:
   uploads_data:
+  # Tier-1 DB backup artefacts. Persistent across `up --build` and container
+  # restarts; survives until the host volume is explicitly removed
+  # (`docker volume rm aph_backup_data`).
+  backup_data:

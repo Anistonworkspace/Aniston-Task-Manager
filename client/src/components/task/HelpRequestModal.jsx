@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { HelpCircle, X, Send, AlertCircle, Clock, Video, Check } from 'lucide-react';
+import { HelpCircle, X, Send, AlertCircle, Clock, Video, Check, XCircle } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { resolveTier, tierLabel } from '../../utils/tiers';
@@ -23,6 +23,13 @@ export default function HelpRequestModal({ task, onClose }) {
   const [preferredTime, setPreferredTime] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Reject-with-reason dialog state. Holds the help-request id being
+  // rejected, the typed reason, and any submission error. Null means the
+  // dialog is closed.
+  const [rejectTarget, setRejectTarget] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectError, setRejectError] = useState('');
+  const [rejectSubmitting, setRejectSubmitting] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -79,11 +86,40 @@ export default function HelpRequestModal({ task, onClose }) {
     } catch {}
   }
 
+  function openReject(id) {
+    setRejectTarget(id);
+    setRejectReason('');
+    setRejectError('');
+  }
+
+  function closeReject() {
+    setRejectTarget(null);
+    setRejectReason('');
+    setRejectError('');
+    setRejectSubmitting(false);
+  }
+
+  async function submitRejection() {
+    const reason = rejectReason.trim();
+    if (!reason) { setRejectError('Please enter a reason for rejecting this help request.'); return; }
+    setRejectSubmitting(true); setRejectError('');
+    try {
+      await api.put(`/help-requests/${rejectTarget}/status`, { status: 'rejected', rejectionReason: reason });
+      closeReject();
+      fetchData();
+    } catch (err) {
+      setRejectError(err.response?.data?.message || 'Failed to reject help request.');
+    } finally {
+      setRejectSubmitting(false);
+    }
+  }
+
   const STATUS_BADGE = {
     pending: 'bg-yellow-100 text-yellow-700',
     in_review: 'bg-blue-100 text-blue-700',
     meeting_scheduled: 'bg-purple-100 text-purple-700',
     resolved: 'bg-green-100 text-green-700',
+    rejected: 'bg-red-100 text-red-700',
   };
 
   // Portal to <body> so the dialog escapes any stacking context the
@@ -172,6 +208,11 @@ export default function HelpRequestModal({ task, onClose }) {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_BADGE[hr.status] || 'bg-gray-100 text-gray-500'}`}>{hr.status.replace(/_/g, ' ')}</span>
                     </div>
                     <p className="text-[11px] text-gray-500">{hr.description}</p>
+                    {hr.status === 'rejected' && hr.rejectionReason && (
+                      <p className="text-[11px] mt-1 px-2 py-1 rounded bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300">
+                        <span className="font-semibold">Reason for rejection: </span>{hr.rejectionReason}
+                      </p>
+                    )}
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: `${URGENCY_CONFIG[hr.urgency]?.color}15`, color: URGENCY_CONFIG[hr.urgency]?.color }}>
                         {hr.urgency}
@@ -180,11 +221,13 @@ export default function HelpRequestModal({ task, onClose }) {
                       {hr.meetingLink && <a href={hr.meetingLink} target="_blank" className="text-[10px] text-primary flex items-center gap-0.5"><Video size={9} /> Join Meeting</a>}
                     </div>
 
-                    {/* Manager actions */}
-                    {hr.status === 'pending' && canManage && hr.requestedTo === user?.id && (
+                    {/* Helper actions — visible to whoever the request is assigned to,
+                        regardless of tier (the helper is the one being asked). */}
+                    {hr.status === 'pending' && hr.requestedTo === user?.id && (
                       <div className="flex gap-2 mt-2">
                         <button onClick={() => updateStatus(hr.id, 'in_review')} className="text-[10px] bg-blue-500 text-white px-2 py-1 rounded">Start Review</button>
                         <button onClick={() => updateStatus(hr.id, 'resolved')} className="text-[10px] bg-green-500 text-white px-2 py-1 rounded flex items-center gap-0.5"><Check size={9} /> Resolve</button>
+                        <button onClick={() => openReject(hr.id)} className="text-[10px] bg-red-500 text-white px-2 py-1 rounded flex items-center gap-0.5"><XCircle size={9} /> Reject</button>
                       </div>
                     )}
                   </div>
@@ -194,6 +237,38 @@ export default function HelpRequestModal({ task, onClose }) {
           )}
         </div>
       </div>
+
+      {/* Reject-with-reason dialog. Stacked above the Help modal (z-[130]) so
+          it visually owns input focus while the parent modal stays mounted. */}
+      {rejectTarget && (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) closeReject(); }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 w-full max-w-sm shadow-2xl p-5" onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200 flex items-center gap-2"><XCircle size={15} className="text-red-500" /> Reject Help Request</h3>
+              <button onClick={closeReject} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
+            </div>
+            <label className="text-xs text-gray-500 mb-1 block">Reason for rejection <span className="text-red-500">*</span></label>
+            <textarea
+              autoFocus
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              rows={4}
+              maxLength={1000}
+              placeholder="Tell the requester why you can't help right now."
+              className="w-full px-3 py-2 border border-gray-200 dark:border-zinc-600 rounded-lg text-sm focus:outline-none focus:border-red-400 resize-none"
+            />
+            {rejectError && <p className="text-xs text-red-500 flex items-center gap-1 mt-2"><AlertCircle size={11} /> {rejectError}</p>}
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={closeReject} disabled={rejectSubmitting} className="text-xs px-3 py-1.5 rounded border border-gray-200 dark:border-zinc-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-zinc-700">Cancel</button>
+              <button onClick={submitRejection} disabled={rejectSubmitting || !rejectReason.trim()} className="text-xs px-3 py-1.5 rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 flex items-center gap-1"><XCircle size={11} /> {rejectSubmitting ? 'Rejecting…' : 'Reject Request'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );

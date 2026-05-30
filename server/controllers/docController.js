@@ -25,9 +25,11 @@
  */
 
 const { Op } = require('sequelize');
-const { Doc, DocVersion, DocMention, DocTaskReference, Task, Workspace, User, Board } = require('../models');
+const { Doc, DocVersion, DocMention, DocTaskReference, DocAccess, Task, Workspace, User, Board } = require('../models');
 const safeLogger = require('../utils/safeLogger');
 const { logActivity } = require('../services/activityService');
+// feat/docs-personal-notion Phase 2 — canonical access resolver.
+const docAccessSvc = require('../services/docAccessService');
 // Doc visibility must match `/workspaces/mine` visibility: a Tier 4 user
 // who only reaches a workspace via board membership (no explicit
 // WorkspaceMember row) still sees the workspace in the sidebar, so they
@@ -42,6 +44,11 @@ try { xssFn = require('xss'); } catch { xssFn = (s) => s; }
 // notification queue connection into the test environment.
 let notificationService;
 try { notificationService = require('../services/notificationService'); } catch { notificationService = null; }
+// Socket service is loaded lazily for the same reason as notifications —
+// doc-controller unit tests stub the models without a live Socket.io
+// instance. All emit calls are best-effort and guarded.
+let socketService;
+try { socketService = require('../services/socketService'); } catch { socketService = null; }
 
 const SNAPSHOT_EVERY_SAVES = 10;
 
@@ -85,25 +92,130 @@ async function canCallerSeeWorkspace(user, workspaceId) {
   return false;
 }
 
+/**
+ * feat/docs-personal-notion Phase 3 — ownership check used for destructive
+ * actions (archive, restore, permanent-delete, migrate-to-collab,
+ * restoreVersion, share management).
+ *
+ * Owner-only by the new rule. The old admin/manager role bypass is GONE
+ * (the user explicitly chose super-admin as the only role-based bypass in
+ * decision 17.7a). Admins/managers who could previously archive any doc by
+ * role can still see those docs through `legacy_workspace` doc_access rows,
+ * but must request owner privilege via the Share panel to mutate.
+ *
+ * `ownerUserId` is the canonical field after the Phase 2 backfill. Legacy
+ * rows where `ownerUserId IS NULL` fall back to `createdBy` for safety.
+ */
 function canCallerEditDoc(user, doc) {
   if (!user || !doc) return false;
   if (user.isSuperAdmin) return true;
-  if (user.role === 'admin' || user.role === 'manager') return true;
-  return doc.createdBy === user.id;
+  const owner = doc.ownerUserId || doc.createdBy;
+  return owner === user.id;
+}
+
+/**
+ * Resolve every user who currently has access to a doc (owner + every
+ * doc_access grant). Used to fan out the `doc:updated` realtime event so
+ * open viewers/collaborators see edits without a manual refresh.
+ *
+ * Best-effort: a query failure returns just the owner so the emit still
+ * reaches the most important recipient. De-dupes via Set.
+ */
+async function getDocRecipientUserIds(doc) {
+  const ids = new Set();
+  const ownerId = doc.ownerUserId || doc.createdBy;
+  if (ownerId) ids.add(ownerId);
+  try {
+    const rows = await DocAccess.findAll({
+      where: { docId: doc.id },
+      attributes: ['userId'],
+      raw: true,
+    });
+    for (const r of rows) if (r.userId) ids.add(r.userId);
+  } catch (err) {
+    safeLogger.warn('[Doc] getDocRecipientUserIds failed (non-fatal)', { docId: doc.id, err });
+  }
+  return Array.from(ids);
+}
+
+/**
+ * Fan out a `doc:collaborators:changed` signal to everyone who currently
+ * has access to the doc (owner + every doc_access grant). Drives the live
+ * "Shared with" bar + Share panel so adding/removing a collaborator —
+ * whether via @mention in the body OR the Share panel — reflects without a
+ * refresh, for the author and every other viewer alike. Fire-and-forget.
+ */
+async function emitDocCollaboratorsChanged(doc) {
+  if (!socketService?.emitToUsers) return;
+  try {
+    const ids = await getDocRecipientUserIds(doc);
+    if (ids.length > 0) {
+      socketService.emitToUsers('doc:collaborators:changed', { docId: doc.id }, ids);
+    }
+  } catch (err) {
+    safeLogger.warn('[Doc] doc:collaborators:changed emit failed (non-fatal)', { docId: doc.id, err });
+  }
+}
+
+/**
+ * Phase 3 helper — load a doc and gate the request by access level.
+ *
+ *   const result = await loadDocAndAssertAccess(req, res, 'view');
+ *   if (!result) return;
+ *   const { doc, level } = result;
+ *
+ * Sends the appropriate HTTP error (404 / 403) on the response if the doc
+ * is missing or the caller lacks the required level. Returns null in that
+ * case so the caller's `if (!result) return;` aborts cleanly.
+ *
+ * `requiredLevel` ∈ 'view' | 'comment' | 'edit' | 'owner'.
+ */
+async function loadDocAndAssertAccess(req, res, requiredLevel = 'view', options = {}) {
+  const { id } = req.params;
+  const doc = await Doc.findByPk(id, options.include ? { include: options.include } : undefined);
+  if (!doc) {
+    res.status(404).json({ success: false, message: 'Doc not found.' });
+    return null;
+  }
+  const level = await docAccessSvc.getDocAccessLevel(req.user, doc);
+  if (!level) {
+    res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
+    return null;
+  }
+  if (docAccessSvc.levelRank(level) < docAccessSvc.levelRank(requiredLevel)) {
+    res.status(403).json({
+      success: false,
+      code: 'insufficient_access',
+      message: `This action requires ${requiredLevel} access (you have ${level}).`,
+    });
+    return null;
+  }
+  return { doc, level };
 }
 
 function extractContentText(contentJson) {
   if (!contentJson || typeof contentJson !== 'object') return '';
-  // Tiptap docs are { type: 'doc', content: [...] } — recursively pull
-  // every node's `text` field into a single plain-text shadow used for
-  // search. Headings/lists collapse to text only; that's enough for FTS.
+  // feat/docs-personal-notion Phase 6 — handles both shapes:
+  //   - Tiptap: `{ type: 'doc', content: [{ ..., text: '...' }, ...] }`
+  //   - BlockNote: `[{ type, content: [{ type: 'text', text: '...' }, ...], children: [...] }, ...]`
+  //
+  // The walker pulls every node's `text` field regardless of where in the
+  // tree it lives. BlockNote nests `children` (lists, toggles), so we
+  // recurse on both `content` AND `children`. Both formats produce the
+  // same flat plain-text shadow used by the FTS trigram index.
   const parts = [];
   function walk(node) {
     if (!node || typeof node !== 'object') return;
     if (typeof node.text === 'string') parts.push(node.text);
     if (Array.isArray(node.content)) node.content.forEach(walk);
+    if (Array.isArray(node.children)) node.children.forEach(walk);
   }
-  walk(contentJson);
+  if (Array.isArray(contentJson)) {
+    // BlockNote: top-level array.
+    contentJson.forEach(walk);
+  } else {
+    walk(contentJson);
+  }
   return parts.join(' ').trim().slice(0, 50000);
 }
 
@@ -128,45 +240,100 @@ function extractMentions(contentJson) {
   const out = [];
   const seen = new Set();
   let offset = 0;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   function walk(node) {
     if (!node || typeof node !== 'object') return;
-    if (node.type === 'mention' && node.attrs && typeof node.attrs.id === 'string') {
-      const userId = node.attrs.id.trim();
-      // Only keep UUID-shaped ids. A malformed mention (e.g. legacy
-      // text-only) is silently dropped — the user can edit the doc and
-      // re-create the mention via the picker.
-      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
-          && !seen.has(userId)) {
-        seen.add(userId);
-        out.push({ userId, anchorOffset: offset });
+    if (node.type === 'mention') {
+      // Tiptap stores id under .attrs.id; BlockNote (Phase 6+) uses
+      // .props.userId. Handle both shapes so the same doc save path
+      // works for legacy and new editors.
+      const rawId = node.attrs?.id || node.props?.userId;
+      const rawLabel = node.attrs?.label || node.props?.label;
+      if (typeof rawId === 'string') {
+        const userId = rawId.trim();
+        if (UUID_RE.test(userId) && !seen.has(userId)) {
+          seen.add(userId);
+          out.push({ userId, anchorOffset: offset });
+        }
+        const label = String(rawLabel || userId || '');
+        offset += label.length + 1;
+        return;
       }
-      // Mention nodes render as ~`@name` in the plain-text shadow; advance
-      // the offset by the label length so subsequent mentions get accurate
-      // positions.
-      const label = String(node.attrs.label || node.attrs.id || '');
-      offset += label.length + 1;
-      return;
     }
     if (typeof node.text === 'string') offset += node.text.length;
     if (Array.isArray(node.content)) node.content.forEach(walk);
+    // BlockNote nests blocks under .children (lists/toggles); recurse so
+    // mentions inside nested items are caught.
+    if (Array.isArray(node.children)) node.children.forEach(walk);
   }
-  walk(contentJson);
+  // BlockNote contentJson is a top-level Block[]; Tiptap is an envelope.
+  if (Array.isArray(contentJson)) {
+    contentJson.forEach(walk);
+  } else {
+    walk(contentJson);
+  }
   return out;
 }
 
 /**
- * Diff existing DocMention rows against the new contentJson's mention set
- * and emit notifications for newly-introduced mentions. Removed mentions
- * are NOT explicitly un-notified (the user already saw the notification
- * when they were first mentioned).
+ * Diff existing DocMention rows against the new contentJson's mention set.
  *
- * The idempotencyKey ensures re-saves of the same doc don't double-notify
- * users who were already mentioned in the prior save. Format:
- *   `doc-mention:<docId>:<userId>`
+ * feat/docs-personal-notion Phase 5: mention is now a SHARING action.
+ *
+ * Insertion flow per newly-mentioned user:
+ *   1. Active-user filter — discard any mention whose target is not active
+ *      + approved. Mention rows are never created for inactive users.
+ *   2. INSERT `doc_mentions` row (index + back-ref).
+ *   3. UPSERT `doc_access` row with `source='mention'`, `accessLevel='comment'`.
+ *      `upsertAccess` never DOWNGRADES — if the user already has 'edit' or
+ *      'owner' via manual_share / legacy_workspace, that grant survives.
+ *   4. Fire `doc:access:granted` realtime event to the mentioned user only.
+ *   5. Fire `doc_mention` notification (idempotent — re-saving the same body
+ *      will not double-notify thanks to the partial-unique index).
+ *
+ * Removal flow per un-mentioned user (safe rule from §17.5 + Phase 5 plan):
+ *   1. DELETE `doc_mentions` row.
+ *   2. Look up the user's `doc_access` row for this doc.
+ *      - If source = 'mention' → DELETE it (the row existed ONLY because
+ *        of the mention being removed).
+ *      - If source = 'owner' / 'manual_share' / 'legacy_workspace' → keep
+ *        it. The user still has access for an unrelated reason.
+ *   3. If we deleted the access row, fire `doc:access:revoked` to the
+ *      (formerly-)mentioned user so their /docs list refreshes.
+ *
+ * Idempotency: re-saving the same body re-runs the diff but the insert /
+ * delete sets are both empty, so no spurious notifications or events fire.
  */
 async function syncDocMentionsAndNotify(doc, contentJson, actor) {
   const incoming = extractMentions(contentJson);
-  const incomingIds = new Set(incoming.map((m) => m.userId));
+
+  // Phase 5 — validate that each incoming mention points at an active +
+  // approved user. Discards mentions pointing at deactivated employees,
+  // pending accounts, or freshly-deleted users. We DO NOT touch existing
+  // DocMention rows whose target became inactive after they were created;
+  // an owner can prune those via the Share panel.
+  let validIncomingIds = new Set();
+  if (incoming.length > 0) {
+    try {
+      const activeRows = await User.findAll({
+        where: {
+          id: { [Op.in]: incoming.map((m) => m.userId) },
+          isActive: true,
+          accountStatus: 'approved',
+        },
+        attributes: ['id'],
+        raw: true,
+      });
+      validIncomingIds = new Set(activeRows.map((u) => u.id));
+    } catch (err) {
+      // If the validation query fails (DB hiccup), bail out of the whole
+      // sync rather than silently writing rows for unverified user-ids.
+      safeLogger.warn('[Doc] mention sync — active-user check failed', { err, docId: doc.id });
+      return { added: 0, removed: 0 };
+    }
+  }
+  const validIncoming = incoming.filter((m) => validIncomingIds.has(m.userId));
+  const incomingIds = new Set(validIncoming.map((m) => m.userId));
 
   const existing = await DocMention.findAll({
     where: { docId: doc.id },
@@ -174,11 +341,18 @@ async function syncDocMentionsAndNotify(doc, contentJson, actor) {
   });
   const existingIds = new Set(existing.map((m) => m.mentionedUserId));
 
-  // Insertions: present in incoming, absent from existing.
-  const toInsert = incoming.filter((m) => !existingIds.has(m.userId) && m.userId !== actor.id);
-  // Deletions: present in existing, absent from incoming. We remove the
-  // rows so back-references stay accurate, but don't undo notifications.
+  // Insertions: present in incoming, absent from existing. Self-mentions
+  // skipped (owner already has 'owner' access anyway).
+  const toInsert = validIncoming.filter((m) => !existingIds.has(m.userId) && m.userId !== actor.id);
+  // Deletions: present in existing, absent from incoming.
   const toDeleteIds = Array.from(existingIds).filter((id) => !incomingIds.has(id));
+
+  // Lazy require — Phase 5 additions. Both are best-effort; failures in
+  // either path are logged but never block the doc save.
+  let docAccessSvc;
+  try { docAccessSvc = require('../services/docAccessService'); } catch { docAccessSvc = null; }
+  let socketService;
+  try { socketService = require('../services/socketService'); } catch { socketService = null; }
 
   for (const m of toInsert) {
     try {
@@ -193,6 +367,39 @@ async function syncDocMentionsAndNotify(doc, contentJson, actor) {
       // to ignore.
       safeLogger.warn('[Doc] mention insert race (non-fatal)', { docId: doc.id, userId: m.userId, err });
     }
+
+    // Phase 5 — grant 'comment' access via doc_access. upsertAccess never
+    // downgrades, so an existing 'edit'/'owner' grant survives a mention.
+    let accessChanged = false;
+    if (docAccessSvc?.upsertAccess) {
+      try {
+        const result = await docAccessSvc.upsertAccess({
+          docId: doc.id,
+          userId: m.userId,
+          accessLevel: 'comment',
+          source: 'mention',
+          grantedByUserId: actor.id,
+        });
+        accessChanged = !!(result?.created || result?.upgraded);
+      } catch (err) {
+        safeLogger.warn('[Doc] mention upsertAccess failed (non-fatal)', { docId: doc.id, userId: m.userId, err });
+      }
+    }
+
+    // Phase 5 — realtime ping the mentioned user so their /docs list
+    // updates without a refresh. Targeted, not broadcast.
+    if (accessChanged && socketService?.emitToUsers) {
+      try {
+        socketService.emitToUsers(
+          'doc:access:granted',
+          { docId: doc.id, docTitle: doc.title, source: 'mention' },
+          [m.userId],
+        );
+      } catch (err) {
+        safeLogger.warn('[Doc] doc:access:granted emit failed (non-fatal)', { docId: doc.id, userId: m.userId, err });
+      }
+    }
+
     if (notificationService?.createNotification) {
       try {
         await notificationService.createNotification({
@@ -217,9 +424,62 @@ async function syncDocMentionsAndNotify(doc, contentJson, actor) {
     } catch (err) {
       safeLogger.warn('[Doc] mention delete failed (non-fatal)', { docId: doc.id, err });
     }
+
+    // Phase 5 — safe-rule access removal. Per (docId, removedUserId), we
+    // only DELETE the doc_access row when source='mention'. Owner / manual /
+    // legacy_workspace rows survive. Done in a single batch query.
+    if (toDeleteIds.length > 0) {
+      try {
+        const removedRows = await DocAccess.findAll({
+          where: {
+            docId: doc.id,
+            userId: { [Op.in]: toDeleteIds },
+            source: 'mention',
+          },
+          attributes: ['userId'],
+          raw: true,
+        });
+        const removedUserIds = removedRows.map((r) => r.userId);
+        if (removedUserIds.length > 0) {
+          await DocAccess.destroy({
+            where: {
+              docId: doc.id,
+              userId: { [Op.in]: removedUserIds },
+              source: 'mention',
+            },
+          });
+          // Realtime fan-out to the un-mentioned users only. Owners /
+          // manual-share recipients whose access survived are intentionally
+          // NOT notified because nothing changed for them.
+          if (socketService?.emitToUsers) {
+            try {
+              socketService.emitToUsers(
+                'doc:access:revoked',
+                { docId: doc.id, docTitle: doc.title, source: 'mention' },
+                removedUserIds,
+              );
+            } catch (err) {
+              safeLogger.warn('[Doc] doc:access:revoked emit failed (non-fatal)', { docId: doc.id, err });
+            }
+          }
+        }
+      } catch (err) {
+        safeLogger.warn('[Doc] mention-derived doc_access removal failed (non-fatal)', { docId: doc.id, err });
+      }
+    }
   }
 
-  return { added: toInsert.length, removed: toDeleteIds.length };
+  // Live-refresh the "Shared with" bar / Share panel for everyone on the
+  // doc whenever the mention-derived collaborator set actually changed.
+  if (toInsert.length > 0 || toDeleteIds.length > 0) {
+    emitDocCollaboratorsChanged(doc).catch(() => { /* non-fatal */ });
+  }
+
+  return {
+    added: toInsert.length,
+    removed: toDeleteIds.length,
+    skippedInactive: incoming.length - validIncoming.length,
+  };
 }
 
 /**
@@ -236,26 +496,34 @@ function extractTaskRefs(contentJson) {
   const out = [];
   const seen = new Set();
   let offset = 0;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   function walk(node) {
     if (!node || typeof node !== 'object') return;
-    // Accept either 'taskChip' or 'task-chip' to be lenient with how the
-    // frontend declares the node's name.
-    if ((node.type === 'taskChip' || node.type === 'task-chip')
-        && node.attrs && typeof node.attrs.taskId === 'string') {
-      const taskId = node.attrs.taskId.trim();
-      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)
-          && !seen.has(taskId)) {
-        seen.add(taskId);
-        out.push({ taskId, anchorOffset: offset });
+    // Tiptap: 'taskChip' / 'task-chip' with .attrs.taskId
+    // BlockNote (Phase 6+): 'task' inline content with .props.taskId
+    if (node.type === 'taskChip' || node.type === 'task-chip' || node.type === 'task') {
+      const rawId = node.attrs?.taskId || node.props?.taskId;
+      const rawLabel = node.attrs?.label || node.props?.label;
+      if (typeof rawId === 'string') {
+        const taskId = rawId.trim();
+        if (UUID_RE.test(taskId) && !seen.has(taskId)) {
+          seen.add(taskId);
+          out.push({ taskId, anchorOffset: offset });
+        }
+        const label = String(rawLabel || taskId || '');
+        offset += label.length + 1;
+        return;
       }
-      const label = String(node.attrs.label || node.attrs.taskId || '');
-      offset += label.length + 1;
-      return;
     }
     if (typeof node.text === 'string') offset += node.text.length;
     if (Array.isArray(node.content)) node.content.forEach(walk);
+    if (Array.isArray(node.children)) node.children.forEach(walk);
   }
-  walk(contentJson);
+  if (Array.isArray(contentJson)) {
+    contentJson.forEach(walk);
+  } else {
+    walk(contentJson);
+  }
   return out;
 }
 
@@ -343,53 +611,23 @@ function serializeDoc(doc, opts = {}) {
  */
 async function listArchivedDocsForCaller(req, res) {
   try {
-    // Build the set of workspaceIds the caller can see. For T1+T2 this
-    // is "every workspace"; for T3+T4 we union the workspace-member set
-    // with the board-membership-derived set so the rule matches the
-    // sidebar exactly.
-    const user = req.user;
-    let workspaceIds;
-    if (user?.isSuperAdmin || user?.role === 'admin' || user?.role === 'manager') {
-      const all = await Workspace.findAll({ where: { isActive: true }, attributes: ['id'], raw: true });
-      workspaceIds = all.map((w) => w.id);
-    } else {
-      const memberRows = await Workspace.findAll({
-        where: { isActive: true },
-        include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
-      });
-      const memberSet = new Set();
-      for (const ws of memberRows) {
-        if (ws.createdBy === user.id) memberSet.add(ws.id);
-        else if ((ws.workspaceMembers || []).some((m) => m.id === user.id)) memberSet.add(ws.id);
-      }
-      // Board-membership union — same path as canCallerSeeWorkspace.
-      try {
-        const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(user, { includeArchived: false });
-        if (visibleBoardIds && visibleBoardIds.size > 0) {
-          const boards = await Board.findAll({
-            where: { id: { [Op.in]: Array.from(visibleBoardIds) }, isArchived: false },
-            attributes: ['workspaceId'],
-            raw: true,
-          });
-          boards.forEach((b) => { if (b.workspaceId) memberSet.add(b.workspaceId); });
-        }
-      } catch (err) {
-        safeLogger.warn('[Doc] listArchivedDocsForCaller boardVisibility fallback failed', { err });
-      }
-      workspaceIds = Array.from(memberSet);
-    }
-
-    if (workspaceIds.length === 0) {
+    // feat/docs-personal-notion Phase 3 — switch from workspace-visibility
+    // resolution to docAccessSvc.getMyVisibleDocIds. The list narrows to
+    // docs the caller actually has explicit access to (owner + doc_access
+    // grants); workspace / board / role no longer auto-grant.
+    const visibleIds = await docAccessSvc.getMyVisibleDocIds(req.user);
+    if (visibleIds.length === 0) {
       return res.json({ success: true, data: { docs: [] } });
     }
 
     const docs = await Doc.findAll({
-      where: { isArchived: true, workspaceId: { [Op.in]: workspaceIds } },
+      where: { isArchived: true, id: { [Op.in]: visibleIds } },
       include: [
         { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'owner', attributes: USER_PILL_ATTRS, required: false },
         { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
         { model: User, as: 'archiver', attributes: USER_PILL_ATTRS, required: false },
-        { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color'] },
+        { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color'], required: false },
       ],
       order: [['archivedAt', 'DESC'], ['updatedAt', 'DESC']],
       limit: 200,
@@ -416,12 +654,9 @@ async function listArchivedDocsForCaller(req, res) {
  */
 async function permanentDeleteDoc(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
-      return res.status(403).json({ success: false, message: 'Only doc owner or admins can delete a doc.' });
-    }
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
     if (!doc.isArchived) {
       return res.status(400).json({
         success: false,
@@ -533,22 +768,232 @@ async function createDoc(req, res) {
   }
 }
 
-async function getDoc(req, res) {
+// ─── feat/docs-personal-notion Phase 2 — personal docs surface ────
+//
+// Two new endpoints replace the workspace-nested list/create:
+//   GET  /api/docs           → listPersonalDocs  (returns docs visible to me)
+//   POST /api/docs           → createPersonalDoc (creates a private personal doc)
+//
+// Visibility is resolved by docAccessSvc.getMyVisibleDocIds — super-admin
+// bypass per 17.7 (a), otherwise owner + explicit doc_access rows. No
+// workspace/board/role fallback (those were backfilled into doc_access at
+// migration time, see server.js Phase 2 block).
+//
+// Phase 3 will switch the remaining endpoints (read / update / delete /
+// archive / restore / comments / AI / versions / migrate) from
+// canCallerSeeWorkspace to docAccessSvc.hasDocAccess.
+
+async function listPersonalDocs(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id, {
+    const q = (req.query.q || '').trim();
+    const includeArchived = req.query.archived === '1' || req.query.archived === 'true';
+    const filter = (req.query.filter || 'all').toString();
+
+    // feat/docs-personal-notion Phase 8 — when filter is 'shared' or
+    // 'mentioned', we narrow visibleIds by the caller's doc_access source
+    // before the visibility intersection. For 'all' / 'owned' the wider
+    // getMyVisibleDocIds union (owner + every doc_access source) is fine.
+    let visibleIds;
+    let userAccessRows = null;
+    if (filter === 'shared' || filter === 'mentioned') {
+      const accessRows = await DocAccess.findAll({
+        where: {
+          userId: req.user.id,
+          source: filter === 'mentioned' ? 'mention' : { [Op.in]: ['manual_share', 'legacy_workspace'] },
+        },
+        attributes: ['docId', 'accessLevel', 'source'],
+        raw: true,
+      });
+      userAccessRows = accessRows;
+      visibleIds = accessRows.map((r) => r.docId);
+    } else {
+      visibleIds = await docAccessSvc.getMyVisibleDocIds(req.user);
+      // For badge rendering on 'all' we also need the caller's per-doc
+      // access rows (so the UI can decide between "Owner" / "Shared" /
+      // "Mentioned" pills). Cheap single query keyed on the user.
+      try {
+        userAccessRows = await DocAccess.findAll({
+          where: { userId: req.user.id },
+          attributes: ['docId', 'accessLevel', 'source'],
+          raw: true,
+        });
+      } catch (_) { userAccessRows = []; }
+    }
+
+    if (visibleIds.length === 0) {
+      return res.json({ success: true, data: { docs: [] } });
+    }
+
+    const where = { id: { [Op.in]: visibleIds } };
+    if (!includeArchived) where.isArchived = false;
+
+    if (filter === 'owned') {
+      where.ownerUserId = req.user.id;
+    }
+
+    if (q) {
+      where[Op.or] = [
+        { title: { [Op.iLike]: `%${q}%` } },
+        { contentText: { [Op.iLike]: `%${q}%` } },
+      ];
+    }
+
+    const docs = await Doc.findAll({
+      where,
       include: [
         { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'owner', attributes: USER_PILL_ATTRS, required: false },
         { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
-        { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color'] },
+      ],
+      order: [['lastEditedAt', 'DESC'], ['updatedAt', 'DESC']],
+      limit: 200,
+    });
+
+    // Phase 8 — surface the caller's per-doc relationship so the UI can
+    // render the right badge (Owner / Shared / Mentioned). We do this
+    // server-side so the client doesn't need a second round-trip.
+    const accessByDoc = new Map();
+    for (const row of (userAccessRows || [])) {
+      accessByDoc.set(row.docId, row);
+    }
+
+    const serialized = docs.map((d) => {
+      const json = serializeDoc(d, { includeContent: false });
+      const access = accessByDoc.get(json.id);
+      if (json.ownerUserId === req.user.id || (json.createdBy === req.user.id && !json.ownerUserId)) {
+        json.callerRelation = 'owner';
+      } else if (access?.source === 'mention') {
+        json.callerRelation = 'mentioned';
+      } else if (access?.source === 'manual_share') {
+        json.callerRelation = 'shared';
+      } else if (access?.source === 'legacy_workspace') {
+        json.callerRelation = 'legacy';
+      } else if (req.user?.isSuperAdmin) {
+        json.callerRelation = 'super_admin';
+      } else {
+        json.callerRelation = null;
+      }
+      json.callerAccessLevel = access?.accessLevel
+        || (json.callerRelation === 'owner' ? 'owner' : null);
+      return json;
+    });
+
+    res.json({
+      success: true,
+      data: { docs: serialized },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] listPersonalDocs error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load docs.' });
+  }
+}
+
+async function createPersonalDoc(req, res) {
+  try {
+    const title = sanitizeTitle(req.body?.title) || 'Untitled doc';
+    // feat/docs-personal-notion Phase 6 — new docs default to BlockNote.
+    // Empty seed is `[]` (BlockNote treats this as "create a single empty
+    // paragraph on mount"). If the client passes `contentFormat: 'tiptap_json'`
+    // explicitly (e.g. an importer), we honor it and seed the Tiptap envelope.
+    const reqFormat = req.body?.contentFormat;
+    const contentFormat = (reqFormat === 'tiptap_json')
+      ? 'tiptap_json'
+      : 'blocknote_json';
+    const emptySeed = contentFormat === 'blocknote_json'
+      ? []
+      : { type: 'doc', content: [] };
+    const contentJson = sanitizeContentJson(req.body?.contentJson) || emptySeed;
+    const contentText = extractContentText(contentJson);
+
+    const doc = await Doc.create({
+      // workspaceId intentionally omitted — personal docs are workspace-less.
+      title,
+      contentJson,
+      contentText,
+      contentFormat, // Phase 6: 'blocknote_json' by default; 'tiptap_json' on explicit opt-in
+      slug: slugify(title),
+      sharePolicy: 'private',
+      visibility: 'private',
+      ownerUserId: req.user.id,
+      createdBy: req.user.id,
+      lastEditedBy: req.user.id,
+      lastEditedAt: new Date(),
+    });
+
+    // Owner access row. Fire after create so the FK lands cleanly. Failure
+    // here is logged but non-fatal — getMyVisibleDocIds also checks
+    // ownerUserId so the doc is still findable.
+    try {
+      await DocAccess.create({
+        docId: doc.id,
+        userId: req.user.id,
+        accessLevel: 'owner',
+        source: 'owner',
+      });
+    } catch (err) {
+      safeLogger.warn('[Doc] owner doc_access insert failed (non-fatal)', { docId: doc.id, err });
+    }
+
+    // Mention + task-ref extraction kept identical to legacy createDoc so
+    // a paste-with-mentions creates the right downstream rows. Mention →
+    // doc_access wiring lands in Phase 5; today these are notification +
+    // back-ref rows only.
+    syncDocMentionsAndNotify(doc, contentJson, req.user).catch((err) => {
+      safeLogger.warn('[Doc] initial mention sync failed (non-fatal)', { docId: doc.id, err });
+    });
+    syncDocTaskRefs(doc, contentJson, req.user).catch((err) => {
+      safeLogger.warn('[Doc] initial task-ref sync failed (non-fatal)', { docId: doc.id, err });
+    });
+
+    logActivity({
+      action: 'created',
+      description: `Created doc: ${doc.title}`,
+      entityType: 'doc',
+      entityId: doc.id,
+      userId: req.user.id,
+    });
+
+    const reloaded = await Doc.findByPk(doc.id, {
+      include: [
+        { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'owner', attributes: USER_PILL_ATTRS, required: false },
+        { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
       ],
     });
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
+    const json = serializeDoc(reloaded, { includeContent: true });
+    // Surface the caller's access level on the create response too.
+    // Without this the brand-new doc's first paint on the editor side
+    // would have `callerAccessLevel` undefined → the new permission gate
+    // in DocPage would treat the owner as read-only until the follow-up
+    // GET /docs/:id arrives. Owner of a freshly-created doc is always 'owner'.
+    json.callerAccessLevel = 'owner';
+    res.status(201).json({ success: true, data: { doc: json } });
+  } catch (err) {
+    safeLogger.error('[Doc] createPersonalDoc error', { err });
+    res.status(500).json({ success: false, message: 'Failed to create doc.' });
+  }
+}
 
-    const allowed = await canCallerSeeWorkspace(req.user, doc.workspaceId);
-    if (!allowed) return res.status(403).json({ success: false, message: 'Access denied.' });
+// ─── (legacy endpoints below — workspace-scoped, kept for Phase 3 reference)
 
-    res.json({ success: true, data: { doc: serializeDoc(doc, { includeContent: true }) } });
+async function getDoc(req, res) {
+  try {
+    const result = await loadDocAndAssertAccess(req, res, 'view', {
+      include: [
+        { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'owner', attributes: USER_PILL_ATTRS, required: false },
+        { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
+        { model: Workspace, as: 'workspace', attributes: ['id', 'name', 'color'], required: false },
+      ],
+    });
+    if (!result) return;
+    const { doc, level } = result;
+    const json = serializeDoc(doc, { includeContent: true });
+    // Surface the caller's effective access level so the editor can decide
+    // whether to render the Save button, archive icon, etc. without a
+    // second roundtrip.
+    json.callerAccessLevel = level;
+    res.json({ success: true, data: { doc: json } });
   } catch (err) {
     safeLogger.error('[Doc] getDoc error', { err });
     res.status(500).json({ success: false, message: 'Failed to load doc.' });
@@ -557,35 +1002,63 @@ async function getDoc(req, res) {
 
 async function updateDoc(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    // Collab-doc default (Notion-style): anyone with workspace access can
-    // edit the body. canCallerEditDoc stays strict for destructive actions
-    // (archive/restore/restoreVersion) below.
-    const canEditBody = canCallerEditDoc(req.user, doc)
-      || await canCallerSeeWorkspace(req.user, doc.workspaceId);
-    if (!canEditBody) {
-      return res.status(403).json({ success: false, message: 'You do not have permission to edit this doc.' });
-    }
+    // Body / title edits require 'edit' or higher. Note 'comment' is NOT
+    // enough — comment-level users can leave comments but not mutate the
+    // doc body (matches the share-panel semantics).
+    const result = await loadDocAndAssertAccess(req, res, 'edit');
+    if (!result) return;
+    const { doc, level } = result;
 
     const updates = {};
     if (typeof req.body?.title === 'string') updates.title = sanitizeTitle(req.body.title);
     if (req.body?.contentJson !== undefined) {
       const cleanJson = sanitizeContentJson(req.body.contentJson);
       if (cleanJson === null) {
-        return res.status(400).json({ success: false, message: 'contentJson must be a valid Tiptap JSON doc.' });
+        return res.status(400).json({ success: false, message: 'contentJson must be a valid Tiptap or BlockNote doc.' });
       }
       updates.contentJson = cleanJson;
       updates.contentText = extractContentText(cleanJson);
     }
+    // Phase 7 — contentFormat change drives the "Convert legacy doc to
+    // BlockNote" flow. Owner-only (defense in depth — body edits already
+    // require 'edit' but format change is destructive enough to deserve
+    // its own gate). Auto-snapshots the existing contentJson to
+    // legacyContentJson so the original Tiptap source is recoverable.
+    if (typeof req.body?.contentFormat === 'string'
+        && ['tiptap_json', 'blocknote_json'].includes(req.body.contentFormat)
+        && req.body.contentFormat !== doc.contentFormat) {
+      if (level !== 'owner') {
+        return res.status(403).json({
+          success: false,
+          code: 'insufficient_access',
+          message: 'Only the doc owner can convert the editor format.',
+        });
+      }
+      // Preserve the pre-conversion contentJson exactly once. We only
+      // snapshot if legacyContentJson is currently NULL — re-converting a
+      // doc twice should not overwrite the original snapshot.
+      if (!doc.legacyContentJson && doc.contentJson) {
+        updates.legacyContentJson = doc.contentJson;
+      }
+      updates.contentFormat = req.body.contentFormat;
+    }
+    // sharePolicy is owner-only — it changes who else can read the doc.
     if (typeof req.body?.sharePolicy === 'string'
         && ['private', 'workspace', 'public_link'].includes(req.body.sharePolicy)) {
+      if (level !== 'owner') {
+        return res.status(403).json({
+          success: false,
+          code: 'insufficient_access',
+          message: 'Only the doc owner can change the share policy.',
+        });
+      }
       updates.sharePolicy = req.body.sharePolicy;
     }
 
     if (Object.keys(updates).length === 0) {
-      return res.json({ success: true, data: { doc: serializeDoc(doc, { includeContent: true }) } });
+      const json = serializeDoc(doc, { includeContent: true });
+      json.callerAccessLevel = level;
+      return res.json({ success: true, data: { doc: json } });
     }
 
     updates.lastEditedBy = req.user.id;
@@ -594,17 +1067,36 @@ async function updateDoc(req, res) {
     await doc.update(updates);
 
     // Snapshot decision: every Nth content save creates a new version
-    // entry. Title-only or share-only saves don't create versions —
-    // they're metadata, not content.
+    // entry for the owner's own typing (so we don't bloat history with
+    // "still typing" rows). Title-only or share-only saves don't create
+    // versions — they're metadata, not content.
+    //
+    // Audit carve-out (May 2026): when the actor is NOT the doc owner
+    // (delegated edit-level collaborator OR super-admin acting via
+    // override), force a snapshot on every content save regardless of
+    // cadence. Without this, override edits could land between
+    // landmarks (1st, 10th, 20th save) and never appear in History,
+    // breaking the audit trail for cross-user access. `savedBy` is
+    // already the actor (req.user.id); `note` carries the override
+    // reason so the History UI can label it.
     if (updates.contentJson !== undefined) {
+      const ownerId = doc.ownerUserId || doc.createdBy;
+      const actorIsOwner = ownerId && ownerId === req.user.id;
+      const adminOverride = !!req.user.isSuperAdmin && ownerId && ownerId !== req.user.id;
       const versionCount = await DocVersion.count({ where: { docId: doc.id } });
-      if ((versionCount + 1) % SNAPSHOT_EVERY_SAVES === 0 || versionCount === 0) {
+      const cadenceFires =
+        (versionCount + 1) % SNAPSHOT_EVERY_SAVES === 0 || versionCount === 0;
+      const shouldSnapshot = cadenceFires || !actorIsOwner;
+      if (shouldSnapshot) {
         try {
           await DocVersion.create({
             docId: doc.id,
             contentJson: updates.contentJson,
             contentText: updates.contentText,
             savedBy: req.user.id,
+            note: adminOverride
+              ? 'Edit via super admin override'
+              : (!actorIsOwner ? `Edit by collaborator (${level})` : null),
           });
         } catch (verr) {
           // Don't fail the save if a snapshot insert fails.
@@ -626,6 +1118,28 @@ async function updateDoc(req, res) {
       });
     }
 
+    // Real-time fan-out: notify every OTHER user with access to this doc
+    // that the content/title changed, so their open editor (viewers) or
+    // docs list refreshes without a manual reload. The payload is a
+    // lightweight signal — recipients re-fetch via the access-gated
+    // GET /docs/:id so RBAC is preserved and we never push doc bodies over
+    // the socket. Fire-and-forget; never blocks the save response.
+    if (updates.contentJson !== undefined || updates.title !== undefined) {
+      getDocRecipientUserIds(doc).then((ids) => {
+        const recipients = ids.filter((uid) => uid !== req.user.id);
+        if (recipients.length > 0 && socketService?.emitToUsers) {
+          socketService.emitToUsers('doc:updated', {
+            docId: doc.id,
+            actorId: req.user.id,
+            title: doc.title,
+            lastEditedAt: doc.lastEditedAt,
+          }, recipients);
+        }
+      }).catch((err) => {
+        safeLogger.warn('[Doc] doc:updated emit failed (non-fatal)', { docId: doc.id, err });
+      });
+    }
+
     logActivity({
       action: 'updated',
       description: `Edited doc: ${doc.title}`,
@@ -640,7 +1154,11 @@ async function updateDoc(req, res) {
         { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
       ],
     });
-    res.json({ success: true, data: { doc: serializeDoc(reloaded, { includeContent: true }) } });
+    const json = serializeDoc(reloaded, { includeContent: true });
+    // Preserve the caller's access level across the autosave roundtrip so
+    // the editor's `onSaved` merge doesn't accidentally undefine it.
+    json.callerAccessLevel = level;
+    res.json({ success: true, data: { doc: json } });
   } catch (err) {
     safeLogger.error('[Doc] updateDoc error', { err });
     res.status(500).json({ success: false, message: 'Failed to update doc.' });
@@ -649,12 +1167,9 @@ async function updateDoc(req, res) {
 
 async function archiveDoc(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
-      return res.status(403).json({ success: false, message: 'Only doc owner or admins can archive.' });
-    }
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
     if (doc.isArchived) {
       return res.json({ success: true, data: { doc: serializeDoc(doc) } });
     }
@@ -679,12 +1194,9 @@ async function archiveDoc(req, res) {
 
 async function restoreDoc(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
-      return res.status(403).json({ success: false, message: 'Only doc owner or admins can restore.' });
-    }
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
     if (!doc.isArchived) {
       return res.json({ success: true, data: { doc: serializeDoc(doc) } });
     }
@@ -704,74 +1216,21 @@ async function restoreDoc(req, res) {
 }
 
 /**
- * Phase D Slice 1 — GET /api/docs/mentionable?workspaceId=…&q=…
+ * GET /api/docs/mentionable?q=…  (legacy alias — Phase 4 delegation)
  *
- * Returns the list of users the caller can @-mention in a doc. Today the
- * scope is: workspace creator + explicit workspace members, filtered by
- * name match (case-insensitive substring). Self is excluded — you can't
- * mention yourself.
+ * Pre-Phase-4 this returned workspace-scoped users (workspace creator +
+ * explicit workspace members). The user explicitly chose option 17.5 to
+ * allow mentioning ANY active user in the app, so this endpoint now
+ * delegates to the global picker at /api/users/mentions.
  *
- * Future iterations could expand to "anyone the caller can see via the
- * hierarchy service" for cross-workspace mentions. Keeping it tight for
- * Slice 1 avoids leaking the wider user directory.
+ * The legacy `workspaceId` query param is silently IGNORED — old clients
+ * keep working and just get the broader result set. New clients should
+ * call /api/users/mentions directly. We'll drop this alias in a future
+ * release once telemetry shows no caller still uses it.
  */
 async function listMentionableUsers(req, res) {
-  try {
-    const { workspaceId } = req.query;
-    const q = String(req.query.q || '').trim().toLowerCase();
-    if (!workspaceId) {
-      return res.status(400).json({ success: false, message: 'workspaceId is required.' });
-    }
-    const allowed = await canCallerSeeWorkspace(req.user, workspaceId);
-    if (!allowed) {
-      return res.status(403).json({ success: false, message: 'You do not have access to this workspace.' });
-    }
-
-    const ws = await Workspace.findByPk(workspaceId, {
-      include: [
-        { model: User, as: 'workspaceMembers', attributes: [...USER_PILL_ATTRS, 'isActive'] },
-        { model: User, as: 'creator', attributes: [...USER_PILL_ATTRS, 'isActive'] },
-      ],
-    });
-    if (!ws) {
-      return res.status(404).json({ success: false, message: 'Workspace not found.' });
-    }
-
-    const candidates = new Map();
-    if (ws.creator && ws.creator.isActive !== false) {
-      candidates.set(ws.creator.id, ws.creator);
-    }
-    for (const m of (ws.workspaceMembers || [])) {
-      if (m.isActive !== false && !candidates.has(m.id)) {
-        candidates.set(m.id, m);
-      }
-    }
-    candidates.delete(req.user.id); // self-mentions blocked
-
-    let list = Array.from(candidates.values());
-    if (q) {
-      list = list.filter((u) => (u.name || '').toLowerCase().includes(q)
-        || (u.email || '').toLowerCase().includes(q));
-    }
-    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    // Cap at 25 — UI menu doesn't need more than that.
-    list = list.slice(0, 25);
-
-    res.json({
-      success: true,
-      data: {
-        users: list.map((u) => ({
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          avatar: u.avatar,
-        })),
-      },
-    });
-  } catch (err) {
-    safeLogger.error('[Doc] listMentionableUsers error', { err });
-    res.status(500).json({ success: false, message: 'Failed to load mentionable users.' });
-  }
+  const { searchMentionableUsers } = require('./userMentionController');
+  return searchMentionableUsers(req, res);
 }
 
 /**
@@ -888,11 +1347,13 @@ async function listDocReferencesForTask(req, res) {
       order: [['createdAt', 'DESC']],
     });
 
-    // Filter to docs whose workspace the caller can see — defense in depth.
+    // feat/docs-personal-notion Phase 3 — filter by docAccessSvc instead of
+    // workspace visibility. A user seeing a task's "referenced in N docs"
+    // pill should ONLY count docs they themselves can open.
     const visibleDocs = [];
     for (const ref of refs) {
       if (!ref.doc || ref.doc.isArchived) continue;
-      const ok = await canCallerSeeWorkspace(req.user, ref.doc.workspaceId).catch(() => false);
+      const ok = await docAccessSvc.hasDocAccess(req.user, ref.doc).catch(() => false);
       if (ok) {
         visibleDocs.push({
           docId: ref.doc.id,
@@ -912,14 +1373,12 @@ async function listDocReferencesForTask(req, res) {
 
 async function listVersions(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    const allowed = await canCallerSeeWorkspace(req.user, doc.workspaceId);
-    if (!allowed) return res.status(403).json({ success: false, message: 'Access denied.' });
+    const result = await loadDocAndAssertAccess(req, res, 'view');
+    if (!result) return;
+    const { doc } = result;
 
     const versions = await DocVersion.findAll({
-      where: { docId: id },
+      where: { docId: doc.id },
       include: [{ model: User, as: 'author', attributes: USER_PILL_ATTRS }],
       attributes: ['id', 'note', 'savedBy', 'createdAt'], // exclude contentJson for the list
       order: [['createdAt', 'DESC']],
@@ -934,13 +1393,13 @@ async function listVersions(req, res) {
 
 async function restoreVersion(req, res) {
   try {
-    const { id, versionId } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
-      return res.status(403).json({ success: false, message: 'Only doc owner or admins can restore versions.' });
-    }
-    const version = await DocVersion.findOne({ where: { id: versionId, docId: id } });
+    // Restoring a snapshot mutates the live doc body — requires edit or
+    // owner. (Reads on /versions allow view-level so anyone can browse.)
+    const result = await loadDocAndAssertAccess(req, res, 'edit');
+    if (!result) return;
+    const { doc } = result;
+    const { versionId } = req.params;
+    const version = await DocVersion.findOne({ where: { id: versionId, docId: doc.id } });
     if (!version) return res.status(404).json({ success: false, message: 'Version not found.' });
 
     await doc.update({
@@ -1000,12 +1459,9 @@ async function restoreVersion(req, res) {
  */
 async function migrateDocToCollab(req, res) {
   try {
-    const { id } = req.params;
-    const doc = await Doc.findByPk(id);
-    if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
-    if (!canCallerEditDoc(req.user, doc)) {
-      return res.status(403).json({ success: false, message: 'Only doc owner or admins can migrate a doc to collab.' });
-    }
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
     if (doc.isArchived) {
       return res.status(400).json({ success: false, message: 'Cannot migrate an archived doc. Restore it first.' });
     }
@@ -1094,6 +1550,277 @@ async function migrateDocToCollab(req, res) {
   }
 }
 
+// ─── feat/docs-personal-notion Phase 3 — manual share surface ─────
+//
+// Owner-only CRUD on the doc_access table. Powers the Share panel:
+//
+//   GET    /api/docs/:id/collaborators                  → list
+//   POST   /api/docs/:id/collaborators                  → add (or upgrade)
+//   PATCH  /api/docs/:id/collaborators/:userId          → change level
+//   DELETE /api/docs/:id/collaborators/:userId          → revoke
+//
+// Auth model:
+//   - List requires any access to the doc (so collaborators can see who
+//     else is on the doc).
+//   - Add/update/revoke require owner-level access (owner OR super-admin).
+//
+// Mention sources are respected — see Phase 5 mention-removal logic for
+// the safe-rule semantics. For Phase 3 the share panel writes/deletes the
+// row directly; if a mention still names the user in the doc body, the
+// next save's mention-sync (Phase 5) will re-add the access row.
+
+const COLLAB_LEVELS = ['view', 'comment', 'edit'];
+
+function serializeAccessRow(row) {
+  if (!row) return null;
+  const json = row.toJSON ? row.toJSON() : row;
+  return {
+    id: json.id,
+    user: json.user || null,
+    accessLevel: json.accessLevel,
+    source: json.source,
+    grantedBy: json.grantedBy || null,
+    createdAt: json.createdAt,
+    updatedAt: json.updatedAt,
+  };
+}
+
+async function listCollaborators(req, res) {
+  try {
+    const result = await loadDocAndAssertAccess(req, res, 'view');
+    if (!result) return;
+    const { doc } = result;
+
+    const [ownerUser, grants] = await Promise.all([
+      doc.ownerUserId
+        ? User.findByPk(doc.ownerUserId, { attributes: USER_PILL_ATTRS })
+        : Promise.resolve(null),
+      DocAccess.findAll({
+        where: { docId: doc.id },
+        include: [
+          { model: User, as: 'user', attributes: USER_PILL_ATTRS },
+          { model: User, as: 'grantedBy', attributes: USER_PILL_ATTRS, required: false },
+        ],
+        order: [['createdAt', 'ASC']],
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        owner: ownerUser ? {
+          id: ownerUser.id, name: ownerUser.name, email: ownerUser.email, avatar: ownerUser.avatar,
+        } : null,
+        // Exclude the owner from the collaborators list (they're already
+        // surfaced via `owner`). Mention/legacy_workspace/manual_share rows
+        // all appear here with their `source` so the UI can label them.
+        collaborators: grants
+          .filter((g) => g.userId !== doc.ownerUserId)
+          .map(serializeAccessRow),
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[Doc] listCollaborators error', { err });
+    res.status(500).json({ success: false, message: 'Failed to load collaborators.' });
+  }
+}
+
+async function addCollaborator(req, res) {
+  try {
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
+
+    const userId = req.body?.userId;
+    const accessLevel = req.body?.accessLevel || 'comment';
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ success: false, message: 'userId is required.' });
+    }
+    if (!COLLAB_LEVELS.includes(accessLevel)) {
+      return res.status(400).json({
+        success: false,
+        message: `accessLevel must be one of: ${COLLAB_LEVELS.join(', ')}.`,
+      });
+    }
+    if (userId === doc.ownerUserId) {
+      return res.status(400).json({ success: false, message: 'The doc owner already has full access.' });
+    }
+
+    const target = await User.findByPk(userId, { attributes: [...USER_PILL_ATTRS, 'isActive'] });
+    if (!target || target.isActive === false) {
+      return res.status(404).json({ success: false, message: 'User not found or inactive.' });
+    }
+
+    await docAccessSvc.upsertAccess({
+      docId: doc.id,
+      userId,
+      accessLevel,
+      source: 'manual_share',
+      grantedByUserId: req.user.id,
+    });
+
+    // Best-effort notification + activity. Mirrors the mention path.
+    let notificationService;
+    try { notificationService = require('../services/notificationService'); } catch { notificationService = null; }
+    if (notificationService?.createNotification) {
+      notificationService.createNotification({
+        userId,
+        type: 'doc_shared',
+        message: `${req.user.name || 'Someone'} shared "${doc.title}" with you`,
+        entityType: 'doc',
+        entityId: doc.id,
+        idempotencyKey: `doc-share:${doc.id}:${userId}`,
+      }).catch((err) => {
+        safeLogger.warn('[Doc] share notification failed (non-fatal)', { docId: doc.id, userId, err });
+      });
+    }
+
+    // Real-time push to the recipient so the shared doc appears in their
+    // /docs list and any open DocPage flips to the granted access level —
+    // no manual refresh needed. Mirrors the mention-sync emit.
+    if (socketService?.emitToUsers) {
+      try {
+        socketService.emitToUsers(
+          'doc:access:granted',
+          { docId: doc.id, docTitle: doc.title, source: 'manual_share', accessLevel },
+          [userId],
+        );
+      } catch (err) {
+        safeLogger.warn('[Doc] doc:access:granted emit failed (non-fatal)', { docId: doc.id, userId, err });
+      }
+    }
+    // Live-refresh the shared-with bar / Share panel for the author + every
+    // other collaborator.
+    emitDocCollaboratorsChanged(doc).catch(() => { /* non-fatal */ });
+
+    logActivity({
+      action: 'shared',
+      description: `Shared doc "${doc.title}" with ${target.name || target.email || userId} (${accessLevel})`,
+      entityType: 'doc',
+      entityId: doc.id,
+      userId: req.user.id,
+    });
+
+    const reloaded = await DocAccess.findOne({
+      where: { docId: doc.id, userId },
+      include: [
+        { model: User, as: 'user', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'grantedBy', attributes: USER_PILL_ATTRS, required: false },
+      ],
+    });
+    res.status(201).json({ success: true, data: { collaborator: serializeAccessRow(reloaded) } });
+  } catch (err) {
+    safeLogger.error('[Doc] addCollaborator error', { err });
+    res.status(500).json({ success: false, message: 'Failed to add collaborator.' });
+  }
+}
+
+async function updateCollaborator(req, res) {
+  try {
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
+    const { userId } = req.params;
+    const accessLevel = req.body?.accessLevel;
+    if (!COLLAB_LEVELS.includes(accessLevel)) {
+      return res.status(400).json({
+        success: false,
+        message: `accessLevel must be one of: ${COLLAB_LEVELS.join(', ')}.`,
+      });
+    }
+    if (userId === doc.ownerUserId) {
+      return res.status(400).json({
+        success: false,
+        message: 'The doc owner\'s access level cannot be changed from the Share panel — transfer ownership instead.',
+      });
+    }
+    const row = await DocAccess.findOne({ where: { docId: doc.id, userId } });
+    if (!row) {
+      return res.status(404).json({ success: false, message: 'Collaborator not found.' });
+    }
+    // Manual edit converts the row's source to manual_share so the Phase 5
+    // mention-removal logic won't auto-strip it later. (If the underlying
+    // mention is later removed, the row survives because source !== 'mention'.)
+    await row.update({
+      accessLevel,
+      source: 'manual_share',
+      grantedByUserId: req.user.id,
+    });
+
+    // Real-time push so the recipient's open DocPage re-fetches and flips
+    // between read-only / editable as their level changes. Reuses the same
+    // event the /docs list already listens on for a self-refresh.
+    if (socketService?.emitToUsers) {
+      try {
+        socketService.emitToUsers(
+          'doc:access:granted',
+          { docId: doc.id, docTitle: doc.title, source: 'manual_share', accessLevel },
+          [userId],
+        );
+      } catch (err) {
+        safeLogger.warn('[Doc] doc:access:granted (level change) emit failed (non-fatal)', { docId: doc.id, userId, err });
+      }
+    }
+    emitDocCollaboratorsChanged(doc).catch(() => { /* non-fatal */ });
+
+    const reloaded = await DocAccess.findOne({
+      where: { docId: doc.id, userId },
+      include: [
+        { model: User, as: 'user', attributes: USER_PILL_ATTRS },
+        { model: User, as: 'grantedBy', attributes: USER_PILL_ATTRS, required: false },
+      ],
+    });
+    res.json({ success: true, data: { collaborator: serializeAccessRow(reloaded) } });
+  } catch (err) {
+    safeLogger.error('[Doc] updateCollaborator error', { err });
+    res.status(500).json({ success: false, message: 'Failed to update collaborator.' });
+  }
+}
+
+async function removeCollaborator(req, res) {
+  try {
+    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    if (!result) return;
+    const { doc } = result;
+    const { userId } = req.params;
+    if (userId === doc.ownerUserId) {
+      return res.status(400).json({ success: false, message: 'The doc owner cannot be removed.' });
+    }
+    const row = await DocAccess.findOne({ where: { docId: doc.id, userId } });
+    if (!row) {
+      return res.status(404).json({ success: false, message: 'Collaborator not found.' });
+    }
+    await row.destroy();
+
+    // Real-time push so the removed user's /docs list drops the doc and any
+    // open DocPage for it bounces them back to the list.
+    if (socketService?.emitToUsers) {
+      try {
+        socketService.emitToUsers(
+          'doc:access:revoked',
+          { docId: doc.id, docTitle: doc.title, source: 'manual_share' },
+          [userId],
+        );
+      } catch (err) {
+        safeLogger.warn('[Doc] doc:access:revoked emit failed (non-fatal)', { docId: doc.id, userId, err });
+      }
+    }
+    emitDocCollaboratorsChanged(doc).catch(() => { /* non-fatal */ });
+
+    logActivity({
+      action: 'unshared',
+      description: `Removed access to doc "${doc.title}" for user ${userId}`,
+      entityType: 'doc',
+      entityId: doc.id,
+      userId: req.user.id,
+    });
+    res.json({ success: true, data: { docId: doc.id, userId } });
+  } catch (err) {
+    safeLogger.error('[Doc] removeCollaborator error', { err });
+    res.status(500).json({ success: false, message: 'Failed to remove collaborator.' });
+  }
+}
+
 // ─── input validation helpers ────────────────────────────────
 
 function sanitizeTitle(input) {
@@ -1102,14 +1829,23 @@ function sanitizeTitle(input) {
 }
 
 function sanitizeContentJson(input) {
-  // The frontend sends a Tiptap JSON document. We don't render the JSON
-  // anywhere as HTML — it goes back into Tiptap on read, which itself
-  // sanitizes via ProseMirror's schema. So our defense is shape-only:
-  // verify it's an object with the expected envelope, cap total size.
+  // feat/docs-personal-notion Phase 6 — accept two shapes:
+  //   - Tiptap: `{ type: 'doc', content: [...] }` (legacy)
+  //   - BlockNote: `Block[]` — top-level array of block objects
+  // Both are stored as-is in `docs.contentJson` JSONB; the read path
+  // branches on `docs.contentFormat`. Neither is ever rendered as HTML
+  // on the server — Tiptap and BlockNote both re-parse their own schemas
+  // on the client, so our defense is shape-only.
   if (input === null || input === undefined) return null;
   if (typeof input !== 'object') return null;
-  if (Array.isArray(input)) return null;
-  if (input.type !== 'doc') return null;
+  if (Array.isArray(input)) {
+    // BlockNote: array of Block objects. Each element must be an object
+    // (defensive — reject arrays of primitives/nulls).
+    if (input.length > 0 && !input.every((b) => b && typeof b === 'object')) return null;
+  } else {
+    // Tiptap envelope.
+    if (input.type !== 'doc') return null;
+  }
   // Hard cap: 2 MB JSON. Larger probably means an export-paste accident.
   try {
     const size = Buffer.byteLength(JSON.stringify(input), 'utf8');
@@ -1119,6 +1855,16 @@ function sanitizeContentJson(input) {
 }
 
 module.exports = {
+  // feat/docs-personal-notion Phase 2 — new personal-docs surface.
+  listPersonalDocs,
+  createPersonalDoc,
+  // Phase 3 — manual share endpoints.
+  listCollaborators,
+  addCollaborator,
+  updateCollaborator,
+  removeCollaborator,
+  // Legacy workspace-scoped endpoints — kept temporarily so the workspace
+  // route handlers can return 410 with a deprecation message.
   listDocs,
   createDoc,
   getDoc,

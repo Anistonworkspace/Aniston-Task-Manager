@@ -134,6 +134,19 @@ api.interceptors.response.use(
         processQueue(null, null);
         return api(originalRequest);
       } catch (refreshError) {
+        // Benign multi-tab refresh race. The other tab won, rotated the
+        // refresh token, and set new cookies on its response. This tab's
+        // refresh hit the now-rotated row and the server returned 401 +
+        // TOKEN_RACE_RETRY instead of nuking the session chain. Wait long
+        // enough for the winner's Set-Cookie to be committed by the
+        // browser, then retry the ORIGINAL request — the new access
+        // cookie will ride along automatically.
+        const isRaceRetry = refreshError?.response?.data?.code === 'TOKEN_RACE_RETRY';
+        if (isRaceRetry) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          processQueue(null, null);
+          return api(originalRequest);
+        }
         processQueue(refreshError, null);
         // Refresh failed — clear any leftover legacy storage and bounce
         // to login. Cookies were cleared server-side as part of the 401
@@ -271,5 +284,47 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// ─── In-flight GET deduplication ─────────────────────────────────────
+//
+// When a socket event triggers a refetch while a previous fetch for the
+// same URL is still in flight (e.g. the previous one was slow or the user
+// also navigated to the page at the same instant), we don't need a second
+// network round-trip — both callers can latch onto the same response.
+//
+// Belt-and-suspenders to RealtimeProvider's per-queryKey debounce. The
+// debounce collapses bursts within a 300ms window; the dedup catches the
+// edge case where a refetch fires while an earlier identical request is
+// still mid-flight (slow backend, large board, etc.). Together they were
+// the primary mitigation for the 2026-05-23 13:41 IST rate-limit cascade.
+//
+// Scope: GET only, in-flight only. Callers that pass `_skipDedup: true`
+// (e.g. polling that legitimately wants a fresh round-trip even when one
+// is in flight) bypass this. AbortSignal-bearing requests also bypass —
+// dedup would let one caller cancel a request another caller is awaiting.
+const inflightGetPromises = new Map();
+
+function dedupKey(url, config) {
+  let key = `GET ${url}`;
+  if (config && config.params) {
+    try { key += `|${JSON.stringify(config.params)}`; } catch { /* ignore */ }
+  }
+  return key;
+}
+
+const originalGet = api.get.bind(api);
+api.get = function dedupedGet(url, config) {
+  if (config && (config._skipDedup || config.signal)) {
+    return originalGet(url, config);
+  }
+  const key = dedupKey(url, config);
+  const existing = inflightGetPromises.get(key);
+  if (existing) return existing;
+  const p = originalGet(url, config).finally(() => {
+    if (inflightGetPromises.get(key) === p) inflightGetPromises.delete(key);
+  });
+  inflightGetPromises.set(key, p);
+  return p;
+};
 
 export default api;

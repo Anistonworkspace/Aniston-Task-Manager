@@ -632,9 +632,9 @@ export default function ArchivedPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    {d.workspaceId && (
+                    {d.id && (
                       <button
-                        onClick={() => navigate(`/workspaces/${d.workspaceId}/docs/${d.id}`)}
+                        onClick={() => navigate(`/docs/${d.id}`)}
                         className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 rounded-lg border border-gray-200 transition-colors"
                         title="Open archived doc"
                       >

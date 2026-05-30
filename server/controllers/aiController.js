@@ -834,41 +834,15 @@ async function summarizeDocEndpoint(req, res) {
   try {
     const { id } = req.params;
     if (!id) return res.status(400).json({ success: false, message: 'Doc id is required.' });
-    const { Doc, Workspace, User, Board } = require('../models');
+    const { Doc } = require('../models');
     const doc = await Doc.findByPk(id);
     if (!doc) return res.status(404).json({ success: false, message: 'Doc not found.' });
 
-    // Workspace visibility mirrors docController.canCallerSeeWorkspace —
-    // including the board-membership branch (May 2026) so Tier 4 users
-    // who reach the workspace through any visible board can also use the
-    // doc Summarize action.
-    const u = req.user;
-    let allowed = false;
-    if (u?.isSuperAdmin || u?.role === 'admin' || u?.role === 'manager') allowed = true;
-    if (!allowed) {
-      const ws = await Workspace.findByPk(doc.workspaceId, {
-        include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
-      });
-      if (ws && (ws.createdBy === u.id
-        || (ws.workspaceMembers || []).some((m) => m.id === u.id))) {
-        allowed = true;
-      }
-    }
-    if (!allowed) {
-      // Board-membership path — same rule the docs API uses.
-      try {
-        const boardVisibility = require('../services/boardVisibilityService');
-        const visibleBoardIds = await boardVisibility.getVisibleBoardIdsForUser(u, { includeArchived: false });
-        if (visibleBoardIds && visibleBoardIds.size > 0) {
-          const wsBoards = await Board.findAll({
-            where: { workspaceId: doc.workspaceId, isArchived: false },
-            attributes: ['id'],
-            raw: true,
-          });
-          if (wsBoards.some((b) => visibleBoardIds.has(b.id))) allowed = true;
-        }
-      } catch (_) { /* best-effort */ }
-    }
+    // feat/docs-personal-notion Phase 3 — single source of truth.
+    // Replaces the inline workspace/board/role visibility block with the
+    // canonical resolver. Super-admin bypass + owner + doc_access only.
+    const docAccessSvc = require('../services/docAccessService');
+    const allowed = await docAccessSvc.hasDocAccess(req.user, doc);
     if (!allowed) {
       return res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
     }

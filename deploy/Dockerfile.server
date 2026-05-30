@@ -2,6 +2,16 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# ── System packages ──────────────────────────────────────────────────
+# postgresql16-client provides `pg_dump` and `psql`, used by the Tier-1
+# backup/restore service (server/services/backupService.js). Version must
+# match the postgres SERVER major (currently 16) — pg_dump refuses to
+# dump a newer server. If you bump the postgres image, bump this line too.
+#
+# Installed system-wide so the `node` user can invoke both binaries without
+# a setuid dance. Image overhead is ~25 MB.
+RUN apk add --no-cache postgresql16-client
+
 # Install dependencies
 COPY server/package*.json ./
 RUN npm ci --only=production
@@ -9,8 +19,13 @@ RUN npm ci --only=production
 # Copy source code
 COPY server/ .
 
-# Create uploads directory
-RUN mkdir -p uploads
+# Create runtime directories the node user will write to. /app/uploads is
+# the multer / file-attachment target. /app/backups is the Tier-1 backup
+# volume root — three subdirs (database/, pre-restore/, uploads-inbox/)
+# are created on demand by backupService.ensureDirectories. Both paths
+# are mounted as Docker named volumes in deploy/docker-compose.yml so
+# their content survives container rebuilds.
+RUN mkdir -p uploads backups
 
 # P1-23: drop root. The node:20-alpine image ships with a pre-created
 # unprivileged `node` user (uid 1000). Chown /app so the runtime user can

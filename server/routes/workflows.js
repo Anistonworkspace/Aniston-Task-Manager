@@ -22,6 +22,7 @@
 
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const ctrl = require('../controllers/workflowController');
@@ -40,7 +41,7 @@ const testRunLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.user?.id ? `wf-test-run:${req.user.id}` : req.ip),
+  keyGenerator: (req) => (req.user?.id ? `wf-test-run:${req.user.id}` : ipKeyGenerator(req.ip)),
   message: {
     success: false,
     code: 'rate_limited',

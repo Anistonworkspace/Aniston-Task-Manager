@@ -31,7 +31,7 @@ vi.mock('framer-motion', () => ({
 }));
 
 vi.mock('../../../services/docsService', () => ({
-  listWorkspaceDocs: vi.fn(),
+  listMyDocs: vi.fn(),
   createDoc: vi.fn(),
   archiveDoc: vi.fn(),
   restoreDoc: vi.fn(),
@@ -72,9 +72,16 @@ vi.mock('../../../utils/safeLog', () => ({
   },
 }));
 
+// Phase 8 — DocsListPage subscribes to realtime doc:access:granted /
+// doc:access:revoked events via useRealtimeEvent. Mock the hook so the
+// page doesn't need a wrapping RealtimeProvider in tests.
+vi.mock('../../../realtime/useRealtimeEvent', () => ({
+  default: vi.fn(),
+}));
+
 import DocsListPage from '../DocsListPage';
 import {
-  listWorkspaceDocs,
+  listMyDocs,
   createDoc,
   archiveDoc,
   restoreDoc,
@@ -86,15 +93,16 @@ beforeEach(() => {
   useAuth.mockReturnValue({
     user: { id: 'u1', name: 'Test User' },
     isSuperAdmin: false,
-    canManage: true,
   });
 });
 
-function renderPage(workspaceId = 'w1') {
+// Phase 2: page lives at /docs, calls GET /api/docs directly (no workspace
+// resolution). All tests render at /docs.
+function renderPage() {
   return render(
-    <MemoryRouter initialEntries={[`/workspaces/${workspaceId}/docs`]}>
+    <MemoryRouter initialEntries={['/docs']}>
       <Routes>
-        <Route path="/workspaces/:workspaceId/docs" element={<DocsListPage />} />
+        <Route path="/docs" element={<DocsListPage />} />
       </Routes>
     </MemoryRouter>
   );
@@ -103,23 +111,23 @@ function renderPage(workspaceId = 'w1') {
 describe('DocsListPage', () => {
   it('renders loading skeletons initially while the fetch is pending', () => {
     // Pending forever so loading state remains visible.
-    listWorkspaceDocs.mockReturnValue(new Promise(() => {}));
+    listMyDocs.mockReturnValue(new Promise(() => {}));
     const { container } = renderPage();
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 
-  it('calls listWorkspaceDocs(workspaceId, { q: undefined, archived: false }) on mount', async () => {
-    listWorkspaceDocs.mockResolvedValue({ docs: [] });
+  it('calls listMyDocs({ q: undefined, archived: false }) on mount', async () => {
+    listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
-    await waitFor(() => expect(listWorkspaceDocs).toHaveBeenCalledTimes(1));
-    expect(listWorkspaceDocs).toHaveBeenCalledWith('w1', {
+    await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
+    expect(listMyDocs).toHaveBeenCalledWith({
       q: undefined,
       archived: false,
     });
   });
 
   it('renders doc rows when the fetch resolves', async () => {
-    listWorkspaceDocs.mockResolvedValue({
+    listMyDocs.mockResolvedValue({
       docs: [
         { id: 'd1', title: 'Roadmap Q3', contentText: 'Plan stuff', lastEditedAt: new Date().toISOString() },
         { id: 'd2', title: 'Meeting notes', contentText: 'Discuss', lastEditedAt: new Date().toISOString() },
@@ -131,22 +139,22 @@ describe('DocsListPage', () => {
   });
 
   it('shows the empty state when no docs exist', async () => {
-    listWorkspaceDocs.mockResolvedValue({ docs: [] });
+    listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
     await waitFor(() => expect(screen.getByText('No docs yet')).toBeInTheDocument());
   });
 
   it('typing into search triggers a new fetch with the q param (debounced)', async () => {
-    listWorkspaceDocs.mockResolvedValue({ docs: [] });
+    listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
-    await waitFor(() => expect(listWorkspaceDocs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
 
     const input = screen.getByPlaceholderText(/Search docs/i);
     fireEvent.change(input, { target: { value: 'roadmap' } });
 
     // 250ms debounce — waitFor polls with a default 1000ms timeout, plenty.
     await waitFor(() => {
-      expect(listWorkspaceDocs).toHaveBeenCalledWith('w1', {
+      expect(listMyDocs).toHaveBeenCalledWith({
         q: 'roadmap',
         archived: false,
       });
@@ -154,15 +162,15 @@ describe('DocsListPage', () => {
   });
 
   it('toggling "Show archived" calls fetch with archived: true', async () => {
-    listWorkspaceDocs.mockResolvedValue({ docs: [] });
+    listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
-    await waitFor(() => expect(listWorkspaceDocs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
 
     const checkbox = screen.getByLabelText(/Show archived/i);
     fireEvent.click(checkbox);
 
     await waitFor(() => {
-      expect(listWorkspaceDocs).toHaveBeenCalledWith('w1', {
+      expect(listMyDocs).toHaveBeenCalledWith({
         q: undefined,
         archived: true,
       });
@@ -170,7 +178,7 @@ describe('DocsListPage', () => {
   });
 
   it('"New doc" button calls createDoc and navigates to the new doc URL', async () => {
-    listWorkspaceDocs.mockResolvedValue({ docs: [] });
+    listMyDocs.mockResolvedValue({ docs: [] });
     createDoc.mockResolvedValue({ doc: { id: 'd99', title: 'Untitled doc' } });
     renderPage();
     await waitFor(() => expect(screen.getByText('No docs yet')).toBeInTheDocument());
@@ -180,14 +188,14 @@ describe('DocsListPage', () => {
       fireEvent.click(btn);
     });
 
-    expect(createDoc).toHaveBeenCalledWith('w1', { title: 'Untitled doc' });
+    expect(createDoc).toHaveBeenCalledWith({ title: 'Untitled doc' });
     await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith('/workspaces/w1/docs/d99')
+      expect(mockNavigate).toHaveBeenCalledWith('/docs/d99')
     );
   });
 
   it('archive icon calls archiveDoc and removes the row optimistically', async () => {
-    listWorkspaceDocs.mockResolvedValue({
+    listMyDocs.mockResolvedValue({
       docs: [
         { id: 'd1', title: 'Roadmap Q3', lastEditedAt: new Date().toISOString(), createdBy: 'u1' },
       ],
@@ -208,7 +216,7 @@ describe('DocsListPage', () => {
   });
 
   it('renders the error banner when the fetch fails', async () => {
-    listWorkspaceDocs.mockRejectedValue({
+    listMyDocs.mockRejectedValue({
       response: { data: { message: 'Boom — could not load docs' } },
     });
     renderPage();
@@ -221,7 +229,7 @@ describe('DocsListPage', () => {
     // Default response keeps the archived row visible across all three fetches
     // (mount, "Show archived" flip, post-restore reload). Subsequent calls
     // would otherwise return undefined and break destructuring.
-    listWorkspaceDocs.mockResolvedValue({
+    listMyDocs.mockResolvedValue({
       docs: [
         {
           id: 'd1',
@@ -236,7 +244,7 @@ describe('DocsListPage', () => {
 
     renderPage();
     // Need archived visible — flip the checkbox so the row is rendered.
-    await waitFor(() => expect(listWorkspaceDocs).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByLabelText(/Show archived/i));
     await waitFor(() => expect(screen.getByText('Old doc')).toBeInTheDocument());
 
@@ -247,8 +255,8 @@ describe('DocsListPage', () => {
 
     expect(restoreDoc).toHaveBeenCalledWith('d1');
     expect(mockToastSuccess).toHaveBeenCalledWith('Doc restored');
-    // After restore the page calls load() again — listWorkspaceDocs is hit a
+    // After restore the page calls load() again — listMyDocs is hit a
     // third time (initial mount, archived flip, post-restore reload).
-    await waitFor(() => expect(listWorkspaceDocs.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(listMyDocs.mock.calls.length).toBeGreaterThanOrEqual(3));
   });
 });

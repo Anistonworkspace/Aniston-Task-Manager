@@ -19,11 +19,18 @@ router.post(
 );
 router.get('/', authenticate, getHelpRequests);
 router.get('/my-pending', authenticate, getMyPendingHelp);
-// Status update — controller enforces: only helper (requestedTo) or manager+ can update
+// Status update — controller enforces: only helper (requestedTo) or manager+ can update.
+// 'rejected' is additionally gated to the helper only inside the controller.
 router.put(
   '/:id/status',
   authenticate,
-  [ param('id').isUUID().withMessage('id must be a valid UUID') ],
+  [
+    param('id').isUUID().withMessage('id must be a valid UUID'),
+    body('status').optional().isIn(['pending', 'in_review', 'meeting_scheduled', 'resolved', 'rejected'])
+      .withMessage('invalid status'),
+    body('rejectionReason').optional().isString().trim().isLength({ min: 1, max: 1000 })
+      .withMessage('rejectionReason must be 1-1000 chars'),
+  ],
   updateStatus
 );
 router.put(

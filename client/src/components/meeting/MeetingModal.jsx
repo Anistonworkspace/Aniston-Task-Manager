@@ -4,10 +4,10 @@ import api from '../../services/api';
 import Avatar from '../common/Avatar';
 import { resolveTier, tierLabel } from '../../utils/tiers';
 
+// Only two types are supported. "follow_up" was retired — the backend rejects it.
 const TYPES = [
   { value: 'meeting', label: 'Meeting', color: '#0073ea' },
   { value: 'reminder', label: 'Reminder', color: '#fdab3d' },
-  { value: 'follow_up', label: 'Follow-up', color: '#9d50dd' },
 ];
 
 export default function MeetingModal({ meeting, onClose, onSave }) {
@@ -19,6 +19,12 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
     endTime: meeting?.endTime || '10:00',
     location: meeting?.location || '',
     type: meeting?.type || 'meeting',
+    // Reminder-only schedule config (not persisted as a column — the backend
+    // expands it into one meeting row per occurrence on create).
+    reminderSchedule: 'once',
+    repeatEvery: 1,
+    repeatUnit: 'days',
+    repeatCount: 3,
     boardId: meeting?.boardId || '',
     taskId: meeting?.taskId || '',
   });
@@ -57,20 +63,50 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    const isReminder = form.type === 'reminder';
     if (!form.title.trim()) { setError('Title is required.'); return; }
     if (!form.date) { setError('Date is required.'); return; }
-    if (form.startTime >= form.endTime) { setError('End time must be after start time.'); return; }
+    if (!isReminder && form.startTime >= form.endTime) { setError('End time must be after start time.'); return; }
+    if (isReminder && form.reminderSchedule === 'repeat') {
+      if (!(parseInt(form.repeatEvery, 10) >= 1)) { setError('Repeat interval must be at least 1.'); return; }
+      if (!(parseInt(form.repeatCount, 10) >= 1)) { setError('Number of reminders must be at least 1.'); return; }
+    }
 
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        ...form,
-        title: form.title.trim(),
-        participants: selectedParticipants,
-        boardId: form.boardId || null,
-        taskId: form.taskId || null,
-      };
+      let payload;
+      if (isReminder) {
+        // Reminders carry no end time / location / participants. endTime mirrors
+        // the time so the backend's NOT NULL column stays satisfied.
+        payload = {
+          title: form.title.trim(),
+          description: form.description,
+          date: form.date,
+          startTime: form.startTime,
+          endTime: form.startTime,
+          type: 'reminder',
+          reminder: {
+            schedule: form.reminderSchedule,
+            repeatEvery: Number(form.repeatEvery) || 1,
+            repeatUnit: form.repeatUnit,
+            repeatCount: Number(form.repeatCount) || 1,
+          },
+        };
+      } else {
+        payload = {
+          title: form.title.trim(),
+          description: form.description,
+          date: form.date,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          location: form.location,
+          type: 'meeting',
+          participants: selectedParticipants,
+          boardId: form.boardId || null,
+          taskId: form.taskId || null,
+        };
+      }
 
       let res;
       if (meeting?.id) {
@@ -81,7 +117,7 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
       if (onSave) onSave(res.data?.meeting || res.data?.data?.meeting);
       onClose();
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to save meeting.');
+      setError(err.response?.data?.message || (isReminder ? 'Failed to save reminder.' : 'Failed to save meeting.'));
     } finally {
       setSaving(false);
     }
@@ -97,7 +133,9 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
           <h2 className="text-base font-semibold text-text-primary">
-            {meeting?.id ? 'Edit Meeting' : 'Schedule Meeting'}
+            {meeting?.id
+              ? (form.type === 'reminder' ? 'Edit Reminder' : 'Edit Meeting')
+              : (form.type === 'reminder' ? 'Create Reminder' : 'Schedule Meeting')}
           </h2>
           <button onClick={onClose} className="p-1 rounded-md hover:bg-surface text-text-secondary"><X size={18} /></button>
         </div>
@@ -131,6 +169,69 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
             </div>
           </div>
 
+          {form.type === 'reminder' ? (
+            <>
+              {/* Reminder Date & Time */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">Date *</label>
+                  <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1.5">Time *</label>
+                  <input type="time" value={form.startTime} onChange={e => setForm(f => ({ ...f, startTime: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
+                </div>
+              </div>
+
+              {/* Reminder schedule */}
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">Reminder schedule</label>
+                <div className="flex gap-2">
+                  {[{ value: 'once', label: 'Once' }, { value: 'repeat', label: 'Repeat' }].map(s => (
+                    <button key={s.value} type="button" onClick={() => setForm(f => ({ ...f, reminderSchedule: s.value }))}
+                      className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border transition-all ${form.reminderSchedule === s.value ? 'border-primary/50 bg-primary/5 text-primary shadow-sm' : 'border-border text-text-secondary hover:bg-surface'}`}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {form.reminderSchedule === 'repeat' && (
+                <div className="flex items-end gap-2 rounded-lg bg-surface/40 border border-border p-3">
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Repeat every</label>
+                    <input type="number" min={1} value={form.repeatEvery} onChange={e => setForm(f => ({ ...f, repeatEvery: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5">Unit</label>
+                    <select value={form.repeatUnit} onChange={e => setForm(f => ({ ...f, repeatUnit: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-lg border border-border text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                      <option value="days">Days</option>
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium text-text-secondary mb-1.5"># of times</label>
+                    <input type="number" min={1} max={50} value={form.repeatCount} onChange={e => setForm(f => ({ ...f, repeatCount: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary" />
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">Notes</label>
+                <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} rows={2}
+                  className="w-full px-3 py-2 rounded-lg border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary resize-none"
+                  placeholder="Optional notes for this reminder..." />
+              </div>
+            </>
+          ) : (
+            <>
           {/* Date & Time */}
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -229,6 +330,8 @@ export default function MeetingModal({ meeting, onClose, onSave }) {
               </select>
             </div>
           </div>
+            </>
+          )}
         </form>
 
         {/* Footer */}

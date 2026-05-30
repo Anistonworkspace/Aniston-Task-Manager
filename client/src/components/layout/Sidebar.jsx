@@ -1020,18 +1020,10 @@ export default function Sidebar({ collapsed, onToggle }) {
                         {wsBoards.length === 0 && (
                           <p className="text-sidebar-text/40 text-[11px] px-3 py-1.5">{t('sidebar.noBoardsYet')}</p>
                         )}
-                        {/* Doc Editor — per-workspace docs entry. Monday-style
-                            left nav: docs live alongside boards inside each
-                            workspace, not in a separate global section. */}
-                        <button
-                          type="button"
-                          onClick={() => navigate(`/workspaces/${ws.id}/docs`)}
-                          className={`sidebar-item w-full mt-0.5 ${location.pathname.startsWith(`/workspaces/${ws.id}/docs`) ? 'sidebar-item-active' : ''}`}
-                          title="Open docs for this workspace"
-                        >
-                          <BookOpen size={14} strokeWidth={1.8} />
-                          <span className="flex-1 text-left truncate text-[12px]">Docs</span>
-                        </button>
+                        {/* feat/docs-personal-notion Phase 1: per-workspace
+                            Docs sub-row removed. Docs are personal in the new
+                            model; the top-level "Docs" nav entry is the only
+                            entry point. */}
                       </div>
                     );
                   })()}
@@ -1119,23 +1111,12 @@ export default function Sidebar({ collapsed, onToggle }) {
                   setShowCreateBoard(true);
                 }}
                 onCreateWorkspace={() => setShowCreateWorkspace(true)}
-                // Doc Editor Phase B — "Doc" item in the + Add new menu
-                // navigates to the docs landing of the inferred workspace
-                // (current board's workspace, or first available). The
-                // landing page's own "+ New doc" button then creates the
-                // empty doc; this navigation keeps the menu's contract
-                // identical for every content type (modal OR navigate).
+                // feat/docs-personal-notion Phase 1: + Add new → Doc now
+                // navigates to the personal docs landing (no workspace
+                // selection required). The landing page's own "+ New doc"
+                // button creates the empty doc.
                 onCreateDoc={() => {
-                  const inferredWsId = inferCurrentWorkspaceId() || workspaces[0]?.id;
-                  if (inferredWsId) {
-                    navigate(`/workspaces/${inferredWsId}/docs`);
-                  } else {
-                    // No workspaces yet — silent navigation would feel broken.
-                    // Open the workspace-creation modal so the user can make
-                    // one first; the doc landing is gated on having a
-                    // workspace to attach to.
-                    setShowCreateWorkspace(true);
-                  }
+                  navigate('/docs');
                 }}
               />
             </div>

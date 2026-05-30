@@ -53,7 +53,7 @@ export default function TaskDocReferencesBar({ taskId }) {
         <button
           key={d.docId}
           type="button"
-          onClick={() => navigate(`/workspaces/${d.workspaceId}/docs/${d.docId}`)}
+          onClick={() => navigate(`/docs/${d.docId}`)}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[#0073ea] bg-[#0073ea]/10 hover:bg-[#0073ea]/20 transition-colors max-w-[180px] truncate"
           title={d.title}
         >

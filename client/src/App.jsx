@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/layout/Layout';
 import ErrorBoundary from './components/common/ErrorBoundary';
@@ -27,6 +27,8 @@ const MeetingsPage = lazy(() => import('./pages/MeetingsPage'));
 const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'));
 const ArchivedPage = lazy(() => import('./pages/ArchivedPage'));
 const AdminSettingsPage = lazy(() => import('./pages/AdminSettingsPage'));
+// Tier-1 (Super Admin) database backup management. Routed at /admin/backups.
+const BackupSettingsPage = lazy(() => import('./pages/BackupSettingsPage'));
 const AccessRequestPage = lazy(() => import('./pages/AccessRequestPage'));
 const OrgChartPage = lazy(() => import('./pages/OrgChartPage'));
 // /cross-team URL serves the Dependency Requests page.
@@ -47,9 +49,14 @@ const SidekickPage = lazy(() => import('./pages/Sidekick/SidekickPage'));
 // The classic /meetings route stays in place so existing bookmarks work.
 const NotetakerPage = lazy(() => import('./pages/Notetaker/NotetakerPage'));
 const MeetingDetailPage = lazy(() => import('./pages/Notetaker/MeetingDetailPage'));
-// Doc Editor Phase B: collaborative documents inside a workspace.
-//   /workspaces/:workspaceId/docs           → list (DocsListPage)
-//   /workspaces/:workspaceId/docs/:docId    → editor (DocPage)
+// Personal Docs (feat/docs-personal-notion Phase 1).
+// New URL pattern — workspace is no longer in the URL:
+//   /docs           → personal docs list (DocsListPage)
+//   /docs/:docId    → editor (DocPage, derives workspaceId from the loaded doc)
+//
+// Phase 1 is URL/navigation cleanup only; backend access is unchanged in this
+// phase so the list still resolves the caller's first visible workspace
+// internally. Phase 2 introduces the personal /api/docs endpoint.
 const DocsListPage = lazy(() => import('./pages/Docs/DocsListPage'));
 const DocPage = lazy(() => import('./pages/Docs/DocPage'));
 // Phase W1 — Workflow Canvas. Two routes:
@@ -67,14 +74,20 @@ const FormViewPage = lazy(() => import('./pages/Forms/FormViewPage'));
 // Dependency Graph (new) — visual DAG of task → task dependencies. Sits
 // alongside the existing list view at /cross-team. Reuses reactflow.
 const DependencyGraphPage = lazy(() => import('./pages/DependencyGraphPage'));
-// Tier-agnostic Docs entry. Resolves the caller's first visible workspace
-// then redirects; shows a friendly empty state when they belong to none.
-// Decouples the sidebar Docs nav-item from the workspace data shape so
-// members on day 1 see the entry instead of a missing nav row.
-const DocsRedirectPage = lazy(() => import('./pages/Docs/DocsRedirectPage'));
+// DocsRedirectPage is retired in Phase 1 — the top-level /docs route now
+// renders DocsListPage directly. The file is kept on disk until Phase 2 in
+// case any deep-link callers still import it; remove it then.
 
 function PageLoader() {
   return <AnistonLoader variant="page" size="lg" />;
+}
+
+// feat/docs-personal-notion Phase 1: deep-link redirect for the legacy
+// /workspaces/:workspaceId/docs/:docId pattern. Preserves the :docId so
+// bookmarks land on the right doc; the editor itself enforces access.
+function WorkspaceDocLegacyRedirect() {
+  const { docId } = useParams();
+  return <Navigate to={`/docs/${docId}`} replace />;
 }
 
 function ProtectedRoute({ children }) {
@@ -118,6 +131,21 @@ function StrictAdminRoute({ children, requiredPermission }) {
   // Strict admin only (not manager) — for Admin Settings, Integrations, Feedback
   const hasOverride = requiredPermission && granularPermissions?.[requiredPermission];
   if (!isStrictAdmin && !isSuperAdmin && !hasOverride) return <Navigate to="/" replace />;
+  return children;
+}
+
+/**
+ * SuperAdminRoute — Tier 1 ONLY. No granular-permission escape hatch, no
+ * regular-admin pass-through. Used for routes that wrap inherently
+ * destructive system operations (today: /admin/backups). The backend
+ * mirrors this with `superAdminOnly` middleware; the UI hide is a UX
+ * nicety, not a security boundary.
+ */
+function SuperAdminRoute({ children }) {
+  const { user, loading, isSuperAdmin } = useAuth();
+  if (loading) return <AnistonFullScreenLoader />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!isSuperAdmin) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -188,14 +216,19 @@ export default function App() {
               GET /api/meetings/my data source. */}
           <Route path="notetaker" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><NotetakerPage /></Suspense></ErrorBoundary>} />
           <Route path="notetaker/meetings/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><MeetingDetailPage /></Suspense></ErrorBoundary>} />
-          {/* Doc Editor Phase B — collaborative documents. Two routes:
-              the workspace list, and a single doc's editor. Both auth-only.
-              The top-level `/docs` entry resolves the caller's first
-              visible workspace and redirects (or shows an empty state
-              when they belong to none). */}
-          <Route path="docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsRedirectPage /></Suspense></ErrorBoundary>} />
-          <Route path="workspaces/:workspaceId/docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsListPage /></Suspense></ErrorBoundary>} />
-          <Route path="workspaces/:workspaceId/docs/:docId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocPage /></Suspense></ErrorBoundary>} />
+          {/* Personal Docs (feat/docs-personal-notion Phase 1).
+              Canonical URLs:
+                /docs           → personal docs list
+                /docs/:docId    → editor
+              Old workspace-scoped URLs redirect here so existing bookmarks
+              and TaskDocReferencesBar links keep working. The :docId is
+              preserved on the deep-link redirect — if the user no longer has
+              access after Phase 2 lands, the editor surfaces a proper
+              403/404 EmptyState instead of silently losing the target. */}
+          <Route path="docs" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocsListPage /></Suspense></ErrorBoundary>} />
+          <Route path="docs/:docId" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><DocPage /></Suspense></ErrorBoundary>} />
+          <Route path="workspaces/:workspaceId/docs" element={<Navigate to="/docs" replace />} />
+          <Route path="workspaces/:workspaceId/docs/:docId" element={<WorkspaceDocLegacyRedirect />} />
           {/* Workflow Canvas (Phase W1) — list + per-workflow canvas. */}
           <Route path="workflows" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><WorkflowsListPage /></Suspense></ErrorBoundary>} />
           <Route path="workflows/:id" element={<ErrorBoundary><Suspense fallback={<PageLoader />}><WorkflowCanvasPage /></Suspense></ErrorBoundary>} />
@@ -229,6 +262,10 @@ export default function App() {
           <Route path="archive" element={<AdminRoute requiredPermission="archive.view"><Suspense fallback={<PageLoader />}><ArchivedPage /></Suspense></AdminRoute>} />
           <Route path="users" element={<AdminRoute requiredPermission="users.view"><Suspense fallback={<PageLoader />}><UserManagementPage /></Suspense></AdminRoute>} />
           <Route path="admin-settings" element={<StrictAdminRoute requiredPermission="admin_settings.view"><ErrorBoundary><Suspense fallback={<PageLoader />}><AdminSettingsPage /></Suspense></ErrorBoundary></StrictAdminRoute>} />
+          {/* Tier-1 only. Database backups (Settings → System → Database Backup
+              in the HRMS reference). Backend mirrors the gate via
+              superAdminOnly on /api/admin/backups/*. */}
+          <Route path="admin/backups" element={<SuperAdminRoute><ErrorBoundary><Suspense fallback={<PageLoader />}><BackupSettingsPage /></Suspense></ErrorBoundary></SuperAdminRoute>} />
           <Route path="access-requests" element={<AdminRoute requiredPermission="roles.view"><Suspense fallback={<PageLoader />}><AccessRequestPage /></Suspense></AdminRoute>} />
           <Route path="org-chart" element={<PermissionRoute requiredPermission="org_chart.view" resourceLabel="the Org Chart" action="view"><Suspense fallback={<PageLoader />}><OrgChartPage /></Suspense></PermissionRoute>} />
           <Route path="cross-team" element={<Suspense fallback={<PageLoader />}><DependenciesPage /></Suspense>} />

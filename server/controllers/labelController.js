@@ -1,4 +1,4 @@
-const { Label, TaskLabel, Task, User, Board } = require('../models');
+const { Label, TaskLabel, Task, User, Board, TaskAssignee, TaskOwner } = require('../models');
 const { sequelize } = require('../config/db');
 const { emitToBoard, emitToBoardAndUsers } = require('../services/socketService');
 const { sanitizeInput } = require('../utils/sanitize');
@@ -84,6 +84,50 @@ function envelope500(message, err) {
   return body;
 }
 
+// When a Tier 3/4 user clicks a label on a task that nobody owns, the
+// canViewTask check fails (no assignee/owner intersects the viewer's
+// subtree) and the response was a flat "Forbidden." That's true but
+// unhelpful — the actual cause is "this task has no owner, so the
+// visibility predicate has nothing to match on." Surface that with a
+// guided message so the user knows to assign an owner first.
+async function isUnassignedTask(taskId, assignedTo) {
+  if (assignedTo) return false;
+  const taCount = await TaskAssignee.count({ where: { taskId } });
+  if (taCount > 0) return false;
+  const toCount = await TaskOwner.count({ where: { taskId } });
+  if (toCount > 0) return false;
+  return true;
+}
+
+function denyVisibility(res, { unassigned }) {
+  if (unassigned) {
+    return res.status(403).json({
+      success: false,
+      code: 'TASK_UNASSIGNED',
+      message: 'This task has no owner yet. Please assign an owner before adding labels.',
+    });
+  }
+  return res.status(403).json({ success: false, message: 'Forbidden.' });
+}
+
+// Product rule (May 2026): labels cannot be attached to tasks with no
+// owner. The reason is two-fold: (1) the visibility system pivots on
+// "who's assigned / who created" — labels on an ownerless task are
+// effectively invisible to anyone outside the creator's subtree, which
+// confuses board-wide search and filters; (2) labels are meant to
+// categorise *someone's* work, not a placeholder row. Run this AFTER
+// canViewTask passes so we don't leak the precondition copy to callers
+// who can't see the task in the first place (they keep getting 403).
+// Returns 400 (precondition / business-rule failure) — distinct from the
+// 403 "you cannot see this task" branch above.
+function denyOwnerlessForLabeling(res) {
+  return res.status(400).json({
+    success: false,
+    code: 'TASK_UNASSIGNED',
+    message: 'Please assign an owner to this task before adding labels.',
+  });
+}
+
 // GET /api/labels?boardId=...
 // P0-6 fix: scope to board visibility. Without this, any authenticated user
 // could pass an arbitrary boardId and enumerate every label on every board.
@@ -142,7 +186,7 @@ exports.createLabel = async (req, res) => {
 
     if (assignToTaskId) {
       // ── Path 1: TASK-SCOPED create + assign ──────────────────────────
-      const task = await Task.findByPk(assignToTaskId, { attributes: ['id', 'boardId'] });
+      const task = await Task.findByPk(assignToTaskId, { attributes: ['id', 'boardId', 'assignedTo', 'createdBy'] });
       if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
       if (boardId && task.boardId !== boardId) {
         return res.status(400).json({ success: false, message: 'Task is not on the requested board.' });
@@ -153,7 +197,14 @@ exports.createLabel = async (req, res) => {
       // first place. Users who CANNOT see the task get a 403, same as a
       // direct GET would.
       if (!(await taskVisibility.canViewTask(req.user, task))) {
-        return res.status(403).json({ success: false, message: 'Forbidden.' });
+        const unassigned = await isUnassignedTask(task.id, task.assignedTo);
+        return denyVisibility(res, { unassigned });
+      }
+      // Precondition: this task must have an owner before any label can
+      // attach. Placed AFTER the visibility gate so the helpful copy
+      // doesn't leak to callers who couldn't see the task anyway.
+      if (await isUnassignedTask(task.id, task.assignedTo)) {
+        return denyOwnerlessForLabeling(res);
       }
       // Phase A (May 2026) — One-click "create new label + attach to this
       // task" is the union of TWO separate authorities:
@@ -317,7 +368,7 @@ exports.assignLabel = async (req, res) => {
       return res.status(400).json({ success: false, message: 'taskId and labelId are required.' });
     }
     const [task, label] = await Promise.all([
-      Task.findByPk(taskId, { attributes: ['id', 'boardId'] }),
+      Task.findByPk(taskId, { attributes: ['id', 'boardId', 'assignedTo', 'createdBy'] }),
       Label.findByPk(labelId, { attributes: ['id', 'boardId'] }),
     ]);
     if (!task) { metrics.increment('labels.assign.not_found'); return res.status(404).json({ success: false, message: 'Task not found.' }); }
@@ -330,7 +381,16 @@ exports.assignLabel = async (req, res) => {
     if (!(await taskVisibility.canViewTask(req.user, task))) {
       metrics.increment('labels.assign.forbidden');
       logger.warn('[labels.assign] view-access denied', { userId: req.user.id, taskId });
-      return res.status(403).json({ success: false, message: 'Forbidden.' });
+      const unassigned = await isUnassignedTask(task.id, task.assignedTo);
+      return denyVisibility(res, { unassigned });
+    }
+    // Precondition: a label can only attach to a task that has an owner.
+    // Same placement reasoning as createLabel — after visibility so the
+    // precondition copy is only surfaced to callers who could otherwise
+    // perform the action.
+    if (await isUnassignedTask(task.id, task.assignedTo)) {
+      metrics.increment('labels.assign.task_unassigned');
+      return denyOwnerlessForLabeling(res);
     }
     // Phase 7 — granular `labels.add_to_task` gate (umbrella → labels.create).
     const { denyIfNoPermission } = require('../utils/permissionGate');
@@ -355,10 +415,11 @@ exports.unassignLabel = async (req, res) => {
     if (!taskId || !labelId) {
       return res.status(400).json({ success: false, message: 'taskId and labelId are required.' });
     }
-    const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId'] });
+    const task = await Task.findByPk(taskId, { attributes: ['id', 'boardId', 'assignedTo', 'createdBy'] });
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });
     if (!(await taskVisibility.canViewTask(req.user, task))) {
-      return res.status(403).json({ success: false, message: 'Forbidden.' });
+      const unassigned = await isUnassignedTask(task.id, task.assignedTo);
+      return denyVisibility(res, { unassigned });
     }
     // Phase 7 — granular `labels.remove_from_task` gate (umbrella → labels.edit).
     const { denyIfNoPermission } = require('../utils/permissionGate');
@@ -376,10 +437,20 @@ exports.unassignLabel = async (req, res) => {
 // GET /api/labels/task/:taskId — get labels for a task
 // P0-3 fix: previously any authenticated user could read labels on any
 // task. Now we gate on canViewTask.
+//
+// (May 2026) Include `assignedTo` and `createdBy` in the loaded
+// attributes. The previous shape (`['id','boardId']`) handed canViewTask
+// a hydrated task object whose ownership columns were undefined, so the
+// service's fast-path checks all missed and it fell through to junction-
+// table lookups. For an ownerless task that the *creator* was viewing,
+// junction tables were empty and the result was a false 403 — which fired
+// the "Forbidden" toast on BoardPage's socket-driven refetch (BoardPage
+// useRealtimeEvent('task:labels_updated') → GET /labels/task/:id). With
+// both columns loaded, the fast path correctly identifies the creator.
 exports.getTaskLabels = async (req, res) => {
   try {
     const task = await Task.findByPk(req.params.taskId, {
-      attributes: ['id', 'boardId'],
+      attributes: ['id', 'boardId', 'assignedTo', 'createdBy'],
       include: [{ model: Label, as: 'labels', through: { attributes: [] } }],
     });
     if (!task) return res.status(404).json({ success: false, message: 'Task not found.' });

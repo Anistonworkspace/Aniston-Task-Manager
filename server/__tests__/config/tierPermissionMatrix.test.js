@@ -236,8 +236,8 @@ describe('Tier 3 — subtree-scoped (was assistant_manager)', () => {
     expect(TIER_PERMISSIONS[3].time_plan.delete).toBe(true);
   });
 
-  it('approve = false (matches prior assistant_manager)', () => {
-    expect(TIER_PERMISSIONS[3].tasks.approve).toBe(false);
+  it('approve = true (T3 is walked into the chain as a sequential approver for T4 reports; per-task chain membership is enforced in processApprovalAction)', () => {
+    expect(TIER_PERMISSIONS[3].tasks.approve).toBe(true);
   });
 
   it('tasks.edit_locked_description = false (T1+T2-only override)', () => {

@@ -30,6 +30,12 @@ jest.mock('../../models', () => ({
   Board: {
     findByPk: jest.fn(),
   },
+  TaskAssignee: {
+    count: jest.fn(async () => 0),
+  },
+  TaskOwner: {
+    count: jest.fn(async () => 0),
+  },
 }));
 
 jest.mock('../../config/db', () => ({
@@ -136,7 +142,7 @@ describe('assignLabel — IDOR protection (P0-1)', () => {
   });
 
   test('happy path: same-board label, viewable task — assignment succeeds', async () => {
-    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1' });
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: 'u-owner' });
     Label.findByPk.mockResolvedValue({ id: 'l1', boardId: 'b1' });
     taskVisibility.canViewTask.mockResolvedValue(true);
     TaskLabel.findOrCreate.mockResolvedValue([{ id: 'tl1' }, true]);
@@ -149,7 +155,7 @@ describe('assignLabel — IDOR protection (P0-1)', () => {
   });
 
   test('global label (boardId=null) bypasses cross-board check', async () => {
-    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1' });
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: 'u-owner' });
     Label.findByPk.mockResolvedValue({ id: 'l-global', boardId: null });
     taskVisibility.canViewTask.mockResolvedValue(true);
     TaskLabel.findOrCreate.mockResolvedValue([{ id: 'tl1' }, true]);
@@ -157,6 +163,72 @@ describe('assignLabel — IDOR protection (P0-1)', () => {
     const res = mockRes();
     await labelCtrl.assignLabel(req, res);
     expect(res.json).toHaveBeenCalled();
+  });
+});
+
+// ── Owner-precondition: labels cannot attach to ownerless tasks ───────
+//
+// Product rule (May 2026): a task with NO assignedTo, no task_assignees,
+// and no task_owners cannot be labelled. Returns 400 + TASK_UNASSIGNED
+// so the frontend can surface "Please assign an owner..." without going
+// through the misleading "Forbidden" branch.
+describe('assignLabel — owner precondition (May 2026)', () => {
+  test('returns 400 TASK_UNASSIGNED when task has no owner — task creator', async () => {
+    // Sunny is the creator. canViewTask passes because she's in her own
+    // visibility scope. The precondition must still fire and block the
+    // attach, with the actionable copy.
+    Task.findByPk.mockResolvedValue({ id: 't-jagger', boardId: 'b1', assignedTo: null, createdBy: 'sunny' });
+    Label.findByPk.mockResolvedValue({ id: 'l-depend', boardId: 'b1' });
+    taskVisibility.canViewTask.mockResolvedValue(true);
+    const req = { user: { id: 'sunny', role: 'member', tier: 4 }, body: { taskId: 't-jagger', labelId: 'l-depend' } };
+    const res = mockRes();
+    await labelCtrl.assignLabel(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(false);
+    expect(payload.code).toBe('TASK_UNASSIGNED');
+    expect(payload.message).toMatch(/assign an owner/i);
+    expect(TaskLabel.findOrCreate).not.toHaveBeenCalled();
+  });
+
+  test('passes when task has an assignedTo (legacy single FK)', async () => {
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: 'u-owner' });
+    Label.findByPk.mockResolvedValue({ id: 'l1', boardId: 'b1' });
+    taskVisibility.canViewTask.mockResolvedValue(true);
+    TaskLabel.findOrCreate.mockResolvedValue([{ id: 'tl1' }, true]);
+    const req = { user: { id: 'u1' }, body: { taskId: 't1', labelId: 'l1' } };
+    const res = mockRes();
+    await labelCtrl.assignLabel(req, res);
+    expect(TaskLabel.findOrCreate).toHaveBeenCalled();
+  });
+
+  test('passes when task has task_assignees rows even with assignedTo null', async () => {
+    const { TaskAssignee } = require('../../models');
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: null });
+    Label.findByPk.mockResolvedValue({ id: 'l1', boardId: 'b1' });
+    taskVisibility.canViewTask.mockResolvedValue(true);
+    TaskAssignee.count.mockResolvedValueOnce(1);   // one row in task_assignees
+    TaskLabel.findOrCreate.mockResolvedValue([{ id: 'tl1' }, true]);
+    const req = { user: { id: 'u1' }, body: { taskId: 't1', labelId: 'l1' } };
+    const res = mockRes();
+    await labelCtrl.assignLabel(req, res);
+    expect(TaskLabel.findOrCreate).toHaveBeenCalled();
+  });
+
+  test('precondition runs only after visibility — attackers still get 403', async () => {
+    // Even though the task is also ownerless, an attacker who cannot
+    // see it must continue to receive the visibility 403 branch (carries
+    // its OWN TASK_UNASSIGNED code at 403, distinct from the 400 path
+    // here). This protects the precondition copy from leaking to
+    // unauthorised callers.
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: null });
+    Label.findByPk.mockResolvedValue({ id: 'l1', boardId: 'b1' });
+    taskVisibility.canViewTask.mockResolvedValue(false);
+    const req = { user: { id: 'attacker' }, body: { taskId: 't1', labelId: 'l1' } };
+    const res = mockRes();
+    await labelCtrl.assignLabel(req, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(TaskLabel.findOrCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -201,6 +273,25 @@ describe('getTaskLabels — IDOR protection (P0-3)', () => {
     await labelCtrl.getTaskLabels(req, res);
     expect(res.status).toHaveBeenCalledWith(404);
   });
+
+  // Regression (May 2026): the attribute list MUST include assignedTo
+  // and createdBy. Without them, canViewTask's fast-path receives a task
+  // object whose ownership columns are undefined, all checks miss, and
+  // for an ownerless task it falls through to junction-table lookups
+  // that return empty — producing a false 403 for the task creator.
+  // That 403 was the source of the "Forbidden" toast the user reported
+  // when the realtime `task:labels_updated` event triggered BoardPage's
+  // refetch.
+  test('loads assignedTo + createdBy so canViewTask can recognise the creator', async () => {
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: null, createdBy: 'sunny', labels: [{ id: 'l1' }] });
+    taskVisibility.canViewTask.mockResolvedValue(true);
+    const req = { user: { id: 'sunny' }, params: { taskId: 't1' } };
+    const res = mockRes();
+    await labelCtrl.getTaskLabels(req, res);
+    expect(Task.findByPk).toHaveBeenCalledWith('t1', expect.objectContaining({
+      attributes: expect.arrayContaining(['id', 'boardId', 'assignedTo', 'createdBy']),
+    }));
+  });
 });
 
 // ── P0-6: getLabels — board visibility ────────────────────────────────
@@ -240,7 +331,7 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
 
   test('Tier 1 super admin: board-scoped + auto-assign succeeds and broadcasts to assignees', async () => {
     Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
-    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1' });
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: 'u-assignee' });
     Label.create.mockResolvedValue({ id: 'l-new', name: 'important', color: '#579bfc', boardId: 'b1', createdBy: 'u-super' });
     TaskLabel.create.mockResolvedValue({ taskId: 't1', labelId: 'l-new' });
     taskVisibility.canViewTask.mockResolvedValue(true);
@@ -356,7 +447,7 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
     ['Tier 4 member',      { id: 'u-t4', isSuperAdmin: false, role: 'member', tier: 4 }],
   ])('%s: task-scoped create (assignToTaskId on a visible task) succeeds', async (_label, user) => {
     Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
-    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1' });
+    Task.findByPk.mockResolvedValue({ id: 't1', boardId: 'b1', assignedTo: 'u-owner' });
     taskVisibility.canViewTask.mockResolvedValue(true);
     Label.create.mockResolvedValue({ id: 'l-new', name: 'mine', color: '#579bfc', boardId: 'b1', createdBy: user.id });
     TaskLabel.create.mockResolvedValue({ taskId: 't1', labelId: 'l-new' });
@@ -387,6 +478,28 @@ describe('createLabel — happy path + tier gate + fan-out', () => {
     const res = mockRes();
     await labelCtrl.createLabel(req, res);
     expect(res.status).toHaveBeenCalledWith(403);
+    expect(Label.create).not.toHaveBeenCalled();
+    expect(TaskLabel.create).not.toHaveBeenCalled();
+  });
+
+  // Owner-precondition for the task-scoped create path. Same product
+  // rule as assignLabel: a label cannot be minted-and-attached in one
+  // shot to a task that has no owner. Returns 400 + TASK_UNASSIGNED so
+  // the LabelCell's inline error renders "Please assign an owner...".
+  test('task-scoped create on an OWNERLESS task → 400 TASK_UNASSIGNED', async () => {
+    Board.findByPk.mockResolvedValue({ id: 'b1', createdBy: 'someone-else' });
+    Task.findByPk.mockResolvedValue({ id: 't-jagger', boardId: 'b1', assignedTo: null, createdBy: 'sunny' });
+    taskVisibility.canViewTask.mockResolvedValue(true);
+    const req = {
+      user: { id: 'sunny', role: 'member', tier: 4 },
+      body: { name: 'depend', color: '#df2f4a', boardId: 'b1', assignToTaskId: 't-jagger' },
+    };
+    const res = mockRes();
+    await labelCtrl.createLabel(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.code).toBe('TASK_UNASSIGNED');
+    expect(payload.message).toMatch(/assign an owner/i);
     expect(Label.create).not.toHaveBeenCalled();
     expect(TaskLabel.create).not.toHaveBeenCalled();
   });

@@ -36,6 +36,7 @@ import TimelineView from '../components/board/TimelineView';
 import ErrorBoundary from '../components/common/ErrorBoundary';
 import { SkeletonBoard } from '../components/common/Skeleton';
 import safeLog from '../utils/safeLog';
+import { isEditableTarget } from '../utils/isEditableTarget';
 import { useToast } from '../components/common/Toast';
 import { sortTasksByPendingPriority } from '../utils/taskPrioritization';
 import { canUser as canUserFn } from '../utils/permissions';
@@ -1183,42 +1184,53 @@ export default function BoardPage() {
   }
 
   // Keyboard shortcuts
+  //
+  // History: until May 2026 this handler bound bare `N` to "new task" and bare
+  // `F` to "toggle filter", with only a tagName check (INPUT/TEXTAREA/SELECT)
+  // as a guard. That broke typing in contenteditable cells, search bars, and
+  // any rich-text editor — every `f` or `n` keystroke hijacked the page.
+  //
+  // Fix: route all global shortcuts through isEditableTarget() and require a
+  // modifier-combo (Ctrl/Cmd + Shift + F) for filter. The bare-letter N
+  // shortcut is removed entirely — new tasks are created via the visible
+  // "+ Add task" rows and the "+ New group" / FAB buttons.
   useEffect(() => {
     function handleKeyDown(e) {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-      // Ctrl+N or N: New task (only if user can create tasks)
-      if ((e.key === 'n' || e.key === 'N') && canCreateTask) {
-        if (e.ctrlKey || e.metaKey || !e.shiftKey) {
-          e.preventDefault();
-          const firstGroupId = board?.groups?.[0]?.id || 'new';
-          // Toast already surfaced inside handleAddTask — swallow the
-          // re-thrown error so the keyboard shortcut stays fire-and-forget.
-          handleAddTask(firstGroupId, 'New Task').catch(() => {});
-        }
-      }
-      // Ctrl+F or F: Toggle filters
-      if (e.key === 'f' || e.key === 'F') {
-        if (!e.ctrlKey && !e.metaKey) {
-          e.preventDefault();
-          setShowFilters(prev => !prev);
-        } else if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          document.querySelector('[data-search-input]')?.focus();
-        }
-      }
-      // Tab keyboard shortcuts — order matches the visible tab order:
-      //   1 = Main table, 2 = Gantt, 3 = Calendar, 4 = Kanban
-      if (e.key === '1') { e.preventDefault(); setViewTab('table'); }
-      if (e.key === '2') { e.preventDefault(); setViewTab('gantt'); }
-      if (e.key === '3') { e.preventDefault(); setViewTab('calendar'); }
-      if (e.key === '4') { e.preventDefault(); setViewTab('kanban'); }
-      if (e.key === 'Delete') {
+      if (isEditableTarget(e.target)) return;
+
+      // Ctrl/Cmd + Shift + F: toggle the advanced-filters panel. The bare-key
+      // form was removed because it conflicted with normal typing.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
+        setShowFilters(prev => !prev);
+        return;
+      }
+      // Ctrl/Cmd + F (no shift): focus the board search input instead of the
+      // browser's find-in-page. Preserved from the pre-May-2026 handler.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        document.querySelector('[data-search-input]')?.focus();
+        return;
+      }
+
+      // View-tab shortcuts — Shift + 1..4. The bare-digit form was removed
+      // because plain `1`/`2`/`3`/`4` hijacked digit typing whenever focus
+      // was on a non-editable surface (e.g. after closing a modal, with focus
+      // back on the body). Ctrl/Cmd/Alt + digit stay reserved for the
+      // browser/OS. Match on `e.code` because Shift+1 produces e.key="!" on
+      // a US layout — Digit1..Digit4 is layout-stable for top-row digits.
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // Order matches the visible tab order:
+        //   Shift+1 = Main table, Shift+2 = Gantt, Shift+3 = Calendar, Shift+4 = Kanban
+        if (e.code === 'Digit1') { e.preventDefault(); setViewTab('table'); return; }
+        if (e.code === 'Digit2') { e.preventDefault(); setViewTab('gantt'); return; }
+        if (e.code === 'Digit3') { e.preventDefault(); setViewTab('calendar'); return; }
+        if (e.code === 'Digit4') { e.preventDefault(); setViewTab('kanban'); return; }
       }
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [board]);
+  }, []);
 
   // Derive a deduped, name-sorted list of labels currently in use on this
   // board's tasks. We intentionally derive from in-memory `tasks` rather
@@ -1391,6 +1403,7 @@ export default function BoardPage() {
 
             {/* Filter */}
             <button onClick={() => setShowFilters(!showFilters)}
+              title="Toggle filters (Ctrl+Shift+F)"
               className={`flex items-center gap-1.5 px-2.5 py-[6px] text-[14px] rounded-[4px] transition-colors ${
                 showFilters || activeFilterCount > 0 ? 'bg-[#cce5ff] text-[#0073ea]' : 'text-[#676879] hover:bg-[#dcdfec]'
               }`}>

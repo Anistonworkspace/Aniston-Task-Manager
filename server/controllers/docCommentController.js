@@ -26,9 +26,12 @@
  * doc_mention notification path.
  */
 
-const { Doc, DocComment, User, Workspace } = require('../models');
+const { Doc, DocComment, DocAccess, User, Workspace } = require('../models');
 const safeLogger = require('../utils/safeLogger');
 const { logActivity } = require('../services/activityService');
+// feat/docs-personal-notion Phase 3 — canonical access resolver. Replaces
+// the legacy workspace-visibility / board-fallback gate.
+const docAccessSvc = require('../services/docAccessService');
 
 let xssFn;
 try { xssFn = require('xss'); } catch { xssFn = (s) => s; }
@@ -42,24 +45,31 @@ let socketService;
 try { socketService = require('../services/socketService'); } catch { socketService = null; }
 
 /**
- * Fan-out helper — best-effort, fire-and-forget. Loads the doc's
- * workspace member set (creator + explicit members) and emits the event
- * to each. Errors are swallowed so a transient socket / DB hiccup never
- * causes a comment mutation to roll back from the caller's perspective.
+ * Fan-out helper — best-effort, fire-and-forget.
+ *
+ * feat/docs-personal-notion Phase 3 — recipient set switched from the
+ * workspace member list to the doc's `doc_access` rows (+ owner). A
+ * workspace member who is NOT explicitly granted access no longer receives
+ * comment events about a doc they cannot read. Reuses the union pattern
+ * documented in services/docAccessService.js.
+ *
+ * Errors are swallowed so a transient socket / DB hiccup never causes a
+ * comment mutation to roll back from the caller's perspective.
  */
 async function broadcastCommentsChanged(docId) {
   if (!socketService || typeof socketService.emitToUsers !== 'function') return;
   try {
-    const doc = await Doc.findByPk(docId, { attributes: ['id', 'workspaceId'] });
-    if (!doc?.workspaceId) return;
-    const ws = await Workspace.findByPk(doc.workspaceId, {
-      include: [{ model: User, as: 'workspaceMembers', attributes: ['id'], required: false }],
+    const doc = await Doc.findByPk(docId, { attributes: ['id', 'ownerUserId'] });
+    if (!doc) return;
+    const grants = await DocAccess.findAll({
+      where: { docId: doc.id },
+      attributes: ['userId'],
+      raw: true,
     });
-    if (!ws) return;
     const userIds = new Set();
-    if (ws.createdBy) userIds.add(ws.createdBy);
-    for (const m of (ws.workspaceMembers || [])) {
-      if (m?.id) userIds.add(m.id);
+    if (doc.ownerUserId) userIds.add(doc.ownerUserId);
+    for (const g of grants) {
+      if (g?.userId) userIds.add(g.userId);
     }
     if (userIds.size === 0) return;
     socketService.emitToUsers(
@@ -90,38 +100,40 @@ const DELETED_MARKER = '[deleted]';
 // ─── helpers ───────────────────────────────────────────────────────────
 
 /**
- * Workspace-membership check — copied (in spirit) from docController. We
- * intentionally re-implement instead of importing the private helper so a
- * future change in docController.canCallerSeeWorkspace doesn't silently
- * widen / narrow comment access in surprising ways.
+ * feat/docs-personal-notion Phase 3 — load the doc and gate by access
+ * level. Replaces the local workspace-visibility helper. Sends the
+ * appropriate HTTP error onto the response and returns null when the
+ * caller can't proceed.
+ *
+ *   requiredLevel ∈ 'view' | 'comment' | 'edit' | 'owner'
+ *
+ * Default 'view' so listComments still works for any reader. Endpoints
+ * that mutate state pass 'comment' so view-only collaborators can read
+ * but not post.
  */
-async function canCallerSeeWorkspace(user, workspaceId) {
-  if (!workspaceId) return false;
-  if (user?.isSuperAdmin) return true;
-  const ws = await Workspace.findByPk(workspaceId, {
-    include: [
-      { model: User, as: 'workspaceMembers', attributes: ['id'], required: false },
-    ],
-  });
-  if (!ws) return false;
-  if (user?.role === 'admin' || user?.role === 'manager') return true;
-  if (ws.createdBy === user.id) return true;
-  const memberIds = (ws.workspaceMembers || []).map((m) => m.id);
-  return memberIds.includes(user.id);
-}
-
-async function loadDocAndAuthorize(req, res) {
+async function loadDocAndAuthorize(req, res, requiredLevel = 'view') {
   const { id } = req.params;
   const doc = await Doc.findByPk(id);
   if (!doc) {
     res.status(404).json({ success: false, message: 'Doc not found.' });
     return null;
   }
-  const allowed = await canCallerSeeWorkspace(req.user, doc.workspaceId);
-  if (!allowed) {
+  const level = await docAccessSvc.getDocAccessLevel(req.user, doc);
+  if (!level) {
     res.status(403).json({ success: false, message: 'You do not have access to this doc.' });
     return null;
   }
+  if (docAccessSvc.levelRank(level) < docAccessSvc.levelRank(requiredLevel)) {
+    res.status(403).json({
+      success: false,
+      code: 'insufficient_access',
+      message: `This action requires ${requiredLevel} access (you have ${level}).`,
+    });
+    return null;
+  }
+  // Attach for downstream use without re-querying (e.g. edit/delete gates
+  // that need to know if the caller is the author OR owner).
+  doc.__callerLevel = level;
   return doc;
 }
 
@@ -218,7 +230,8 @@ async function listComments(req, res) {
 
 async function createComment(req, res) {
   try {
-    const doc = await loadDocAndAuthorize(req, res);
+    // 'comment' level — view-only collaborators can read threads but not post.
+    const doc = await loadDocAndAuthorize(req, res, 'comment');
     if (!doc) return undefined;
 
     const body = sanitizeBody(req.body?.body);
@@ -313,7 +326,7 @@ async function createComment(req, res) {
 
 async function updateComment(req, res) {
   try {
-    const doc = await loadDocAndAuthorize(req, res);
+    const doc = await loadDocAndAuthorize(req, res, 'view');
     if (!doc) return undefined;
 
     const { commentId } = req.params;
@@ -321,10 +334,12 @@ async function updateComment(req, res) {
     if (!comment || comment.docId !== doc.id) {
       return res.status(404).json({ success: false, message: 'Comment not found.' });
     }
-    // Edit is restricted to the author. Super-admin override mirrors the
-    // pattern in other doc controllers.
-    if (!req.user.isSuperAdmin && comment.authorId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Only the comment author can edit it.' });
+    // Edit is restricted to the author OR the doc owner (super-admin
+    // bypasses via getDocAccessLevel returning 'owner').
+    const isAuthor = comment.authorId === req.user.id;
+    const isOwner = doc.__callerLevel === 'owner';
+    if (!isAuthor && !isOwner) {
+      return res.status(403).json({ success: false, message: 'Only the comment author or doc owner can edit this comment.' });
     }
 
     const body = sanitizeBody(req.body?.body);
@@ -350,7 +365,7 @@ async function updateComment(req, res) {
 
 async function deleteComment(req, res) {
   try {
-    const doc = await loadDocAndAuthorize(req, res);
+    const doc = await loadDocAndAuthorize(req, res, 'view');
     if (!doc) return undefined;
 
     const { commentId } = req.params;
@@ -358,8 +373,11 @@ async function deleteComment(req, res) {
     if (!comment || comment.docId !== doc.id) {
       return res.status(404).json({ success: false, message: 'Comment not found.' });
     }
-    if (!req.user.isSuperAdmin && comment.authorId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Only the comment author can delete it.' });
+    // Author OR doc owner. Super-admin lands here via getDocAccessLevel.
+    const isAuthor = comment.authorId === req.user.id;
+    const isOwner = doc.__callerLevel === 'owner';
+    if (!isAuthor && !isOwner) {
+      return res.status(403).json({ success: false, message: 'Only the comment author or doc owner can delete this comment.' });
     }
 
     // If the comment is a top-level thread WITH replies, soft-delete it
@@ -395,7 +413,9 @@ async function deleteComment(req, res) {
 
 async function resolveComment(req, res) {
   try {
-    const doc = await loadDocAndAuthorize(req, res);
+    // Any collaborator with comment access can resolve a thread on a doc
+    // they participate in. Pure-view collaborators cannot.
+    const doc = await loadDocAndAuthorize(req, res, 'comment');
     if (!doc) return undefined;
 
     const { commentId } = req.params;
@@ -428,7 +448,7 @@ async function resolveComment(req, res) {
 
 async function unresolveComment(req, res) {
   try {
-    const doc = await loadDocAndAuthorize(req, res);
+    const doc = await loadDocAndAuthorize(req, res, 'comment');
     if (!doc) return undefined;
 
     const { commentId } = req.params;

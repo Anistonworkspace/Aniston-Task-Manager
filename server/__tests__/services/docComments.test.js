@@ -27,6 +27,16 @@ jest.mock('../../models', () => ({
     count: jest.fn(),
     destroy: jest.fn(),
   },
+  // feat/docs-personal-notion Phase 3 — access table consulted by the
+  // canonical resolver (docAccessService.hasDocAccess). Default findOne
+  // returns a 'comment'-level grant so existing tests that expect a
+  // workspace member to be able to post comments still pass; the explicit
+  // "403 when caller is not a workspace member" test mocks findOne to
+  // return null to verify the denial path.
+  DocAccess: {
+    findOne: jest.fn().mockResolvedValue({ accessLevel: 'comment' }),
+    findAll: jest.fn().mockResolvedValue([]),
+  },
   Workspace: { findByPk: jest.fn() },
   User: {},
 }));
@@ -178,12 +188,13 @@ describe('createComment', () => {
     expect(DocComment.create).not.toHaveBeenCalled();
   });
 
-  test('403 when caller is not a workspace member (and not admin)', async () => {
-    Doc.findByPk.mockResolvedValue(makeDoc());
-    Workspace.findByPk.mockResolvedValue(makeWorkspace({
-      createdBy: 'some-other-admin',
-      workspaceMembers: [], // outsider not in here
-    }));
+  test('403 when caller has no doc_access grant (and not super-admin)', async () => {
+    // Phase 3: this test renamed — workspace membership is no longer the
+    // gate. We now drive the denial via DocAccess.findOne returning null.
+    Doc.findByPk.mockResolvedValue(makeDoc({ createdBy: 'someone-else' }));
+    Workspace.findByPk.mockResolvedValue(makeWorkspace({ createdBy: 'someone-else' }));
+    const { DocAccess } = require('../../models');
+    DocAccess.findOne.mockResolvedValueOnce(null);
 
     const req = {
       user: OUTSIDER,

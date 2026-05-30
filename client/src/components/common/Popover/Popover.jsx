@@ -234,10 +234,18 @@ function PopoverContent({
 
   const transformOrigin = transformOriginFor(finalPlacement);
 
-  return (
+  // AnimatePresence must wrap the conditionally-rendered motion element
+  // DIRECTLY (with a key) so it can track mount/unmount for the exit
+  // animation. The portal therefore lives OUTSIDE AnimatePresence — we always
+  // render the portal into document.body and let AnimatePresence inside it
+  // toggle the content. The previous ordering (AnimatePresence outside, a
+  // keyless `createPortal(...)` as its only child) made framer-motion 12 skip
+  // the child entirely, so the popover content never mounted.
+  return createPortal(
     <AnimatePresence>
-      {open && createPortal(
+      {open && (
         <motion.div
+          key="popover-content"
           ref={contentRef}
           id={contentId}
           role="dialog"
@@ -261,10 +269,10 @@ function PopoverContent({
           transition={{ duration: reducedMotion ? 0.1 : 0.15, ease: [0.16, 1, 0.3, 1] }}
         >
           {children}
-        </motion.div>,
-        document.body
+        </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
 

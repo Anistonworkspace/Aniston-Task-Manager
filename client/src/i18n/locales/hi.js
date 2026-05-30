@@ -210,8 +210,6 @@ const hi = {
       profile: 'प्रोफाइल',
       security: 'सुरक्षा',
       preferences: 'सेटिंग',
-      notifications: 'नोटिफिकेशन',
-      integrations: 'इंटीग्रेशन',
       guide: 'गाइड',
     },
     personalInformation: 'व्यक्तिगत जानकारी',
@@ -252,10 +250,6 @@ const hi = {
     languageHint: 'पूरे ऐप में दिखने वाली भाषा चुनें। यह आपके अकाउंट में सेव होती है।',
     languageEnglish: 'English',
     languageHindi: 'हिंदी',
-
-    teamsNotifications: 'Teams नोटिफिकेशन',
-    teamsNotifBody: 'Microsoft Teams में काम के नोटिफिकेशन पाएं',
-    teamsNotifHint: 'काम देना, डेडलाइन बदलना और हटाने की सूचनाएं आपके Teams चैट में भेजी जाएंगी।',
 
     accountId: 'अकाउंट ID',
     lastUpdated: 'आख़िरी बार अपडेट',

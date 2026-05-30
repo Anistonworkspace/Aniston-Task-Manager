@@ -13,6 +13,9 @@ const HelpRequest = sequelize.define('HelpRequest', {
   meetingLink: { type: DataTypes.TEXT, allowNull: true },
   meetingScheduledAt: { type: DataTypes.DATE, allowNull: true },
   resolvedAt: { type: DataTypes.DATE, allowNull: true },
+  // Required when status='rejected'. Surfaced back to the requester so they
+  // understand why help was declined.
+  rejectionReason: { type: DataTypes.TEXT, allowNull: true },
   isArchived: { type: DataTypes.BOOLEAN, defaultValue: false },
   archivedAt: { type: DataTypes.DATE, allowNull: true },
   archivedBy: { type: DataTypes.UUID, allowNull: true },

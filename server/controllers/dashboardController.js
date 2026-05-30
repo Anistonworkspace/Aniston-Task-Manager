@@ -1,4 +1,4 @@
-const { Task, Board, User, Activity, WorkLog, Subtask } = require('../models');
+const { Task, Board, User, Activity, WorkLog, Subtask, Workspace } = require('../models');
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { buildPendingPriorityOrder } = require('../utils/taskPrioritization');
@@ -21,6 +21,30 @@ async function applyVisibilityWhere(viewer, where) {
   return where;
 }
 
+// Returns the set of board IDs that are "active" for dashboard counting:
+// board.isArchived = false AND its workspace (if any) has not been archived
+// (workspaces.archivedAt IS NULL). Boards with no workspace are treated as
+// active. Resolving to an explicit ID list lets us drop the rows at the task
+// layer too, so archived-board tasks never leak into Total / Completed /
+// In Progress / etc.
+async function getActiveBoardIds() {
+  const boards = await Board.findAll({
+    where: { isArchived: false },
+    attributes: ['id', 'workspaceId'],
+    include: [
+      {
+        model: Workspace,
+        as: 'workspace',
+        attributes: ['id', 'archivedAt'],
+        required: false,
+      },
+    ],
+  });
+  return boards
+    .filter(b => !b.workspaceId || !b.workspace || b.workspace.archivedAt === null)
+    .map(b => b.id);
+}
+
 /**
  * GET /api/dashboard/stats?boardId=...
  * Returns aggregated stats for dashboard. Admin sees all boards, manager sees their boards.
@@ -36,6 +60,26 @@ const getDashboardStats = async (req, res) => {
     }
 
     const taskWhere = { isArchived: false, ...boardFilter };
+
+    // Exclude tasks whose board or workspace is archived. Resolved to an
+    // explicit ID list because Sequelize's nested include + workspace.archivedAt
+    // null check is fragile when boards have no workspace at all.
+    const activeBoardIds = await getActiveBoardIds();
+    if (boardId) {
+      if (!activeBoardIds.includes(boardId)) {
+        return res.json({
+          success: true,
+          data: {
+            summary: { totalTasks: 0, done: 0, working: 0, stuck: 0, notStarted: 0, overdue: 0 },
+            statusCounts: {}, priorityCounts: {}, memberStats: [],
+            recentActivity: [], recentWorklogs: [], boards: [],
+            overdueTasks: [], trendData: [], workloadData: [],
+          },
+        });
+      }
+    } else {
+      taskWhere.boardId = { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] };
+    }
 
     // CP-3 RBAC: scope tasks to the viewer's allowed user-set (admin/super_admin
     // unrestricted, manager/assistant_manager/member → self + descendants).
@@ -163,7 +207,11 @@ const getDashboardStats = async (req, res) => {
     let boards = [];
     if (!boardId) {
       const visBoardWhere = await boardVisibility.buildBoardVisibilityWhere(req.user);
-      const boardWhere = { isArchived: false, ...visBoardWhere };
+      const boardWhere = {
+        isArchived: false,
+        id: { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] },
+        ...visBoardWhere,
+      };
       const allBoards = await Board.findAll({
         where: boardWhere,
         attributes: ['id', 'name', 'color'],
@@ -305,7 +353,22 @@ const getMemberTasks = async (req, res) => {
     }
 
     const taskWhere = { assignedTo: userId, isArchived: false };
-    if (boardId) taskWhere.boardId = boardId;
+    const activeBoardIds = await getActiveBoardIds();
+    if (boardId) {
+      if (!activeBoardIds.includes(boardId)) {
+        return res.json({
+          success: true,
+          data: {
+            member,
+            tasks: [],
+            summary: { total: 0, done: 0, working: 0, stuck: 0, notStarted: 0, overdue: 0 },
+          },
+        });
+      }
+      taskWhere.boardId = boardId;
+    } else {
+      taskWhere.boardId = { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] };
+    }
 
     const tasks = await Task.findAll({
       where: taskWhere,
@@ -343,10 +406,14 @@ const getMemberTasks = async (req, res) => {
  */
 const getEnterpriseDashboard = async (req, res) => {
   try {
-    const { Workspace, AccessRequest, Announcement } = require('../models');
+    const { AccessRequest, Announcement } = require('../models');
 
     const today = new Date().toISOString().slice(0, 10);
     const taskWhere = { isArchived: false };
+
+    // Exclude tasks on archived boards / archived workspaces from every count.
+    const activeBoardIds = await getActiveBoardIds();
+    taskWhere.boardId = { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] };
 
     // CP-3 RBAC: scope to the viewer's allowed user-set (admin/super_admin
     // unrestricted; everyone else → self + descendants).
@@ -485,7 +552,7 @@ const getEnterpriseDashboard = async (req, res) => {
     let workspaces = [];
     try {
       workspaces = await Workspace.findAll({
-        where: { isActive: true },
+        where: { isActive: true, archivedAt: null },
         include: [
           { model: Board, as: 'boards', attributes: ['id', 'name'], where: { isArchived: false }, required: false },
           { model: User, as: 'workspaceMembers', attributes: ['id', 'name'] },
@@ -572,6 +639,10 @@ const getSuperDashboard = async (req, res) => {
 
     // Build task where clause
     const taskWhere = { isArchived: false };
+
+    // Exclude tasks on archived boards / archived workspaces.
+    const activeBoardIds = await getActiveBoardIds();
+    taskWhere.boardId = { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] };
 
     // CP-3 RBAC: scope to viewer's allowed user-set. Admin/super_admin see all;
     // everyone else (manager/assistant_manager/member) → self + descendants.
@@ -710,6 +781,10 @@ const getRoleDashboard = async (req, res) => {
 
     // Build task filter
     const taskWhere = { isArchived: false };
+
+    // Exclude tasks on archived boards / archived workspaces.
+    const activeBoardIds = await getActiveBoardIds();
+    taskWhere.boardId = { [Op.in]: activeBoardIds.length ? activeBoardIds : [null] };
 
     // CP-3 RBAC: server-enforced scope. The `scope` query param can only
     // narrow visibility — it can never widen it past the role-based ceiling.

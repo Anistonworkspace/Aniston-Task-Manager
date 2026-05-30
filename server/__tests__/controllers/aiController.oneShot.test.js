@@ -62,6 +62,11 @@ jest.mock('../../models', () => ({
   Doc: { findByPk: jest.fn() },
   Workspace: { findByPk: jest.fn() },
   User: {},
+  // feat/docs-personal-notion Phase 3 — summarize/doc gates on
+  // docAccessSvc.hasDocAccess, which reads DocAccess.findOne. Default
+  // null → no access; happy-path tests set the doc's ownerUserId to the
+  // caller's id or use super-admin.
+  DocAccess: { findOne: jest.fn().mockResolvedValue(null), findAll: jest.fn() },
   AIConfig: { findOne: jest.fn() },
   AIProvider: { findOne: jest.fn(), findAll: jest.fn() },
 }));
@@ -431,13 +436,12 @@ describe('POST /api/ai/summarize/doc/:id', () => {
     expect(Workspace.findByPk).not.toHaveBeenCalled();
   });
 
-  it('member with workspace membership can summarize', async () => {
+  it('member with explicit doc_access grant can summarize', async () => {
+    // Phase 3: workspace membership no longer grants access — the gate is
+    // docAccessSvc.hasDocAccess (owner OR explicit doc_access row).
     Doc.findByPk.mockResolvedValueOnce({ id: 'd-1', workspaceId: 'w-1', title: 'X' });
-    Workspace.findByPk.mockResolvedValueOnce({
-      id: 'w-1',
-      createdBy: 'someone-else',
-      workspaceMembers: [{ id: MEMBER.id }],
-    });
+    const { DocAccess } = require('../../models');
+    DocAccess.findOne.mockResolvedValueOnce({ id: 'a-1' }); // explicit grant for MEMBER
     aiSummary.summarizeDocWithAI.mockResolvedValueOnce({ summary: 's' });
 
     const req = { params: { id: 'd-1' }, user: MEMBER, body: {} };
@@ -447,13 +451,10 @@ describe('POST /api/ai/summarize/doc/:id', () => {
     expect(res.json).toHaveBeenCalledWith({ success: true, data: { summary: 's' } });
   });
 
-  it('member without workspace membership gets 403', async () => {
-    Doc.findByPk.mockResolvedValueOnce({ id: 'd-1', workspaceId: 'w-1', title: 'X' });
-    Workspace.findByPk.mockResolvedValueOnce({
-      id: 'w-1',
-      createdBy: 'someone-else',
-      workspaceMembers: [],
-    });
+  it('member without doc_access gets 403', async () => {
+    // Phase 3: default DocAccess.findOne → null means MEMBER has no grant.
+    // Workspace membership is no longer consulted.
+    Doc.findByPk.mockResolvedValueOnce({ id: 'd-1', workspaceId: 'w-1', title: 'X', ownerUserId: 'someone-else' });
 
     const req = { params: { id: 'd-1' }, user: MEMBER, body: {} };
     const res = mockRes();
@@ -467,13 +468,9 @@ describe('POST /api/ai/summarize/doc/:id', () => {
     expect(aiSummary.summarizeDocWithAI).not.toHaveBeenCalled();
   });
 
-  it('workspace creator can summarize (IDOR check)', async () => {
-    Doc.findByPk.mockResolvedValueOnce({ id: 'd-1', workspaceId: 'w-1', title: 'X' });
-    Workspace.findByPk.mockResolvedValueOnce({
-      id: 'w-1',
-      createdBy: MEMBER.id, // they created the workspace
-      workspaceMembers: [],
-    });
+  it('doc owner can summarize (Phase 3 ownerUserId match)', async () => {
+    // Phase 3: ownership comes from ownerUserId, not workspace creator.
+    Doc.findByPk.mockResolvedValueOnce({ id: 'd-1', workspaceId: 'w-1', title: 'X', ownerUserId: MEMBER.id });
     aiSummary.summarizeDocWithAI.mockResolvedValueOnce({ summary: 's' });
 
     const req = { params: { id: 'd-1' }, user: MEMBER, body: {} };
