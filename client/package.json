@@ -42,7 +42,7 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.23.1",
     "reactflow": "^11.11.4",
-    "recharts": "^2.12.7",
+    "recharts": "^3.8.1",
     "socket.io-client": "^4.7.5",
     "tippy.js": "^6.3.7",
     "y-prosemirror": "^1.2.5",
