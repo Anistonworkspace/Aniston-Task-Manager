@@ -9,7 +9,7 @@
     "dist:win": "electron-builder --win --publish never"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "^42.3.0",
     "electron-builder": "^25.1.8"
   },
   "build": {
