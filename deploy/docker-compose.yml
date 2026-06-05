@@ -71,10 +71,13 @@ services:
       - "5000:5000"
     volumes:
       - uploads_data:/app/uploads
-      # Tier-1 database backups. Named volume so dumps survive container
-      # rebuilds (a docker-compose `up --build` would otherwise blow them
-      # away if backups lived in the image). The backend writes to three
-      # subdirs under /app/backups: database/, pre-restore/, uploads-inbox/.
+      # Tier-1 database + uploaded-files backups. Named volume so dumps
+      # survive container rebuilds (a docker-compose `up --build` would
+      # otherwise blow them away if backups lived in the image). Subdirs
+      # under /app/backups: database/, pre-restore/, uploads-inbox/ (DB
+      # backups) and files/, files-pre-restore/, files-uploads-inbox/
+      # (uploads tar.gz archives). The files backup reads /app/uploads
+      # (mounted above) and writes the archive here.
       #
       # NOT YET shipped off-host. EC2 host loss = backup loss. The
       # follow-up is to wire a daily `aws s3 cp /app/backups/database/...`

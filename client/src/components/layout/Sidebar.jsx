@@ -547,8 +547,18 @@ export default function Sidebar({ collapsed, onToggle }) {
         {/* === FIXED TOP: Logo only === */}
         <div className="flex-shrink-0">
           <div className="flex items-center gap-2.5 px-4 py-3 border-b border-sidebar-border">
-            <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-7 h-7 rounded-lg object-contain flex-shrink-0" />
-            <h1 className="text-sidebar-text-active text-[13px] font-bold truncate leading-tight flex-1">Monday Aniston</h1>
+            {/* Clicking the brand (logo + title) refreshes the app — a full
+                page reload resets all in-memory state while the persistent
+                session cookie keeps the user signed in. Replaces the old
+                header "Refresh app" button. */}
+            <button
+              onClick={() => window.location.reload()}
+              title="Refresh app"
+              aria-label="Refresh app"
+              className="flex items-center gap-2.5 flex-1 min-w-0 text-left rounded-md hover:bg-sidebar-hover transition-all duration-150 -mx-1 px-1 py-0.5 cursor-pointer">
+              <img src="/icons/anistonlogo.png" alt="Monday Aniston" className="w-7 h-7 rounded-lg object-contain flex-shrink-0" />
+              <h1 className="text-sidebar-text-active text-[13px] font-bold truncate leading-tight flex-1">Monday Aniston</h1>
+            </button>
             <button onClick={onToggle} className="text-sidebar-text/50 hover:text-sidebar-text-active p-1 rounded-md hover:bg-sidebar-hover transition-all duration-150">
               <PanelLeftClose size={15} />
             </button>

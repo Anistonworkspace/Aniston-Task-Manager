@@ -1516,11 +1516,29 @@ exports.getActionablePendingCounts = async (req, res) => {
 exports.getWorkflowItems = async (req, res) => {
   try {
     const user = req.user;
-    const { isTier4 } = require('../config/tiers');
+    const { isTier4, isTier3 } = require('../config/tiers');
     const isMember = isTier4(user);
+    // Tier 3 (assistant manager) is subtree-scoped: it may only see — and act
+    // on — approvals / requests belonging to its own reporting branch, never
+    // the whole org. Tier 1 / Tier 2 stay unrestricted; Tier 4 stays self-only
+    // (handled by the isMember branches below). See hierarchyService.
+    const isSubtreeScoped = isTier3(user);
+    let subtreeIds = null;
+    if (isSubtreeScoped) {
+      const hierarchyService = require('../services/hierarchyService');
+      let descendants = [];
+      try {
+        descendants = await hierarchyService.getDescendantIds(user.id);
+      } catch (e) {
+        // hierarchy tables absent / transient — fall back to self only so the
+        // page still loads (with just the actor's own items) instead of 500ing.
+      }
+      subtreeIds = [String(user.id), ...descendants.map(String)];
+    }
 
     const approvalWhere = { approvalStatus: { [Op.ne]: null }, isArchived: false };
     if (isMember) approvalWhere.assignedTo = user.id;
+    else if (isSubtreeScoped) approvalWhere.assignedTo = { [Op.in]: subtreeIds };
     const approvals = await Task.findAll({
       where: approvalWhere,
       include: [
@@ -1554,6 +1572,7 @@ exports.getWorkflowItems = async (req, res) => {
 
     const extWhere = {};
     if (isMember) extWhere.requestedBy = user.id;
+    else if (isSubtreeScoped) extWhere.requestedBy = { [Op.in]: subtreeIds };
     const extensions = await DueDateExtension.findAll({
       where: extWhere,
       include: [
@@ -1577,6 +1596,7 @@ exports.getWorkflowItems = async (req, res) => {
 
     const delegationWhere = { action: 'task_delegated' };
     if (isMember) delegationWhere.userId = user.id;
+    else if (isSubtreeScoped) delegationWhere.userId = { [Op.in]: subtreeIds };
     const delegations = await Activity.findAll({
       where: delegationWhere,
       include: [
@@ -1589,6 +1609,10 @@ exports.getWorkflowItems = async (req, res) => {
 
     const helpWhere = {};
     if (isMember) helpWhere[Op.or] = [{ requestedBy: user.id }, { requestedTo: user.id }];
+    else if (isSubtreeScoped) helpWhere[Op.or] = [
+      { requestedBy: { [Op.in]: subtreeIds } },
+      { requestedTo: { [Op.in]: subtreeIds } },
+    ];
     const helpRequests = await HelpRequest.findAll({
       where: helpWhere,
       include: [

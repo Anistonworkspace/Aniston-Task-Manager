@@ -30,6 +30,9 @@ const safeLogger = require('../utils/safeLogger');
 const { logActivity } = require('../services/activityService');
 // feat/docs-personal-notion Phase 2 — canonical access resolver.
 const docAccessSvc = require('../services/docAccessService');
+// June 2026 — archive / restore / permanent-delete are Tier 1/2 (admin)
+// actions. The tier helpers are the single source of truth for that gate.
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 // Doc visibility must match `/workspaces/mine` visibility: a Tier 4 user
 // who only reaches a workspace via board membership (no explicit
 // WorkspaceMember row) still sees the workspace in the sidebar, so they
@@ -654,24 +657,34 @@ async function listArchivedDocsForCaller(req, res) {
  */
 async function permanentDeleteDoc(req, res) {
   try {
-    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    // June 2026 — permanent delete is a Tier 1/2 action surfaced from the
+    // global Archive page. Caller must see the doc AND be Tier 1 or 2.
+    const result = await loadDocAndAssertAccess(req, res, 'view');
     if (!result) return;
     const { doc } = result;
+    if (!hasTierAtLeast(req.user, TIER_2)) {
+      return res.status(403).json({
+        success: false,
+        code: 'insufficient_tier',
+        message: 'Only Tier 1 and Tier 2 can permanently delete docs.',
+      });
+    }
     if (!doc.isArchived) {
       return res.status(400).json({
         success: false,
         message: 'Archive the doc first before permanent deletion.',
       });
     }
+    const deletedId = doc.id;
     await doc.destroy();
     logActivity({
       action: 'deleted',
       description: `Permanently deleted doc: ${doc.title}`,
       entityType: 'doc',
-      entityId: doc.id,
+      entityId: deletedId,
       userId: req.user.id,
     });
-    res.json({ success: true, data: { id } });
+    res.json({ success: true, data: { id: deletedId } });
   } catch (err) {
     safeLogger.error('[Doc] permanentDeleteDoc error', { err });
     res.status(500).json({ success: false, message: 'Failed to delete doc.' });
@@ -842,7 +855,10 @@ async function listPersonalDocs(req, res) {
       where,
       include: [
         { model: User, as: 'creator', attributes: USER_PILL_ATTRS },
-        { model: User, as: 'owner', attributes: USER_PILL_ATTRS, required: false },
+        // June 2026 — include the owner's department so the Tier 1/2
+        // department-grouped docs view + department filter can render
+        // without a second round-trip.
+        { model: User, as: 'owner', attributes: [...USER_PILL_ATTRS, 'department'], required: false },
         { model: User, as: 'lastEditor', attributes: USER_PILL_ATTRS },
       ],
       order: [['lastEditedAt', 'DESC'], ['updatedAt', 'DESC']],
@@ -857,9 +873,17 @@ async function listPersonalDocs(req, res) {
       accessByDoc.set(row.docId, row);
     }
 
+    // June 2026 — Tier 1/2 are doc admins (see docAccessService.isDocAdmin):
+    // they see every doc with owner-level access. Used for the admin badge +
+    // callerAccessLevel fallback below.
+    const isAdminViewer = req.user?.isSuperAdmin || hasTierAtLeast(req.user, TIER_2);
+
     const serialized = docs.map((d) => {
       const json = serializeDoc(d, { includeContent: false });
       const access = accessByDoc.get(json.id);
+      // Owner's department for the Tier 1/2 grouped view (flattened so the
+      // client doesn't have to dig into the nested owner object).
+      json.ownerDepartment = d.owner?.department || null;
       if (json.ownerUserId === req.user.id || (json.createdBy === req.user.id && !json.ownerUserId)) {
         json.callerRelation = 'owner';
       } else if (access?.source === 'mention') {
@@ -870,11 +894,13 @@ async function listPersonalDocs(req, res) {
         json.callerRelation = 'legacy';
       } else if (req.user?.isSuperAdmin) {
         json.callerRelation = 'super_admin';
+      } else if (isAdminViewer) {
+        json.callerRelation = 'admin';
       } else {
         json.callerRelation = null;
       }
       json.callerAccessLevel = access?.accessLevel
-        || (json.callerRelation === 'owner' ? 'owner' : null);
+        || (json.callerRelation === 'owner' ? 'owner' : (isAdminViewer ? 'owner' : null));
       return json;
     });
 
@@ -1019,21 +1045,17 @@ async function updateDoc(req, res) {
       updates.contentJson = cleanJson;
       updates.contentText = extractContentText(cleanJson);
     }
-    // Phase 7 — contentFormat change drives the "Convert legacy doc to
-    // BlockNote" flow. Owner-only (defense in depth — body edits already
-    // require 'edit' but format change is destructive enough to deserve
-    // its own gate). Auto-snapshots the existing contentJson to
-    // legacyContentJson so the original Tiptap source is recoverable.
+    // contentFormat change drives the legacy Tiptap → BlockNote migration.
+    // June 2026: every doc now opens in BlockNote, and DocPage auto-migrates
+    // legacy docs on load. The flip is allowed for any caller who can edit
+    // the body (the outer loadDocAndAssertAccess already required 'edit'),
+    // because the migration is lossless — we auto-snapshot the existing
+    // contentJson into legacyContentJson + version history so the original
+    // Tiptap source is always recoverable. Comment/view callers never reach
+    // this code path.
     if (typeof req.body?.contentFormat === 'string'
         && ['tiptap_json', 'blocknote_json'].includes(req.body.contentFormat)
         && req.body.contentFormat !== doc.contentFormat) {
-      if (level !== 'owner') {
-        return res.status(403).json({
-          success: false,
-          code: 'insufficient_access',
-          message: 'Only the doc owner can convert the editor format.',
-        });
-      }
       // Preserve the pre-conversion contentJson exactly once. We only
       // snapshot if legacyContentJson is currently NULL — re-converting a
       // doc twice should not overwrite the original snapshot.
@@ -1167,9 +1189,20 @@ async function updateDoc(req, res) {
 
 async function archiveDoc(req, res) {
   try {
-    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    // June 2026 — archive is a Tier 1/2 (admin/manager) capability. The
+    // caller must be able to SEE the doc (view access) AND be Tier 1 or 2.
+    // Owners below Tier 2 no longer self-archive; archived docs route to the
+    // global Archive surface for admins to restore / permanently delete.
+    const result = await loadDocAndAssertAccess(req, res, 'view');
     if (!result) return;
     const { doc } = result;
+    if (!hasTierAtLeast(req.user, TIER_2)) {
+      return res.status(403).json({
+        success: false,
+        code: 'insufficient_tier',
+        message: 'Only Tier 1 and Tier 2 can archive docs.',
+      });
+    }
     if (doc.isArchived) {
       return res.json({ success: true, data: { doc: serializeDoc(doc) } });
     }
@@ -1194,9 +1227,18 @@ async function archiveDoc(req, res) {
 
 async function restoreDoc(req, res) {
   try {
-    const result = await loadDocAndAssertAccess(req, res, 'owner');
+    // Restore mirrors archive — a Tier 1/2 action from the global Archive
+    // surface. Caller must be able to see the doc AND be Tier 1 or 2.
+    const result = await loadDocAndAssertAccess(req, res, 'view');
     if (!result) return;
     const { doc } = result;
+    if (!hasTierAtLeast(req.user, TIER_2)) {
+      return res.status(403).json({
+        success: false,
+        code: 'insufficient_tier',
+        message: 'Only Tier 1 and Tier 2 can restore docs.',
+      });
+    }
     if (!doc.isArchived) {
       return res.json({ success: true, data: { doc: serializeDoc(doc) } });
     }

@@ -49,6 +49,9 @@ import safeLog from '../utils/safeLog';
 // ── Constants ────────────────────────────────────────────────────────────
 // Matches the backend gate in adminBackupsController.RESTORE_CONFIRM_PHRASE.
 const RESTORE_CONFIRM_PHRASE = 'RESTORE DATABASE';
+// Matches adminBackupsController.FILES_RESTORE_CONFIRM_PHRASE. Different phrase
+// so a DB-restore confirmation can't be pasted into a files restore by habit.
+const FILES_RESTORE_CONFIRM_PHRASE = 'RESTORE FILES';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -183,6 +186,16 @@ export default function BackupSettingsPage() {
   // Upload-restore is a special case — we hold the File reference here so
   // the typed-confirmation modal can show its name before the user commits.
   const fileInputRef = useRef(null);
+
+  // ── Files-backup state (parallel to the DB state above, fully separate) ──
+  const [filesItems, setFilesItems] = useState([]);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [filesRetentionDays, setFilesRetentionDays] = useState(30);
+  const [filesCreating, setFilesCreating] = useState(false);
+  const [filesDownloadingId, setFilesDownloadingId] = useState(null);
+  // Separate confirm state so the files modals never couple to the DB ones.
+  const [filesConfirm, setFilesConfirm] = useState(null); // { kind, payload } | null
+  const filesFileInputRef = useRef(null);
 
   const fetchBackups = useCallback(async () => {
     try {
@@ -366,6 +379,161 @@ export default function BackupSettingsPage() {
     setConfirm({ kind: 'restore-upload', payload: { file } });
   };
 
+  // ── Files-backup fetch / poll / handlers ────────────────────────────────
+
+  const fetchFiles = useCallback(async () => {
+    try {
+      const res = await api.get('/admin/backups/files');
+      const data = res.data?.data || {};
+      setFilesItems(Array.isArray(data.items) ? data.items : []);
+      if (data.retentionDays) setFilesRetentionDays(data.retentionDays);
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files list error', err);
+      if (err?.response?.status !== 403) toast.error('Failed to load files backups.');
+    } finally {
+      setFilesLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    if (!isSuperAdmin) { setFilesLoading(false); return; }
+    fetchFiles();
+  }, [isSuperAdmin, fetchFiles]);
+
+  // Poll while any files backup is running (zero cost in steady state).
+  useEffect(() => {
+    if (!isSuperAdmin) return undefined;
+    const hasRunning = filesItems.some((r) => r.status === 'running');
+    if (!hasRunning) return undefined;
+    const handle = setInterval(fetchFiles, 2500);
+    return () => clearInterval(handle);
+  }, [filesItems, isSuperAdmin, fetchFiles]);
+
+  const hasRunningFilesBackup = useMemo(
+    () => filesItems.some((r) => r.status === 'running'),
+    [filesItems]
+  );
+
+  const latestCompletedFilesId = useMemo(() => {
+    const eligible = filesItems
+      .filter((r) => r.status === 'completed' && (r.trigger === 'scheduled' || r.trigger === 'manual'))
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return eligible[0]?.id || null;
+  }, [filesItems]);
+
+  const handleFilesCreate = async () => {
+    if (filesCreating || hasRunningFilesBackup) return;
+    setFilesCreating(true);
+    try {
+      const res = await api.post('/admin/backups/files');
+      const fresh = res.data?.data;
+      toast.success(fresh?.filename ? `Files backup created: ${fresh.filename}` : 'Files backup created.');
+      await fetchFiles();
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files create error', err);
+      if (err?.response?.status === 409) {
+        toast.warning(err.response.data?.message || 'A files backup is already running. Wait for it to finish.');
+        await fetchFiles();
+      } else {
+        toast.error(err?.response?.data?.message || 'Files backup failed. Check server logs.');
+      }
+    } finally {
+      setFilesCreating(false);
+    }
+  };
+
+  const handleFilesDownload = async (record) => {
+    setFilesDownloadingId(record.id);
+    try {
+      const res = await api.get(`/admin/backups/files/${record.id}/download`, { responseType: 'blob' });
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: 'application/gzip' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = record.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files download error', err);
+      toast.error(err?.response?.data?.message || 'Download failed.');
+    } finally {
+      setFilesDownloadingId(null);
+    }
+  };
+
+  const handleFilesDelete = async ({ id }) => {
+    try {
+      await api.delete(`/admin/backups/files/${id}`);
+      toast.success('Files backup deleted.');
+      await fetchFiles();
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files delete error', err);
+      toast.error(err?.response?.data?.message || 'Delete failed.');
+    }
+  };
+
+  const handleFilesRestore = async ({ id }) => {
+    try {
+      const res = await api.post(`/admin/backups/files/${id}/restore`, {
+        confirmation: FILES_RESTORE_CONFIRM_PHRASE,
+      });
+      const preRestoreId = res.data?.data?.preRestoreBackupId;
+      toast.success(
+        preRestoreId
+          ? 'Files restored. A pre-restore safety archive was created automatically.'
+          : 'Files restored.'
+      );
+      await fetchFiles();
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files restore error', err);
+      const preRestoreId = err?.response?.data?.data?.preRestoreBackupId;
+      toast.error(
+        preRestoreId
+          ? 'Files restore failed. Pre-restore safety archive is preserved.'
+          : (err?.response?.data?.message || 'Files restore failed.')
+      );
+      await fetchFiles();
+    }
+  };
+
+  const handleFilesUploadRestore = async ({ file }) => {
+    const form = new FormData();
+    form.append('backup', file);
+    form.append('confirmation', FILES_RESTORE_CONFIRM_PHRASE);
+    try {
+      const res = await api.post('/admin/backups/files/restore-upload', form);
+      const preRestoreId = res.data?.data?.preRestoreBackupId;
+      toast.success(
+        preRestoreId
+          ? `Restored uploads from ${file.name}. Pre-restore safety archive created.`
+          : `Restored uploads from ${file.name}.`
+      );
+      await fetchFiles();
+    } catch (err) {
+      safeLog.error('[BackupSettingsPage] files upload-restore error', err);
+      const preRestoreId = err?.response?.data?.data?.preRestoreBackupId;
+      toast.error(
+        preRestoreId
+          ? 'Files restore failed. Pre-restore safety archive is preserved.'
+          : (err?.response?.data?.message || 'Files upload restore failed.')
+      );
+      await fetchFiles();
+    }
+  };
+
+  const onFilesFileInputChange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/\.(tar\.gz|tgz)$/i.test(file.name)) {
+      toast.error('Files backups must end in .tar.gz');
+      return;
+    }
+    setFilesConfirm({ kind: 'restore-upload', payload: { file } });
+  };
+
   // ── Guards ─────────────────────────────────────────────────────────────
 
   if (!isSuperAdmin) {
@@ -379,9 +547,9 @@ export default function BackupSettingsPage() {
       <div className="mb-6 flex items-center gap-2">
         <Database size={22} className="text-primary" />
         <div>
-          <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Database Backups</h1>
+          <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Backups</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Daily automatic snapshots and on-demand backups of the production database.
+            Daily automatic snapshots and on-demand backups of the production database <span className="font-medium">and</span> uploaded files.
             Retention: scheduled backups older than {retentionDays} days are pruned automatically.
           </p>
         </div>
@@ -541,19 +709,148 @@ export default function BackupSettingsPage() {
         )}
       </section>
 
-      {/* ─── Files backup placeholder ──────────────────────────────────── */}
-      <section className="mt-6 bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-6">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300 flex items-center justify-center">
-            <FileArchive size={18} />
+      {/* ─── Uploaded files backups card ───────────────────────────────── */}
+      <section className="mt-6 bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl overflow-hidden">
+        <header className="flex items-center justify-between gap-3 px-6 py-4 border-b border-gray-200 dark:border-zinc-800">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300 flex items-center justify-center">
+              <FileArchive size={18} />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Uploaded Files Backups</h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                <code>tar.gz</code> archive of the <code>uploads/</code> directory (avatars, attachments, voice notes).
+                These bytes live on disk, not in the database dump — back them up to avoid dangling file references after a DB restore.
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Uploaded Files Backups</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              <code>tar.gz</code> archive of <code>uploads/</code> — coming next. The backend volume layout is ready;
-              the workflow ships in a follow-up release.
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => filesFileInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-zinc-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+            >
+              <Upload size={14} /> Restore from File
+            </button>
+            <input
+              ref={filesFileInputRef}
+              type="file"
+              accept=".gz,.tgz,application/gzip,application/x-gzip"
+              className="hidden"
+              onChange={onFilesFileInputChange}
+            />
+            <button
+              type="button"
+              onClick={handleFilesCreate}
+              disabled={filesCreating || hasRunningFilesBackup}
+              title={hasRunningFilesBackup ? 'A files backup is already running. Wait for it to finish.' : undefined}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-600/90 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {(filesCreating || hasRunningFilesBackup) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              {hasRunningFilesBackup ? 'Backup running…' : (filesCreating ? 'Creating…' : 'Create Files Backup')}
+            </button>
+          </div>
+        </header>
+
+        {filesLoading ? (
+          <div className="flex items-center justify-center py-12 text-gray-500">
+            <Loader2 size={20} className="animate-spin mr-2" /> Loading files backups…
+          </div>
+        ) : filesItems.length === 0 ? (
+          <div className="px-6 py-12 text-center">
+            <Archive size={28} className="mx-auto text-gray-400 dark:text-zinc-500 mb-2" />
+            <p className="text-sm text-gray-600 dark:text-gray-400">No files backups yet.</p>
+            <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+              The first scheduled files backup runs at 6:30 PM server time. You can also create one now.
             </p>
           </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full table-fixed text-sm">
+              <thead className="text-xs uppercase tracking-wide text-gray-500 dark:text-zinc-400 bg-gray-50 dark:bg-zinc-800/40">
+                <tr>
+                  <th className="px-6 py-3 text-left font-medium w-[280px]">Filename</th>
+                  <th className="px-6 py-3 text-left font-medium w-[140px]">Created</th>
+                  <th className="px-6 py-3 text-left font-medium w-[90px]">Size</th>
+                  <th className="px-6 py-3 text-left font-medium w-[120px]">Trigger</th>
+                  <th className="px-6 py-3 text-left font-medium w-[260px]">Status</th>
+                  <th className="px-6 py-3 text-right font-medium w-[140px]">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
+                {filesItems.map((r) => {
+                  const isLatest = r.id === latestCompletedFilesId;
+                  const canAct = r.status === 'completed';
+                  return (
+                    <tr key={r.id} className="hover:bg-gray-50/50 dark:hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-6 py-3 align-top">
+                        <div className="flex items-center gap-2">
+                          <FileArchive size={14} className="text-gray-400 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-mono text-xs text-gray-800 dark:text-gray-100 truncate" title={r.filename}>
+                              {r.filename}
+                            </div>
+                            {isLatest && (
+                              <span className="inline-block mt-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
+                                Latest
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-3 align-top">
+                        <div className="text-gray-700 dark:text-gray-200">{formatDateTime(r.createdAt)}</div>
+                        <div className="text-xs text-gray-500 dark:text-zinc-400">{relativeAge(r.createdAt)}</div>
+                      </td>
+                      <td className="px-6 py-3 align-top text-gray-700 dark:text-gray-200">{formatBytes(r.sizeBytes)}</td>
+                      <td className="px-6 py-3 align-top"><TriggerPill trigger={r.trigger} /></td>
+                      <td className="px-6 py-3 align-top">
+                        <StatusPill status={r.status} progressPercent={r.progressPercent} />
+                        {r.status === 'running' && <ProgressBar percent={r.progressPercent} />}
+                        {r.status === 'failed' && r.errorMessage && (
+                          <div
+                            className="text-[11px] text-red-600 dark:text-red-400 mt-1 break-words whitespace-normal line-clamp-4"
+                            title={r.errorMessage}
+                          >
+                            {r.errorMessage}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-3 align-top">
+                        <div className="flex items-center justify-end gap-1">
+                          <IconAction
+                            label="Download"
+                            disabled={!canAct || filesDownloadingId === r.id}
+                            loading={filesDownloadingId === r.id}
+                            onClick={() => handleFilesDownload(r)}
+                            icon={Download}
+                          />
+                          <IconAction
+                            label="Restore"
+                            disabled={!canAct}
+                            onClick={() => setFilesConfirm({ kind: 'restore', payload: { id: r.id, filename: r.filename } })}
+                            icon={RotateCcw}
+                          />
+                          <IconAction
+                            label="Delete"
+                            danger
+                            onClick={() => setFilesConfirm({ kind: 'delete', payload: { id: r.id, filename: r.filename } })}
+                            icon={Trash2}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="px-6 py-3 border-t border-gray-200 dark:border-zinc-800">
+          <p className="text-xs text-gray-500 dark:text-zinc-400">
+            Retention: scheduled files backups older than {filesRetentionDays} days are pruned automatically.
+            Restore overlays the archive onto the live <code>uploads/</code> directory (it never deletes files added after the backup).
+          </p>
         </div>
       </section>
 
@@ -592,6 +889,47 @@ export default function BackupSettingsPage() {
             const payload = confirm.payload;
             setConfirm(null);
             await handleUploadRestore(payload);
+          }}
+        />
+      )}
+
+      {/* ─── Files-backup confirmation modals ──────────────────────────── */}
+      {filesConfirm?.kind === 'delete' && (
+        <DeleteConfirmModal
+          filename={filesConfirm.payload.filename}
+          onCancel={() => setFilesConfirm(null)}
+          onConfirm={async () => {
+            const payload = filesConfirm.payload;
+            setFilesConfirm(null);
+            await handleFilesDelete(payload);
+          }}
+        />
+      )}
+      {filesConfirm?.kind === 'restore' && (
+        <RestoreConfirmModal
+          title="Restore uploaded files from this backup?"
+          description="This extracts the archived files back into the live uploads/ directory, overwriting any current file with the same name. Files added after this backup are left untouched."
+          targetLabel={filesConfirm.payload.filename}
+          confirmPhrase={FILES_RESTORE_CONFIRM_PHRASE}
+          onCancel={() => setFilesConfirm(null)}
+          onConfirm={async () => {
+            const payload = filesConfirm.payload;
+            setFilesConfirm(null);
+            await handleFilesRestore(payload);
+          }}
+        />
+      )}
+      {filesConfirm?.kind === 'restore-upload' && (
+        <RestoreConfirmModal
+          title="Restore from uploaded archive?"
+          description="The uploaded .tar.gz will be validated, then extracted over the live uploads/ directory. A pre-restore safety archive of the current files is taken automatically before the overwrite."
+          targetLabel={filesConfirm.payload.file.name}
+          confirmPhrase={FILES_RESTORE_CONFIRM_PHRASE}
+          onCancel={() => setFilesConfirm(null)}
+          onConfirm={async () => {
+            const payload = filesConfirm.payload;
+            setFilesConfirm(null);
+            await handleFilesUploadRestore(payload);
           }}
         />
       )}
@@ -664,10 +1002,10 @@ function DeleteConfirmModal({ filename, onCancel, onConfirm }) {
   );
 }
 
-function RestoreConfirmModal({ title, description, targetLabel, onCancel, onConfirm }) {
+function RestoreConfirmModal({ title, description, targetLabel, onCancel, onConfirm, confirmPhrase = RESTORE_CONFIRM_PHRASE }) {
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
-  const ok = typed.trim() === RESTORE_CONFIRM_PHRASE;
+  const ok = typed.trim() === confirmPhrase;
   return (
     <Modal
       isOpen
@@ -714,7 +1052,7 @@ function RestoreConfirmModal({ title, description, targetLabel, onCancel, onConf
 
         <div>
           <label className="block text-xs text-gray-500 dark:text-zinc-400 mb-1">
-            Type <span className="font-mono text-gray-700 dark:text-gray-200">{RESTORE_CONFIRM_PHRASE}</span> to confirm
+            Type <span className="font-mono text-gray-700 dark:text-gray-200">{confirmPhrase}</span> to confirm
           </label>
           <input
             type="text"
@@ -724,12 +1062,12 @@ function RestoreConfirmModal({ title, description, targetLabel, onCancel, onConf
             spellCheck={false}
             autoComplete="off"
             className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm text-gray-900 dark:text-gray-100 font-mono focus:outline-none focus:ring-2 focus:ring-red-500/40"
-            placeholder={RESTORE_CONFIRM_PHRASE}
+            placeholder={confirmPhrase}
           />
         </div>
 
         <p className="text-xs text-gray-500 dark:text-zinc-400">
-          A pre-restore safety backup of the current database will be created automatically before the overwrite.
+          A pre-restore safety backup of the current state will be created automatically before the overwrite.
         </p>
       </div>
     </Modal>

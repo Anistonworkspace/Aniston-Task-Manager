@@ -6,13 +6,16 @@ import {
 import api from '../../services/api';
 import AnistonLoader from '../common/AnistonLoader';
 
+// defaultBaseUrl is auto-filled when the type is selected; defaultLanguage too.
 const PROVIDER_TYPES = [
-  { value: 'deepgram', label: 'Deepgram', color: '#13EF93', icon: 'D', defaultModel: 'nova-3' },
-  { value: 'custom', label: 'Custom', color: '#6B7280', icon: 'C', defaultModel: '' },
+  { value: 'deepgram', label: 'Deepgram', color: '#13EF93', icon: 'D', defaultModel: 'nova-3', defaultBaseUrl: '', defaultLanguage: 'en-US' },
+  { value: 'sarvam', label: 'Sarvam AI', color: '#E8590C', icon: 'S', defaultModel: 'saarika:v2.5', defaultBaseUrl: 'https://api.sarvam.ai/speech-to-text', defaultLanguage: 'unknown' },
+  { value: 'custom', label: 'Custom', color: '#6B7280', icon: 'C', defaultModel: '', defaultBaseUrl: '', defaultLanguage: 'en-US' },
 ];
 
 const MODEL_OPTIONS = {
   deepgram: ['nova-3', 'nova-2', 'nova', 'enhanced'],
+  sarvam: ['saarika:v2.5', 'saaras:v3'],
   custom: [],
 };
 
@@ -20,6 +23,18 @@ const LANGUAGES = [
   { value: 'en-US', label: 'English (US)' },
   { value: 'en-GB', label: 'English (UK)' },
   { value: 'multi', label: 'Multilingual (code-switching)' },
+  { value: 'unknown', label: 'Auto-detect (Sarvam)' },
+  { value: 'en-IN', label: 'English (India)' },
+  { value: 'hi-IN', label: 'Hindi (हिन्दी)' },
+  { value: 'bn-IN', label: 'Bengali (বাংলা)' },
+  { value: 'gu-IN', label: 'Gujarati (ગુજરાતી)' },
+  { value: 'kn-IN', label: 'Kannada (ಕನ್ನಡ)' },
+  { value: 'ml-IN', label: 'Malayalam (മലയാളം)' },
+  { value: 'mr-IN', label: 'Marathi (मराठी)' },
+  { value: 'od-IN', label: 'Odia (ଓଡ଼ିଆ)' },
+  { value: 'pa-IN', label: 'Punjabi (ਪੰਜਾਬੀ)' },
+  { value: 'ta-IN', label: 'Tamil (தமிழ்)' },
+  { value: 'te-IN', label: 'Telugu (తెలుగు)' },
   { value: 'hi', label: 'Hindi' },
   { value: 'es', label: 'Spanish' },
   { value: 'fr', label: 'French' },
@@ -372,6 +387,8 @@ function ProviderForm({
                   ...prev,
                   providerType: t.value,
                   model: t.defaultModel || prev.model,
+                  baseUrl: t.defaultBaseUrl,
+                  language: t.defaultLanguage || prev.language,
                 }))}
                 className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl border-2 transition-all ${
                   form.providerType === t.value
@@ -439,14 +456,20 @@ function ProviderForm({
           </select>
         </div>
 
-        {form.providerType === 'custom' && (
+        {(form.providerType === 'custom' || form.providerType === 'sarvam') && (
           <div className="md:col-span-2">
-            <label className="block text-xs font-medium text-text-secondary mb-1.5">Base URL (WebSocket)</label>
+            <label className="block text-xs font-medium text-text-secondary mb-1.5">
+              {form.providerType === 'sarvam' ? 'Base URL (REST endpoint)' : 'Base URL (WebSocket)'}
+            </label>
             <input type="text" value={form.baseUrl}
               onChange={e => setForm(p => ({ ...p, baseUrl: e.target.value }))}
-              placeholder="wss://your-stt-endpoint.com/v1/listen"
+              placeholder={form.providerType === 'sarvam' ? 'https://api.sarvam.ai/speech-to-text' : 'wss://your-stt-endpoint.com/v1/listen'}
               className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" />
-            <p className="text-[10px] text-text-tertiary mt-1">Must speak the Deepgram Live streaming protocol.</p>
+            <p className="text-[10px] text-text-tertiary mt-1">
+              {form.providerType === 'sarvam'
+                ? 'Sarvam batch speech-to-text endpoint. Live audio is transcribed in short ~6 s windows.'
+                : 'Custom endpoints must speak the Deepgram Live streaming protocol.'}
+            </p>
           </div>
         )}
 
@@ -488,6 +511,22 @@ function ProviderForm({
             <li>Paste the key above and choose <span className="font-mono">nova-3</span> for best accuracy</li>
             <li>Click "Test Connection" to verify, then save</li>
           </ol>
+        </div>
+      )}
+
+      {isNew && form.providerType === 'sarvam' && (
+        <div className="mt-3 p-3 rounded-lg bg-orange-50 border border-orange-200">
+          <p className="text-xs text-orange-700 font-medium mb-1">Sarvam AI Setup Guide</p>
+          <ol className="text-[11px] text-orange-600 space-y-1 list-decimal list-inside">
+            <li>Get an API subscription key at <span className="font-mono">dashboard.sarvam.ai</span></li>
+            <li>Paste the key above (sent as <span className="font-mono">api-subscription-key</span>)</li>
+            <li>Pick <span className="font-mono">saarika:v2.5</span> (fast) or <span className="font-mono">saaras:v3</span>, and a language or Auto-detect</li>
+            <li>Click "Test Connection" to verify, then save</li>
+          </ol>
+          <p className="text-[10px] text-orange-500 mt-1.5">
+            Sarvam transcribes in short batches, so captions appear every few seconds rather than word-by-word.
+            Speaker diarization is not available on Sarvam's real-time endpoint.
+          </p>
         </div>
       )}
     </div>

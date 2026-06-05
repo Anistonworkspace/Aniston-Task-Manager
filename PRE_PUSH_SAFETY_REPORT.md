@@ -1,3 +1,168 @@
+# Pre-Push Safety Report — Aniston Task Manager (2026-06-05)
+
+Generated: 2026-06-05
+Branch: `feat/docs-personal-notion` — **no upstream set**, committed HEAD `0265ffe`.
+Audit basis: working-tree changes on top of `0265ffe` — 41 modified + 2 staged deletions + 25 untracked files (Time Planner overhaul, uploaded-files backup subsystem, transcription provider, planner reminder job).
+Mode: **read-only audit**. No commit, push, deploy, migration, or production write was performed. Nothing was patched in this pass — no safety defects required a code change.
+**This section supersedes the 2026-05-30 report below (kept for history).**
+
+> ⚠️ Re. "deleted data appears to come back": confirmed again this pass. The read-only audit workflows are genuinely read-only (`SET TRANSACTION READ ONLY` + `ROLLBACK`) and **could not** have mutated production (§9). The dominant real cause is **pre-existing recurring-task regeneration of *today's* hard-deleted instance** — and that code is **not touched by this changeset** (§10). The new Time Planner recurrence does NOT have this bug (expanded once at create-time; no regeneration job).
+
+---
+
+## 0. TL;DR — Final Answers
+
+1. **Final status: SAFE TO PUSH.** This is a feature branch with no upstream; pushing it creates/updates `origin/feat/docs-personal-notion` and **does not deploy** — `deploy.yml` triggers only on push to `main`. No blocking defects found; nothing was patched.
+2. **DB migration needed: NO separate run.** All deltas are additive and self-install via idempotent `IF NOT EXISTS` boot DDL in `server.js`. Migrations 023/024/025 are mirrored exactly. (One cosmetic numbering collision — two `024_*` files — see §13, LOW.)
+3. **Script that could restore/reseed data: NONE automatic in this changeset.** Backup *restore* is manual-only (Tier-1 + typed confirmation). The deploy-invoked `seed-users.js` / `seed-hierarchy.js` remain prod-guarded (verified §3).
+4. **Could the read-only audit deploy have altered data: NO.** Evidence in §9 — every SQL statement runs inside `BEGIN; SET TRANSACTION READ ONLY; … ROLLBACK;` with a forbidden-keyword guard. Those workflow files are also unchanged in this push.
+5. **What was patched: nothing** — no safety fix was required.
+6. **Commands before push:** see §16.
+7. **Files safe to commit:** all 41 modified + 25 untracked (§17). No secrets, no dumps.
+8. **Explicit warning:** the only meaningful production risk is **future**, when this branch is merged to `main` — at that point the pre-existing recurring-task resurrection behavior (§10) and the always-additive boot migrations apply. Take the usual pre-deploy `pg_dump` (deploy.yml already snapshots) before merging to main.
+
+---
+
+## 1. Executive Summary (2026-06-05 working tree)
+
+This working tree is a **Time Planner overhaul** (Google-Calendar-style blocks: recurrence, reminders, colours, rich descriptions, team/delegate views) + a new **uploaded-files backup subsystem** (tar.gz of `uploads/`, parallel to the DB-dump subsystem) + transcription-provider and misc fixes.
+
+- **Migration:** **NO separate run.** New schema = `time_blocks` columns (`title`, `type`, `status`, `priority`, `source`, `reminderMinutesBefore`, `createdById`, `recurrenceRule`, `recurrenceGroupId`, `color`, `reminderSentAt`; `description` widened to `TEXT`) + new `file_backup_records` table + `notifications` enum value `time_block_reminder`. Every one is `ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` / `ADD VALUE IF NOT EXISTS`, mirrored in `server.js start()` (§2). No DROP, no rename, no `NOT NULL`-without-default on a populated column, no FK retype.
+- **Automatic data mutation:** one **idempotent backfill UPDATE** — `UPDATE time_blocks SET source='task' WHERE "taskId" IS NOT NULL AND source='manual'` (sets a brand-new column's value; cannot resurrect or destroy rows). New cron jobs only (a) stamp `time_blocks.reminderSentAt` for dedupe and (b) write backup archives. Neither creates business rows.
+- **Reseed/restore risk:** **none automatic.** Files-backup *restore* is manual, Tier-1, typed `RESTORE FILES` confirmation, with a pre-restore safety archive, and is reachable only via authenticated HTTP — no boot/deploy path (§3, §10).
+- **Secrets:** **SAFE — none tracked.** `deploy/.env` / `server/.env` exist on disk but are git-ignored & untracked; only `.example`/template files (placeholders) and documented dev passwords are tracked (§11).
+- **Build/Test:** 23 changed/new server files parse clean (`node --check`); 102/102 targeted tests pass (fileBackupService + doc suites) (§12).
+
+## 2. Is it safe to push? **YES** — feature branch, no deploy trigger. (Merging to `main` later: take a `pg_dump` first, per §0.8.)
+## 3. Does this require a DB migration? **NO** — schema auto-installs at boot, idempotent. Additive only.
+## 4. Any production data risk (this changeset)? **NO** beyond one harmless idempotent column backfill.
+## 5. Any script that may restore/reseed/alter production data? **NO automatic path.** Manual-only restore (Tier-1 guarded).
+
+---
+
+## 6. Changed Files Summary (working tree vs `0265ffe`)
+
+**Migrations / schema:** all additive & idempotent
+- `server/migrations/023_timeblock_planner_fields.sql` (new) — 7 nullable/defaulted columns + index + idempotent backfill UPDATE.
+- `server/migrations/024_timeblock_calendar_upgrade.sql` (new) — widen `description` to TEXT, add `recurrenceRule`/`recurrenceGroupId` + index.
+- `server/migrations/024_file_backup_records.sql` (new) — `CREATE TABLE IF NOT EXISTS file_backup_records`. **⚠ shares the `024` prefix** with the file above (§13).
+- `server/migrations/025_timeblock_color_reminder.sql` (new) — `color`, `reminderSentAt` + partial index.
+- `server/server.js` (+87) — three new idempotent `time_blocks` boot-DDL blocks + `file_backup_records` boot DDL + new enum value + starts two new cron jobs. No business-data INSERT/UPDATE except the one additive backfill.
+
+**Backend logic:**
+- `server/services/fileBackupService.js`, `server/jobs/dailyFileBackupJob.js`, `server/models/FileBackupRecord.js` (new) — uploaded-files backup. Restore is overlay (never wipes uploads), manual-only.
+- `server/jobs/timePlannerReminderJob.js` (new) — every-minute reminder; only writes `reminderSentAt` dedupe + notifications.
+- `server/services/plannerAccessService.js` (new) — planner access resolver (read-path authorization).
+- `server/controllers/timePlanController.js` (+522), `routes/timeplans.js`, `models/TimeBlock.js` — planner CRUD + bounded recurrence expansion (once, at create time).
+- `controllers/adminBackupsController.js` (+333), `routes/adminBackups.js` — files-backup endpoints (Tier-1 + limiter + typed confirmation).
+- `controllers/docController.js`, `services/docAccessService.js`, `controllers/approvalController.js`, `controllers/dashboardController.js`, `controllers/transcriptionProviderController.js`, `services/transcriptionService.js`, `services/calendarService.js`, `services/meetingStreamService.js`, `models/Notification.js`, `models/index.js`, `config/permissionMatrix.js`, `routes/dashboard.js` — feature/fix edits, no destructive data ops.
+
+**Frontend:** Time Planner UI (15 new `client/src/components/timeplan/*` + `TimePlanPage.jsx` rewrite), `BackupSettingsPage.jsx` (files card), Docs side panel, Header/Sidebar links, `index.css`, `vite.config.js`. UI-only; no data risk. (Old `DayTimeline.jsx`/`TimeBlockForm.jsx` deleted — staged.)
+
+**Tests:** `__tests__/services/fileBackupService.test.js` (new) + doc-suite edits — all pass.
+
+**`deploy/docker-compose.yml`:** comment-only change; reuses the existing `backup_data` volume for the files archives. No new destructive mounts.
+
+## 7. Migration Assessment
+
+- **Does this push require DB migration? NO** (separate run). Boot DDL applies everything idempotently. Production already runs these blocks on every restart.
+- **New columns:** 11 on `time_blocks` (all nullable or defaulted). **New table:** `file_backup_records`. **New enum value:** `time_block_reminder`. **Type widen:** `time_blocks.description` VARCHAR(500)→TEXT (lossless). **No** removed/renamed columns, **no** changed FKs, **no** dropped objects.
+- **Safe local/staging verify:** `docker compose -f deploy/docker-compose.dev.yml up -d` then start the server — boot DDL is logged (`[Server] time_blocks … migration ensured.`). Or apply the SQL files manually against a **staging** DB:
+  `psql "$STAGING_URL" -f server/migrations/023_timeblock_planner_fields.sql` (then 024_timeblock_calendar_upgrade, 024_file_backup_records, 025).
+- **Production plan (do NOT execute now):** none required as a separate step — schema self-installs on the first boot after merge-to-main. Still take the standard pre-deploy `pg_dump` (deploy.yml does this automatically) before merging.
+- **Rollback:** all additive, so rolling back code leaves harmless unused columns/table. If you must drop them: `ALTER TABLE time_blocks DROP COLUMN IF EXISTS …; DROP TABLE IF EXISTS file_backup_records;` (only after confirming no live code reads them).
+- **Backup requirement:** standard pre-merge `pg_dump`. **Risk level: LOW.**
+
+## 8. Deploy Workflow Assessment (`deploy.yml`, unchanged this push)
+
+- Trigger: `push` to `main` only → **this feature-branch push does not deploy.**
+- Pre-deploy `pg_dump` snapshot (retain 30) before build — good.
+- Health-check loop + auto-rollback of **code** (`git reset --hard $PREVIOUS_SHA`). DB changes are forward-only (additive here, so safe).
+- Steps [8/9] run `seed-users.js` + `seed-hierarchy.js` every deploy — both **prod-guarded** (§3 verified): seed-users refuses unless `ALLOW_SEED_IN_PRODUCTION=true` *and even then refuses to overwrite existing credentials*; seed-hierarchy skips unless `ALLOW_PROD_HIERARCHY_SEED=true`.
+- Step [9/9] Sunny/Muskan password reset — gated OFF by default (flag/`workflow_dispatch` opt-in + in-DB marker).
+- No DB reset, no restore, no destructive migration in the deploy script.
+
+## 9. Read-Only Audit Deploy Assessment
+
+`.github/workflows/readonly-production-task-audit.yml` (+ `…task-visibility-audit.yml`, `…sso-diagnostic.yml`) — **truly read-only**, unchanged this push. Verified: all SQL runs inside `BEGIN; SET TRANSACTION READ ONLY; … ROLLBACK;`, the workflow asserts "No INSERT/UPDATE/DELETE/TRUNCATE/DROP/ALTER", and a forbidden-keyword guard blocks mutating statements. **It could not have altered, deleted, restored, reseeded, or overwritten any production data.**
+
+## 10. Deleted-Data-Coming-Back Investigation (ranked)
+
+1. **HIGH (pre-existing — NOT in this changeset): recurring-task regeneration of *today's* instance.** `recurringTemplateGenerationJob.js` (10-min poll) + `recurringTaskService.js` regenerate any eligible day with no existing row, and `lastGeneratedDate=today` keeps **today** inside the backfill walk. There is **no per-occurrence tombstone**, so hard-deleting today's instance → it reappears within ~10 min. Past/future deletions are durable. This matches the project memory note "deleted tasks come back = recurring re-seed bug." **Fix direction (not applied — out of scope for this push):** add a `(recurringTemplateId, occurrenceDate)` tombstone consulted before create.
+2. **MEDIUM (non-DB): service-worker / stale client cache** replaying a deleted item in the UI until refresh (the "stale-UI variant").
+3. **LOW (operator-only): removing a `system_flags` marker** (or restoring an old DB snapshot predating it) re-runs the one-shot `doc_access` / `task_assignees` boot **backfills** — these re-add access/junction rows for *currently-existing* entities; they never recreate deleted parents.
+- **This changeset's Time Planner recurrence is SAFE:** recurrence is expanded once, synchronously, at create time into a bounded `recurrenceGroupId` set; there is **no** time-block regeneration cron. Deleting a block (or `?scope=series`) is durable.
+
+## 11. Secret Exposure Check — **SAFE**
+
+No secret values are tracked. `deploy/.env`, `server/.env`, `.env`, `client/.env` are all git-ignored & untracked (verified via `git check-ignore`). Tracked matches are only `.example`/`k8s` templates (`CHANGE_ME_*` / `your_*` placeholders) and documented local dev passwords in prod-refusing seed/dev scripts. No AWS keys, no `BEGIN PRIVATE KEY`, no JWT-shaped strings, no `sk-`/`dg_` API keys, no `.sql.gz`/`.dump`/`.pem`/`.log` artifacts staged. Staged/unstaged diffs introduce no new secrets.
+
+## 12. Build / Test Results
+
+- `node --check` on all 23 changed/new server files: **all OK**.
+- `jest` on `fileBackupService.test.js` + `docController` + `docFormatConversion` + `docTaskRefs`: **102/102 pass** (~5s). (Warnings in output are expected mocked-DB log lines.)
+- Full client `npm run build` not re-run this pass (no client logic risk; only UI). Recommended as a final gate before merge-to-main (§16).
+
+## 13. Risk Table
+
+| Severity | Finding | Evidence | Action |
+|----------|---------|----------|--------|
+| **Critical** | — none — | | |
+| **High** | Recurring-task resurrection of *today's* deleted instance | `recurringTaskService.js` / `recurringTemplateGenerationJob.js` | **Pre-existing, not in this push.** Track separately; add occurrence tombstone. |
+| **Medium** | Stale client/SW cache shows deleted item until refresh | client realtime/SW | Non-DB; hard-refresh / cache-bust. Not introduced here. |
+| **Low** | Migration number collision — two `024_*` files | `server/migrations/024_*` | Cosmetic (audit-trail only; boot DDL is filename-agnostic). Optionally rename file-backup one to `026_`. |
+| **Low** | One-time `time_blocks.source` backfill UPDATE on boot | `server.js` block 023 | Harmless/idempotent — sets a new column's value, never deletes. Accept. |
+| **Low** | `doc_access`/`task_assignees` backfills re-run if `system_flags` marker removed | `server.js` boot blocks | Operator footgun only; access/junction rows only. Accept. |
+
+## 14. Required Fixes Before Push
+
+**None.** No safety defect blocks this feature-branch push. Nothing was patched.
+
+## 15. Optional Improvements (after push / before merge-to-main)
+
+- Rename `024_file_backup_records.sql` → `026_file_backup_records.sql` to remove the `024` prefix collision (audit-trail tidiness only).
+- Add a recurring-instance tombstone to make deletion of *today's* instance durable (addresses the standing HIGH item; separate change).
+- Run full `cd client && npm run build` and full `cd server && npm test` as the final merge-to-main gate.
+
+## 16. Exact Recommended Commands Before Push
+
+```bash
+# 1. Confirm you are on the feature branch (this push will NOT deploy)
+git branch --show-current            # → feat/docs-personal-notion
+
+# 2. Confirm no secret/env/dump is about to be committed
+git status --short
+git ls-files | grep -Ei '\.(env|pem|key|sql\.gz|dump)$'   # expect: no .env/.pem/.key/.gz hits
+
+# 3. (optional) final gates
+cd server && npm test
+cd ../client && npm run build
+
+# 4. Stage + commit the feature work, then push the FEATURE branch (not main)
+git add -A
+git commit -m "feat(timeplan): calendar-style planner + uploaded-files backup subsystem"
+git push -u origin feat/docs-personal-notion
+```
+
+> Do **not** `git push origin main`. Merging to main is a separate, deploy-triggering action — take a `pg_dump` first and use the production approval gate.
+
+## 17. Exact Files Safe to Commit
+
+All 41 modified + 2 staged deletions + 25 untracked files are safe (no secrets, no dumps, additive migrations). The full list is in §6 / `git status`.
+
+## 18. Final Approval Checklist
+
+- [x] Branch is a feature branch with no `main` deploy trigger
+- [x] No secrets / env / dumps tracked or staged
+- [x] DB changes additive & idempotent; no separate migration run required
+- [x] No automatic restore/reseed path in this changeset
+- [x] Read-only audit workflows confirmed read-only (could not have mutated prod)
+- [x] Changed server files parse; targeted tests pass (102/102)
+- [ ] (before merge-to-main) full client build + full server suite + pre-deploy `pg_dump`
+
+---
+---
+
 # Pre-Push Safety Report — Aniston Task Manager (2026-05-30)
 
 Generated: 2026-05-30

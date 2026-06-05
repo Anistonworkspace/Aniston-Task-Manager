@@ -633,8 +633,11 @@ const ACTION_META = {
     delete:   { enforcement: 'pending', dangerous: true },
   },
   time_plan: {
-    view_all:  { enforcement: 'pending' },
-    edit_team: { enforcement: 'pending' },
+    // Wired by the Time Planner upgrade. Both are enforced server-side via
+    // plannerAccessService (per-owner PermissionGrant delegation), so they are
+    // now savable as grant/deny rows.
+    view_all:  { enforcement: 'wired', label: 'View any time plan', description: 'View other users\' time plans (delegated)' },
+    edit_team: { enforcement: 'wired' },
   },
   timeline: {
     view_all: { enforcement: 'pending' },
@@ -766,9 +769,11 @@ const ROLE_PERMISSIONS = {
     // still verifies workspace access for non-admin/manager actors so they
     // cannot drop a board into a workspace they are not entitled to see.
     // edit/delete/manage_members/manage_settings/export remain false — those
-    // are management-only actions (rename/archive/reorder groups, member
-    // management, settings, exports) and have not been loosened.
-    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
+    // are management-only actions (rename/archive, member management, settings,
+    // exports) and have not been loosened. create_group / reorder_group ARE
+    // allowed: adding and drag-reordering groups is board-global and
+    // non-destructive (mirrors TIER_PERMISSIONS[3]).
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true, reorder_group: true },
     // tasks.approve = true: assistant_managers are walked into the approval
     // chain as sequential approvers for their direct reports. Per-task chain
     // membership is enforced inside processApprovalAction; this just unlocks
@@ -812,10 +817,11 @@ const ROLE_PERMISSIONS = {
     // boards.create is now base-allowed: members can create their own board
     // inside a workspace they can already access. The createBoard controller
     // verifies workspace access for non-admin/manager actors. boards.edit
-    // remains false so members cannot rename/archive/reorder groups via
-    // PUT /boards/:id — addGroup uses a separate per-board route guarded by
-    // boardVisibilityService.canUserSeeBoard instead.
-    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
+    // remains false so members cannot rename/archive via PUT /boards/:id, but
+    // create_group / reorder_group ARE allowed: adding and drag-reordering
+    // groups is board-global and non-destructive, guarded by
+    // boardVisibilityService.canUserSeeBoard (mirrors TIER_PERMISSIONS[4]).
+    boards:           { view: true, create: true,  edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true, reorder_group: true },
     // Members can create their own tasks and self-assign. Editing applies to
     // their own/self-assigned tasks only — controllers enforce the field-level
     // whitelist; assigning OTHERS requires the explicit assign_others grant.
@@ -896,7 +902,7 @@ const TIER_PERMISSIONS = {
     roles:            { view: true, manage: true },
     admin_settings:   { view: true, manage: true },
     workspaces:       { view: true, create: true, edit: true, delete: true, manage_members: true },
-    boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true, create_group: true },
+    boards:           { view: true, create: true, edit: true, delete: true, manage_members: true, manage_settings: true, export: true, create_group: true, reorder_group: true },
     tasks:            { view: true, create: true, edit: true, delete: true, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: true },
     subtasks:         { view: true, create: true, edit: true, delete: true },
     task_comments:    { view: true, create: true, edit: true, delete: true },
@@ -931,7 +937,7 @@ const TIER_PERMISSIONS = {
     // surfaces — Tier 1 only per migration plan §3.1 (accepted by product).
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: true, edit: true, delete: false, manage_members: true },
-    boards:           { view: true, create: true, edit: true, delete: false, manage_members: true, manage_settings: true, export: true, create_group: true },
+    boards:           { view: true, create: true, edit: true, delete: false, manage_members: true, manage_settings: true, export: true, create_group: true, reorder_group: true },
     // edit_locked_description is T1+T2 (decision #10 revised — Tier 1 and Tier 2
     // may rewrite an already-set task description; Tier 3/Tier 4 are blocked.)
     tasks:            { view: true, create: true, edit: true, delete: false, assign: true, assign_others: true, set_priority: true, change_status: true, comment: true, upload: true, approve: true, edit_locked_description: true },
@@ -981,11 +987,14 @@ const TIER_PERMISSIONS = {
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
     // boards.create allowed; controller verifies workspace scope (decision #7).
-    // create_group: true — every tier that can see a board may add groups to
-    // it. addGroup controller pre-gates via boardVisibilityService.canUserSeeBoard,
-    // so this explicit entry just stops the umbrella fallback (which would
-    // otherwise inherit boards.edit=false) from blocking T3.
-    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
+    // create_group / reorder_group: true — every tier that can see a board may
+    // add groups to it AND drag-reorder the existing groups. Group order is a
+    // board-global property (every viewer sees the same order), so letting T3
+    // rearrange is non-destructive and reflects to all members. The reorderGroups
+    // controller pre-gates via boardVisibilityService.canUserSeeBoard; these
+    // explicit entries just stop the umbrella fallback (which would otherwise
+    // inherit boards.edit=false) from blocking T3.
+    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true, reorder_group: true },
     // tasks.delete tightened to false (decision #4, no destructive without scope proof).
     // tasks.approve = true: the approval chain in approvalChainService walks
     // assistant_managers in as sequential approvers for their Tier 4 reports,
@@ -1043,11 +1052,13 @@ const TIER_PERMISSIONS = {
     roles:            { view: false, manage: false },
     admin_settings:   { view: false, manage: false },
     workspaces:       { view: true, create: false, edit: false, delete: false, manage_members: false },
-    // create_group: true — Tier 4 may add groups to any board they can see
-    // (addGroup controller pre-gates via boardVisibilityService.canUserSeeBoard).
-    // Explicit entry overrides the umbrella fallback that would otherwise
-    // inherit boards.edit=false.
-    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true },
+    // create_group / reorder_group: true — Tier 4 may add groups to any board
+    // they can see AND drag-reorder the existing groups. Group order is
+    // board-global (every viewer sees the same order), so this is non-destructive
+    // and reflects to all members. The controllers pre-gate via
+    // boardVisibilityService.canUserSeeBoard. These explicit entries override the
+    // umbrella fallback that would otherwise inherit boards.edit=false.
+    boards:           { view: true, create: true, edit: false, delete: false, manage_members: false, manage_settings: false, export: false, create_group: true, reorder_group: true },
     // assign_others: false (decision #8 — implicit, kept as before)
     // set_priority: false (decision #9: T4 priority denied)
     // delete: false (controller has separate own-task-archive path)
@@ -1327,7 +1338,10 @@ const GRANTABILITY = {
   announcements: { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE },
 
   // ── Planning ──────────────────────────────────────────────────
-  time_plan: { view: T1_T2, create: T1_T2, edit: T1_T2, delete: NON_GRANTABLE, manage: T1_T2 },
+  // view_all = delegated read of another planner (T1/T2 may grant); edit_team =
+  // delegated manage of another planner — T1-only to assign, so a Tier 2 PA can
+  // only ever be appointed for a specific owner by a Tier 1.
+  time_plan: { view: T1_T2, view_all: T1_T2, create: T1_T2, edit: T1_T2, edit_team: T1_ONLY, delete: NON_GRANTABLE, manage: T1_T2 },
   timeline:  { view: T1_T2 },
 
   // ── Operations ────────────────────────────────────────────────

@@ -20,6 +20,7 @@ const fsp = require('fs/promises');
 const os = require('os');
 const multer = require('multer');
 const backupService = require('../services/backupService');
+const fileBackupService = require('../services/fileBackupService');
 const activityService = require('../services/activityService');
 const safeLogger = require('../utils/safeLogger');
 
@@ -63,6 +64,29 @@ const restoreUploadMulter = multer({
 
 // Exported as middleware the route file can chain in.
 const uploadMiddleware = restoreUploadMulter.single('backup');
+
+// ── Multer for the FILES restore-upload endpoint ────────────────────────
+// Same purpose-built path as above, but accepts .tar.gz / .tgz archives
+// (the format produced by the files-backup subsystem) instead of .sql.gz.
+const filesRestoreUploadMulter = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, file, cb) => {
+      const name = String(file.originalname || '');
+      const safeExt = /\.(tar\.gz|tgz)$/i.test(name) ? '.tar.gz' : '.upload';
+      cb(null, `files_backup_upload_${Date.now()}_${Math.round(Math.random() * 1e9)}${safeExt}`);
+    },
+  }),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const name = String(file.originalname || '');
+    if (!/\.(tar\.gz|tgz)$/i.test(name)) {
+      return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Files backups must end in .tar.gz'));
+    }
+    cb(null, true);
+  },
+});
+const filesUploadMiddleware = filesRestoreUploadMulter.single('backup');
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -459,6 +483,306 @@ const restoreUpload = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// FILES BACKUPS (uploads/ directory tar.gz archives)
+//
+// A parallel set of handlers backed by fileBackupService + file_backup_records.
+// Intentionally independent from the database-backup handlers above so the
+// two subsystems never share state. publicShape() is reused — the row shapes
+// are identical — but the restore confirmation phrase differs so an operator
+// can't paste a DB-restore confirmation into a files restore by muscle memory.
+// ═══════════════════════════════════════════════════════════════════════
+
+const FILES_RESTORE_CONFIRM_PHRASE = 'RESTORE FILES';
+
+function hasValidFilesConfirmation(req) {
+  const phrase = String(req.body?.confirmation || req.body?.confirm || '').trim();
+  return phrase === FILES_RESTORE_CONFIRM_PHRASE;
+}
+
+const listFileBackups = async (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const records = await fileBackupService.listBackups({ limit, offset });
+    return res.status(200).json({
+      success: true,
+      data: {
+        items: records.map(publicShape),
+        retentionDays: fileBackupService.RETENTION_DAYS,
+      },
+    });
+  } catch (err) {
+    safeLogger.error('[AdminBackups] files list failed', { err });
+    return res.status(500).json({ success: false, message: 'Failed to list files backups' });
+  }
+};
+
+const createFileBackup = async (req, res) => {
+  try {
+    const ctx = auditContext(req);
+    safeLogger.warn('[AdminBackups] manual files backup triggered', ctx);
+
+    const record = await fileBackupService.createFilesBackup({
+      trigger: 'manual',
+      createdBy: req.user.id,
+    });
+
+    activityService.logActivity({
+      action: 'created',
+      description: `Manual files backup: ${record.filename}`,
+      entityType: 'file_backup',
+      entityId: record.id,
+      userId: req.user.id,
+    });
+
+    return res.status(201).json({ success: true, data: publicShape(record) });
+  } catch (err) {
+    if (err && err.code === 'BACKUP_ALREADY_RUNNING') {
+      safeLogger.info('[AdminBackups] manual files backup rejected — already running', {
+        runningId: err.runningBackupId, by: req.user?.id,
+      });
+      return res.status(409).json({
+        success: false,
+        code: 'BACKUP_ALREADY_RUNNING',
+        message: err.message,
+        data: { runningBackupId: err.runningBackupId },
+      });
+    }
+    safeLogger.error('[AdminBackups] manual files backup failed', { err });
+    const friendly = (err && err.message) ? String(err.message).slice(0, 600) : 'Files backup failed';
+    return res.status(500).json({ success: false, message: friendly });
+  }
+};
+
+const downloadFileBackup = async (req, res) => {
+  const id = req.params.id;
+  try {
+    const { record, absolutePath, sizeBytes } = await fileBackupService.getDownloadInfo({ recordId: id });
+
+    activityService.logActivity({
+      action: 'downloaded',
+      description: `Downloaded files backup: ${record.filename}`,
+      entityType: 'file_backup',
+      entityId: record.id,
+      userId: req.user.id,
+    });
+
+    safeLogger.info('[AdminBackups] files download', { recordId: id, by: req.user.id, ip: req.ip });
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', String(sizeBytes));
+    const safeName = record.filename.replace(/["\\]/g, '_');
+    const encodedName = encodeURIComponent(record.filename);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    const stream = fs.createReadStream(absolutePath);
+    stream.on('error', (err) => {
+      safeLogger.error('[AdminBackups] files download stream error', { recordId: id, err });
+      if (!res.headersSent) res.status(500);
+      res.end();
+    });
+    stream.pipe(res);
+  } catch (err) {
+    if (err.code === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Files backup not found' });
+    if (err.code === 'BACKUP_NOT_READY') return res.status(409).json({ success: false, message: 'Files backup is not in a completed state' });
+    if (err.code === 'FILE_MISSING') return res.status(410).json({ success: false, message: 'Archive file no longer exists on disk' });
+    if (err.code === 'PATH_TRAVERSAL') return res.status(400).json({ success: false, message: 'Invalid backup path' });
+    safeLogger.error('[AdminBackups] files download failed', { recordId: id, err });
+    return res.status(500).json({ success: false, message: 'Download failed' });
+  }
+};
+
+const deleteFileBackup = async (req, res) => {
+  const id = req.params.id;
+  try {
+    safeLogger.warn('[AdminBackups] files delete triggered', { recordId: id, by: req.user.id, ip: req.ip });
+
+    const { FileBackupRecord } = require('../models');
+    const existing = await FileBackupRecord.findByPk(id);
+    if (!existing) return res.status(404).json({ success: false, message: 'Files backup not found' });
+
+    await fileBackupService.deleteFileBackup({ recordId: id, actingUser: req.user });
+
+    activityService.logActivity({
+      action: 'deleted',
+      description: `Deleted files backup: ${existing.filename}`,
+      entityType: 'file_backup',
+      entityId: id,
+      userId: req.user.id,
+    });
+
+    return res.status(200).json({ success: true, data: { id } });
+  } catch (err) {
+    if (err.code === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Files backup not found' });
+    if (err.code === 'PATH_TRAVERSAL') return res.status(400).json({ success: false, message: 'Invalid backup path' });
+    safeLogger.error('[AdminBackups] files delete failed', { recordId: id, err });
+    return res.status(500).json({ success: false, message: 'Delete failed' });
+  }
+};
+
+const restoreFileBackup = async (req, res) => {
+  const id = req.params.id;
+  if (!hasValidFilesConfirmation(req)) {
+    return res.status(400).json({
+      success: false,
+      code: 'CONFIRMATION_REQUIRED',
+      message: `Restore requires confirmation. Send body { "confirmation": "${FILES_RESTORE_CONFIRM_PHRASE}" }.`,
+    });
+  }
+
+  try {
+    safeLogger.warn('[AdminBackups] files restore triggered', {
+      recordId: id, by: req.user.id, ip: req.ip, userAgent: req.get && req.get('user-agent'),
+    });
+
+    activityService.logActivity({
+      action: 'restore_initiated',
+      description: `Initiated files restore from backup ${id}`,
+      entityType: 'file_backup',
+      entityId: id,
+      userId: req.user.id,
+      meta: { ip: req.ip },
+    });
+
+    const result = await fileBackupService.restoreFilesFromRecord({
+      recordId: id,
+      actingUser: req.user,
+    });
+
+    activityService.logActivity({
+      action: 'restore_completed',
+      description: `Restored uploads from files backup ${result.record.filename}`,
+      entityType: 'file_backup',
+      entityId: id,
+      userId: req.user.id,
+      meta: { preRestoreId: result.preRestoreId },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        record: publicShape(result.record),
+        preRestoreBackupId: result.preRestoreId,
+      },
+    });
+  } catch (err) {
+    if (err.code === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Files backup not found' });
+    if (err.code === 'BACKUP_NOT_READY') return res.status(409).json({ success: false, message: 'Files backup is not in a completed state' });
+    if (err.code === 'PATH_TRAVERSAL') return res.status(400).json({ success: false, message: 'Invalid backup path' });
+    if (err.code === 'RESTORE_FAILED') {
+      activityService.logActivity({
+        action: 'restore_failed',
+        description: `Files restore failed: ${err.message?.slice(0, 200)}`,
+        entityType: 'file_backup',
+        entityId: id,
+        userId: req.user.id,
+        meta: { preRestoreId: err.preRestoreId || null },
+      });
+      return res.status(500).json({
+        success: false,
+        message: 'Files restore failed. Pre-restore safety archive is preserved.',
+        data: { preRestoreBackupId: err.preRestoreId || null },
+      });
+    }
+    safeLogger.error('[AdminBackups] files restore failed', { recordId: id, err });
+    return res.status(500).json({ success: false, message: 'Files restore failed' });
+  }
+};
+
+const restoreFileUpload = async (req, res) => {
+  if (!hasValidFilesConfirmation(req)) {
+    return res.status(400).json({
+      success: false,
+      code: 'CONFIRMATION_REQUIRED',
+      message: `Restore requires confirmation field "confirmation" = "${FILES_RESTORE_CONFIRM_PHRASE}".`,
+    });
+  }
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'No file uploaded (field name must be "backup")' });
+  }
+
+  let uploaded = null;
+  try {
+    safeLogger.warn('[AdminBackups] files upload-restore triggered', {
+      by: req.user.id, ip: req.ip, originalName: req.file.originalname,
+    });
+
+    uploaded = await fileBackupService.acceptUpload({
+      tempPath: req.file.path,
+      originalName: req.file.originalname,
+      actingUser: req.user,
+    });
+
+    activityService.logActivity({
+      action: 'upload_accepted',
+      description: `Uploaded files backup ${req.file.originalname} (${uploaded.filename})`,
+      entityType: 'file_backup',
+      entityId: uploaded.id,
+      userId: req.user.id,
+      meta: { ip: req.ip },
+    });
+
+    const result = await fileBackupService.restoreFilesFromRecord({
+      recordId: uploaded.id,
+      actingUser: req.user,
+    });
+
+    activityService.logActivity({
+      action: 'restore_completed',
+      description: `Restored uploads from uploaded archive ${req.file.originalname}`,
+      entityType: 'file_backup',
+      entityId: uploaded.id,
+      userId: req.user.id,
+      meta: { preRestoreId: result.preRestoreId, original: req.file.originalname },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        uploaded: publicShape(uploaded),
+        record: publicShape(result.record),
+        preRestoreBackupId: result.preRestoreId,
+      },
+    });
+  } catch (err) {
+    if (uploaded && !err.uploadedRecordId) err.uploadedRecordId = uploaded.id;
+    try {
+      if (req.file && req.file.path) await fsp.unlink(req.file.path).catch(() => {});
+    } catch (_) { /* ignore */ }
+
+    if (err.code === 'BAD_EXTENSION') return res.status(400).json({ success: false, message: err.message });
+    if (err.code === 'BAD_ARCHIVE') return res.status(400).json({ success: false, message: 'Uploaded file is corrupt or not a valid .tar.gz archive.' });
+    if (err.code === 'EMPTY_FILE') return res.status(400).json({ success: false, message: 'Uploaded file is empty.' });
+    if (err.code === 'RESTORE_FAILED') {
+      const failedEntityId = err.uploadedRecordId || null;
+      if (failedEntityId) {
+        activityService.logActivity({
+          action: 'restore_failed',
+          description: `Files restore from uploaded archive failed: ${(err.message || '').slice(0, 200)}`,
+          entityType: 'file_backup',
+          entityId: failedEntityId,
+          userId: req.user.id,
+          meta: { preRestoreId: err.preRestoreId || null },
+        });
+      }
+      safeLogger.error('[AdminBackups] files upload-restore: restore step failed', { err });
+      return res.status(500).json({
+        success: false,
+        message: 'Files restore failed. Pre-restore safety archive is preserved.',
+        data: { preRestoreBackupId: err.preRestoreId || null },
+      });
+    }
+    safeLogger.error('[AdminBackups] files upload-restore failed', { err });
+    return res.status(500).json({ success: false, message: 'Files upload-restore failed' });
+  }
+};
+
 module.exports = {
   listBackups,
   createBackup,
@@ -467,6 +791,15 @@ module.exports = {
   restoreBackup,
   restoreUpload,
   uploadMiddleware,
+  // Files backups
+  listFileBackups,
+  createFileBackup,
+  downloadFileBackup,
+  deleteFileBackup,
+  restoreFileBackup,
+  restoreFileUpload,
+  filesUploadMiddleware,
   // Exported for tests so they can assert what the route file requires:
   RESTORE_CONFIRM_PHRASE,
+  FILES_RESTORE_CONFIRM_PHRASE,
 };

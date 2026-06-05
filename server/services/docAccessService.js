@@ -24,11 +24,27 @@
 const { Op } = require('sequelize');
 const { Doc, DocAccess } = require('../models');
 const safeLogger = require('../utils/safeLogger');
+// June 2026 — Tier 1 AND Tier 2 are full doc admins (decision: admins manage
+// all docs). They see every doc and act with owner-level access, exactly like
+// the super-admin bypass. This intentionally widens the May 2026 rule that
+// made super-admin the ONLY role-based bypass.
+const { hasTierAtLeast, TIER_2 } = require('../config/tiers');
 
 const ACCESS_LEVELS = ['view', 'comment', 'edit', 'owner'];
 function levelRank(level) {
   const idx = ACCESS_LEVELS.indexOf(level);
   return idx === -1 ? -1 : idx;
+}
+
+/**
+ * Doc admins (Tier 1 / Tier 2) get the same blanket access super-admins do:
+ * they can see every doc and act on it at owner level. Super-admin implies
+ * Tier 1, so the tier check covers them too, but we keep the explicit
+ * isSuperAdmin clause for environments where tier hasn't been backfilled.
+ */
+function isDocAdmin(user) {
+  if (!user) return false;
+  return user.isSuperAdmin === true || hasTierAtLeast(user, TIER_2);
 }
 
 /**
@@ -40,7 +56,7 @@ function levelRank(level) {
  */
 async function getMyVisibleDocIds(user) {
   if (!user) return [];
-  if (user.isSuperAdmin) {
+  if (isDocAdmin(user)) {
     const all = await Doc.findAll({ attributes: ['id'], raw: true });
     return all.map((d) => d.id);
   }
@@ -88,7 +104,7 @@ function resolveOwnerId(doc) {
  */
 async function hasDocAccess(user, docOrId) {
   if (!user) return false;
-  if (user.isSuperAdmin) return true;
+  if (isDocAdmin(user)) return true;
   let owner, docId;
   if (typeof docOrId === 'string') {
     docId = docOrId;
@@ -115,7 +131,7 @@ async function hasDocAccess(user, docOrId) {
  */
 async function getDocAccessLevel(user, doc) {
   if (!user || !doc) return null;
-  if (user.isSuperAdmin) return 'owner';
+  if (isDocAdmin(user)) return 'owner';
   const owner = resolveOwnerId(doc);
   if (owner && owner === user.id) return 'owner';
   const row = await DocAccess.findOne({
@@ -165,6 +181,7 @@ module.exports = {
   hasDocAccess,
   getDocAccessLevel,
   upsertAccess,
+  isDocAdmin,
   ACCESS_LEVELS,
   levelRank,
 };

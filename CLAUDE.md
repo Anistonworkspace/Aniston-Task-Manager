@@ -671,6 +671,22 @@ Production-safe DB backup workflow, all gated by `superAdminOnly`.
 - Retention deletes ONLY `trigger='scheduled'` rows older than `DB_BACKUP_RETENTION_DAYS` (default 30). Manual / uploaded / pre-restore artefacts are never auto-pruned.
 - Off-host shipping (S3) is NOT yet wired — EC2 host loss = backup loss. The existing `deploy/backup.sh` has a commented `aws s3 cp` template for future use.
 
+## Uploaded-Files Backup (Tier 1) — separate subsystem
+
+The DB backup above captures only the database. The **physical upload bytes** (avatars, attachments, voice-note audio) live on disk in `uploads/` and are backed up by a **fully independent** subsystem so a bug in one can never corrupt the other.
+
+| Surface | Location | Notes |
+|---|---|---|
+| Model | `server/models/FileBackupRecord.js` | Separate table `file_backup_records` (NOT `backup_records`). Same field shape; auto-installed via DDL block in `server.js` + `migrations/024_file_backup_records.sql`. |
+| Service | `server/services/fileBackupService.js` | `tar.gz` of the `uploads/` dir via the pure-JS `tar` npm package (NO system tar/gzip binary — works on Alpine prod and Windows dev alike, so no `DB_BACKUP_VIA_DOCKER` workaround needed). Independent concurrency lock, retention, path-traversal gate. Progress estimated by polling the output file's growth (tar v7's `onentry` does not fire in create mode). |
+| Controller/Routes | `adminBackupsController.js` + `routes/adminBackups.js` | Parallel endpoints under `/api/admin/backups/files` (list / create / `:id/download` / `:id` delete / `:id/restore` / `restore-upload`). Same Tier-1 gate + limiters. |
+| Cron | `server/jobs/dailyFileBackupJob.js` | `30 18 * * *` (6:30 PM, 30 min after the DB backup so they don't contend for IO). Lock name `dailyFilesBackup` — distinct from `dailyDbBackup`. |
+| Frontend | Second card in `BackupSettingsPage.jsx` ("Uploaded Files Backups"). |
+| Restore | **Overlay, not wipe**: extracts the archive over the live `uploads/`; files added after the backup are left in place. A pre-restore safety archive of current files is taken first. Typed confirmation phrase is `RESTORE FILES` (distinct from the DB's `RESTORE DATABASE`). |
+| Env | `FILE_BACKUP_ENABLED`, `FILE_BACKUP_CRON`, `FILE_BACKUP_RETENTION_DAYS`, `FILE_BACKUP_TIMEOUT_MS`, `FILE_BACKUP_GZIP_LEVEL` (see `server/.env.example`). |
+
+> Caveat: if `STORAGE_PROVIDER` is non-local (S3), upload bytes aren't on this disk — the files archive will be near-empty and the service logs a loud warning. The feature targets the default local-disk (`uploads` Docker volume) deployment.
+
 ---
 
 ## Cross-references

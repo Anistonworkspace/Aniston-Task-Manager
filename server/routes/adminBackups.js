@@ -28,6 +28,13 @@ const {
   restoreBackup,
   restoreUpload,
   uploadMiddleware,
+  listFileBackups,
+  createFileBackup,
+  downloadFileBackup,
+  deleteFileBackup,
+  restoreFileBackup,
+  restoreFileUpload,
+  filesUploadMiddleware,
 } = require('../controllers/adminBackupsController');
 
 const router = express.Router();
@@ -74,5 +81,22 @@ router.post('/database/:id/restore', restoreLimiter, restoreBackup);
 // `restoreUpload` handles validation (extension, gzip integrity, etc.) inside
 // the service layer — see backupService.acceptUpload.
 router.post('/database/restore-upload', restoreLimiter, uploadMiddleware, restoreUpload);
+
+// ── Files backups (uploads/ tar.gz archives) ──────────────────────────────
+// Fully parallel surface to /database, backed by fileBackupService +
+// file_backup_records. Same Tier-1 gate (router.use above), same limiters.
+//   GET    /files                 — list files backups
+//   POST   /files                 — trigger a manual files backup
+//   GET    /files/:id/download    — stream the .tar.gz to the browser
+//   DELETE /files/:id             — delete a single files backup
+//   POST   /files/:id/restore     — restore uploads from a record
+//                                   (body: { confirmation: "RESTORE FILES" })
+//   POST   /files/restore-upload  — multipart upload + restore (field "backup")
+router.get('/files', listFileBackups);
+router.post('/files', mutatingLimiter, createFileBackup);
+router.get('/files/:id/download', downloadFileBackup);
+router.delete('/files/:id', mutatingLimiter, deleteFileBackup);
+router.post('/files/:id/restore', restoreLimiter, restoreFileBackup);
+router.post('/files/restore-upload', restoreLimiter, filesUploadMiddleware, restoreFileUpload);
 
 module.exports = router;

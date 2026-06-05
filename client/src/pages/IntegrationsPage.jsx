@@ -976,6 +976,14 @@ export default function IntegrationsPage() {
       {/* AI Provider Cards */}
       {isAdmin && (
         <div className="mb-6">
+          {/* Category heading — distinguishes AI models from speech-to-text below */}
+          <div className="flex items-center gap-3 mb-3 mt-2">
+            <div className="h-8 w-1.5 rounded-full bg-gradient-to-b from-violet-500 to-indigo-600" />
+            <div>
+              <h2 className="text-lg font-bold text-text-primary">AI Models</h2>
+              <p className="text-xs text-text-tertiary">Large language models that power resume scoring, interview questions, and the AI assistant — text generation, not audio.</p>
+            </div>
+          </div>
           {/* Section Header */}
           <div className="bg-white dark:bg-zinc-800 rounded-xl border border-gray-200 dark:border-zinc-700 shadow-sm overflow-hidden mb-4">
             <div className="flex items-center gap-4 p-5">
@@ -1317,6 +1325,15 @@ export default function IntegrationsPage() {
       )}
 
       {/* Transcription Provider (admin only) */}
+      {isAdmin && (
+        <div className="flex items-center gap-3 mb-3 mt-8">
+          <div className="h-8 w-1.5 rounded-full bg-gradient-to-b from-emerald-500 to-cyan-600" />
+          <div>
+            <h2 className="text-lg font-bold text-text-primary">Speech-to-Text (Transcription)</h2>
+            <p className="text-xs text-text-tertiary">Audio engines that convert meeting & voice-note recordings into text — e.g. Deepgram and Sarvam AI.</p>
+          </div>
+        </div>
+      )}
       {isAdmin && (
         <TranscriptionProviderSection
           onError={(msg) => { setError(msg); setTimeout(() => setError(''), 6000); }}

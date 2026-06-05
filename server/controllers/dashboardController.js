@@ -113,6 +113,19 @@ const getDashboardStats = async (req, res) => {
     // getAllUsers which already redacts email/role for lower tiers).
     const canSeeOrgMetadata = hasTierAtLeast(req.user, TIER_2);
 
+    // Per-member breakdown scope. A task is visible to a restricted viewer
+    // (Tier 3 assistant_manager / Tier 4 member) when ANY of its relations
+    // (assignedTo / createdBy / task_assignees / task_owners) touches their
+    // subtree — see buildTaskVisibilityWhere. That means a visible task can be
+    // ASSIGNED to someone OUTSIDE the viewer's hierarchy (e.g. the viewer's
+    // report co-owns it, or created it on another member's behalf). Keying the
+    // Team Overview rows on `assignedTo` would then surface that out-of-hierarchy
+    // member. Restrict the per-member breakdown to the viewer's allowed user-set
+    // so a Tier 3 sees only their own hierarchy. Unrestricted (Tier 1/2) viewers
+    // pass through unchanged (allowedMemberIds === null).
+    const memberScope = await taskVisibility.getVisibleUserIdsForViewer(req.user);
+    const allowedMemberIds = memberScope.unrestricted ? null : new Set(memberScope.userIds || []);
+
     tasks.forEach(t => {
       const plain = t.toJSON();
       // Status counts
@@ -123,6 +136,10 @@ const getDashboardStats = async (req, res) => {
       if (plain.dueDate && plain.dueDate < today && plain.status !== 'done') overdue++;
       // Per-member stats
       const memberId = plain.assignedTo || 'unassigned';
+      // Restricted viewers: skip members outside their hierarchy. The summary /
+      // status / priority / overdue counters above still reflect every visible
+      // task; only the member-by-member breakdown is narrowed.
+      if (allowedMemberIds && memberId !== 'unassigned' && !allowedMemberIds.has(memberId)) return;
       const memberName = plain.assignee?.name || 'Unassigned';
       const memberAvatar = plain.assignee?.avatar || null;
       if (!memberStats[memberId]) {

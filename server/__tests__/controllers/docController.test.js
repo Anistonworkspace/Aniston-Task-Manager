@@ -580,6 +580,12 @@ describe('updateDoc', () => {
 
 // ─── archiveDoc ─────────────────────────────────────────────────────────────
 
+// June 2026 — archive / restore / permanent-delete are Tier 1/2 (admin)
+// actions. The caller must be able to SEE the doc (view access) AND be
+// Tier 1 or Tier 2. Owners below Tier 2 (e.g. a member owning their own
+// doc) can no longer self-archive — archived docs route to the global
+// Archive surface for admins. SUPER (Tier 1) is used for the success
+// paths; OWNER (Tier 4 member) exercises the tier gate.
 describe('archiveDoc', () => {
   test('404 when not found', async () => {
     Doc.findByPk.mockResolvedValue(null);
@@ -589,7 +595,7 @@ describe('archiveDoc', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 
-  test('403 when caller cannot edit', async () => {
+  test('403 when caller cannot see the doc', async () => {
     const doc = makeDoc({ createdBy: OWNER.id });
     Doc.findByPk.mockResolvedValue(doc);
     const req = { user: OTHER, params: { id: 'd1' } };
@@ -599,10 +605,21 @@ describe('archiveDoc', () => {
     expect(doc.update).not.toHaveBeenCalled();
   });
 
-  test('sets isArchived=true, archivedAt, archivedBy on archive', async () => {
+  test('403 insufficient_tier when owner is below Tier 2', async () => {
     const doc = makeDoc({ isArchived: false, createdBy: OWNER.id });
     Doc.findByPk.mockResolvedValue(doc);
     const req = { user: OWNER, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.archiveDoc(req, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json.mock.calls[0][0].code).toBe('insufficient_tier');
+    expect(doc.update).not.toHaveBeenCalled();
+  });
+
+  test('sets isArchived=true, archivedAt, archivedBy on archive (Tier 1)', async () => {
+    const doc = makeDoc({ isArchived: false, createdBy: OWNER.id });
+    Doc.findByPk.mockResolvedValue(doc);
+    const req = { user: SUPER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.archiveDoc(req, res);
 
@@ -610,13 +627,13 @@ describe('archiveDoc', () => {
     const updateArgs = doc.update.mock.calls[0][0];
     expect(updateArgs.isArchived).toBe(true);
     expect(updateArgs.archivedAt).toBeInstanceOf(Date);
-    expect(updateArgs.archivedBy).toBe(OWNER.id);
+    expect(updateArgs.archivedBy).toBe(SUPER.id);
   });
 
   test('no-op (success) when already archived', async () => {
     const doc = makeDoc({ isArchived: true, createdBy: OWNER.id });
     Doc.findByPk.mockResolvedValue(doc);
-    const req = { user: OWNER, params: { id: 'd1' } };
+    const req = { user: SUPER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.archiveDoc(req, res);
 
@@ -629,7 +646,7 @@ describe('archiveDoc', () => {
 // ─── restoreDoc ─────────────────────────────────────────────────────────────
 
 describe('restoreDoc', () => {
-  test('403 when caller cannot edit', async () => {
+  test('403 when caller cannot see the doc', async () => {
     const doc = makeDoc({ isArchived: true, createdBy: OWNER.id });
     Doc.findByPk.mockResolvedValue(doc);
     const req = { user: OTHER, params: { id: 'd1' } };
@@ -639,10 +656,21 @@ describe('restoreDoc', () => {
     expect(doc.update).not.toHaveBeenCalled();
   });
 
-  test('sets isArchived=false on restore', async () => {
-    const doc = makeDoc({ isArchived: true, createdBy: OWNER.id, archivedAt: new Date(), archivedBy: OWNER.id });
+  test('403 insufficient_tier when owner is below Tier 2', async () => {
+    const doc = makeDoc({ isArchived: true, createdBy: OWNER.id, archivedAt: new Date(), archivedBy: SUPER.id });
     Doc.findByPk.mockResolvedValue(doc);
     const req = { user: OWNER, params: { id: 'd1' } };
+    const res = mockRes();
+    await docCtrl.restoreDoc(req, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json.mock.calls[0][0].code).toBe('insufficient_tier');
+    expect(doc.update).not.toHaveBeenCalled();
+  });
+
+  test('sets isArchived=false on restore (Tier 1)', async () => {
+    const doc = makeDoc({ isArchived: true, createdBy: OWNER.id, archivedAt: new Date(), archivedBy: SUPER.id });
+    Doc.findByPk.mockResolvedValue(doc);
+    const req = { user: SUPER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.restoreDoc(req, res);
 
@@ -656,7 +684,7 @@ describe('restoreDoc', () => {
   test('no-op when already not-archived', async () => {
     const doc = makeDoc({ isArchived: false, createdBy: OWNER.id });
     Doc.findByPk.mockResolvedValue(doc);
-    const req = { user: OWNER, params: { id: 'd1' } };
+    const req = { user: SUPER, params: { id: 'd1' } };
     const res = mockRes();
     await docCtrl.restoreDoc(req, res);
 

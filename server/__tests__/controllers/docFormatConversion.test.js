@@ -95,7 +95,11 @@ describe('Phase 7 — updateDoc contentFormat conversion', () => {
     expect(args.legacyContentJson).toEqual(TIPTAP_DOC);
   });
 
-  test('non-owner with edit access CANNOT flip contentFormat (403)', async () => {
+  // June 2026 — every doc auto-migrates to BlockNote on open, and the
+  // migration is lossless (legacyContentJson + version snapshot). So an
+  // edit-level collaborator may now complete the format flip too; only
+  // comment/view callers (who can't reach updateDoc at all) are excluded.
+  test('non-owner with edit access CAN flip contentFormat (lossless migration)', async () => {
     const update = jest.fn();
     const doc = {
       id: 'd1',
@@ -108,8 +112,7 @@ describe('Phase 7 — updateDoc contentFormat conversion', () => {
       toJSON() { return { id: this.id }; },
     };
     Doc.findByPk.mockResolvedValue(doc);
-    // Give SHARED edit-level grant so they pass the body-edit gate but
-    // not the owner-only format-change gate.
+    // Give SHARED edit-level grant so they pass the body-edit gate.
     const { DocAccess } = require('../../models');
     DocAccess.findOne.mockResolvedValue({ accessLevel: 'edit' });
 
@@ -121,11 +124,12 @@ describe('Phase 7 — updateDoc contentFormat conversion', () => {
     const res = mockRes();
     await docCtrl.updateDoc(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'insufficient_access',
-    }));
-    expect(update).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(403);
+    expect(update).toHaveBeenCalledTimes(1);
+    const args = update.mock.calls[0][0];
+    expect(args.contentFormat).toBe('blocknote_json');
+    // Original Tiptap source preserved for recovery.
+    expect(args.legacyContentJson).toEqual(TIPTAP_DOC);
   });
 
   test('re-converting a doc does NOT overwrite an existing legacyContentJson', async () => {

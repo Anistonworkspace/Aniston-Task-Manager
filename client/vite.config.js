@@ -18,6 +18,68 @@ function swVersionPlugin() {
   };
 }
 
+// Dev-only "self-destroying" service worker.
+//
+// In production we ship the real public/sw.js (cached app shell + web push).
+// The problem in dev: a service worker registered by a previous prod/preview
+// build stays registered on localhost. It intercepts the Vite dev server,
+// serves a CACHED copy of the OLD bundle (so source fixes never run), and via
+// skipWaiting() + clients.claim() repeatedly fires `controllerchange` — which
+// reload-loops the tab on every refresh. "Clear site data" only helps until
+// the SW re-controls the tab.
+//
+// This middleware answers /sw.js in dev with a kill-switch worker instead of
+// the cached one. Browsers re-fetch /sw.js on every navigation's update check;
+// because these bytes differ from the installed SW, the browser installs this
+// one, which unregisters itself, deletes all caches, and reloads each client
+// ONCE into a clean, SW-free dev session. No manual DevTools steps needed.
+// apply:'serve' keeps it entirely out of the production build.
+function devSelfDestroyingSWPlugin() {
+  const killSwitch = [
+    "self.addEventListener('install', () => self.skipWaiting());",
+    "self.addEventListener('activate', (event) => {",
+    "  event.waitUntil((async () => {",
+    "    // claim() FIRST so this worker controls the already-open tabs — only a",
+    "    // controlling worker can navigate() them. Without claim the old SW kept",
+    "    // controlling the tab, our navigate() silently failed, and the stale",
+    "    // looping bundle stayed on screen.",
+    "    try { await self.clients.claim(); } catch (e) {}",
+    "    try {",
+    "      const keys = await caches.keys();",
+    "      await Promise.all(keys.map((k) => caches.delete(k)));",
+    "    } catch (e) {}",
+    "    try { await self.registration.unregister(); } catch (e) {}",
+    "    // Reload every open tab ONCE into the now SW-free session. After",
+    "    // unregister there is no registration left, so the reloaded page has no",
+    "    // controller and the browser will not re-fetch /sw.js — no loop.",
+    "    try {",
+    "      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });",
+    "      for (const client of clients) { try { await client.navigate(client.url); } catch (e) {} }",
+    "    } catch (e) {}",
+    "  })());",
+    "});",
+    "// Pass-through fetch — never serve anything from cache in dev.",
+    "self.addEventListener('fetch', () => {});",
+    "",
+  ].join('\n');
+  return {
+    name: 'dev-self-destroying-sw',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url && req.url.split('?')[0] === '/sw.js') {
+          res.setHeader('Content-Type', 'application/javascript');
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('Service-Worker-Allowed', '/');
+          res.end(killSwitch);
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 // `base` controls the URL prefix Vite bakes into index.html for asset
 // references. On the web (served by nginx at https://monday.anistonav.com/),
 // the default '/' is correct — deep-link visits to /boards/123 still resolve
@@ -30,7 +92,7 @@ function swVersionPlugin() {
 // variant with: `vite build --mode desktop`.
 export default defineConfig(({ mode }) => ({
   base: mode === 'desktop' ? './' : '/',
-  plugins: [react(), swVersionPlugin()],
+  plugins: [react(), swVersionPlugin(), devSelfDestroyingSWPlugin()],
   test: {
     globals: true,
     environment: 'jsdom',

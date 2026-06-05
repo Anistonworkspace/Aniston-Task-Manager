@@ -719,7 +719,11 @@ async function fetchCalendarEvents(teamsUserId, startDate, endDate) {
     return result;
   } catch (err) {
     logger.error('[Calendar] fetchCalendarEvents error', { err: graphErrorMessage(err) });
-    return { timedEvents: [], allDayEvents: [] };
+    // Distinguish a transient/Graph failure from a genuinely empty calendar.
+    // `null` already means "not configured / no mailbox"; this sentinel lets
+    // the controller surface "fetch failed" instead of a misleading
+    // "not synced". The only caller (timePlanController) handles `error`.
+    return { error: true, timedEvents: [], allDayEvents: [] };
   }
 }
 

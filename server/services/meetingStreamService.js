@@ -6,9 +6,20 @@ const { parseCookies, ACCESS_COOKIE } = require('../utils/authCookies');
 const {
   getActiveDefaultProvider,
   buildDeepgramStreamUrl,
+  providerKind,
+  transcribeSarvamPcm,
 } = require('./transcriptionService');
+const safeLogger = require('../utils/safeLogger');
 
 const WS_PATH = '/api/meeting-stream/ws';
+
+// Sarvam (batch) bridge tuning. The browser worklet emits linear16 / 16 kHz /
+// mono, so 1 second of audio is 32 000 bytes.
+const SARVAM_SAMPLE_RATE = 16000;
+const SARVAM_BYTES_PER_SEC = SARVAM_SAMPLE_RATE * 2;
+const SARVAM_WINDOW_BYTES = SARVAM_BYTES_PER_SEC * 6;   // flush a window every ~6 s of audio
+const SARVAM_MIN_FLUSH_BYTES = SARVAM_BYTES_PER_SEC * 1; // don't transcribe < 1 s on the timer
+const SARVAM_MAX_BUFFER_BYTES = SARVAM_BYTES_PER_SEC * 60; // memory safety cap if transcription lags
 
 // Close codes reserved for application-level errors.
 const CLOSE_NO_PROVIDER = 4001;
@@ -211,8 +222,124 @@ function createBridge(clientWs, upstreamUrl, apiKey, user, logInfo) {
 }
 
 /**
+ * Sarvam bridge. Sarvam is a batch (HTTP multipart) STT API — it has no
+ * Deepgram-style live socket. We accumulate the browser's PCM frames and, once
+ * enough audio has piled up (or a timer fires), POST that window to Sarvam and
+ * fan the transcript back to the client in the SAME shape the Deepgram bridge
+ * uses ({ type:'transcript', isFinal, segments:[{speaker,text,startMs,endMs}] }),
+ * so the client (useMeetingTranscription) needs no changes.
+ *
+ * Each window is transcribed independently (standalone WAV). This trades a
+ * little cross-window context for simplicity and zero duplicate text.
+ */
+function createSarvamBridge(clientWs, provider, user, logInfo) {
+  let closed = false;
+  let flushing = false;
+  let chunks = [];
+  let bufferedBytes = 0;
+  let consumedMs = 0;            // total audio ms already shipped for transcription
+  let bytesFromClient = 0;
+  let transcriptsEmitted = 0;
+  const connectedAt = Date.now();
+
+  function safeClientSend(obj) {
+    if (closed || clientWs.readyState !== WebSocket.OPEN) return;
+    try { clientWs.send(JSON.stringify(obj)); } catch { /* client gone */ }
+  }
+
+  function logClose(reason) {
+    const durationSec = Math.round((Date.now() - connectedAt) / 1000);
+    console.log(`[MeetingStream:sarvam] closed user=${user.id} ${durationSec}s rxBytes=${bytesFromClient} txMsgs=${transcriptsEmitted} reason=${reason}`);
+  }
+
+  async function flush(force) {
+    if (flushing) return;
+    if (!chunks.length) return;
+    if (!force && bufferedBytes < SARVAM_MIN_FLUSH_BYTES) return;
+
+    flushing = true;
+    const pcm = Buffer.concat(chunks, bufferedBytes);
+    const windowMs = Math.round((bufferedBytes / SARVAM_BYTES_PER_SEC) * 1000);
+    const offsetMs = consumedMs;
+    chunks = [];
+    bufferedBytes = 0;
+    consumedMs += windowMs;
+
+    try {
+      const result = await transcribeSarvamPcm(pcm, provider);
+      if (result.ok) {
+        if (result.segments && result.segments.length) {
+          const segments = result.segments.map((s) => ({
+            speaker: s.speaker,
+            text: s.text,
+            startMs: offsetMs + (s.startMs || 0),
+            endMs: offsetMs + (s.endMs || windowMs),
+          }));
+          transcriptsEmitted += 1;
+          safeClientSend({ type: 'transcript', isFinal: true, speechFinal: true, segments });
+        }
+      } else if (result.status === 401 || result.status === 403) {
+        safeClientSend({
+          type: 'error',
+          code: 'upstream_error',
+          message: 'The transcription provider rejected the API key.',
+        });
+        closeAll(CLOSE_UPSTREAM_ERROR, 'Sarvam auth error');
+      } else {
+        // Transient (rate limit, 5xx, network) — log and keep recording.
+        safeLogger.warn('[MeetingStream:sarvam] window transcription failed', {
+          status: result.status, error: result.error,
+        });
+      }
+    } catch (err) {
+      safeLogger.warn('[MeetingStream:sarvam] transcribe threw', { err });
+    } finally {
+      flushing = false;
+    }
+  }
+
+  const timer = setInterval(() => { flush(false); }, 2000);
+
+  function closeAll(code, reason) {
+    if (closed) return;
+    closed = true;
+    clearInterval(timer);
+    try { clientWs.readyState <= WebSocket.OPEN && clientWs.close(code, reason); } catch {}
+    logClose(reason || code);
+  }
+
+  clientWs.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      let msg;
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+      if (msg && msg.type === 'stop') {
+        // Best-effort final window, then close. The client typically closes the
+        // socket right after sending stop, so the tail window may not arrive —
+        // acceptable, and minimised by the frequent windowing above.
+        (async () => { await flush(true); closeAll(1000, 'Client requested stop'); })();
+      }
+      return;
+    }
+    if (closed) return;
+    bytesFromClient += data.length;
+    chunks.push(data);
+    bufferedBytes += data.length;
+    if (bufferedBytes >= SARVAM_MAX_BUFFER_BYTES || bufferedBytes >= SARVAM_WINDOW_BYTES) {
+      flush(false);
+    }
+  });
+
+  clientWs.on('close', () => closeAll(1000, 'Client disconnected'));
+  clientWs.on('error', () => closeAll(1011, 'Client socket error'));
+
+  safeClientSend({ type: 'ready', provider: logInfo });
+  return { closeAll };
+}
+
+/**
  * Attach a WebSocket server to the provided HTTP server at WS_PATH.
- * Handles JWT auth, resolves the active Deepgram provider, and proxies audio.
+ * Handles JWT auth, resolves the active provider, and bridges audio to it —
+ * Deepgram (live WS) or Sarvam (buffered batch), depending on the provider.
  */
 function attachMeetingStream(server) {
   const wss = new WebSocket.Server({ noServer: true });
@@ -239,14 +366,19 @@ function attachMeetingStream(server) {
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const upstreamUrl = buildDeepgramStreamUrl(provider);
-      console.log(`[MeetingStream] open user=${user.id} provider=${provider.providerType} model=${provider.model}`);
-      createBridge(ws, upstreamUrl, provider.apiKey, user, {
+      const logInfo = {
         providerType: provider.providerType,
         model: provider.model,
         language: provider.language,
         diarize: provider.diarizationEnabled,
-      });
+      };
+      console.log(`[MeetingStream] open user=${user.id} provider=${provider.providerType} model=${provider.model} kind=${providerKind(provider)}`);
+      if (providerKind(provider) === 'sarvam') {
+        createSarvamBridge(ws, provider, user, logInfo);
+      } else {
+        const upstreamUrl = buildDeepgramStreamUrl(provider);
+        createBridge(ws, upstreamUrl, provider.apiKey, user, logInfo);
+      }
     });
   });
 

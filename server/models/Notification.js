@@ -59,7 +59,9 @@ const Notification = sequelize.define(
         'help_responded',
         'promotion',
         'board_member_added',
-        'board_member_removed'
+        'board_member_removed',
+        // Time Planner — N-minutes-before block reminder.
+        'time_block_reminder'
       ),
       allowNull: false,
     },

@@ -5,7 +5,8 @@ import {
   FileText, Archive, RotateCcw,
   Sparkles, Check, AlertCircle, Loader2, History, MessageSquare, Save,
   MoreHorizontal, Link2, Wand2, ChevronDown, ChevronRight, LayoutGrid, RefreshCw,
-} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons. Save — May 2026 manual-save button. May 2026 Notion-style refactor: MoreHorizontal/Link2/Wand2/ChevronDown for the new AI + More menus. ChevronRight + LayoutGrid added for the Editorial breadcrumb (May 2026 Editorial pass). RefreshCw — live peer-update refresh pill.
+  PanelRight, PanelRightClose,
+} from 'lucide-react'; // History + MessageSquare — Phase F + H header buttons. Save — May 2026 manual-save button. May 2026 Notion-style refactor: MoreHorizontal/Link2/Wand2/ChevronDown for the new AI + More menus. ChevronRight + LayoutGrid added for the Editorial breadcrumb (May 2026 Editorial pass). RefreshCw — live peer-update refresh pill. PanelRight/PanelRightClose — June 2026 right-rail docs navigator toggle.
 import PortalDropdown from '../../components/common/PortalDropdown';
 import { AnimatePresence, motion } from 'framer-motion';
 import api from '../../services/api';
@@ -61,6 +62,10 @@ import DocSharePanel from './DocSharePanel';
 // chips just under the title, with owner-only unshare. Reflects live
 // share/unshare via the `shareVersion` reload key bumped by DocSharePanel.
 import DocSharedWithBar from './DocSharedWithBar';
+// June 2026 — in-editor right rail to switch between docs (department-grouped
+// for Tier 1/2) without bouncing back to /docs. Open/close persisted in
+// localStorage so it survives refresh, ChatGPT/Claude-sidebar style.
+import DocsSidePanel from './DocsSidePanel';
 
 /**
  * DocPage — collaborative document viewer/editor.
@@ -83,6 +88,11 @@ import DocSharedWithBar from './DocSharedWithBar';
  * write wins); this is acceptable for the foundation slice.
  */
 
+// localStorage key for the right-rail docs navigator open/close state.
+// Global (not per-user / per-doc) so the rail preference is one toggle the
+// user sets once and it sticks everywhere in Docs.
+const DOCS_PANEL_STORAGE_KEY = 'docsRightPanelOpen';
+
 export default function DocPage() {
   // feat/docs-personal-notion Phase 1: URL is now /docs/:docId — workspaceId
   // is no longer in the URL. It comes from the loaded doc (doc.workspaceId)
@@ -91,7 +101,7 @@ export default function DocPage() {
   // pickers from workspace context.
   const { docId } = useParams();
   const navigate = useNavigate();
-  const { user, isSuperAdmin } = useAuth();
+  const { user, isSuperAdmin, canManage } = useAuth();
   const toast = useToast();
 
   const [doc, setDoc] = useState(null);
@@ -139,6 +149,28 @@ export default function DocPage() {
   // Bumped whenever the Share panel mutates collaborators so the
   // shared-with @name bar re-fetches.
   const [shareVersion, setShareVersion] = useState(0);
+
+  // June 2026 — right-rail docs navigator. Open/close persists in
+  // localStorage (global key, not per-doc) so the rail stays as the user
+  // left it across navigations and refreshes. Defaults to OPEN on first
+  // visit so the new switcher is discoverable. When open, the editor column
+  // re-centers within the narrower remaining space (shifts left, ChatGPT
+  // style); when closed it centers in the full width.
+  const [panelOpen, setPanelOpen] = useState(() => {
+    try {
+      const v = localStorage.getItem(DOCS_PANEL_STORAGE_KEY);
+      return v === null ? true : v === '1';
+    } catch {
+      return true;
+    }
+  });
+  const togglePanel = useCallback(() => {
+    setPanelOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem(DOCS_PANEL_STORAGE_KEY, next ? '1' : '0'); } catch { /* quota / privacy mode */ }
+      return next;
+    });
+  }, []);
 
   // Post-Phase-2: server returns `callerAccessLevel` from getDoc, computed
   // by docAccessService.getDocAccessLevel. It's the single source of truth
@@ -450,57 +482,6 @@ export default function DocPage() {
     },
   });
 
-  // Phase 7 — owner-only "Convert to new editor" flow for legacy Tiptap
-  // docs. Renders the existing Tiptap contentJson to HTML, asks BlockNote
-  // to parse it into blocks, then PATCHes the doc with the new format +
-  // preserves the original Tiptap JSON in legacyContentJson (the column
-  // added in Phase 2 specifically for this insurance). After save, the
-  // page hard-reloads so the editor branch flips and BlockNote takes over.
-  const [converting, setConverting] = useState(false);
-  const handleConvertToBlockNote = useCallback(async () => {
-    if (!doc?.id || converting) return;
-    if (doc.contentFormat !== 'tiptap_json') return;
-    const ok = typeof window !== 'undefined' && window.confirm
-      ? window.confirm(
-        'Convert this doc to the new Notion-style editor?\n\n'
-        + 'Your original content will be preserved (saved to version history) '
-        + 'so you can always restore it later. Some custom Tiptap nodes '
-        + '(mentions, task chips) may render differently after conversion.',
-      )
-      : true;
-    if (!ok) return;
-    setConverting(true);
-    try {
-      // 1. Flush any pending edits so we convert what's actually on screen.
-      try { await flush(); } catch (_) { /* non-fatal */ }
-      // 2. Render the current Tiptap JSON to HTML.
-      const html = tiptapJsonToHtml(doc.contentJson) || '';
-      // 3. Lazy-load BlockNote and parse the HTML into blocks. We construct
-      //    a throwaway editor instance just for the parse — no UI mount.
-      const [{ BlockNoteEditor: HeadlessEditor }] = await Promise.all([
-        import('@blocknote/core'),
-      ]);
-      const tmp = HeadlessEditor.create({});
-      const blocks = await tmp.tryParseHTMLToBlocks(html);
-      // 4. PATCH the doc with the new format. Server-side updateDoc detects
-      //    the format flip and auto-snapshots the existing tiptap_json
-      //    contentJson into legacyContentJson before overwriting — the
-      //    client never has to send legacyContentJson directly.
-      await api.patch(`/docs/${doc.id}`, {
-        contentJson: blocks,
-        contentFormat: 'blocknote_json',
-      });
-      toast.success('Converted to the new editor.');
-      // 5. Hard reload so the BlockNote branch mounts cleanly. Simpler than
-      //    juggling the in-flight editor state through a remount.
-      window.location.reload();
-    } catch (err) {
-      safeLog.error('[DocPage] convert-to-BlockNote failed', err);
-      toast.error(getErrorMessage(err) || 'Could not convert this doc.');
-      setConverting(false);
-    }
-  }, [doc, converting, flush, toast]);
-
   // Manual save handler. Used by Ctrl+S and the explicit "Save" button.
   // Always triggers an HTTP flush — even in collab mode — because the
   // HTTP path is what persists `contentJson` / `contentText` (Y.js only
@@ -552,6 +533,14 @@ export default function DocPage() {
   }, [docId, handleManualSave]);
 
   // Load doc on mount + when docId changes.
+  //
+  // June 2026 — every doc now renders in the BlockNote (Notion-style) editor.
+  // Legacy `tiptap_json` docs are converted to BlockNote blocks IN MEMORY on
+  // load (withBlockNoteContent) so the old TipTap editor never mounts and the
+  // "Switch to new editor" affordance is gone. When the caller can edit, we
+  // also persist the migration once (PATCH) so the doc is permanently
+  // BlockNote — the server snapshots the original TipTap JSON into
+  // legacyContentJson + version history before overwriting, so nothing is lost.
   useEffect(() => {
     if (!docId) return undefined;
     let cancelled = false;
@@ -559,12 +548,37 @@ export default function DocPage() {
     setError('');
     initialLoadedRef.current = false;
     getDoc(docId)
-      .then(({ doc: loaded }) => {
+      .then(async ({ doc: loaded }) => {
         if (cancelled) return;
-        setDoc(loaded);
-        setTitleDraft(loaded?.title || '');
+        const hydrated = await withBlockNoteContent(loaded);
+        if (cancelled) return;
+        setDoc(hydrated);
+        setTitleDraft(hydrated?.title || '');
         setBodyDraft(tiptapJsonToHtml(loaded?.contentJson));
         initialLoadedRef.current = true;
+        // Persist the one-time TipTap → BlockNote migration so the doc never
+        // round-trips through the legacy editor again. Fire-and-forget — a
+        // failure just means we re-convert in memory on the next open.
+        const migrated = loaded?.contentFormat === 'tiptap_json'
+          && hydrated?.contentFormat === 'blocknote_json';
+        if (migrated) {
+          const ownerId = loaded.ownerUserId || loaded.createdBy;
+          const lvl = loaded.callerAccessLevel;
+          // Persist for anyone who can edit the body — the server flips the
+          // format losslessly (it snapshots the original Tiptap JSON first).
+          // Comment/view callers can't edit, so they just get the in-memory
+          // BlockNote render and we re-convert on each open.
+          const callerCanMigrate = !loaded.isArchived && (
+            isSuperAdmin || lvl === 'owner' || lvl === 'edit'
+            || (ownerId && user && ownerId === user.id)
+          );
+          if (callerCanMigrate) {
+            api.patch(`/docs/${loaded.id}`, {
+              contentJson: hydrated.contentJson,
+              contentFormat: 'blocknote_json',
+            }).catch((err) => safeLog.warn('[DocPage] auto-migrate to BlockNote failed (non-fatal)', err));
+          }
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -573,7 +587,8 @@ export default function DocPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [docId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, isSuperAdmin, user?.id]);
 
   // ─── Live collaboration (non-CRDT) ────────────────────────────
   // Re-fetch the doc and remount the editor with the fresh content. Used
@@ -584,9 +599,10 @@ export default function DocPage() {
   const reloadDocBody = useCallback(() => {
     if (!docId) return;
     getDoc(docId)
-      .then(({ doc: fresh }) => {
+      .then(async ({ doc: fresh }) => {
         if (!fresh) return;
-        setDoc((prev) => (prev ? { ...prev, ...fresh } : fresh));
+        const hydrated = await withBlockNoteContent(fresh);
+        setDoc((prev) => (prev ? { ...prev, ...hydrated } : hydrated));
         setBodyDraft(tiptapJsonToHtml(fresh?.contentJson));
         setEditorRemountKey((k) => k + 1);
         setPeerUpdated(false);
@@ -735,37 +751,25 @@ export default function DocPage() {
   // handleShareCopy removed in Phase H — replaced by DocShareDropdown
   // which handles copy-link as part of the public_link mode.
 
-  if (loading) {
-    return (
-      <div className="max-w-3xl mx-auto px-6 py-8">
-        <div className="h-7 w-56 bg-surface-100 rounded animate-pulse mb-2" />
-        <div className="h-3 w-48 bg-surface-100 rounded animate-pulse mb-8" />
-        <div className="h-4 w-full bg-surface-100 rounded animate-pulse mb-2" />
-        <div className="h-4 w-5/6 bg-surface-100 rounded animate-pulse mb-2" />
-        <div className="h-4 w-2/3 bg-surface-100 rounded animate-pulse" />
-      </div>
-    );
-  }
-
-  if (error || !doc) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          title="Couldn't load this doc"
-          description={error || 'The doc may have been archived or you may not have access.'}
-          primaryAction={{ label: 'Back to docs', onClick: () => navigate('/docs') }}
-        />
-      </div>
-    );
-  }
+  // June 2026 — switching docs from the right rail must NOT unmount the rail
+  // or re-render the whole page; only the editor COLUMN should swap. So we no
+  // longer early-return a full-page skeleton/error here (that wiped the whole
+  // tree, including the rail, which then re-fetched and flashed). Instead the
+  // header + rail render persistently and only the editor column below reacts
+  // to loading / error / doc. `doc` persists across a doc→doc switch (we never
+  // clear it), so the header keeps showing the previous title until the new
+  // doc loads, while the rail stays put.
+  const showSkeleton = loading;
+  const showError = !loading && (error || !doc);
+  const showDoc = !loading && !error && !!doc;
 
   const titleDisplay = (
     <h1
       className="doc-page-notion__title"
       onClick={() => isOwner && setEditingTitle(true)}
-      title={isOwner ? 'Click to rename' : doc.title}
+      title={isOwner ? 'Click to rename' : doc?.title}
     >
-      {doc.title || <span className="doc-page-notion__title-placeholder">Untitled</span>}
+      {doc?.title || <span className="doc-page-notion__title-placeholder">Untitled</span>}
     </h1>
   );
 
@@ -805,12 +809,18 @@ export default function DocPage() {
             <span>Monday Aniston</span>
           </button>
           <ChevronRight size={12} className="doc-page-notion__breadcrumb-sep" aria-hidden="true" />
-          <span className="doc-page-notion__breadcrumb-title" title={doc.title}>
-            {doc.title || 'Untitled'}
+          <span className="doc-page-notion__breadcrumb-title" title={doc?.title}>
+            {doc?.title || 'Untitled'}
           </span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Doc-dependent controls. Absent on the very first load (no doc
+              yet) but kept rendered with the PREVIOUS doc during a doc→doc
+              switch so the header doesn't flash. The rail toggle below stays
+              outside this guard so it's always available. */}
+          {doc && (
+          <>
           <SaveIndicator status={status} lastSavedAt={lastSavedAt} error={saveError} />
           {/* Live peer-update pill — shown only when a collaborator's edit
               arrived while we had unsaved local changes (so we didn't auto-
@@ -893,8 +903,9 @@ export default function DocPage() {
             </button>
           )}
 
-          {/* Restore is a primary recovery action — keep inline when archived. */}
-          {isOwner && doc.isArchived && (
+          {/* Restore is a primary recovery action — keep inline when archived.
+              June 2026: archive/restore are Tier 1/2 (canManage) actions. */}
+          {canManage && doc.isArchived && (
             <button
               type="button"
               onClick={handleUnarchive}
@@ -905,10 +916,10 @@ export default function DocPage() {
             </button>
           )}
 
-          {/* More menu — History, Save, Copy link, Convert, Archive. */}
+          {/* More menu — History, Save, Copy link, Archive. */}
           <DocMoreMenu
             canEdit={canEdit}
-            isOwner={isOwner}
+            canManage={canManage}
             doc={doc}
             saveStatus={status}
             onOpenHistory={() => setVersionsOpen(true)}
@@ -921,21 +932,35 @@ export default function DocPage() {
                 toast.error('Could not copy link');
               }
             }}
-            onConvert={handleConvertToBlockNote}
-            converting={converting}
             onArchive={handleArchive}
           />
+          </>
+          )}
+
+          {/* Right-rail docs navigator toggle. Sits at the far right edge so
+              it reads as the control for the panel on that edge. Highlighted
+              while open. State persists in localStorage. */}
+          <button
+            type="button"
+            onClick={togglePanel}
+            className={`doc-page-notion__icon-btn${panelOpen ? ' doc-page-notion__icon-btn--active' : ''}`}
+            aria-pressed={panelOpen}
+            aria-label={panelOpen ? 'Hide docs panel' : 'Show docs panel'}
+            title={panelOpen ? 'Hide docs panel' : 'Show docs panel'}
+          >
+            {panelOpen ? <PanelRightClose size={16} /> : <PanelRight size={16} />}
+          </button>
         </div>
       </header>
 
       {/* Super-admin override banner — slim calm strip (audit-required
           per decision 17.7a). Token-driven; matches the approved Editorial
           spec: mx-4, 8px y-padding, rounded, 6px accent dot. */}
-      {isSuperAdmin && doc && doc.ownerUserId && doc.ownerUserId !== user?.id && (
+      {(isSuperAdmin || canManage) && doc && doc.ownerUserId && doc.ownerUserId !== user?.id && (
         <div className="doc-page-notion__sa-banner" role="status">
           <span className="doc-page-notion__sa-banner-dot" aria-hidden="true" />
           <span className="truncate">
-            <strong>Super admin view</strong>
+            <strong>{isSuperAdmin ? 'Super admin view' : 'Admin view'}</strong>
             {' — viewing '}
             {doc.owner?.name ? `${doc.owner.name}'s` : "another user's"}
             {' doc. Actions are logged.'}
@@ -946,9 +971,33 @@ export default function DocPage() {
       {/* Editorial centered page column. Floating doc icon + large title +
           compact meta + chromeless editor body. (Cover band removed
           May 2026 — felt too heavy; icon now sits flush at the top of
-          the column.) */}
-      <div className="flex-1 overflow-auto">
-        <div className="doc-page-notion__column">
+          the column.)
+
+          June 2026 — wrapped in a flex row with the docs navigator rail on
+          the right. The editor scroll area is flex-1, so when the rail is
+          open the centered column re-centers in the narrower space (shifts
+          left, ChatGPT/Claude style); when the rail is closed it centers in
+          the full width. */}
+      <div className="flex flex-1 min-h-0">
+        <div className="flex-1 overflow-auto">
+          {showSkeleton ? (
+            <div className="doc-page-notion__column" aria-busy="true">
+              <div className="doc-page-notion__page-icon" aria-hidden="true" />
+              <div className="h-8 w-2/3 rounded animate-pulse mt-5 mb-4" style={{ background: 'var(--surface-100, #f0f2f5)' }} />
+              <div className="h-4 w-full rounded animate-pulse mb-2" style={{ background: 'var(--surface-100, #f0f2f5)' }} />
+              <div className="h-4 w-5/6 rounded animate-pulse mb-2" style={{ background: 'var(--surface-100, #f0f2f5)' }} />
+              <div className="h-4 w-2/3 rounded animate-pulse" style={{ background: 'var(--surface-100, #f0f2f5)' }} />
+            </div>
+          ) : showError ? (
+            <div className="doc-page-notion__column">
+              <EmptyState
+                title="Couldn't load this doc"
+                description={error || 'The doc may have been archived or you may not have access.'}
+                primaryAction={{ label: 'Back to docs', onClick: () => navigate('/docs') }}
+              />
+            </div>
+          ) : showDoc ? (
+          <div className="doc-page-notion__column">
           <div className="doc-page-notion__title-block">
             <div className="doc-page-notion__page-icon" aria-hidden="true">
               <FileText size={22} />
@@ -1124,9 +1173,29 @@ export default function DocPage() {
             )}
             </ErrorBoundary>
           </div>
+          </div>
+          ) : null}
         </div>
+
+        {/* Right-rail docs navigator. Lives OUTSIDE the loading/error branch
+            above so switching docs only swaps the editor column — the rail
+            stays mounted (no re-fetch, no flash). activeDocId reads the URL
+            param so the highlight is correct even while the new doc loads.
+            AnimatePresence runs the slide-in/out animation on open/close;
+            closing is owned by the header toggle only. */}
+        <AnimatePresence initial={false}>
+          {panelOpen && (
+            <DocsSidePanel key="docs-rail" activeDocId={docId} />
+          )}
+        </AnimatePresence>
       </div>
 
+      {/* Doc-scoped overlays (comment pill, sidekick, task/comment/version
+          modals). Guarded on `doc` so they never read a null doc during the
+          first load or a failed load — the rail and header above stay up
+          regardless. */}
+      {doc && (
+      <>
       {/* Floating "Comment" pill — appears next to a text selection in the
           doc body for anyone who can comment (owner / edit / comment). The
           editor-agnostic path so BlockNote docs and read-only comment-level
@@ -1208,8 +1277,9 @@ export default function DocPage() {
           setVersionsOpen(false);
           initialLoadedRef.current = false;
           setLoading(true);
-          getDoc(doc.id).then(({ doc: reloaded }) => {
-            setDoc(reloaded);
+          getDoc(doc.id).then(async ({ doc: reloaded }) => {
+            const hydrated = await withBlockNoteContent(reloaded);
+            setDoc(hydrated);
             setBodyDraft(tiptapJsonToHtml(reloaded?.contentJson));
             initialLoadedRef.current = true;
           }).catch((err) => {
@@ -1230,6 +1300,8 @@ export default function DocPage() {
         subtitle={doc.title}
         run={() => aiSummary.summarizeDoc(doc.id)}
       />
+      </>
+      )}
     </div>
   );
 }
@@ -1400,13 +1472,15 @@ function DocAIMenu({ onSummarize, onAskAI, preparing }) {
 
 /**
  * DocMoreMenu — overflow menu for the document-level actions that aren't
- * needed in the primary bar: History, Manual Save, Copy link, Convert
- * (legacy docs), Archive (owner). Each item gates itself on the same
- * permissions the inline buttons used to check.
+ * needed in the primary bar: History, Manual Save, Copy link, Archive.
+ * Each item gates itself on the same permissions the inline buttons used to
+ * check. June 2026: Archive is a Tier 1/2 (canManage) action; the legacy
+ * "Switch to new editor" convert item was removed when all docs moved to the
+ * BlockNote editor.
  */
 function DocMoreMenu({
-  canEdit, isOwner, doc, saveStatus,
-  onOpenHistory, onManualSave, onCopyLink, onConvert, converting, onArchive,
+  canEdit, canManage, doc, saveStatus,
+  onOpenHistory, onManualSave, onCopyLink, onArchive,
 }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef(null);
@@ -1460,24 +1534,7 @@ function DocMoreMenu({
             <Link2 size={14} />
             <span className="doc-page-notion__menu-item-title">Copy link</span>
           </button>
-          {isOwner && doc.contentFormat === 'tiptap_json' && !doc.isArchived && (
-            <button
-              type="button"
-              role="menuitem"
-              className="doc-page-notion__menu-item"
-              onClick={() => { close(); onConvert(); }}
-              disabled={converting}
-            >
-              {converting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} className="text-violet-500" />}
-              <div className="flex-1 text-left">
-                <div className="doc-page-notion__menu-item-title">
-                  {converting ? 'Converting…' : 'Switch to new editor'}
-                </div>
-                <div className="doc-page-notion__menu-item-hint">Notion-style blocks</div>
-              </div>
-            </button>
-          )}
-          {isOwner && !doc.isArchived && (
+          {canManage && !doc.isArchived && (
             <>
               <div className="doc-page-notion__menu-divider" />
               <button
@@ -1577,6 +1634,35 @@ function SaveIndicator({ status, lastSavedAt, error }) {
 //
 // Phase G (Y.js) will replace this bridge with a CRDT-backed Tiptap doc
 // that emits both formats natively — until then, this is the boundary.
+
+// June 2026 — convert a legacy Tiptap `contentJson` envelope into BlockNote
+// blocks. Renders the Tiptap JSON to HTML, then spins up a throwaway headless
+// BlockNote editor to parse that HTML into blocks. Returns null on failure so
+// callers can fall back to rendering the original content unchanged.
+async function tiptapJsonToBlockNoteBlocks(contentJson) {
+  try {
+    const html = tiptapJsonToHtml(contentJson) || '';
+    const { BlockNoteEditor: HeadlessEditor } = await import('@blocknote/core');
+    const tmp = HeadlessEditor.create({});
+    const blocks = await tmp.tryParseHTMLToBlocks(html);
+    return Array.isArray(blocks) ? blocks : null;
+  } catch {
+    return null;
+  }
+}
+
+// Returns a doc whose body is always BlockNote-shaped. A `blocknote_json`
+// doc is returned untouched; a legacy `tiptap_json` doc is converted in
+// memory so the BlockNote editor (the only editor we mount now) can render
+// it. On conversion failure the original doc is returned so the page still
+// loads (the ErrorBoundary around the editor catches any downstream render
+// error).
+async function withBlockNoteContent(loaded) {
+  if (!loaded || loaded.contentFormat !== 'tiptap_json') return loaded;
+  const blocks = await tiptapJsonToBlockNoteBlocks(loaded.contentJson);
+  if (!blocks) return loaded;
+  return { ...loaded, contentFormat: 'blocknote_json', contentJson: blocks };
+}
 
 function tiptapJsonToHtml(json) {
   if (!json || typeof json !== 'object') return '';

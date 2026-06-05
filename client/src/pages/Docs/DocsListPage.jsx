@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileText, Plus, Search, Archive, RotateCcw, Loader2, AtSign, Users, User as UserIcon, Inbox } from 'lucide-react';
+import { FileText, Plus, Search, Archive, Loader2, AtSign, Users, User as UserIcon, Inbox, Building2, ChevronDown, ChevronRight } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import {
   listMyDocs, createDoc as createDocApi,
-  archiveDoc as archiveDocApi, restoreDoc as restoreDocApi,
+  archiveDoc as archiveDocApi,
 } from '../../services/docsService';
 import safeLog from '../../utils/safeLog';
 import { getErrorMessage } from '../../utils/errorMap';
@@ -15,6 +15,9 @@ import EmptyState from '../../components/common/EmptyState';
 // Phase 8 — listen for realtime access grants/revokes so /docs self-refreshes
 // when someone shares a doc with us or removes our mention-derived access.
 import useRealtimeEvent from '../../realtime/useRealtimeEvent';
+// June 2026 — per-user department-collapse persistence, shared with the
+// in-editor right side panel (DocsSidePanel) so collapse state stays in sync.
+import { loadDeptCollapseState, saveDeptCollapseState } from './docsDeptCollapse';
 
 // Phase 8 — filter chip definitions. Keys match the backend's `?filter=`
 // query param. Icons are lucide-react; copy stays simple Notion-style.
@@ -24,6 +27,9 @@ const FILTERS = [
   { key: 'shared',    label: 'Shared with me', Icon: Users },
   { key: 'mentioned', label: 'Mentioned me',   Icon: AtSign },
 ];
+
+// Bucket label for docs whose owner has no department set (Tier 1/2 view).
+const NO_DEPT = 'No Department';
 
 /**
  * DocsListPage — personal docs library.
@@ -38,26 +44,71 @@ const FILTERS = [
 
 export default function DocsListPage() {
   const navigate = useNavigate();
-  const { user, isSuperAdmin } = useAuth();
+  const { canManage, user } = useAuth();
   const toast = useToast();
 
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [includeArchived, setIncludeArchived] = useState(false);
   const [creating, setCreating] = useState(false);
   // Phase 8 — filter chip state. 'all' is the safe default; 'owned' /
   // 'shared' / 'mentioned' narrow the result set server-side.
   const [filter, setFilter] = useState('all');
+  // June 2026 — Tier 1/2 see every doc grouped by the owner's department,
+  // and can narrow to one department. 'all' shows every department.
+  const [deptFilter, setDeptFilter] = useState('all');
+  // Per-user collapse state for the department sections, hydrated from
+  // localStorage so minimized departments stay minimized across refreshes.
+  const [collapsedDepts, setCollapsedDepts] = useState(() => loadDeptCollapseState(user?.id));
+
+  // Re-hydrate if the logged-in user changes (collapse state is per-user).
+  useEffect(() => {
+    setCollapsedDepts(loadDeptCollapseState(user?.id));
+  }, [user?.id]);
+
+  const toggleDept = useCallback((dept) => {
+    setCollapsedDepts((prev) => {
+      const next = { ...prev, [dept]: !prev[dept] };
+      saveDeptCollapseState(user?.id, next);
+      return next;
+    });
+  }, [user?.id]);
+
+  // Distinct department list (Tier 1/2 only) derived from the loaded docs.
+  const departments = useMemo(() => {
+    const set = new Set();
+    for (const d of docs) set.add(d.ownerDepartment || NO_DEPT);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [docs]);
+
+  // Docs after applying the department filter (no-op for non-managers).
+  const visibleDocs = useMemo(() => {
+    if (!canManage || deptFilter === 'all') return docs;
+    return docs.filter((d) => (d.ownerDepartment || NO_DEPT) === deptFilter);
+  }, [docs, canManage, deptFilter]);
+
+  // For Tier 1/2: docs grouped by department [ [deptName, docs[]], ... ].
+  const groupedByDept = useMemo(() => {
+    if (!canManage) return null;
+    const map = new Map();
+    for (const d of visibleDocs) {
+      const key = d.ownerDepartment || NO_DEPT;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(d);
+    }
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [visibleDocs, canManage]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
+      // Archived docs are intentionally excluded — they live only in the
+      // global Archive folder now (June 2026). The old inline "Show archived"
+      // toggle was removed; restore/delete happen from /archive.
       const { docs: list } = await listMyDocs({
         q: query || undefined,
-        archived: includeArchived,
         filter: filter !== 'all' ? filter : undefined,
       });
       setDocs(Array.isArray(list) ? list : []);
@@ -67,7 +118,7 @@ export default function DocsListPage() {
     } finally {
       setLoading(false);
     }
-  }, [query, includeArchived, filter]);
+  }, [query, filter]);
 
   // Debounce search by 250ms so typing doesn't fire a request per keystroke.
   useEffect(() => {
@@ -99,25 +150,12 @@ export default function DocsListPage() {
     e?.stopPropagation();
     try {
       await archiveDocApi(doc.id);
-      toast.success('Doc archived');
+      toast.success('Doc archived — find it in Archive › Docs');
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
     } catch (err) {
       toast.error(getErrorMessage(err));
     }
   }
-
-  async function handleRestore(doc, e) {
-    e?.stopPropagation();
-    try {
-      await restoreDocApi(doc.id);
-      toast.success('Doc restored');
-      load();
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    }
-  }
-
-  const activeDocs = useMemo(() => docs.filter((d) => includeArchived || !d.isArchived), [docs, includeArchived]);
 
   return (
     <div className="flex flex-col h-full">
@@ -166,14 +204,24 @@ export default function DocsListPage() {
               className="w-full pl-8 pr-3 py-1.5 text-sm border border-border rounded-md bg-surface focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary"
             />
           </div>
-          <label className="inline-flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={includeArchived}
-              onChange={(e) => setIncludeArchived(e.target.checked)}
-            />
-            Show archived
-          </label>
+          {/* June 2026 — department filter, Tier 1/2 only. Options derive
+              from the owners of the docs currently loaded. */}
+          {canManage && (
+            <div className="relative">
+              <Building2 size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+              <select
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+                className="pl-8 pr-7 py-1.5 text-sm border border-border rounded-md bg-surface focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary appearance-none cursor-pointer"
+                title="Filter by department"
+              >
+                <option value="all">All departments</option>
+                {departments.map((dep) => (
+                  <option key={dep} value={dep}>{dep}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Phase 8 — filter chip row. Sits below search so the filter
@@ -214,11 +262,12 @@ export default function DocsListPage() {
               <div key={i} className="h-14 rounded-md animate-pulse" style={{ backgroundColor: 'var(--surface-100, #f0f2f5)' }} />
             ))}
           </div>
-        ) : activeDocs.length === 0 ? (
+        ) : visibleDocs.length === 0 ? (
           <EmptyState
             icon={<FileText size={48} className="text-text-tertiary" />}
             title={
               query ? 'No docs match'
+                : (canManage && deptFilter !== 'all') ? `No docs in ${deptFilter}`
                 : filter === 'shared' ? 'Nothing shared with you yet'
                 : filter === 'mentioned' ? 'You haven\'t been @-mentioned yet'
                 : filter === 'owned' ? 'You haven\'t created any docs yet'
@@ -226,31 +275,69 @@ export default function DocsListPage() {
             }
             description={
               query ? 'Try a different search or filter.'
+                : (canManage && deptFilter !== 'all') ? 'Try a different department or clear the filter.'
                 : filter === 'shared' ? 'When someone shares a doc with you via the Share panel, it will show up here.'
                 : filter === 'mentioned' ? 'When a teammate @-mentions you in a doc, you\'ll see it here.'
                 : filter === 'owned' ? 'Create your first doc to draft a spec, capture meeting notes, or decide together.'
                 : 'Create your first doc to draft a spec, capture meeting notes, or decide together.'
             }
             primaryAction={
-              (!query && (filter === 'all' || filter === 'owned'))
+              (!query && deptFilter === 'all' && (filter === 'all' || filter === 'owned'))
                 ? { label: '+ Create doc', onClick: handleCreate }
                 : undefined
             }
           />
+        ) : canManage ? (
+          // Tier 1/2 — docs grouped by the owner's department.
+          <div className="space-y-5">
+            {groupedByDept.map(([dept, deptDocs]) => {
+              const collapsed = !!collapsedDepts[dept];
+              return (
+                <section key={dept}>
+                  <button
+                    type="button"
+                    onClick={() => toggleDept(dept)}
+                    aria-expanded={!collapsed}
+                    className="flex items-center gap-2 mb-1.5 px-1 w-full text-left group"
+                  >
+                    {collapsed
+                      ? <ChevronRight size={14} className="text-text-tertiary transition-colors group-hover:text-text-secondary" />
+                      : <ChevronDown size={14} className="text-text-tertiary transition-colors group-hover:text-text-secondary" />}
+                    <Building2 size={13} className="text-text-tertiary" />
+                    <h2 className="text-xs font-bold uppercase tracking-wide text-text-secondary">{dept}</h2>
+                    <span className="text-[11px] font-medium text-text-tertiary">{deptDocs.length}</span>
+                  </button>
+                  {!collapsed && (
+                    <ul className="space-y-1 rounded-md border border-border-light overflow-hidden">
+                      {deptDocs.map((doc, i) => (
+                        <li key={doc.id}>
+                          <DocRow
+                            doc={doc}
+                            onOpen={() => navigate(`/docs/${doc.id}`)}
+                            onArchive={(e) => handleArchive(doc, e)}
+                            canArchive={canManage}
+                            isFirst={i === 0}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              );
+            })}
+          </div>
         ) : (
           <ul className="space-y-1 rounded-md border border-border-light overflow-hidden">
-            {activeDocs.map((doc, i) => (
+            {visibleDocs.map((doc, i) => (
               <li key={doc.id}>
                 <DocRow
                   doc={doc}
                   onOpen={() => navigate(`/docs/${doc.id}`)}
                   onArchive={(e) => handleArchive(doc, e)}
-                  onRestore={(e) => handleRestore(doc, e)}
-                  // Owner gate: super-admin OR the doc's owner. Shared/mentioned
-                  // users no longer see Archive/Restore — Phase 3 will enforce
-                  // this server-side too.
-                  canEdit={isSuperAdmin
-                    || (doc.ownerUserId || doc.createdBy) === user?.id}
+                  // June 2026: Archive is a Tier 1/2 (canManage) action.
+                  // Everyone else no longer sees the Archive affordance.
+                  // Restore/permanent-delete live in the global Archive folder.
+                  canArchive={canManage}
                   isFirst={i === 0}
                 />
               </li>
@@ -262,7 +349,7 @@ export default function DocsListPage() {
   );
 }
 
-function DocRow({ doc, onOpen, onArchive, onRestore, canEdit, isFirst }) {
+function DocRow({ doc, onOpen, onArchive, canArchive, isFirst }) {
   return (
     <button
       type="button"
@@ -312,7 +399,7 @@ function DocRow({ doc, onOpen, onArchive, onRestore, canEdit, isFirst }) {
           : (doc.updatedAt ? formatDistanceToNow(new Date(doc.updatedAt), { addSuffix: true }) : '—')}
       </div>
       <div className="justify-self-end flex items-center gap-1">
-        {canEdit && !doc.isArchived && (
+        {canArchive && !doc.isArchived && (
           <span
             role="button"
             aria-label="Archive"
@@ -323,19 +410,6 @@ function DocRow({ doc, onOpen, onArchive, onRestore, canEdit, isFirst }) {
             title="Archive doc"
           >
             <Archive size={12} />
-          </span>
-        )}
-        {canEdit && doc.isArchived && (
-          <span
-            role="button"
-            aria-label="Restore"
-            tabIndex={0}
-            onClick={onRestore}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRestore(e); } }}
-            className="p-1 rounded text-text-tertiary hover:bg-surface-100 hover:text-primary cursor-pointer"
-            title="Restore doc"
-          >
-            <RotateCcw size={12} />
           </span>
         )}
       </div>
@@ -353,6 +427,7 @@ function RelationBadge({ relation }) {
     shared:    { bg: 'rgba(0, 115, 234, 0.12)',  fg: '#0073ea', label: 'Shared' },
     legacy:    { bg: 'rgba(120, 120, 120, 0.12)', fg: '#6b7280', label: 'Legacy access' },
     super_admin: { bg: 'rgba(220, 38, 38, 0.10)', fg: '#dc2626', label: 'Super-admin view' },
+    admin:     { bg: 'rgba(245, 158, 11, 0.12)', fg: '#b45309', label: 'Admin view' },
   };
   const tone = palette[relation];
   if (!tone) return null;

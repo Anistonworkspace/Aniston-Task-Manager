@@ -6,6 +6,16 @@ export default function UpdatePrompt() {
   const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
+    // Service-worker update UX is a PRODUCTION-only concern: the SW is only
+    // registered in prod builds (see main.jsx SW_ENABLED). In dev, the only
+    // service worker that can exist is a STALE one left over from a previous
+    // prod/preview build on localhost. That stale SW emits skipWaiting() +
+    // clients.claim() → `controllerchange`, and it can post SW_UPDATED — both
+    // of which would call window.location.reload() below and trap the dev tab
+    // in an endless reload loop. Attaching these listeners only in prod stops
+    // the loop; dev relies on main.jsx's quiet unregister instead.
+    if (!import.meta.env.PROD) return undefined;
+
     // Listen for SW update available event
     function onUpdateAvailable(e) {
       setShowUpdate(true);
@@ -43,8 +53,12 @@ export default function UpdatePrompt() {
     }
   }
 
-  // Also listen for controller change (new SW took over)
+  // Also listen for controller change (new SW took over).
+  // PROD-only — see the note above. A stale dev SW claiming the page would
+  // otherwise reload-loop the tab forever.
   useEffect(() => {
+    if (!import.meta.env.PROD) return undefined;
+
     let refreshing = false;
     function onControllerChange() {
       if (!refreshing) {

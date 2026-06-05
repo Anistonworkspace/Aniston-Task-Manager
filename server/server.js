@@ -788,6 +788,7 @@ const start = async () => {
       'promotion',
       'board_member_added',
       'board_member_removed',
+      'time_block_reminder',
     ]) {
       try {
         await sequelize.query(`ALTER TYPE "enum_notifications_type" ADD VALUE IF NOT EXISTS '${val}';`);
@@ -909,6 +910,46 @@ const start = async () => {
       console.log('[Server] task_reminders recurring-types migration ensured.');
     } catch (e) {
       console.warn('[Server] task_reminders recurring-types migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: time_blocks planner fields (migration 023) ──────────
+    // Time Planner upgrade. All columns nullable or defaulted so legacy rows
+    // remain valid and render unchanged. Mirrors migrations/023_*.sql.
+    try {
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "title" VARCHAR(300)`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "type" VARCHAR(30) NOT NULL DEFAULT 'task_work'`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "status" VARCHAR(20) NOT NULL DEFAULT 'planned'`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "priority" VARCHAR(20) NOT NULL DEFAULT 'normal'`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "source" VARCHAR(20) NOT NULL DEFAULT 'manual'`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "reminderMinutesBefore" INTEGER`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "createdById" UUID REFERENCES users(id) ON DELETE SET NULL`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS time_blocks_created_by_id ON time_blocks ("createdById")`);
+      await sequelize.query(`UPDATE time_blocks SET "source" = 'task' WHERE "taskId" IS NOT NULL AND "source" = 'manual'`).catch(() => {});
+      console.log('[Server] time_blocks planner-fields migration ensured.');
+    } catch (e) {
+      console.warn('[Server] time_blocks planner-fields migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: time_blocks calendar upgrade (migration 024) ────────
+    // Rich description (TEXT) + bounded recurrence (rule + group id). Additive.
+    try {
+      await sequelize.query(`ALTER TABLE time_blocks ALTER COLUMN "description" TYPE TEXT`).catch(() => {});
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "recurrenceRule" VARCHAR(50)`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "recurrenceGroupId" UUID`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS time_blocks_recurrence_group ON time_blocks ("recurrenceGroupId")`);
+      console.log('[Server] time_blocks calendar-upgrade migration ensured.');
+    } catch (e) {
+      console.warn('[Server] time_blocks calendar-upgrade migration warning:', e.message?.slice(0, 200));
+    }
+
+    // ── Auto-migration: time_blocks colour + reminder dedupe (migration 025) ─
+    try {
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "color" VARCHAR(20)`);
+      await sequelize.query(`ALTER TABLE time_blocks ADD COLUMN IF NOT EXISTS "reminderSentAt" TIMESTAMP WITH TIME ZONE`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS time_blocks_reminder_due ON time_blocks ("reminderSentAt") WHERE "reminderMinutesBefore" IS NOT NULL AND "reminderSentAt" IS NULL`);
+      console.log('[Server] time_blocks colour/reminder migration ensured.');
+    } catch (e) {
+      console.warn('[Server] time_blocks colour/reminder migration warning:', e.message?.slice(0, 200));
     }
 
     // â”€â”€ Auto-migration: notifications.idempotencyKey column + partial unique index â”€
@@ -2966,6 +3007,40 @@ const start = async () => {
       console.warn('[Server] backup_records migration warning:', e.message?.slice(0, 200));
     }
 
+    // ── Auto-migration: file_backup_records ──────────────────────
+    // Catalog for uploaded-FILES backups (tar.gz of the uploads/ dir).
+    // A SEPARATE table from backup_records so the files-backup subsystem
+    // never shares state with the database-dump subsystem. Same raw-DDL +
+    // CHECK-constraint shape as backup_records for the same stability reasons.
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS file_backup_records (
+          id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          filename        VARCHAR(255) NOT NULL UNIQUE,
+          path            VARCHAR(1024) NOT NULL,
+          "sizeBytes"     BIGINT,
+          trigger         TEXT NOT NULL DEFAULT 'manual'
+                          CHECK (trigger IN ('scheduled','manual','pre_restore','uploaded')),
+          status          TEXT NOT NULL DEFAULT 'running'
+                          CHECK (status IN ('running','completed','failed')),
+          "errorMessage"  TEXT,
+          "createdBy"     UUID REFERENCES users(id) ON DELETE SET NULL,
+          "completedAt"   TIMESTAMP WITH TIME ZONE,
+          "restoredAt"    TIMESTAMP WITH TIME ZONE,
+          "progressPercent" INTEGER NOT NULL DEFAULT 0
+                          CHECK ("progressPercent" >= 0 AND "progressPercent" <= 100),
+          "createdAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+          "updatedAt"     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )
+      `);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_file_backup_records_created_at ON file_backup_records("createdAt" DESC)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_file_backup_records_trigger ON file_backup_records(trigger)`);
+      await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_file_backup_records_status ON file_backup_records(status)`);
+      console.log('[Server] file_backup_records table ensured.');
+    } catch (e) {
+      console.warn('[Server] file_backup_records migration warning:', e.message?.slice(0, 200));
+    }
+
     // â”€â”€ Auto-migration: Add receipt columns to task_assignees â”€â”€
     // Per-assignee delivery/seen tracking for the WhatsApp-style receipt UI.
     // assignerId records who triggered the assignment (used to scope visibility
@@ -3060,6 +3135,10 @@ const start = async () => {
       const { startDeadlineReminderJob } = require('./jobs/deadlineReminderJob');
       startDeadlineReminderJob();
 
+      // Start Time Planner reminder job (every minute)
+      const { startTimePlannerReminderJob } = require('./jobs/timePlannerReminderJob');
+      startTimePlannerReminderJob();
+
       // Start priority escalation job (daily at midnight)
       const { startPriorityEscalationJob } = require('./jobs/priorityEscalationJob');
       startPriorityEscalationJob();
@@ -3102,6 +3181,14 @@ const start = async () => {
       // default escape hatch).
       const { startDailyBackupJob } = require('./jobs/dailyBackupJob');
       startDailyBackupJob();
+
+      // Daily uploaded-FILES backup at 18:30 (overridable via FILE_BACKUP_CRON).
+      // Independent of the DB backup above: separate cron lock, separate
+      // table (file_backup_records), separate retention. Archives the
+      // uploads/ directory as .tar.gz so a DB restore isn't left with
+      // dangling attachment rows. Disable via FILE_BACKUP_ENABLED=false.
+      const { startDailyFileBackupJob } = require('./jobs/dailyFileBackupJob');
+      startDailyFileBackupJob();
     });
   } catch (error) {
     console.error('[Server] Failed to start:', error);

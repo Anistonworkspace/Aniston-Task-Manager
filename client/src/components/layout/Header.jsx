@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock, Download, RotateCw, Database } from 'lucide-react';
+import { Bell, Search, HelpCircle, LogOut, User, Settings, ChevronDown, Moon, Sun, Plus, Command, Menu, Waypoints, Mic, BookOpen, Puzzle, MessageSquare, Archive, Network, Clock, Download, Database } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useT } from '../../context/LanguageContext';
 import { isExplicitlyDenied } from '../../utils/permissions';
@@ -504,19 +504,8 @@ export default function Header({ onToggleSidebar }) {
           {/* Sub-separator between page-nav icons and notification/system icons */}
           <div className="h-5 w-px bg-border mx-1 hidden sm:block" />
 
-          {/* Slice 6.2: Refresh button. Mirrors the tray menu's Refresh
-              item — useful when the app gets into a stale state and the
-              user wants to recover without closing the window. A full
-              page reload here is cheap and resets all in-memory state;
-              the persistent session cookie keeps the user signed in. */}
-          <button
-            onClick={() => window.location.reload()}
-            title="Refresh app"
-            aria-label="Refresh app"
-            className="p-2 rounded-lg hover:bg-surface-100 transition-all duration-150 text-text-tertiary hover:text-text-primary"
-          >
-            <RotateCw size={17} strokeWidth={1.8} />
-          </button>
+          {/* Slice 6.2: Refresh moved to the sidebar logo/title (see
+              Sidebar.jsx) — clicking the brand reloads the app. */}
 
           {/* Notifications. aria-label is a static description; the badge
               text becomes part of the accessible name via aria-label so

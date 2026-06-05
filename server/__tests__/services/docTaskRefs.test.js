@@ -865,8 +865,12 @@ describe('listDocReferencesForTask', () => {
   test('200 returns docs the caller can access; excludes archived docs', async () => {
     // Phase 3: filter is now docAccessSvc.hasDocAccess (per-doc), NOT
     // canCallerSeeWorkspace. We drive access via doc.ownerUserId matching
-    // ADMIN for the "visible" ref; the "hidden" doc has a different owner
-    // and no DocAccess row, so it falls out.
+    // the caller for the "visible" ref; the "hidden" doc has a different
+    // owner and no DocAccess row, so it falls out.
+    //
+    // June 2026: Tier 1/2 are blanket doc admins (isDocAdmin → see all), so
+    // this per-doc filtering test uses a MEMBER caller — an admin would see
+    // every doc and defeat the assertion.
     Task.findByPk.mockResolvedValue({ id: UUID_A, boardId: 'b1' });
     canUserSeeBoard.mockResolvedValue(true);
 
@@ -877,7 +881,7 @@ describe('listDocReferencesForTask', () => {
         id: 'doc-visible',
         title: 'Visible doc',
         workspaceId: 'w-visible',
-        ownerUserId: ADMIN.id, // caller owns this doc → access granted
+        ownerUserId: CALLER.id, // caller owns this doc → access granted
         isArchived: false,
       },
     };
@@ -888,7 +892,7 @@ describe('listDocReferencesForTask', () => {
         id: 'doc-archived',
         title: 'Archived doc',
         workspaceId: 'w-visible',
-        ownerUserId: ADMIN.id,
+        ownerUserId: CALLER.id,
         isArchived: true, // archived filter excludes regardless
       },
     };
@@ -914,7 +918,7 @@ describe('listDocReferencesForTask', () => {
     const { DocAccess } = require('../../models');
     DocAccess.findOne.mockResolvedValue(null);
 
-    const req = { user: ADMIN, params: { id: UUID_A } };
+    const req = { user: CALLER, params: { id: UUID_A } };
     const res = mockRes();
     await docCtrl.listDocReferencesForTask(req, res);
 

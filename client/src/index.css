@@ -1709,6 +1709,214 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   background: var(--hover);
   color: var(--text);
 }
+/* Pressed/active state — used by the right-rail docs navigator toggle so the
+   user can see at a glance whether the rail is open. */
+.doc-page-notion__icon-btn--active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.doc-page-notion__icon-btn--active:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* =====================================================================
+   Docs right-rail navigator (June 2026) — in-editor doc switcher.
+   Lives inside .doc-page-notion so it inherits the same token system
+   (--bg / --text / --text-3 / --divider / --hover / --accent /
+   --accent-soft). Fixed width on the right of the editor; the editor's
+   centered column re-centers in the remaining space when this is open.
+   ===================================================================== */
+/* Animated wrapper — flex item whose width animates 0↔OUTER_WIDTH so the
+   editor reflows smoothly as the rail slides in/out. Clips the fixed-width
+   card during the animation so its content never squishes. */
+.docs-side-panel__outer {
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+}
+.docs-side-panel {
+  /* Soft cream→white→grey floating card — visually distinct from the white
+     editor surface so it reads as "navigation", not "document". Rail-scoped
+     token overrides keep text/contrast right on the light gradient and give
+     the active pill the Monday-blue identity (a white pill would vanish on
+     this near-white surface). */
+  --text:        #1f2330;
+  --text-2:      #4b5563;
+  --text-3:      #8a94a3;
+  --hover:       rgba(15, 23, 42, 0.05);
+  --divider:     rgba(15, 23, 42, 0.08);
+  --accent:      #0073ea;
+  --accent-soft: rgba(0, 115, 234, 0.12);
+
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 10px 12px 12px 8px;
+  background: linear-gradient(135deg, #FFF7DA 0%, #FFFFFF 48%, #F1F1EF 100%);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.10), 0 2px 6px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+.dark .docs-side-panel,
+.theme-dark .docs-side-panel {
+  --text:        #e5e7eb;
+  --text-2:      #c4c8d1;
+  --text-3:      #8d94a3;
+  --hover:       rgba(255, 255, 255, 0.06);
+  --divider:     rgba(255, 255, 255, 0.09);
+  --accent:      #8b85f2;
+  --accent-soft: rgba(139, 133, 242, 0.18);
+  background: linear-gradient(135deg, #20262f 0%, #181c24 48%, #14171e 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+}
+.docs-side-panel__title-icon { color: var(--accent); }
+.docs-side-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 8px 0 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--divider);
+}
+.docs-side-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.docs-side-panel__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.docs-side-panel__icon-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.docs-side-panel__icon-btn:disabled { opacity: 0.6; cursor: wait; }
+
+.docs-side-panel__search {
+  position: relative;
+  padding: 8px 10px;
+  flex-shrink: 0;
+}
+.docs-side-panel__search-icon {
+  position: absolute;
+  left: 19px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.docs-side-panel__search-input {
+  width: 100%;
+  padding: 6px 10px 6px 28px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--hover);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  outline: none;
+}
+.docs-side-panel__search-input::placeholder { color: var(--text-3); }
+.docs-side-panel__search-input:focus {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+.docs-side-panel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Department section header (Tier 1/2 grouped view). */
+.docs-side-panel__dept {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 6px;
+  margin-top: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.docs-side-panel__dept:hover { background: var(--hover); border-radius: 6px; }
+.docs-side-panel__dept-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.docs-side-panel__dept-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+/* A single doc row in the rail. */
+.docs-side-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-2);
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.docs-side-panel__row:hover { background: var(--hover); color: var(--text); }
+.docs-side-panel__row-icon { color: var(--text-3); }
+.docs-side-panel__row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Active = the doc currently open in the editor. Monday-blue tinted pill +
+   blue text — stands out against the light cream→white gradient. */
+.docs-side-panel__row--active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.10);
+}
+.docs-side-panel__row--active .docs-side-panel__row-icon { color: var(--accent); }
+.docs-side-panel__row--active:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 
 /* Share trigger button â€” pill style, matches Notion's compact share. */
 .doc-page-notion__share-trigger {
@@ -1910,8 +2118,12 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 
 .doc-page-notion__title-block {
-  margin-top: 10px;
-  margin-bottom: 0;
+  /* Icon sits flush at the top of the column — the breathing room is applied
+     to the title itself (see .doc-page-notion__title), not above the icon. */
+  margin-top: 0;
+  /* Breathing room between the meta row (author · last-edited / shared-with
+     bar) and the first line of the doc body. */
+  margin-bottom: 10px;
 }
 
 /* Editable title â€” calmer Editorial scale (reduced from 42px May 2026
@@ -1926,10 +2138,14 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
   background: transparent;
   border: none;
   outline: none;
+  /* Breathing room ABOVE the title (between the icon and the title), per
+     request — moved here from .doc-page-notion__title-block so the gap sits
+     on the title, not above the icon. margin-top works on both the display
+     div and the editing <input>; padding-top is the fallback if ever needed. */
+  margin: 20px 0 0;
   padding: 0;
   width: 100%;
   cursor: text;
-  margin: 0;
 }
 .doc-page-notion__title:focus,
 .doc-page-notion__title:hover { background: transparent; }
@@ -1978,7 +2194,9 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 .doc-page-notion .blocknote-wrapper .bn-editor {
   font-size: 16px;
-  line-height: 1.65;
+  /* June 2026 — tightened from 1.65 → 1.4 → 1.26 (a further 10% reduction)
+     for a notepad-like rhythm with minimal gap between lines/paragraphs. */
+  line-height: 1.26;
   color: var(--doc-text-color);
 }
 .doc-page-notion .blocknote-wrapper [data-content-type="paragraph"],
@@ -1986,7 +2204,35 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .doc-page-notion .blocknote-wrapper [data-content-type="numberedListItem"],
 .doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] {
   font-size: 16px;
-  line-height: 1.65;
+  line-height: 1.26;
+}
+/* Shrink the per-block vertical padding so stacked paragraphs sit close
+   together like a regular notes app instead of double-spaced. */
+.doc-page-notion .blocknote-wrapper .bn-block-content {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+/* List markers aligned with their text. BlockNote renders `.bn-block-content`
+   as a flex row (marker ::before / checkbox div + inline content) with a
+   default `align-items: stretch`, which pins the marker to the TOP of the row.
+   For the disc/number we align to the text BASELINE — box-centering doesn't
+   help single-line items because the glyph is positioned by baseline, so it
+   still reads as "too high". Baseline alignment puts the disc/number on the
+   same optical line as the words. */
+.doc-page-notion .blocknote-wrapper [data-content-type="bulletListItem"],
+.doc-page-notion .blocknote-wrapper [data-content-type="numberedListItem"] {
+  align-items: baseline;
+}
+/* The checkbox is a replaced element with no useful text baseline, so center
+   it against the line instead. */
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] {
+  align-items: center;
+}
+/* The checkbox wrapper is hard-coded to 24px in BlockNote core, which forces
+   the row taller than the text line. Let it size to the (16px) checkbox so
+   centering lines the box up with the words next to it. */
+.doc-page-notion .blocknote-wrapper [data-content-type="checkListItem"] > div:has(> input) {
+  height: auto;
 }
 .doc-page-notion .blocknote-wrapper [data-content-type="heading"][data-level="1"] {
   font-family: var(--title-font-family, Poppins, sans-serif);
@@ -2036,15 +2282,15 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 }
 .doc-page-notion .rich-doc-body .ProseMirror {
   font-size: 16px;
-  line-height: 1.65;
+  line-height: 1.26;
   outline: none;
   background: transparent;
 }
 .doc-page-notion .rich-doc-body .ProseMirror:focus { outline: none; }
 .doc-page-notion .rich-doc-body .ProseMirror p {
   font-size: 16px;
-  line-height: 1.65;
-  margin: 0.25em 0;
+  line-height: 1.26;
+  margin: 0.15em 0;
 }
 .doc-page-notion .rich-doc-body .ProseMirror h1,
 .doc-page-notion .rich-doc-body .ProseMirror h2,
@@ -2128,4 +2374,115 @@ textarea::placeholder, input::placeholder { color: var(--text-tertiary); }
 .theme-dark .doc-page-notion .blocknote-wrapper .mantine-Menu-dropdown,
 .theme-dark .doc-page-notion .blocknote-wrapper .bn-suggestion-menu {
   box-shadow: 0 16px 44px -12px rgba(0, 0, 0, 0.6), 0 6px 14px rgba(0, 0, 0, 0.45) !important;
+}
+
+/* ───────────────────────── Time Planner — FullCalendar theme ─────────────
+   Scoped under .planner-fc so it never leaks to other modules. Re-skins
+   FullCalendar v6 to the Monday Aniston pastel system (theme-adaptive vars). */
+.planner-fc .fc {
+  --fc-border-color: var(--border-color);
+  --fc-now-indicator-color: #d83a52;
+  --fc-today-bg-color: rgba(0, 115, 234, 0.05);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: transparent;
+  font-family: inherit;
+}
+.planner-fc .fc-theme-standard td,
+.planner-fc .fc-theme-standard th,
+.planner-fc .fc-scrollgrid {
+  border-color: var(--border-color);
+}
+.planner-fc .fc-scrollgrid { border-radius: 12px; overflow: hidden; }
+.planner-fc .fc-col-header-cell { background: transparent; padding: 6px 0; }
+.planner-fc .fc-col-header-cell-cushion {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 8px 4px;
+}
+.planner-fc .fc-day-today .fc-col-header-cell-cushion { color: var(--primary, #0073ea); }
+.planner-fc .fc-timegrid-slot { height: 2.3em; }
+.planner-fc .fc-timegrid-slot-label-cushion,
+.planner-fc .fc-timegrid-axis-cushion {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+.planner-fc .fc-timegrid-slot-minor { border-top-style: dotted; }
+/* Pastel rounded events with a left accent only */
+.planner-fc .fc-timegrid-event,
+.planner-fc .fc-daygrid-event {
+  border-radius: 8px;
+  border: none;
+  border-left: 3px solid var(--fc-event-border-color, #8b5cf6);
+  box-shadow: none;
+  padding: 0;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.planner-fc .fc-timegrid-event:hover {
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.14);
+  transform: translateY(-1px);
+  z-index: 5;
+}
+.planner-fc .fc-event:focus-visible { outline: 2px solid var(--primary, #0073ea); outline-offset: 1px; }
+.planner-fc .fc-event-main { padding: 0; color: inherit; }
+.planner-fc .fc-timegrid-now-indicator-arrow { display: none; }
+.planner-fc .fc-highlight { background: rgba(0, 115, 234, 0.12); border-radius: 8px; }
+.planner-fc .fc-timegrid-now-indicator-line { border-width: 2px 0 0; }
+
+/* Show the closing 9 PM boundary label (FC only labels slot starts, so the
+   final 21:00 line is otherwise unlabeled). height="auto" means the body's
+   bottom edge IS the 21:00 line. */
+.planner-fc .fc-timegrid-body { position: relative; }
+.planner-fc .fc-timegrid-body::after {
+  content: '9:00pm';
+  position: absolute;
+  left: 0;
+  bottom: -7px;
+  width: 52px;
+  padding-right: 4px;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+/* Month view — render events as compact colored chips (the dot carries the
+   colour), not full bars. */
+.planner-fc .fc-daygrid-event {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 6px;
+  padding: 1px 0 !important;
+  margin-top: 1px;
+}
+.planner-fc .fc-daygrid-event:hover { background: var(--surface) !important; }
+.planner-fc .fc-daygrid-day.fc-day-today { background: var(--fc-today-bg-color); }
+.planner-fc .fc-daygrid-day-number { font-size: 11px; color: var(--text-secondary); padding: 4px 6px; }
+.planner-fc .fc-daygrid-more-link {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary, #0073ea);
+  padding: 0 4px;
+}
+.planner-fc .fc-daygrid-day-frame { cursor: pointer; }
+
+/* Suppress FullCalendar's native "+N more" popover — we open our own clean,
+   solid DayBlocksDialog instead (the native one rendered transparent/cramped). */
+.fc-popover { display: none !important; }
+
+/* Rich planner description — shared by the editor and the detail popover so
+   formatted notes render identically. Restores list markers that Tailwind
+   preflight strips. */
+.planner-rich ul { list-style: disc; padding-left: 1.25rem; margin: 0.25rem 0; }
+.planner-rich ol { list-style: decimal; padding-left: 1.25rem; margin: 0.25rem 0; }
+.planner-rich a { color: var(--primary, #0073ea); text-decoration: underline; }
+.planner-rich b, .planner-rich strong { font-weight: 700; }
+.planner-rich u { text-decoration: underline; }
+.planner-rich:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+  pointer-events: none;
 }

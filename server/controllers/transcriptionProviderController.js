@@ -4,7 +4,9 @@ const { encrypt, decrypt, maskSecret } = require('../utils/encryption');
 const { logActivity } = require('../services/activityService');
 const { testProviderConnection } = require('../services/transcriptionService');
 
-const VALID_TYPES = ['deepgram', 'custom'];
+const VALID_TYPES = ['deepgram', 'sarvam', 'custom'];
+
+const DEFAULT_MODEL = { deepgram: 'nova-3', sarvam: 'saarika:v2.5', custom: '' };
 
 function publicFields(p, unmaskedKey) {
   let maskedKey = '';
@@ -62,7 +64,7 @@ async function createProvider(req, res) {
       name: xss(name.trim()),
       providerType,
       apiKey: encrypt(apiKey),
-      model: xss(model || 'nova-3'),
+      model: xss(model || DEFAULT_MODEL[providerType] || ''),
       language: xss(language || 'en-US'),
       baseUrl: xss(baseUrl || ''),
       diarizationEnabled: diarizationEnabled !== false,

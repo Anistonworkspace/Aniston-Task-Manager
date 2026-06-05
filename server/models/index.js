@@ -79,6 +79,9 @@ const FormSubmission = require('./FormSubmission');
 // Tier-1 administered DB backup catalog — metadata for every dump file under
 // DB_BACKUP_DIR. Source of truth for the /api/admin/backups/* endpoints.
 const BackupRecord = require('./BackupRecord');
+// Separate catalog for uploaded-FILES backups (tar.gz of the uploads/ dir).
+// Kept independent from BackupRecord so the two subsystems never interfere.
+const FileBackupRecord = require('./FileBackupRecord');
 
 // ─── Board <-> User (creator) ────────────────────────────────
 Board.belongsTo(User, {
@@ -278,6 +281,13 @@ User.hasMany(TimeBlock, {
   as: 'timeBlocks',
 });
 
+// ─── TimeBlock <-> creator (delegation audit) ────────────────
+TimeBlock.belongsTo(User, {
+  foreignKey: 'createdById',
+  as: 'createdBy',
+  onDelete: 'SET NULL',
+});
+
 // ─── TimeBlock <-> Task ──────────────────────────────────────
 TimeBlock.belongsTo(Task, {
   foreignKey: 'taskId',
@@ -474,12 +484,17 @@ module.exports = {
   Form,
   FormSubmission,
   BackupRecord,
+  FileBackupRecord,
 };
 
 // ─── BackupRecord <-> User (creator) ────────────────────────
 // createdBy is null for scheduled / pre_restore runs; SET NULL on user delete
 // so historical backup metadata survives an admin offboarding.
 BackupRecord.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
+
+// ─── FileBackupRecord <-> User (creator) ────────────────────
+// Same SET NULL rationale as BackupRecord above.
+FileBackupRecord.belongsTo(User, { foreignKey: 'createdBy', as: 'creator', onDelete: 'SET NULL' });
 
 // ─── RefreshToken <-> User ───────────────────────────────────────────
 // CASCADE on delete: deactivating/removing a user wipes their refresh tokens

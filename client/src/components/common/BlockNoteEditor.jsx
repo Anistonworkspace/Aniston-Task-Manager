@@ -3,6 +3,7 @@ import {
   useCreateBlockNote,
   createReactInlineContentSpec,
   SuggestionMenuController,
+  getDefaultReactSlashMenuItems,
 } from '@blocknote/react';
 import { BlockNoteSchema, defaultInlineContentSpecs, filterSuggestionItems } from '@blocknote/core';
 import { BlockNoteView } from '@blocknote/mantine';
@@ -169,6 +170,19 @@ const BlockNoteEditor = forwardRef(function BlockNoteEditor({
     getEditor: () => editor,
   }), [editor]);
 
+  // June 2026 — custom slash ('/') menu so we can drop the entire "Media"
+  // section (Image / Video / Audio / File). We render our own
+  // SuggestionMenuController for '/' and disable BlockNote's built-in slash
+  // menu via `slashMenu={false}` on BlockNoteView below. Media items are
+  // matched by group ('Media') AND title as a locale-robust fallback.
+  const MEDIA_TITLES = useMemo(() => new Set(['Image', 'Video', 'Audio', 'File']), []);
+  const getSlashItems = useMemo(() => async (query) => {
+    const items = getDefaultReactSlashMenuItems(editor).filter(
+      (item) => item.group !== 'Media' && !MEDIA_TITLES.has(item.title),
+    );
+    return filterSuggestionItems(items, query);
+  }, [editor, MEDIA_TITLES]);
+
   const wrapperStyle = useMemo(() => ({ minHeight: `${minHeight}px` }), [minHeight]);
 
   // Follow the host app's dark-mode toggle. The ThemeContext adds `.dark`
@@ -198,9 +212,15 @@ const BlockNoteEditor = forwardRef(function BlockNoteEditor({
         editor={editor}
         editable={!disabled}
         theme={bnTheme}
-        // Disable the built-in `@` slash-style behavior so our custom
-        // SuggestionMenuController owns the `@` trigger.
+        // Disable the built-in slash menu so our custom controller below can
+        // own '/' and drop the Media section. (The '@' trigger has no
+        // built-in menu, so the mention controller just adds one.)
+        slashMenu={false}
       >
+        <SuggestionMenuController
+          triggerCharacter="/"
+          getItems={getSlashItems}
+        />
         {mentions && (
           <SuggestionMenuController
             triggerCharacter="@"
