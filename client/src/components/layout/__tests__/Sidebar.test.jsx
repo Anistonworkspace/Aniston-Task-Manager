@@ -245,10 +245,12 @@ describe('Sidebar component', () => {
         <Sidebar collapsed={false} onToggle={onToggle} />
       </MemoryRouter>
     );
-    // The collapse button is the only PanelLeftClose sibling inside the
-    // logo header (border-b). Click whichever button is in that row.
+    // The logo header (border-b) now holds TWO buttons: the brand button
+    // (logo + title) which reloads the app, and the collapse toggle. The
+    // collapse button is the last one in the row.
     const header = screen.getByText('Monday Aniston').closest('div.border-b');
-    const collapseBtn = header.querySelector('button');
+    const buttons = header.querySelectorAll('button');
+    const collapseBtn = buttons[buttons.length - 1];
     fireEvent.click(collapseBtn);
     expect(onToggle).toHaveBeenCalledTimes(1);
   });

@@ -84,7 +84,6 @@ import {
   listMyDocs,
   createDoc,
   archiveDoc,
-  restoreDoc,
 } from '../../../services/docsService';
 import { useAuth } from '../../../context/AuthContext';
 
@@ -116,13 +115,16 @@ describe('DocsListPage', () => {
     expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
   });
 
-  it('calls listMyDocs({ q: undefined, archived: false }) on mount', async () => {
+  it('calls listMyDocs({ q: undefined, filter: undefined }) on mount', async () => {
+    // June 2026: the list is personal-scoped and archived docs are excluded
+    // (they live in /archive). Mount fetches with no query and the default
+    // 'all' filter, which the page sends as filter: undefined.
     listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
     await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
     expect(listMyDocs).toHaveBeenCalledWith({
       q: undefined,
-      archived: false,
+      filter: undefined,
     });
   });
 
@@ -156,23 +158,25 @@ describe('DocsListPage', () => {
     await waitFor(() => {
       expect(listMyDocs).toHaveBeenCalledWith({
         q: 'roadmap',
-        archived: false,
+        filter: undefined,
       });
     });
   });
 
-  it('toggling "Show archived" calls fetch with archived: true', async () => {
+  it('clicking the "Shared with me" filter chip refetches with filter=shared', async () => {
+    // June 2026: the "Show archived" toggle was removed (archived docs live
+    // in /archive). The page now exposes filter chips (All / My / Shared /
+    // Mentioned) that map to the backend ?filter= param.
     listMyDocs.mockResolvedValue({ docs: [] });
     renderPage();
     await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
 
-    const checkbox = screen.getByLabelText(/Show archived/i);
-    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: /Shared with me/i }));
 
     await waitFor(() => {
       expect(listMyDocs).toHaveBeenCalledWith({
         q: undefined,
-        archived: true,
+        filter: 'shared',
       });
     });
   });
@@ -195,6 +199,13 @@ describe('DocsListPage', () => {
   });
 
   it('archive icon calls archiveDoc and removes the row optimistically', async () => {
+    // June 2026: Archive is a Tier 1/2 (canManage) affordance only. The row
+    // renders the Archive button when the caller canManage.
+    useAuth.mockReturnValue({
+      user: { id: 'u1', name: 'Test User' },
+      isSuperAdmin: false,
+      canManage: true,
+    });
     listMyDocs.mockResolvedValue({
       docs: [
         { id: 'd1', title: 'Roadmap Q3', lastEditedAt: new Date().toISOString(), createdBy: 'u1' },
@@ -212,7 +223,7 @@ describe('DocsListPage', () => {
 
     expect(archiveDoc).toHaveBeenCalledWith('d1');
     await waitFor(() => expect(screen.queryByText('Roadmap Q3')).not.toBeInTheDocument());
-    expect(mockToastSuccess).toHaveBeenCalledWith('Doc archived');
+    expect(mockToastSuccess).toHaveBeenCalledWith('Doc archived — find it in Archive › Docs');
   });
 
   it('renders the error banner when the fetch fails', async () => {
@@ -225,38 +236,8 @@ describe('DocsListPage', () => {
     );
   });
 
-  it('restoring an archived doc calls restoreDoc then reloads the list', async () => {
-    // Default response keeps the archived row visible across all three fetches
-    // (mount, "Show archived" flip, post-restore reload). Subsequent calls
-    // would otherwise return undefined and break destructuring.
-    listMyDocs.mockResolvedValue({
-      docs: [
-        {
-          id: 'd1',
-          title: 'Old doc',
-          isArchived: true,
-          createdBy: 'u1',
-          lastEditedAt: new Date().toISOString(),
-        },
-      ],
-    });
-    restoreDoc.mockResolvedValue({ doc: { id: 'd1', isArchived: false } });
-
-    renderPage();
-    // Need archived visible — flip the checkbox so the row is rendered.
-    await waitFor(() => expect(listMyDocs).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByLabelText(/Show archived/i));
-    await waitFor(() => expect(screen.getByText('Old doc')).toBeInTheDocument());
-
-    const restoreBtn = screen.getByRole('button', { name: /Restore/i });
-    await act(async () => {
-      fireEvent.click(restoreBtn);
-    });
-
-    expect(restoreDoc).toHaveBeenCalledWith('d1');
-    expect(mockToastSuccess).toHaveBeenCalledWith('Doc restored');
-    // After restore the page calls load() again — listMyDocs is hit a
-    // third time (initial mount, archived flip, post-restore reload).
-    await waitFor(() => expect(listMyDocs.mock.calls.length).toBeGreaterThanOrEqual(3));
-  });
+  // Note: the inline "Show archived" toggle and per-row Restore action were
+  // removed in June 2026 — archived docs now live only in the global Archive
+  // folder (/archive), where restore / permanent-delete happen. Those flows
+  // are covered by the Archive page's own tests.
 });
